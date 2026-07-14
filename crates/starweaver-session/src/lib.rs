@@ -10,6 +10,7 @@ mod input;
 mod publication;
 mod records;
 mod resume;
+mod search;
 mod store;
 mod trace;
 
@@ -30,6 +31,18 @@ pub use records::{
     RunRecord, RunStatus, SessionRecord, SessionStatus, StreamCursorRef, StreamCursorRefError,
 };
 pub use resume::SessionResumeSnapshot;
+pub use search::{
+    SessionSearchCapabilities, SessionSearchCheckpoint, SessionSearchConsistency,
+    SessionSearchCoverage, SessionSearchCoverageState, SessionSearchCursorBinding,
+    SessionSearchCursorCodec, SessionSearchDocument, SessionSearchError, SessionSearchFilter,
+    SessionSearchFilterKind, SessionSearchGranularity, SessionSearchHighlight, SessionSearchHit,
+    SessionSearchIndexError, SessionSearchIndexWriter, SessionSearchLocation,
+    SessionSearchMutation, SessionSearchMutationOperation, SessionSearchPage,
+    SessionSearchProvider, SessionSearchQuery, SessionSearchQueryMode, SessionSearchScope,
+    SessionSearchSnippet, SessionSearchSort, SessionSearchSource, SessionSearchSummary,
+    SessionSearchTimeRange, SessionSearchVisibility, SessionSearchWarning,
+    SessionSearchWarningKind,
+};
 pub use starweaver_core::SessionId;
 pub use store::{InMemorySessionStore, SessionFilter, SessionStore, SessionStoreExecutor};
 pub use trace::{CompactRunTrace, CompactSessionTrace};

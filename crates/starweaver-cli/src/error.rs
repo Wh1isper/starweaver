@@ -23,6 +23,9 @@ pub enum CliError {
     /// Requested record was missing.
     #[error("not found: {0}")]
     NotFound(String),
+    /// Optional product capability is not installed or does not support the request.
+    #[error("unsupported capability: {0}")]
+    Unsupported(String),
     /// Filesystem operation failed.
     #[error("filesystem error at {}: {source}", path.display())]
     Io {

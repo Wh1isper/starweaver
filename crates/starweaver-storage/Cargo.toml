@@ -18,6 +18,7 @@ chrono.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 starweaver-context.workspace = true
 starweaver-core.workspace = true
 starweaver-session.workspace = true

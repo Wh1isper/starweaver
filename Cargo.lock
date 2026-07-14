@@ -2627,6 +2627,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "starweaver-agent",
  "starweaver-context",
  "starweaver-core",

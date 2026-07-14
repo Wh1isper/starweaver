@@ -23,6 +23,7 @@ pub(crate) mod domain;
 mod migrations;
 mod replay_log;
 mod schema;
+mod session_search;
 mod session_store;
 mod sqlite;
 mod storage;
@@ -33,6 +34,7 @@ pub use migrations::{
     sqlite_migration_status,
 };
 pub use replay_log::SqliteReplayEventLog;
+pub use session_search::{LocalSessionSearchLimits, LocalSessionSearchProvider};
 pub use session_store::SqliteSessionStore;
 pub use starweaver_session::RunEvidenceCommit;
 pub use storage::SqliteStorage;

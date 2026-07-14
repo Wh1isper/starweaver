@@ -81,6 +81,63 @@ impl Default for RpcProviderConfig {
     }
 }
 
+/// Session-search backend selected by RPC-owned configuration.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RpcSessionSearchBackend {
+    /// Canonical `SQLite` records with optional bounded local display mirrors.
+    #[default]
+    Local,
+}
+
+/// RPC-owned optional session-search configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RpcSessionSearchConfig {
+    /// Install the optional provider.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Provider backend. External production backends are a follow-on.
+    #[serde(default)]
+    pub backend: RpcSessionSearchBackend,
+    /// Optional local display/offload root matching this database namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_root: Option<PathBuf>,
+    /// Maximum request text bytes.
+    #[serde(default = "default_search_query_bytes")]
+    pub max_query_bytes: usize,
+    /// Maximum result page size.
+    #[serde(default = "default_search_page_size")]
+    pub max_page_size: u32,
+    /// Maximum files in one bounded display scan.
+    #[serde(default = "default_search_files")]
+    pub max_display_files: usize,
+    /// Maximum aggregate bytes in one bounded display scan.
+    #[serde(default = "default_search_bytes")]
+    pub max_total_display_bytes: u64,
+    /// Maximum display candidates retained before ranking.
+    #[serde(default = "default_search_hits")]
+    pub max_display_hits: usize,
+    /// Maximum local display scan wall time in milliseconds.
+    #[serde(default = "default_search_timeout_ms")]
+    pub scan_timeout_ms: u64,
+}
+
+impl Default for RpcSessionSearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            backend: RpcSessionSearchBackend::Local,
+            display_root: None,
+            max_query_bytes: default_search_query_bytes(),
+            max_page_size: default_search_page_size(),
+            max_display_files: default_search_files(),
+            max_total_display_bytes: default_search_bytes(),
+            max_display_hits: default_search_hits(),
+            scan_timeout_ms: default_search_timeout_ms(),
+        }
+    }
+}
+
 /// Resolved configuration for the standalone RPC product.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RpcConfig {
@@ -100,6 +157,8 @@ pub struct RpcConfig {
     pub providers: BTreeMap<String, RpcProviderConfig>,
     /// HTTP transport authentication and request-origin policy.
     pub http_auth: RpcHttpAuthConfig,
+    /// Optional RPC-owned session-search provider configuration.
+    pub session_search: RpcSessionSearchConfig,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -116,6 +175,7 @@ struct FileServerConfig {
     workspace_root: Option<PathBuf>,
     default_profile: Option<String>,
     http_auth: Option<FileHttpAuthConfig>,
+    session_search: Option<RpcSessionSearchConfig>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -163,6 +223,32 @@ impl RpcConfig {
             .workspace_root
             .map_or(current_dir, |path| resolve_path(config_dir, path));
         let http_auth = resolve_http_auth(config_dir, server.http_auth)?;
+        let mut session_search = server.session_search.unwrap_or_default();
+        session_search.display_root = session_search
+            .display_root
+            .map(|path| resolve_path(config_dir, path));
+        if let Ok(value) = env::var("STARWEAVER_RPC_SESSION_SEARCH") {
+            session_search.enabled = match value.as_str() {
+                "1" | "true" | "yes" => true,
+                "0" | "false" | "no" => false,
+                _ => {
+                    return Err(RpcHostError::Invalid(
+                        "STARWEAVER_RPC_SESSION_SEARCH must be true or false".to_string(),
+                    ));
+                }
+            };
+        }
+        if session_search.max_query_bytes == 0
+            || session_search.max_page_size == 0
+            || session_search.max_display_files == 0
+            || session_search.max_total_display_bytes == 0
+            || session_search.max_display_hits == 0
+            || session_search.scan_timeout_ms == 0
+        {
+            return Err(RpcHostError::Invalid(
+                "session search limits must be greater than zero".to_string(),
+            ));
+        }
         let default_profile = env::var("STARWEAVER_RPC_PROFILE")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -188,6 +274,7 @@ impl RpcConfig {
             profiles,
             providers,
             http_auth,
+            session_search,
         })
     }
 
@@ -209,6 +296,7 @@ impl RpcConfig {
             profiles: BTreeMap::from([(DEFAULT_PROFILE_NAME.to_string(), profile)]),
             providers: default_provider_configs(),
             http_auth: RpcHttpAuthConfig::default(),
+            session_search: RpcSessionSearchConfig::default(),
         }
     }
 }
@@ -298,6 +386,30 @@ fn default_provider_configs() -> BTreeMap<String, RpcProviderConfig> {
 
 const fn default_true() -> bool {
     true
+}
+
+const fn default_search_query_bytes() -> usize {
+    4 * 1024
+}
+
+const fn default_search_page_size() -> u32 {
+    100
+}
+
+const fn default_search_files() -> usize {
+    1_000
+}
+
+const fn default_search_bytes() -> u64 {
+    64 * 1024 * 1024
+}
+
+const fn default_search_hits() -> usize {
+    10_000
+}
+
+const fn default_search_timeout_ms() -> u64 {
+    2_000
 }
 
 fn default_global_dir() -> PathBuf {

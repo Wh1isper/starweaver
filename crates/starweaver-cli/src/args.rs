@@ -251,6 +251,8 @@ impl RunCommand {
 pub enum SessionCommand {
     /// List local sessions.
     List(SessionListCommand),
+    /// Search local sessions by metadata and approved text projections.
+    Search(SessionSearchCommand),
     /// Show one session with recent runs.
     Show(SessionShowCommand),
     /// Replay stored display messages.
@@ -270,6 +272,76 @@ pub struct SessionListCommand {
     /// Maximum sessions to show.
     #[arg(long, default_value_t = 50)]
     pub limit: usize,
+}
+
+/// Session search command.
+#[derive(Clone, Debug, Args)]
+pub struct SessionSearchCommand {
+    /// Optional case-insensitive literal text. Omit it to browse metadata.
+    pub text: Option<String>,
+    /// Exact session status.
+    #[arg(long)]
+    pub status: Option<SessionSearchStatusArg>,
+    /// Exact profile name.
+    #[arg(long)]
+    pub profile: Option<String>,
+    /// Exact workspace display value.
+    #[arg(long)]
+    pub workspace: Option<String>,
+    /// Search source; repeat to select multiple sources.
+    #[arg(long = "source", value_enum)]
+    pub sources: Vec<SessionSearchSourceArg>,
+    /// Result grouping level.
+    #[arg(long, value_enum, default_value = "session")]
+    pub granularity: SessionSearchGranularityArg,
+    /// Maximum hits to return.
+    #[arg(long, default_value_t = 20)]
+    pub limit: u32,
+    /// Opaque next-page cursor.
+    #[arg(long = "after")]
+    pub cursor: Option<String>,
+    /// Output mode.
+    #[arg(long, default_value = "text")]
+    pub output: OutputMode,
+}
+
+/// Session status accepted by search.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+pub enum SessionSearchStatusArg {
+    /// Active session.
+    Active,
+    /// Archived session.
+    Archived,
+    /// Failed session.
+    Failed,
+}
+
+/// Search source accepted by the CLI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+pub enum SessionSearchSourceArg {
+    /// Session title and approved metadata.
+    SessionMetadata,
+    /// Canonical text input.
+    RunInput,
+    /// Bounded run output preview.
+    RunOutputPreview,
+    /// User-visible display messages.
+    #[value(alias = "display")]
+    DisplayMessage,
+}
+
+/// Search grouping accepted by the CLI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+pub enum SessionSearchGranularityArg {
+    /// One hit per session.
+    Session,
+    /// One hit per session/run pair.
+    Run,
+    /// Every stable projected occurrence.
+    Occurrence,
 }
 
 /// Session show command.

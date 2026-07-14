@@ -421,6 +421,8 @@ Display messages are persisted and used as the replay source. Each completed or 
 
 ```bash
 starweaver-cli session list
+starweaver-cli session search "literal text" --source run_input --output json
+starweaver-cli session search --profile coding --after <opaque-cursor>
 starweaver-cli session show <session-id>
 starweaver-cli session replay <session-id>
 starweaver-cli session replay <session-id> --run <run-id>
@@ -429,6 +431,8 @@ starweaver-cli session replay <session-id> --output text
 ```
 
 Run-scoped replay emits the same display JSONL that the initial headless run emitted when `--output display-jsonl` is selected.
+
+Session search is read-only and does not select or resume a hit. Its query is case-insensitive literal text, its cursor is opaque and query-bound, and every result preserves coverage warnings. See [Session Search](session-search.md) for projection, pagination, and local display-mirror safety details.
 
 ## TUI snapshot and human-in-the-loop policy
 

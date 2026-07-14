@@ -42,6 +42,7 @@
       "graph",
       "durability",
       "session-stream",
+      "session-search",
       "sdk-app",
       "subagents",
       "mcp"

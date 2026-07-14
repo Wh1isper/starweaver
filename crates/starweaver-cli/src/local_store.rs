@@ -1,6 +1,6 @@
 //! CLI persistence facade over shared `SQLite` storage and product-owned JSON blobs.
 
-use std::{collections::BTreeSet, fs, path::Path, path::PathBuf};
+use std::{collections::BTreeSet, fs, path::Path, path::PathBuf, sync::Arc};
 
 use chrono::Utc;
 use serde::Serialize;
@@ -12,10 +12,11 @@ use starweaver_model::{ModelMessage, ModelRequest, ModelRequestPart, ToolReturnP
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
 use starweaver_session::{
     ApprovalRecord, ApprovalStatus, DeferredToolRecord, EnvironmentStateRef, ExecutionStatus,
-    InputPart, RunRecord, RunStatus, SessionRecord, SessionStatus, SessionStoreError,
-    StreamCursorRef,
+    InputPart, RunRecord, RunStatus, SessionRecord, SessionSearchError, SessionSearchPage,
+    SessionSearchProvider, SessionSearchQuery, SessionSearchScope, SessionStatus,
+    SessionStoreError, StreamCursorRef,
 };
-use starweaver_storage::{RunEvidenceCommit, SqliteStorage};
+use starweaver_storage::{LocalSessionSearchProvider, RunEvidenceCommit, SqliteStorage};
 use starweaver_stream::{DisplayMessage, ReplayCursor, ReplayScope, ReplaySnapshot};
 use uuid::Uuid;
 
@@ -39,6 +40,7 @@ pub use session_store::LocalSessionStore;
 pub struct LocalStore {
     storage: SqliteStorage,
     file_store_path: PathBuf,
+    search_scope: SessionSearchScope,
 }
 
 /// Durable artifacts captured when a CLI run finishes or waits.
@@ -129,6 +131,9 @@ impl LocalStore {
         Ok(Self {
             storage: SqliteStorage::open(&config.database_path).map_err(storage_error)?,
             file_store_path: config.file_store_path.clone(),
+            search_scope: SessionSearchScope::local(
+                config.database_path.to_string_lossy().into_owned(),
+            ),
         })
     }
 
@@ -492,6 +497,22 @@ impl LocalStore {
             .collect()
     }
 
+    /// Search canonical local sessions and approved compatibility display projections.
+    pub fn search_sessions(&self, query: SessionSearchQuery) -> CliResult<SessionSearchPage> {
+        let provider = LocalSessionSearchProvider::new(
+            Arc::new(self.storage.session_store()),
+            &self.search_scope,
+        )
+        .with_display_root(self.file_store_path.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| CliError::Run(error.to_string()))?;
+        runtime
+            .block_on(provider.search(&self.search_scope, query))
+            .map_err(search_error)
+    }
+
     /// List run summaries in sequence order, retaining the newest `limit` runs.
     pub fn list_runs(&self, session_id: &str, limit: usize) -> CliResult<Vec<RunSummary>> {
         let mut runs = self
@@ -744,6 +765,21 @@ fn storage_error(error: SessionStoreError) -> CliError {
     match error {
         SessionStoreError::NotFound(value) => CliError::NotFound(value),
         other => CliError::Storage(other.to_string()),
+    }
+}
+
+fn search_error(error: SessionSearchError) -> CliError {
+    match error {
+        SessionSearchError::InvalidQuery(message) | SessionSearchError::InvalidCursor(message) => {
+            CliError::Usage(message)
+        }
+        SessionSearchError::Unsupported(message) => CliError::Unsupported(message),
+        SessionSearchError::Unavailable(message) | SessionSearchError::Failed(message) => {
+            CliError::Storage(message)
+        }
+        SessionSearchError::PermissionDenied => {
+            CliError::Storage("session search permission denied".to_string())
+        }
     }
 }
 

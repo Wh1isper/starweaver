@@ -1,8 +1,21 @@
 # Pluggable Session Search
 
-Status: proposed
+Status: implemented Phase 1; Phase 2 and external Phase 3 remain follow-ons
 
 Revision: 2026-07-14
+
+## Implementation Status
+
+The in-repository Phase 1 acceptance scope is implemented:
+
+- `starweaver-session` owns provider/query/filter/scope/result/capability/coverage/error/cursor contracts plus optional idempotent mutation-writer contracts and conformance fakes;
+- `starweaver-storage::LocalSessionSearchProvider` reads canonical session/run records, projects only textual input and bounded output preview, and optionally scans validated `display.compact.json` mirrors in process with fixed-string semantics and file/count/byte bounds;
+- local cursors are authenticated opaque values bound to normalized query, authorization scope, provider, corpus generation, and page position;
+- `sw session search` supports human, JSON, JSONL-compatible, and silent output without changing the current session;
+- standalone RPC owns independent configuration, provider construction, `session.search`, read authorization, error mapping, and conditional feature/capability negotiation;
+- `starweaver-rpc-core` owns the typed host DTO projection.
+
+SQLite FTS/materialized-index migrations and external production backends remain Phase 2/3 follow-ons. No external index dependency is part of the implemented baseline. Current display mirrors are still non-authoritative, so missing or unsafe mirrors report partial coverage while canonical metadata/input/output results remain valid.
 
 This spec defines an optional, product-neutral way to discover previously persisted Starweaver sessions by metadata and user-visible text. The same query contract is consumed independently by CLI/TUI, the standalone RPC product, SDK applications, and future stateless service hosts.
 
@@ -612,13 +625,13 @@ Trace/session correlation may include safe session ids for a selected hit only u
 
 ## Implementation Plan
 
-### Phase 1: Shared contract and bounded local search
+### Phase 1: Shared contract and bounded local search (implemented)
 
-1. Add shared search query/result/capability/scope/error contracts to `starweaver-session` with fake-provider contract tests.
-2. Add a `starweaver-storage` local provider using canonical SQLite records plus a bounded fixed-string scanner for validated display files.
-3. Keep filesystem completeness explicit because current CLI mirrors are not authoritative.
-4. Add `sw session search` with human and JSON output.
-5. Add typed `session.search` DTOs/feature negotiation to `starweaver-rpc-core` and independent RPC handler/configuration/auth integration.
+1. Shared search query/result/capability/scope/error/cursor and optional writer contracts live in `starweaver-session`, with cursor and delayed-write conformance tests.
+2. `starweaver-storage` provides canonical SQLite record search plus bounded in-process fixed-string scanning for validated display files.
+3. Filesystem completeness remains explicit because current CLI mirrors are not authoritative.
+4. `sw session search` provides human and stable JSON output with opaque pagination.
+5. `starweaver-rpc-core` and standalone RPC provide typed DTOs, conditional feature negotiation, RPC-owned configuration/scope, read authorization, and handler/error integration.
 
 ### Phase 2: Durable local index
 
@@ -659,15 +672,18 @@ Required contract evidence:
 - opaque cursors reject wrong query, scope, provider, and generation;
 - all hits use composite session/run identity and preserve archive/source provenance;
 - local scans cannot escape the configured root through ids, symlinks, or malformed manifests;
-- query text cannot become shell options or regex syntax in baseline mode, including leading-dash queries and configured `RIPGREP_CONFIG_PATH` fixtures;
+- query text cannot become shell options or regex syntax in baseline mode, including leading-dash queries; the implemented scanner is in process and never reads `RIPGREP_CONFIG_PATH` (a future process scanner must add that fixture);
 - missing/stale compatibility mirrors produce partial coverage without hiding SQLite sessions;
 - projection tests exclude secrets, opaque metadata, tool payloads, inline binary, resource query strings, internal display messages, and backend locators;
 - duplicate archive/replay/snapshot representations collapse to one stable source identity;
 - delete/prune/status/update mutations cannot be resurrected by delayed index writes;
-- external provider tests enforce authorization before ranking and bind cursors to scope;
 - CLI and RPC expose equivalent domain semantics while retaining independent configuration and no product-to-product dependency;
-- RPC advertises `session.search` only when installed and requires read authorization;
-- rebuild plus catch-up produces the same searchable projection as steady-state ingestion.
+- RPC advertises `session.search` only when installed and requires read authorization.
+
+Phase 2/3 follow-on gates, not claimed by the bounded read-through implementation:
+
+- an external provider must prove authorization before ranking and bind cursors to scope;
+- durable rebuild plus catch-up must produce the same searchable projection as steady-state ingestion.
 
 ## Related Specs
 
@@ -675,6 +691,6 @@ Required contract evidence:
 - `02-shared-execution-components.md` — session, stream, replay, and SQLite component split
 - `03-durable-service-runtime.md` — durable truth, display archive, replay, and resume
 - `04-cli-product.md` — CLI command and local composition boundary
-- `06-json-rpc-host-protocol.md` — currently implemented RPC profile; search graduates there after implementation
+- `06-json-rpc-host-protocol.md` — implemented RPC profile including optional `session.search`
 - `08-agent-session-management.md` — agent-facing authorized query/control facade that may consume this provider
 - `../core/07-versioned-protocol-contracts.md` — versioned durable evidence and cursor identity rules

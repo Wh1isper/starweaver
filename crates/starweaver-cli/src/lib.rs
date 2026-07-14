@@ -725,6 +725,121 @@ prompt = "Review carefully."
     }
 
     #[test]
+    fn session_search_supports_human_json_and_opaque_pagination() {
+        let temp = tempfile::tempdir().unwrap();
+        output(temp.path(), &["-p", "first searchable prompt"]).unwrap();
+        output(
+            temp.path(),
+            &["-p", "second searchable prompt", "--new-session"],
+        )
+        .unwrap();
+
+        let json_output = output(
+            temp.path(),
+            &[
+                "session",
+                "search",
+                "searchable prompt",
+                "--source",
+                "run_input",
+                "--granularity",
+                "run",
+                "--limit",
+                "1",
+                "--output",
+                "json",
+            ],
+        )
+        .unwrap();
+        let first: serde_json::Value = serde_json::from_str(json_output.trim()).unwrap();
+        assert_eq!(first["hits"].as_array().unwrap().len(), 1);
+        assert_eq!(first["hits"][0]["source"], "run_input");
+        assert_eq!(first["coverage"]["state"], "complete");
+        let cursor = first["nextCursor"].as_str().unwrap();
+        assert!(cursor.starts_with("ssc1."));
+
+        let second = output(
+            temp.path(),
+            &[
+                "session",
+                "search",
+                "searchable prompt",
+                "--source",
+                "run_input",
+                "--granularity",
+                "run",
+                "--limit",
+                "1",
+                "--after",
+                cursor,
+                "--output",
+                "json",
+            ],
+        )
+        .unwrap();
+        let second: serde_json::Value = serde_json::from_str(second.trim()).unwrap();
+        assert_eq!(second["hits"].as_array().unwrap().len(), 1);
+        assert_ne!(
+            first["hits"][0]["session"]["sessionId"],
+            second["hits"][0]["session"]["sessionId"]
+        );
+
+        let human = output(
+            temp.path(),
+            &[
+                "session",
+                "search",
+                "first searchable",
+                "--source",
+                "run_input",
+            ],
+        )
+        .unwrap();
+        assert!(human.contains("session_id=session_"));
+        assert!(human.contains("source=run_input"));
+    }
+
+    #[test]
+    fn session_search_rejects_cursor_reuse_for_another_query() {
+        let temp = tempfile::tempdir().unwrap();
+        output(temp.path(), &["-p", "shared token one"]).unwrap();
+        output(temp.path(), &["-p", "shared token two", "--new-session"]).unwrap();
+        let first = output(
+            temp.path(),
+            &[
+                "session",
+                "search",
+                "shared token",
+                "--source",
+                "run_input",
+                "--limit",
+                "1",
+                "--output",
+                "json",
+            ],
+        )
+        .unwrap();
+        let first: serde_json::Value = serde_json::from_str(first.trim()).unwrap();
+        let cursor = first["nextCursor"].as_str().unwrap();
+        let error = output(
+            temp.path(),
+            &[
+                "session",
+                "search",
+                "different token",
+                "--source",
+                "run_input",
+                "--limit",
+                "1",
+                "--after",
+                cursor,
+            ],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cursor"));
+    }
+
+    #[test]
     fn continue_appends_run_under_existing_session() {
         let temp = tempfile::tempdir().unwrap();
         output(temp.path(), &["-p", "one"]).unwrap();

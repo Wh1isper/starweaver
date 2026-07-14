@@ -74,6 +74,15 @@ implementation = ["crates/starweaver-core/src/lifecycle.rs", "crates/starweaver-
 contract_tests = ["crates/starweaver-session/tests/protocol_contracts.rs", "crates/starweaver-session/tests/fixtures/contracts"]
 
 [[capability]]
+id = "session.search"
+owner = "starweaver-session"
+stability = "provisional"
+status = "implemented"
+normative_spec = "spec/ops/07-session-search.md"
+implementation = ["crates/starweaver-session/src/search.rs", "crates/starweaver-storage/src/session_search.rs", "crates/starweaver-cli/src/service.rs", "crates/starweaver-rpc-core/src/lib.rs", "crates/starweaver-rpc/src/service.rs"]
+contract_tests = ["crates/starweaver-session/src/search.rs", "crates/starweaver-storage/src/session_search.rs", "crates/starweaver-cli/src/lib.rs", "crates/starweaver-rpc-core/tests/session_search.rs", "crates/starweaver-rpc/src/service.rs"]
+
+[[capability]]
 id = "session.atomic_storage"
 owner = "starweaver-storage"
 stability = "stable"

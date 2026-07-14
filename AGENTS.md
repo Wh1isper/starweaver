@@ -99,6 +99,7 @@ Current docs:
 - `docs/testing.md` — deterministic testing, request guard, scripts, and coverage
 - `docs/release.md` — release, upversion, crate publishing, and binary artifact workflow
 - `docs/session-stream.md` — shared session, display stream, replay, and storage contracts
+- `docs/session-search.md` — pluggable discovery contracts, local bounded search, CLI, and RPC usage
 
 ## Spec Workflow
 
@@ -143,6 +144,7 @@ Current specs:
 - `spec/ops/07-session-search.md` — optional product-neutral session search, local SQLite/filesystem discovery, external index ingestion, and independent CLI/RPC integration
 - `spec/ops/08-agent-session-management.md` — agent-facing session query/control tools, query-only CLI policy, grant-gated RPC mutations, and lifecycle-safe run creation/steering/interruption
 - `spec/alignment/09-architecture-review.md` — cross-workspace architecture, security, durability, API, and consolidation review baseline
+- `spec/alignment/10-session-search-evidence.md` — Phase 1 session-search implementation, conformance, and boundary evidence
 
 Use `spec/alignment/` for readiness notes, design comparisons, implementation evidence, and roadmap reminders. Keep unfinished work in the spec that owns the changed contract.
 

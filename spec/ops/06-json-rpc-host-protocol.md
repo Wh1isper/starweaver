@@ -2,11 +2,11 @@
 
 Status: implemented normative profile
 
-Revision: 2026-07-11
+Revision: 2026-07-14
 
 The Starweaver host protocol is implemented by the standalone `starweaver-rpc` product. It is a local control plane for durable sessions, non-blocking runs, replay, HITL records, RPC-owned model profiles, and RPC-owned environment attachments.
 
-This document describes only implemented v1 behavior. Proposed long-connection subscriptions, additional authorization roles, pagination tokens, richer idempotency, sockets, WebSocket, and hosted deployment semantics live in `rfcs/host-protocol-future.md` and are not part of v1 conformance. Proposed pluggable historical session discovery and a future `session.search` method live in `07-session-search.md`. Proposed model-facing session query/control composition, resource ownership, composite targets, revisions, fenced admission, and durable control receipts live in `08-agent-session-management.md`. Neither proposal enters this implemented method profile until code and conformance coverage land.
+This document describes only implemented v1 behavior. Proposed long-connection subscriptions, additional authorization roles, richer idempotency, sockets, WebSocket, and hosted deployment semantics live in `rfcs/host-protocol-future.md` and are not part of v1 conformance. Optional pluggable historical discovery and the implemented `session.search` projection are defined in `07-session-search.md`. Proposed model-facing session query/control composition, resource ownership, composite targets, revisions, fenced admission, and durable control receipts live in `08-agent-session-management.md`; those mutation/control additions do not enter this method profile until their code and conformance coverage land.
 
 ## Product Boundary
 
@@ -28,14 +28,15 @@ Initialization returns the shared identity shape:
   "protocol": {
     "name": "starweaver.host",
     "major": 1,
-    "revision": "2026-07-11",
+    "revision": "2026-07-14",
     "features": [
       "sessions",
       "runs",
       "stream.replay",
       "environment.attachments",
       "environment.active_mounts",
-      "hitl"
+      "hitl",
+      "session.search"
     ]
   },
   "serverInfo": {
@@ -45,7 +46,7 @@ Initialization returns the shared identity shape:
 }
 ```
 
-Identity constants are owned by `starweaver-rpc-core`. Clients validate `name` and `major`, then use `features`. They must not compare revision strings for ordering. The previous top-level `protocolVersion` date field is accepted as legacy response evidence but is no longer emitted.
+Identity constants are owned by `starweaver-rpc-core`. Clients validate `name` and `major`, then use `features`. `session.search` appears only when the RPC-owned configuration installs a provider; it is omitted when search is disabled. They must not compare revision strings for ordering. The previous top-level `protocolVersion` date field is accepted as legacy response evidence but is no longer emitted.
 
 `stream.subscribe` is not advertised. Calling `stream.subscribe` or `stream.unsubscribe` returns `unsupported_feature` on current stdio and unary HTTP transports.
 
@@ -58,6 +59,17 @@ RPC resolves `$STARWEAVER_CONFIG_DIR/rpc.toml` (default `~/.starweaver/rpc.toml`
 default_profile = "default"
 database_path = "starweaver.sqlite3"
 workspace_root = "."
+
+[server.session_search]
+enabled = true
+backend = "local"
+# display_root = "search-display" # optional compatibility mirrors for this database
+max_query_bytes = 4096
+max_page_size = 100
+max_display_files = 1000
+max_total_display_bytes = 67108864
+max_display_hits = 10000
+scan_timeout_ms = 2000
 
 [server.http_auth]
 token_env = "STARWEAVER_RPC_TOKEN"
@@ -101,19 +113,20 @@ Error:
 
 Current domain codes:
 
-|     Code | Meaning                 |
-| -------: | ----------------------- |
-| `-32700` | parse error             |
-| `-32600` | invalid request         |
-| `-32601` | method not found        |
-| `-32602` | invalid params          |
-| `-32000` | internal/server failure |
-| `-32002` | unsupported feature     |
-| `-32011` | already exists          |
-| `-32012` | idempotency conflict    |
-| `-32013` | run conflict            |
-| `-32031` | environment unavailable |
-| `-32050` | configuration failure   |
+|     Code | Meaning                    |
+| -------: | -------------------------- |
+| `-32700` | parse error                |
+| `-32600` | invalid request            |
+| `-32601` | method not found           |
+| `-32602` | invalid params             |
+| `-32000` | internal/server failure    |
+| `-32002` | unsupported feature        |
+| `-32011` | already exists             |
+| `-32012` | idempotency conflict       |
+| `-32013` | run conflict               |
+| `-32031` | environment unavailable    |
+| `-32032` | session search unavailable |
+| `-32050` | configuration failure      |
 
 Messages are safe for client display and must not include credentials, provider request bodies, raw shell output, or unredacted endpoint launch data.
 
@@ -145,7 +158,7 @@ Messages are safe for client display and must not include credentials, provider 
 | Lifecycle             | `initialize`, `shutdown`                                                                                                                                                  |
 | Diagnostics           | `diagnostics.get`, `config.get`                                                                                                                                           |
 | Profiles              | `profile.list`, `profile.get`, `model.list`, `model.current`, `model.select`                                                                                              |
-| Sessions              | `session.create`, `session.list`, `session.get`, `session.current.get`, `session.current.set`, `session.delete`                                                           |
+| Sessions              | `session.create`, `session.list`, `session.search`, `session.get`, `session.current.get`, `session.current.set`, `session.delete`                                         |
 | Runs                  | `run.start`, `run.prompt`, `run.status`, `run.await`, `run.cancel`, `run.steer`, `run.attach`                                                                             |
 | Streams               | `stream.replay`                                                                                                                                                           |
 | Compatibility aliases | `session.output`, `session.replay`                                                                                                                                        |
@@ -153,6 +166,12 @@ Messages are safe for client display and must not include credentials, provider 
 | Environments          | `environment.attach`, `environment.detach`, `environment.list`, `environment.health`, `environment.active_mount`, `environment.active_unmount`, `environment.active_list` |
 
 A method not in this table is not part of implemented v1. Compatibility aliases are provisional and may be removed in the next host protocol major after clients migrate.
+
+### `session.search`
+
+`session.search` is an optional read method. It accepts typed literal query, filters, sources, granularity, sort, page size, and an opaque cursor. It never accepts a tenant, namespace, policy, local path, or object-store locator. The server derives `SessionSearchScope` from its authenticated database/server context and requires the HTTP `read` scope.
+
+The result is the shared minimal discovery projection (`hits`, `nextCursor`, and `coverage`), not full `SessionRecord` or restore authority. Invalid and wrong-query cursors map to `invalid params`; unsupported modes/sources map to `unsupported feature`; an unhealthy installed provider maps to `session search unavailable`. `initialize` includes safe provider capabilities when installed and otherwise omits the `session.search` protocol feature.
 
 ## Durable Record Compatibility
 

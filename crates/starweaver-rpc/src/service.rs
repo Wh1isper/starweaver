@@ -12,14 +12,16 @@ use serde_json::{Value, json};
 use starweaver_core::{ProtocolIdentity, RunId, SessionId};
 use starweaver_rpc_core::{
     HostInitializeParams, INVALID_PARAMS, JsonRpcOutcome, METHOD_NOT_FOUND, NOT_INITIALIZED,
-    RpcError, RunInput, error_response, handle_json_rpc_text_async, host_protocol_identity,
+    RpcError, RunInput, SessionSearchFeatureCapabilities, SessionSearchParams, SessionSearchResult,
+    error_response, handle_json_rpc_text_async, host_protocol_identity_with_session_search,
     replay_cursor_from_params, replay_result, validate_host_initialize,
 };
 use starweaver_runtime::AgentInput;
 use starweaver_session::{
-    ApprovalStatus, ExecutionStatus, InputPart, SessionFilter, SessionStore, SessionStoreResult,
+    ApprovalStatus, ExecutionStatus, InputPart, SessionFilter, SessionSearchError,
+    SessionSearchProvider, SessionSearchScope, SessionStore, SessionStoreResult,
 };
-use starweaver_storage::SqliteStorage;
+use starweaver_storage::{LocalSessionSearchLimits, LocalSessionSearchProvider, SqliteStorage};
 use starweaver_stream::ReplayScope;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
@@ -63,6 +65,8 @@ pub struct RpcService {
     storage: SqliteStorage,
     coordinator: RpcRuntimeCoordinator,
     environment_manager: EnvironmentAttachmentManager,
+    session_search: Option<Arc<dyn SessionSearchProvider>>,
+    session_search_scope: SessionSearchScope,
     notifications: RpcNotificationMode,
     runtime: Arc<Runtime>,
 }
@@ -134,6 +138,30 @@ impl RpcService {
             storage.clone(),
             environment_manager.clone(),
         );
+        let session_search_scope =
+            SessionSearchScope::local(config.database_path.to_string_lossy().into_owned());
+        let session_search = if config.session_search.enabled {
+            let limits = LocalSessionSearchLimits {
+                max_query_bytes: config.session_search.max_query_bytes,
+                max_page_size: config.session_search.max_page_size,
+                max_display_files: config.session_search.max_display_files,
+                max_total_display_bytes: config.session_search.max_total_display_bytes,
+                max_display_hits: config.session_search.max_display_hits,
+                max_scan_duration: Duration::from_millis(config.session_search.scan_timeout_ms),
+                ..LocalSessionSearchLimits::default()
+            };
+            let mut provider = LocalSessionSearchProvider::new(
+                Arc::new(storage.session_store()),
+                &session_search_scope,
+            )
+            .with_limits(limits);
+            if let Some(root) = config.session_search.display_root.as_ref() {
+                provider = provider.with_display_root(root.clone());
+            }
+            Some(Arc::new(provider) as Arc<dyn SessionSearchProvider>)
+        } else {
+            None
+        };
         let runtime = Runtime::new().map_err(|error| RpcHostError::Runtime(error.to_string()))?;
         Ok(Self {
             config,
@@ -141,6 +169,8 @@ impl RpcService {
             storage,
             coordinator,
             environment_manager,
+            session_search,
+            session_search_scope,
             notifications,
             runtime: Arc::new(runtime),
         })
@@ -267,6 +297,31 @@ impl RpcService {
                     .await
                     .map_err(rpc_error)?;
                 Ok(json!({"sessions": sessions}))
+            }
+            "session.search" => {
+                let provider = self.session_search.as_ref().ok_or_else(|| {
+                    RpcError::new(
+                        starweaver_rpc_core::UNSUPPORTED_FEATURE,
+                        "session.search is not installed",
+                    )
+                })?;
+                let params = serde_json::from_value::<SessionSearchParams>(params.clone())
+                    .map_err(|error| {
+                        RpcError::new(
+                            INVALID_PARAMS,
+                            format!("invalid session.search params: {error}"),
+                        )
+                    })?;
+                let page = provider
+                    .search(&self.session_search_scope, params.into_query())
+                    .await
+                    .map_err(session_search_error)?;
+                serde_json::to_value(SessionSearchResult::from(page)).map_err(|error| {
+                    RpcError::new(
+                        starweaver_rpc_core::SERVER_ERROR,
+                        format!("failed to encode session search result: {error}"),
+                    )
+                })
             }
             "session.get" => {
                 let session_id = SessionId::from_string(required_string(params, "sessionId")?);
@@ -703,8 +758,15 @@ impl RpcService {
             })?;
         validate_host_initialize(&params)?;
         let live = self.notifications == RpcNotificationMode::Live;
+        let search_capabilities =
+            self.session_search
+                .as_ref()
+                .map(|provider| SessionSearchFeatureCapabilities {
+                    available: true,
+                    provider: provider.capabilities(),
+                });
         Ok(json!({
-            "protocol": host_protocol_identity(),
+            "protocol": host_protocol_identity_with_session_search(self.session_search.is_some()),
             "serverInfo": {
                 "name": "starweaver-rpc",
                 "version": env!("CARGO_PKG_VERSION"),
@@ -729,6 +791,7 @@ impl RpcService {
                 "defaultStreamPayload": "display_message",
                 "approvals": true,
                 "deferred": true,
+                "sessionSearch": search_capabilities,
             },
             "config": {
                 "globalDir": self.config.state_dir.parent(),
@@ -884,6 +947,27 @@ fn rpc_error(error: impl Into<RpcHostError>) -> RpcError {
     error.into().into()
 }
 
+fn session_search_error(error: SessionSearchError) -> RpcError {
+    match error {
+        SessionSearchError::InvalidQuery(message) | SessionSearchError::InvalidCursor(message) => {
+            RpcError::new(INVALID_PARAMS, message)
+        }
+        SessionSearchError::Unsupported(message) => {
+            RpcError::new(starweaver_rpc_core::UNSUPPORTED_FEATURE, message)
+        }
+        SessionSearchError::Unavailable(message) => {
+            RpcError::new(starweaver_rpc_core::SESSION_SEARCH_UNAVAILABLE, message)
+        }
+        SessionSearchError::PermissionDenied => RpcError::new(
+            starweaver_rpc_core::SERVER_ERROR,
+            "session search permission denied",
+        ),
+        SessionSearchError::Failed(_) => {
+            RpcError::new(starweaver_rpc_core::SERVER_ERROR, "session search failed")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -896,7 +980,7 @@ mod tests {
             "jsonrpc": "2.0",
             "id": id,
             "method": method,
-            "protocol": host_protocol_identity(),
+            "protocol": starweaver_rpc_core::host_protocol_identity(),
             "params": params
         })
         .to_string()
@@ -1097,6 +1181,75 @@ mod tests {
         assert_eq!(capabilities["streamSubscribe"], false);
         assert_eq!(capabilities["environmentAttachments"], true);
         assert_eq!(capabilities["environmentActiveMounts"], true);
+        assert!(
+            result["protocol"]["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature == "session.search")
+        );
+        assert_eq!(capabilities["sessionSearch"]["available"], true);
+        assert_eq!(
+            capabilities["sessionSearch"]["provider"]["provider"],
+            "local"
+        );
+    }
+
+    #[test]
+    fn session_search_uses_rpc_owned_provider_and_typed_projection() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        let service = RpcService::live(config).unwrap();
+        let run = service.handle_text(&request(
+            1,
+            "run.prompt",
+            json!({"prompt": "rpc searchable literal [value]*"}),
+        ));
+        assert!(run.response.unwrap().get("result").is_some());
+        let outcome = service.handle_text(&request(
+            2,
+            "session.search",
+            json!({
+                "query": "[value]*",
+                "sources": ["run_input"],
+                "granularity": "run",
+                "limit": 20
+            }),
+        ));
+        let response = outcome.response.unwrap();
+        let result = &response["result"];
+        assert_eq!(result["hits"].as_array().unwrap().len(), 1);
+        assert_eq!(result["hits"][0]["source"], "run_input");
+        assert_eq!(result["coverage"]["state"], "complete");
+        assert!(result["hits"][0].get("location").is_some());
+        assert!(result["hits"][0]["session"].get("state").is_none());
+    }
+
+    #[test]
+    fn session_search_is_not_advertised_or_dispatched_when_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = RpcConfig::for_tests(temp.path());
+        config.session_search.enabled = false;
+        let service = RpcService::live(config).unwrap();
+        let initialized = service.handle_text(&request(1, "initialize", json!({})));
+        let result = &initialized.response.unwrap()["result"];
+        assert!(
+            !result["protocol"]["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature == "session.search")
+        );
+        assert!(result["capabilities"]["sessionSearch"].is_null());
+        let outcome = service.handle_text(&request(
+            2,
+            "session.search",
+            json!({"query": "anything", "limit": 20}),
+        ));
+        assert_eq!(
+            outcome.response.unwrap()["error"]["code"],
+            starweaver_rpc_core::UNSUPPORTED_FEATURE
+        );
     }
 
     #[test]

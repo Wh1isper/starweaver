@@ -19,7 +19,9 @@ use serde::{Deserialize, Serialize};
 
 pub use agent_catalog::{RpcAgentCatalog, RpcProfileSummary};
 pub use auth::{RpcHttpAuthConfig, RpcHttpScope};
-pub use config::{RpcConfig, RpcProfileConfig, RpcProviderConfig};
+pub use config::{
+    RpcConfig, RpcProfileConfig, RpcProviderConfig, RpcSessionSearchBackend, RpcSessionSearchConfig,
+};
 pub use coordinator::{RpcRunRequest, RpcRunStatus, RpcRuntimeCoordinator, RpcStartedRun};
 pub use error::{RpcHostError, RpcHostResult};
 pub use service::{RpcNotificationMode, RpcService};

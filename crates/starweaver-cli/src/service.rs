@@ -1,14 +1,17 @@
 //! CLI service layer over local storage and SDK execution.
 #![allow(clippy::redundant_pub_crate)]
 
-use std::{fs, path::Path, sync::mpsc, thread, time::Duration};
+use std::{collections::BTreeSet, fs, path::Path, sync::mpsc, thread, time::Duration};
 
 use serde_json::{Value, json};
 use starweaver_agent::ResumableState;
 use starweaver_core::sdk_name;
 use starweaver_oauth_provider::create_oauth_refresh_supervisor_for_models_with_options;
 use starweaver_runtime::AgentStreamRecord;
-use starweaver_session::{ApprovalStatus, RunRecord, RunStatus};
+use starweaver_session::{
+    ApprovalStatus, RunRecord, RunStatus, SessionSearchFilter, SessionSearchGranularity,
+    SessionSearchQuery, SessionSearchSource, SessionStatus,
+};
 use starweaver_stream::DisplayMessage;
 
 use crate::{
@@ -16,7 +19,8 @@ use crate::{
     args::{
         ApprovalCommand, ApprovalDecisionCommand, ApprovalListCommand, Cli, CliCommand,
         DeferredCommand, DeferredCompleteCommand, DeferredFailCommand, DeferredListCommand,
-        OutputMode, ResumeCommand, RunCommand, SessionCommand, TuiCommand,
+        OutputMode, ResumeCommand, RunCommand, SessionCommand, SessionSearchCommand,
+        SessionSearchGranularityArg, SessionSearchSourceArg, SessionSearchStatusArg, TuiCommand,
     },
     config::{
         CliConfig, read_current_session, read_last_retention_maintenance, write_current_session,
@@ -47,7 +51,8 @@ use auth::oauth_cli_error;
 use rendering::{
     approval_status_name, render_agui_jsonl, render_approvals, render_completion, render_deferred,
     render_deferred_decision, render_display_jsonl, render_display_text, render_prompt_run_json,
-    render_session_delete, render_session_show, render_sessions, render_trim_report, session_value,
+    render_session_delete, render_session_search, render_session_show, render_sessions,
+    render_trim_report, session_value,
 };
 use setup::remove_file_if_exists;
 #[cfg(test)]
@@ -89,6 +94,47 @@ pub(super) struct ExecutedPromptRun {
 
 const PROJECT_GUIDANCE_TAG: &str = "project-guidance";
 const USER_RULES_TAG: &str = "user-rules";
+
+fn search_query(command: SessionSearchCommand) -> SessionSearchQuery {
+    let session_statuses = command
+        .status
+        .map(|status| match status {
+            SessionSearchStatusArg::Active => SessionStatus::Active,
+            SessionSearchStatusArg::Archived => SessionStatus::Archived,
+            SessionSearchStatusArg::Failed => SessionStatus::Failed,
+        })
+        .into_iter()
+        .collect();
+    let sources = command
+        .sources
+        .into_iter()
+        .map(|source| match source {
+            SessionSearchSourceArg::SessionMetadata => SessionSearchSource::SessionMetadata,
+            SessionSearchSourceArg::RunInput => SessionSearchSource::RunInput,
+            SessionSearchSourceArg::RunOutputPreview => SessionSearchSource::RunOutputPreview,
+            SessionSearchSourceArg::DisplayMessage => SessionSearchSource::DisplayMessage,
+        })
+        .collect::<BTreeSet<_>>();
+    let granularity = match command.granularity {
+        SessionSearchGranularityArg::Session => SessionSearchGranularity::Session,
+        SessionSearchGranularityArg::Run => SessionSearchGranularity::Run,
+        SessionSearchGranularityArg::Occurrence => SessionSearchGranularity::Occurrence,
+    };
+    SessionSearchQuery {
+        text: command.text,
+        filter: SessionSearchFilter {
+            session_statuses,
+            profile: command.profile,
+            workspace: command.workspace,
+            ..SessionSearchFilter::default()
+        },
+        sources,
+        granularity,
+        limit: command.limit,
+        cursor: command.cursor,
+        ..SessionSearchQuery::default()
+    }
+}
 
 fn append_guidance_files(input: &mut PromptInput, config: &CliConfig) {
     if let Some(project_guidance) = load_project_guidance(&config.workspace_root) {
@@ -541,6 +587,11 @@ impl CliService {
             SessionCommand::List(command) => {
                 let sessions = self.store()?.list_sessions(command.limit)?;
                 render_sessions(&sessions, command.output)
+            }
+            SessionCommand::Search(command) => {
+                let output = command.output;
+                let page = self.store()?.search_sessions(search_query(command))?;
+                render_session_search(&page, output)
             }
             SessionCommand::Show(command) => {
                 let session = self.store()?.load_session(&command.session_id)?;

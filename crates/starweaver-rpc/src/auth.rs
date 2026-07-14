@@ -164,6 +164,7 @@ pub fn required_scope(method: &str) -> Option<RpcHttpScope> {
         | "model.current"
         | "config.get"
         | "session.list"
+        | "session.search"
         | "session.get"
         | "session.current.get"
         | "run.status"
@@ -363,6 +364,7 @@ mod tests {
     #[test]
     fn scope_mapping_separates_sensitive_method_groups_and_rejects_unknown_methods() {
         assert_eq!(required_scope("session.list"), Some(RpcHttpScope::Read));
+        assert_eq!(required_scope("session.search"), Some(RpcHttpScope::Read));
         assert_eq!(required_scope("run.start"), Some(RpcHttpScope::Run));
         assert_eq!(
             required_scope("approval.decide"),
