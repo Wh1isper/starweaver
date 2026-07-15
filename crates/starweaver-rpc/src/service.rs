@@ -27,7 +27,7 @@ use tokio::runtime::Runtime;
 use uuid::Uuid;
 
 use crate::{
-    RpcAgentCatalog, RpcConfig, RpcHostError, RpcRunRequest, RpcRuntimeCoordinator,
+    RpcAgentCatalog, RpcConfig, RpcHostError, RpcHostResult, RpcRunRequest, RpcRuntimeCoordinator,
     environment_manager::EnvironmentAttachmentManager,
     session_management::command_fingerprint,
     state::{read_current_session, write_current_session},
@@ -176,6 +176,10 @@ impl RpcService {
             notifications,
             runtime: Arc::new(runtime),
         })
+    }
+
+    pub(crate) fn shutdown_owned_runtime(&self, timeout: Duration) -> RpcHostResult<()> {
+        self.runtime.block_on(self.coordinator.shutdown(timeout))
     }
 
     /// Open an uninitialized stateful protocol connection.
@@ -361,12 +365,16 @@ impl RpcService {
             }
             "session.delete" => {
                 let session_id = SessionId::from_string(required_string(params, "sessionId")?);
-                let storage_session_id = session_id.clone();
-                let deleted = run_storage(self.storage.clone(), move |storage| {
-                    storage.delete_session(&storage_session_id)
-                })
-                .await?;
-                Ok(json!({"sessionId": session_id, "deleted": deleted}))
+                let session = self
+                    .coordinator
+                    .tombstone_session_fenced(&session_id, Duration::from_secs(10))
+                    .await
+                    .map_err(rpc_error)?;
+                Ok(json!({
+                    "sessionId": session_id,
+                    "deleted": session.status == starweaver_session::SessionStatus::Deleted,
+                    "revision": session.revision,
+                }))
             }
             "run.start" => self.run_start(params).await,
             "run.prompt" => self.run_prompt(params).await,

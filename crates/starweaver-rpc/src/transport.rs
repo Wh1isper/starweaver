@@ -43,24 +43,33 @@ pub fn run_stdio(config: &RpcConfig) -> RpcHostResult<()> {
     let service = RpcService::live(config.clone())?;
     let connection = service.connection();
     let stdin = io::stdin();
-    for line in stdin.lock().lines() {
-        let line = line.map_err(RpcHostError::Io)?;
-        if line.trim().is_empty() {
-            continue;
+    let serve_result = (|| -> RpcHostResult<()> {
+        for line in stdin.lock().lines() {
+            let line = line.map_err(RpcHostError::Io)?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let outcome = connection.handle_text(&line);
+            if let Some(response) = outcome.response {
+                output_sender
+                    .send(response)
+                    .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+            }
+            if outcome.shutdown {
+                break;
+            }
         }
-        let outcome = connection.handle_text(&line);
-        if let Some(response) = outcome.response {
-            output_sender
-                .send(response)
-                .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
-        }
-        if outcome.shutdown {
-            break;
-        }
-    }
+        Ok(())
+    })();
+    let shutdown_result = service.shutdown_owned_runtime(Duration::from_secs(10));
     drop(service);
     drop(output_sender);
-    let _ = writer.join();
+    let writer_result = writer
+        .join()
+        .map_err(|_| RpcHostError::Runtime("stdio response writer panicked".to_string()));
+    serve_result?;
+    shutdown_result?;
+    writer_result?;
     Ok(())
 }
 
@@ -90,7 +99,9 @@ pub fn run_http(config: &RpcConfig, host: &str, port: u16) -> RpcHostResult<()> 
     ));
     eprintln!("starweaver rpc http listening on http://{local_address}{DEFAULT_HTTP_PATH}");
     let service = Arc::new(RpcService::replay_only(config.clone())?);
-    serve_http(&listener, &service, &security)
+    let served = serve_http(&listener, &service, &security);
+    let shutdown = service.shutdown_owned_runtime(Duration::from_secs(10));
+    served.and(shutdown)
 }
 
 pub fn validate_http_host(host: &str) -> RpcHostResult<()> {

@@ -1,8 +1,8 @@
 # Asynchronous Subagent Execution
 
-Status: proposed
+Status: implemented normative profile
 
-Revision: 2026-07-14
+Revision: 2026-07-15
 
 This spec defines the asynchronous subagent topology used by long-lived Starweaver products. In that topology, the model-visible `delegate` tool accepts work and immediately returns a stable background `agent_id` plus a per-attempt `attempt_id`. The existing blocking delegate remains an internal execution backend and is not model-visible.
 
@@ -73,9 +73,9 @@ The following identities are separate:
 
 `attempt_id`, `agent_id`, and `linked_task_id` are not interchangeable. Every newly delegated conversation turn after a prior terminal attempt receives a new `SubagentAttemptId`, including continuation of an existing `agent_id`. At most one non-terminal attempt for an `agent_id` exists in one supervisor scope. Execution-level continuation from `waiting`, or restart from a supported checkpoint, keeps the same `attempt_id` and acquires a new lease/fencing generation when required. A waiting attempt occupies the active-attempt slot. Per-attempt result, delivery, steering, cancellation, and retention state is keyed by `attempt_id`; it must not reuse a prior attempt's cached result or notification token. A delegated attempt may also link to a distinct task-bundle `linked_task_id`, but a host must not create a task record solely because a subagent is available.
 
-## Current Implementation Baseline
+## Implementation Baseline
 
-The current SDK already provides:
+The SDK provides:
 
 - `SubagentDelegationMode::{Blocking, Async, BlockingAndAsync}`;
 - async model-visible `delegate` backed by hidden `__delegate_backend`;
@@ -86,16 +86,7 @@ The current SDK already provides:
 - child context merge, lifecycle events, stream forwarding, usage accounting, tracing, and inherited tools;
 - main-agent-only background delegation guardrails.
 
-The remaining gaps addressed by this spec are:
-
-- no model-visible `steer_subagent` or `cancel_subagent` in the Starweaver SDK;
-- active task entries do not own child task/control handles needed for targeted steering, cancellation, bounded abort, panic detection, and shutdown join;
-- the monitor is created inside each built runtime rather than owned by a long-lived product supervisor;
-- no host completion callback that can schedule a parent continuation;
-- no durable background execution/delivery record for RPC restart and audit;
-- incomplete task-ownership integration, cancellation policy, shutdown, retention, and quotas;
-- CLI and RPC do not yet install the required product topology and lifetime owner;
-- RPC currently constructs one agent runtime per run and does not yet register subagents or a result-triggered continuation path.
+The implemented normative profile also provides model-visible steering and cancellation, host-owned child task/control handles, injectable long-lived supervisors, completion callbacks, durable RPC execution and delivery records, fenced owner leases, bounded retention and quotas, deterministic shutdown, product-specific CLI/RPC topology, and causally linked result-triggered RPC continuations.
 
 ## Architecture and Ownership
 
@@ -129,7 +120,7 @@ Ownership rules:
 
 - `starweaver-agent` owns the model tools, registry adapter, background supervisor contract, in-process state machine, and SDK lifecycle events.
 - `starweaver-context` owns message-bus delivery and parent context synchronization primitives.
-- `starweaver-session` owns the proposed durable background execution and delivery projection needed by service hosts; it does not execute subagents.
+- `starweaver-session` owns the durable background execution, delivery, artifact-retention, and continuation-admission projection needed by service hosts; it does not execute subagents.
 - `starweaver-storage` owns the concrete durable adapter when persistence is enabled.
 - `starweaver-cli` owns its TUI supervisor lifetime, wake-up scheduling, cancellation interaction, and shutdown policy.
 - `starweaver-rpc` owns its supervisor lifetime, durable continuation creation, active task registry, authorization/profile selection, restart reconciliation, and shutdown policy.
@@ -332,7 +323,9 @@ Delivery rules:
 - a continuation scheduler performs transactional `undelivered -> claimed(claim_id, continuation_run_id)` admission keyed by `attempt_id`;
 - continuation-run durable admission and claim linkage are one idempotent operation when they share a store, or use a durable outbox/compensation record when they do not;
 - after accepted continuation input owns the result, the fallback/bus message is marked consumed and the claim becomes `delivered`;
-- failed continuation admission releases an unexpired claim back to `undelivered`, while restart reconciliation can reclaim an expired claim;
+- failed pre-admission releases an unexpired claim back to `undelivered`; a failed or cancelled consumer release also records that consumer run as a durable automatic-continuation suppression disposition, while an explicit later run remains allowed to claim the result;
+- restart reconciliation retains an expired claim while its linked consumer run is active under a live matching admission lease, acknowledges it when that run is durably completed, and releases it only when the consumer is absent, failed/cancelled, or has lost admission ownership;
+- continuation handlers never sleep until a claim deadline or release a run-owned claim directly; they invoke store reconciliation and act only on the reloaded `undelivered` projection;
 - repeated callbacks, waits, active-turn consumption, and restart reconciliation observe the same claim and cannot create duplicate logical delivery or empty continuation turns.
 
 The host serializes parent continuations per session/context. It must never run two parent turns concurrently against the same mutable conversation state.
@@ -353,7 +346,9 @@ RPC never mutates a terminal parent run to append late output. If the parent ses
 - the same resolved agent profile unless an explicit durable policy selects another;
 - a distinct `continuation_run_id` and ordinary stream/replay evidence.
 
-If the parent session is deleted, archived against continuation, unauthorized, over quota, or shutting down, RPC records/stages the result without creating a new run. A cancelled parent run suppresses automatic continuation by default; an explicit later session run can consume the pending result. Restart reconciliation may schedule a missing continuation only when the durable delivery record proves that none was accepted previously.
+If the parent session is deleted, archived against continuation, unauthorized, over quota, or shutting down, RPC records/stages the result without creating a new run. A cancelled parent run suppresses automatic continuation by default; its run-owned delivery claim is released rather than acknowledged, and an explicit later session run can consume the pending result. Restart reconciliation may schedule a missing continuation only when the durable delivery record proves that none was accepted previously.
+
+Continuation admission is one atomic store operation. Its typed cause binds `attempt_id`, `agent_id`, parent session/run, optional child run, result digest/size, and trace context to a domain-separated SHA-256 digest of `RunRecord.input`. The store independently derives the exact canonical input from terminal evidence and valid artifact content, rejects caller-selected or empty substitute input even when its digest is self-consistent, admits the run, revalidates the persisted receipt, and transitions delivery directly to `delivered`. The receipt carries a store-derived cause. Exact replay compares the persisted input and causal run fields without requiring an already-consumed artifact to remain retained.
 
 ## Context, State, and Merge Semantics
 
@@ -366,6 +361,8 @@ Background work cannot hold an exclusive mutable parent `AgentContext` across tu
 - arbitrary child snapshots do not replace newer parent state;
 - environment handles and capabilities are inherited according to the accepted child grant and remain deny-by-default;
 - stream events preserve parent/child source attribution.
+
+The child worker may derive a field-specific context delta before terminalization, but it must not publish or stage that delta until the fenced durable terminal commit succeeds. Owner loss or terminal persistence failure drops the uncommitted delta. Resumed child history deltas contain only the suffix after a validated base prefix, never the whole restored history. Finalizer registration happens before its future can make progress; panic becomes bounded failed terminal evidence, child workers are abort-on-drop, and normal completion, panic, abort, and shutdown all remove or drain the registered finalizer without retaining historical handles. Durable panic terminalization uses the same fenced terminal retry and owner-heartbeat loop as ordinary completion. Transient commit, heartbeat, or store-read failures remain retryable without deleting local active state; retry delays remain at or below the configured heartbeat interval. One in-flight heartbeat refresh is selected alongside worker completion and cancellation so a slow store call cannot starve either execution branch. A terminal record observed after an uncertain commit response is recovered through exact terminal replay, and local active state is abandoned only after a stale fence, missing record, changed owner, or expired lease confirms owner loss.
 
 Any current implementation that snapshots the parent at spawn and replaces it wholesale at completion must be replaced with field-specific merge operations before product async mode is enabled.
 
@@ -400,6 +397,7 @@ pub struct BackgroundSubagentRecord {
     pub result_ref: Option<SubagentResultRef>,
     pub delivery_status: SubagentDeliveryStatus,
     pub delivery_claim: Option<SubagentDeliveryClaim>,
+    pub automatic_continuation_suppressed_by_run_id: Option<RunId>,
     pub retention_status: SubagentRetentionStatus,
     pub accepted_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -416,9 +414,11 @@ The exact record may reuse versioned session evidence rather than introduce a ne
 - cancellation reason and safe failure category;
 - trace/span and parent/child run correlation.
 
-A local in-process child cannot be resumed merely because its record says `running` after process loss. Restart reconciliation marks it interrupted/failed unless the configured execution backend provides a durable worker lease and resume contract. It may then notify the parent through the same terminal delivery path.
+A local in-process child cannot be resumed merely because its record says `running` after process loss. Restart reconciliation marks it interrupted/failed unless the configured execution backend provides a durable worker lease and resume contract. A new acceptance must carry a lease that is live at store-owned current time. An expired owner lease fences heartbeat, non-terminal transition, and the first terminal commit; only exact replay of terminal evidence that was committed while ownership was live remains valid after expiry. The interrupted result may then notify the parent through the same terminal delivery path.
 
-Retained content is bounded independently from minimal audit evidence. The supervisor keeps a compact result preview inline; oversized successful output moves to a host-owned artifact/result reference with digest and policy-controlled lifetime. Full prompts, results, and errors are not retained indefinitely in supervisor maps or injected repeatedly after delivery.
+The first terminal commit persists a domain-separated fingerprint of its complete immutable projection: attempt and owner generation, terminal status and child run, failure/cancellation evidence, full result reference, artifact identity and binding, terminal timestamp, trace context, and initial retention shape/deadline. A first terminal outcome synthesized by restart reconciliation persists the same canonical fingerprint in the same store lock or transaction. Before retention expiry removes content, the store atomically backfills a missing legacy fingerprint only from a complete, non-expired terminal projection; an already-expired legacy projection without a fingerprint remains fail closed. Retries compare that fingerprint rather than mutable delivery or current retention projections. A changed inline payload cannot replay by retaining an old digest/size, and an unrelated valid artifact cannot replay after retention expiry.
+
+Retained content is bounded independently from minimal audit evidence. The supervisor keeps a compact result preview inline; oversized successful output moves to a host-owned artifact/result reference with digest and policy-controlled lifetime. One versioned domain-separated result-digest helper is shared by SDK and session layers. Artifact validity recomputes that digest and byte size. Loads reject expired or tampered content. Per-artifact and aggregate unexpired namespace byte limits are supplied by trusted host policy and enforced atomically by both in-memory and SQLite stores against store-owned current time; exact terminal retries are resolved before current quota/expiry checks. In-process prechecks count only projections whose retention deadline remains live and do not replace the store's atomic aggregate decision. Results above policy terminalize with a bounded safe failure instead of cloning or writing the oversized payload. Full prompts, results, and errors are not retained indefinitely in supervisor maps or injected repeatedly after delivery.
 
 ## Cancellation and Shutdown
 
@@ -438,12 +438,12 @@ Graceful host shutdown order:
 1. stop accepting new delegations and continuations;
 2. snapshot active child identities;
 3. request cooperative cancellation according to shutdown policy;
-4. wait for terminal hooks and durable writes up to one absolute deadline;
-5. abort remaining in-process tasks;
-6. persist interrupted classification and pending delivery state;
-7. close callbacks, message queues, and executor resources.
+4. wait for terminal hooks, finalizers, and store-owned durable operations up to one absolute deadline;
+5. abort remaining in-process tasks and, before reporting success, join every owned execution worker, including workers nested under a finalization task;
+6. drain non-cancellable store operations before forced terminalization and again afterward, then persist interrupted classification and pending delivery state;
+7. close callbacks, message queues, and executor resources only after the owned work is drained.
 
-Dropping a Tokio runtime or monitor with detached tasks is not a valid shutdown implementation.
+Dropping a Tokio runtime or monitor with detached tasks is not a valid shutdown implementation. Panic terminalization uses the same stable fallback message identity and completion callback path as ordinary completion. Shutdown takeover treats confirmed owner loss as a drained local attempt, bounds each terminal-persistence await by the same absolute shutdown deadline, and drains late finalizers even when forced terminalization returns an error. Checked shutdown calls are serialized. A cancellation-safe drain guard owns every temporarily removed finalizer handle and atomically re-inserts or reaps it on normal return, deadline, outer cancellation, or unwind; a concurrent shutdown cannot observe a false empty set. Attempts with no live finalizer skip the cooperative wait and proceed directly to store drain and terminal replay. A successful checked shutdown means every finalizer and store-owned background-subagent operation is drained. If the deadline expires, shutdown aborts without an unbounded post-deadline join, returns an error, and retains unfinished finalizer handles and store-owned operation tracking so a later checked shutdown can drain them and exact-replay any terminal commit. SQLite adapters track the actual `spawn_blocking` closure lifetime because dropping its async caller does not cancel a closure that has started. Session-store implementations must explicitly declare a cancellation-safe no-op drain or implement owned-operation tracking; the default drain fails closed.
 
 ## Concurrency, Quotas, and Backpressure
 
@@ -453,7 +453,7 @@ Each product configures bounded values for:
 - nested delegation depth, default zero for background children;
 - accepted prompt bytes and host-generated metadata bytes;
 - steering message bytes and queue depth;
-- cached terminal result count/bytes and retention time;
+- cached terminal result count/bytes, per-artifact bytes, aggregate retained artifact bytes, and retention time;
 - callback/continuation queue depth;
 - per-child timeout and total usage/cost budget;
 - shutdown drain timeout.
@@ -550,8 +550,13 @@ Required evidence:
 - TUI application shutdown cancels/joins children without orphan tasks;
 - one-shot headless uses blocking delegation and worker mode exposes none;
 - RPC late results use one atomic delivery claim to create a new causally linked run and never modify a terminal parent run;
-- restart reconciliation recovers expired delivery claims without duplicate delivery and does not claim that a lost in-process child is still running;
-- context merge preserves newer parent state and usage/task/message effects are idempotent;
+- restart reconciliation retains deadline-expired claims owned by active runs with live matching admission leases, acknowledges completed consumers, releases absent/failed/cancelled/lease-lost consumers, and does not claim that a lost in-process child is still running;
+- failed/cancelled consumer release durably suppresses automatic redelivery while allowing one explicit later run to consume the pending result;
+- expired execution owners cannot heartbeat, advance, or make a first terminal commit, while exact terminal replay remains idempotent after lease expiry;
+- restart-synthesized terminal evidence retains its canonical fingerprint through retention expiry, exact replay remains idempotent afterward, and forged replay conflicts;
+- panic terminalization survives more than one bounded heartbeat retry window of transient commit and heartbeat failures, recovers an applied terminal commit after a lost response through exact replay, queues the stable fallback before callback invocation, and clears active state only after commit or confirmed owner loss;
+- slow heartbeat refresh does not starve worker completion or cancellation, and shutdown terminal persistence cannot overrun its absolute deadline or retain active state after confirmed owner loss;
+- context merge preserves newer parent state, resumed child history appends only a validated suffix, and usage/task/message effects are idempotent;
 - child authority cannot exceed the accepted inherited capability grant, and model delegate input cannot spoof host metadata, identity, lineage, tracing, or policy fields;
 - session deletion fences new attempts/continuations and coordinates owned child terminalization before tombstone;
 - CLI and RPC retain no dependency on each other's coordinators or configuration.

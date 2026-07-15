@@ -4,8 +4,9 @@ use std::{env, sync::Arc};
 
 use serde::Serialize;
 use starweaver_agent::{
-    AgentRuntimeBuilder, AgentSpec, AgentSpecRegistry, ModelPreset, agent_session_control_tools,
-    agent_session_query_tools, core_toolsets,
+    AgentRuntimeBuilder, AgentSpec, AgentSpecRegistry, ModelPreset, SubagentConfig,
+    SubagentToolInheritancePolicy, agent_session_control_tools, agent_session_query_tools,
+    core_toolsets,
 };
 use starweaver_model::{
     HttpModelConfig, ModelAdapter, ModelProfile, ProtocolFamily, ProtocolModelClient,
@@ -98,6 +99,41 @@ impl RpcAgentCatalog {
         let profile = self.profile(name)?;
         let model = self.materialize_model(profile)?;
         let spec = agent_spec(name, profile);
+        let mut registry = Self::registry_with_model(profile, model);
+        for subagent_name in &profile.subagents {
+            let declaration = self.config.subagents.get(subagent_name).ok_or_else(|| {
+                RpcHostError::Invalid(format!(
+                    "RPC profile {name} references unknown subagent: {subagent_name}"
+                ))
+            })?;
+            let child_profile = self.profile(&declaration.profile)?;
+            let child_model = self.materialize_model(child_profile)?;
+            let child_registry = Self::registry_with_model(child_profile, child_model);
+            let mut child_spec = agent_spec(&declaration.profile, child_profile);
+            child_spec.subagents.clear();
+            child_spec.all_subagents = false;
+            let child = child_spec
+                .builder(&child_registry)
+                .map_err(|error| RpcHostError::Invalid(error.to_string()))?
+                .build();
+            let mut configured = SubagentConfig::new(subagent_name, Arc::new(child))
+                .with_tool_inheritance(SubagentToolInheritancePolicy::new(
+                    declaration.required_tools.clone(),
+                    declaration.optional_tools.clone(),
+                ));
+            if let Some(description) = declaration.description.as_deref() {
+                configured = configured.with_description(description);
+            }
+            registry = registry.with_subagent(configured);
+        }
+        spec.runtime_builder(&registry)
+            .map_err(|error| RpcHostError::Invalid(error.to_string()))
+    }
+
+    fn registry_with_model(
+        profile: &RpcProfileConfig,
+        model: Arc<dyn ModelAdapter>,
+    ) -> AgentSpecRegistry {
         let mut registry = AgentSpecRegistry::new().with_model(&profile.model_id, model);
         for toolset in core_toolsets()
             .into_iter()
@@ -105,8 +141,7 @@ impl RpcAgentCatalog {
         {
             registry = registry.with_toolset(toolset);
         }
-        spec.runtime_builder(&registry)
-            .map_err(|error| RpcHostError::Invalid(error.to_string()))
+        registry
     }
 
     /// Return whether a profile explicitly grants one toolset.
@@ -154,6 +189,19 @@ impl RpcAgentCatalog {
                 if !available_toolsets.contains(toolset) {
                     return Err(RpcHostError::Invalid(format!(
                         "RPC profile {name} references unknown toolset: {toolset}"
+                    )));
+                }
+            }
+            for subagent in &profile.subagents {
+                let declaration = self.config.subagents.get(subagent).ok_or_else(|| {
+                    RpcHostError::Invalid(format!(
+                        "RPC profile {name} references unknown subagent: {subagent}"
+                    ))
+                })?;
+                if !self.config.profiles.contains_key(&declaration.profile) {
+                    return Err(RpcHostError::Invalid(format!(
+                        "RPC subagent {subagent} references unknown profile: {}",
+                        declaration.profile
                     )));
                 }
             }
@@ -269,6 +317,7 @@ fn agent_spec(name: &str, profile: &RpcProfileConfig) -> AgentSpec {
             settings: None,
         }),
         toolsets: profile.toolsets.clone(),
+        subagents: profile.subagents.clone(),
         ..AgentSpec::default()
     }
 }
@@ -382,5 +431,46 @@ mod tests {
         let catalog = RpcAgentCatalog::new(config).unwrap();
         assert_eq!(catalog.profiles()[0].source, "rpc_test");
         assert!(catalog.runtime_builder("default").is_ok());
+    }
+
+    #[test]
+    fn configured_rpc_subagents_use_async_only_tool_topology() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = RpcConfig::for_tests(temp.path());
+        config.profiles.insert(
+            "child".to_string(),
+            RpcProfileConfig {
+                model_id: "test:child".to_string(),
+                test_response: Some("child result".to_string()),
+                ..RpcProfileConfig::default()
+            },
+        );
+        config.profiles.get_mut("default").unwrap().subagents = vec!["researcher".to_string()];
+        config.subagents.insert(
+            "researcher".to_string(),
+            crate::RpcSubagentConfig {
+                profile: "child".to_string(),
+                description: Some("Research specialist".to_string()),
+                required_tools: Vec::new(),
+                optional_tools: Vec::new(),
+            },
+        );
+        let catalog = RpcAgentCatalog::new(config).unwrap();
+        let runtime = catalog
+            .runtime_builder("default")
+            .unwrap()
+            .subagent_delegation_mode(starweaver_agent::SubagentDelegationMode::Async)
+            .background_subagent_supervisor(Arc::new(
+                starweaver_agent::BackgroundSubagentSupervisor::new(),
+            ))
+            .build();
+        let tools = runtime.app().agent().tools();
+        assert!(tools.contains("delegate"));
+        assert!(tools.contains("steer_subagent"));
+        assert!(tools.contains("cancel_subagent"));
+        assert!(tools.contains("wait_subagent"));
+        assert!(tools.contains("subagent_info"));
+        assert!(!tools.contains("spawn_delegate"));
+        assert!(!tools.contains("__delegate_backend"));
     }
 }

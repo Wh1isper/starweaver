@@ -262,117 +262,7 @@ impl SqliteSessionStore {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(map_sqlite_session_error)?;
-        if let Some(mut existing) = load_admission_receipt(
-            &transaction,
-            &request.namespace_id,
-            &request.idempotency_key,
-            &request.command_fingerprint,
-        )? {
-            existing.idempotent_replay = true;
-            transaction.commit().map_err(map_sqlite_session_error)?;
-            return Ok(existing);
-        }
-        let mut session = load_session_record(&transaction, &request.run.session_id)?;
-        if session.namespace_id != request.namespace_id {
-            return Err(SessionStoreError::NotFound(
-                request.run.session_id.as_str().to_string(),
-            ));
-        }
-        if session.status != SessionStatus::Active || session.deletion_fence.blocks_continuation() {
-            return Err(SessionStoreError::Conflict(
-                "session cannot admit new work".to_string(),
-            ));
-        }
-        if let Some(existing) =
-            load_session_admission(&transaction, &request.namespace_id, &request.run.session_id)?
-        {
-            if !existing.expired_at(Utc::now()) {
-                return Err(SessionStoreError::RunConflict(format!(
-                    "session {} already has active run {}",
-                    request.run.session_id.as_str(),
-                    existing.target.run_id.as_str()
-                )));
-            }
-            terminalize_orphan(&transaction, &existing, Utc::now())?;
-            transaction
-                .execute(
-                    "DELETE FROM run_admissions WHERE namespace_id = ?1 AND session_id = ?2 AND generation = ?3",
-                    params![request.namespace_id, request.run.session_id.as_str(), i64::try_from(existing.fencing_generation).unwrap_or(i64::MAX)],
-                )
-                .map_err(map_sqlite_session_error)?;
-            session.active_run_id = None;
-        } else if let Some(active_run_id) = session.active_run_id.clone() {
-            let mut orphan = load_run_record(&transaction, &session.session_id, &active_run_id)?;
-            if orphan.status.is_active() {
-                orphan.status = RunStatus::Cancelled;
-                orphan.output_preview =
-                    Some("interrupted during admission reconciliation".to_string());
-                orphan.updated_at = Utc::now();
-                save_run_record(&transaction, &orphan)?;
-            }
-            session.active_run_id = None;
-        }
-        let generation =
-            next_generation(&transaction, &request.namespace_id, &request.run.session_id)?;
-        let mut run = request.run;
-        run.status = RunStatus::Queued;
-        run.updated_at = Utc::now();
-        allocate_or_reuse_run_sequence(&transaction, &mut run)?;
-        save_run_record(&transaction, &run)?;
-        apply_run_to_session(&mut session, &run);
-        session.revision = session.revision.saturating_add(1);
-        save_session_record(&transaction, &session)?;
-        let lease = RunAdmissionLease {
-            target: ManagedRunTarget::new(
-                request.namespace_id.clone(),
-                run.session_id.clone(),
-                run.run_id.clone(),
-            ),
-            admission_id: request.admission_id,
-            host_instance_id: request.host_instance_id,
-            fencing_generation: generation,
-            lease_expires_at: request.lease_expires_at,
-            heartbeat_at: Utc::now(),
-            command_fingerprint: request.command_fingerprint.clone(),
-            idempotency_key: request.idempotency_key.clone(),
-        };
-        transaction
-            .execute(
-                "INSERT INTO run_admissions
-                 (namespace_id, session_id, run_id, generation, host_instance_id, lease_expires_at, record)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    lease.target.namespace_id,
-                    lease.target.session_id.as_str(),
-                    lease.target.run_id.as_str(),
-                    i64::try_from(generation).unwrap_or(i64::MAX),
-                    lease.host_instance_id,
-                    lease.lease_expires_at.to_rfc3339(),
-                    serialize_json_record(&lease)?,
-                ],
-            )
-            .map_err(map_sqlite_session_error)?;
-        let receipt = RunAdmissionReceipt {
-            run,
-            lease,
-            idempotent_replay: false,
-        };
-        transaction
-            .execute(
-                "INSERT INTO run_admission_receipts
-                 (namespace_id, idempotency_key, command_fingerprint, session_id, run_id, record, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    request.namespace_id,
-                    request.idempotency_key,
-                    request.command_fingerprint,
-                    receipt.run.session_id.as_str(),
-                    receipt.run.run_id.as_str(),
-                    serialize_json_record(&receipt)?,
-                    Utc::now().to_rfc3339(),
-                ],
-            )
-            .map_err(map_sqlite_session_error)?;
+        let receipt = acquire_run_admission_in_transaction(&transaction, request)?;
         transaction.commit().map_err(map_sqlite_session_error)?;
         Ok(receipt)
     }
@@ -609,6 +499,121 @@ impl SqliteSessionStore {
     }
 }
 
+pub(super) fn acquire_run_admission_in_transaction(
+    transaction: &Transaction<'_>,
+    request: AcquireRunAdmission,
+) -> SessionStoreResult<RunAdmissionReceipt> {
+    if let Some(mut existing) = load_admission_receipt(
+        transaction,
+        &request.namespace_id,
+        &request.idempotency_key,
+        &request.command_fingerprint,
+    )? {
+        existing.idempotent_replay = true;
+        return Ok(existing);
+    }
+    let mut session = load_session_record(transaction, &request.run.session_id)?;
+    if session.namespace_id != request.namespace_id {
+        return Err(SessionStoreError::NotFound(
+            request.run.session_id.as_str().to_string(),
+        ));
+    }
+    if session.status != SessionStatus::Active || session.deletion_fence.blocks_continuation() {
+        return Err(SessionStoreError::Conflict(
+            "session cannot admit new work".to_string(),
+        ));
+    }
+    if let Some(existing) =
+        load_session_admission(transaction, &request.namespace_id, &request.run.session_id)?
+    {
+        if !existing.expired_at(Utc::now()) {
+            return Err(SessionStoreError::RunConflict(format!(
+                "session {} already has active run {}",
+                request.run.session_id.as_str(),
+                existing.target.run_id.as_str()
+            )));
+        }
+        terminalize_orphan(transaction, &existing, Utc::now())?;
+        transaction
+            .execute(
+                "DELETE FROM run_admissions WHERE namespace_id = ?1 AND session_id = ?2 AND generation = ?3",
+                params![request.namespace_id, request.run.session_id.as_str(), i64::try_from(existing.fencing_generation).unwrap_or(i64::MAX)],
+            )
+            .map_err(map_sqlite_session_error)?;
+        session.active_run_id = None;
+    } else if let Some(active_run_id) = session.active_run_id.clone() {
+        let mut orphan = load_run_record(transaction, &session.session_id, &active_run_id)?;
+        if orphan.status.is_active() {
+            orphan.status = RunStatus::Cancelled;
+            orphan.output_preview = Some("interrupted during admission reconciliation".to_string());
+            orphan.updated_at = Utc::now();
+            save_run_record(transaction, &orphan)?;
+        }
+        session.active_run_id = None;
+    }
+    let generation = next_generation(transaction, &request.namespace_id, &request.run.session_id)?;
+    let mut run = request.run;
+    run.status = RunStatus::Queued;
+    run.updated_at = Utc::now();
+    allocate_or_reuse_run_sequence(transaction, &mut run)?;
+    save_run_record(transaction, &run)?;
+    apply_run_to_session(&mut session, &run);
+    session.revision = session.revision.saturating_add(1);
+    save_session_record(transaction, &session)?;
+    let lease = RunAdmissionLease {
+        target: ManagedRunTarget::new(
+            request.namespace_id.clone(),
+            run.session_id.clone(),
+            run.run_id.clone(),
+        ),
+        admission_id: request.admission_id,
+        host_instance_id: request.host_instance_id,
+        fencing_generation: generation,
+        lease_expires_at: request.lease_expires_at,
+        heartbeat_at: Utc::now(),
+        command_fingerprint: request.command_fingerprint.clone(),
+        idempotency_key: request.idempotency_key.clone(),
+    };
+    transaction
+        .execute(
+            "INSERT INTO run_admissions
+             (namespace_id, session_id, run_id, generation, host_instance_id, lease_expires_at, record)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                lease.target.namespace_id,
+                lease.target.session_id.as_str(),
+                lease.target.run_id.as_str(),
+                i64::try_from(generation).unwrap_or(i64::MAX),
+                lease.host_instance_id,
+                lease.lease_expires_at.to_rfc3339(),
+                serialize_json_record(&lease)?,
+            ],
+        )
+        .map_err(map_sqlite_session_error)?;
+    let receipt = RunAdmissionReceipt {
+        run,
+        lease,
+        idempotent_replay: false,
+    };
+    transaction
+        .execute(
+            "INSERT INTO run_admission_receipts
+             (namespace_id, idempotency_key, command_fingerprint, session_id, run_id, record, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                request.namespace_id,
+                request.idempotency_key,
+                request.command_fingerprint,
+                receipt.run.session_id.as_str(),
+                receipt.run.run_id.as_str(),
+                serialize_json_record(&receipt)?,
+                Utc::now().to_rfc3339(),
+            ],
+        )
+        .map_err(map_sqlite_session_error)?;
+    Ok(receipt)
+}
+
 fn load_session_mutation_receipt(
     transaction: &Transaction<'_>,
     namespace_id: &str,
@@ -687,7 +692,7 @@ fn load_admission_receipt(
         .transpose()
 }
 
-fn load_session_admission(
+pub(super) fn load_session_admission(
     connection: &rusqlite::Connection,
     namespace_id: &str,
     session_id: &SessionId,

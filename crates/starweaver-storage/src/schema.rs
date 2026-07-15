@@ -309,4 +309,64 @@ pub const SQLITE_MIGRATIONS: &[SqliteMigration] = &[
     ",
         hook_version: None,
     },
+    SqliteMigration {
+        id: "20260714_000006_async_subagent_delivery",
+        description: "add durable background-subagent execution, delivery, retention, and continuation linkage",
+        sql: r"
+        CREATE TABLE IF NOT EXISTS background_subagent_records (
+            attempt_id TEXT PRIMARY KEY,
+            namespace_id TEXT NOT NULL,
+            parent_session_id TEXT NOT NULL,
+            parent_run_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            execution_status TEXT NOT NULL,
+            delivery_status TEXT NOT NULL,
+            retention_status TEXT NOT NULL,
+            claim_deadline TEXT,
+            continuation_run_id TEXT,
+            owner_host_instance_id TEXT NOT NULL,
+            owner_generation INTEGER NOT NULL,
+            owner_heartbeat_at TEXT NOT NULL,
+            owner_lease_expires_at TEXT NOT NULL,
+            retention_expires_at TEXT,
+            record TEXT NOT NULL,
+            accepted_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (parent_session_id, parent_run_id)
+                REFERENCES run_records(session_id, run_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_background_subagent_session_updated
+            ON background_subagent_records(namespace_id, parent_session_id, updated_at, attempt_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_background_subagent_active_agent
+            ON background_subagent_records(namespace_id, parent_session_id, agent_id)
+            WHERE execution_status IN ('accepted', 'starting', 'running', 'waiting');
+        CREATE INDEX IF NOT EXISTS ix_background_subagent_reconcile
+            ON background_subagent_records(namespace_id, execution_status, owner_lease_expires_at,
+                                             delivery_status, claim_deadline);
+        CREATE INDEX IF NOT EXISTS ix_background_subagent_retention
+            ON background_subagent_records(namespace_id, retention_status,
+                                             retention_expires_at, attempt_id);
+        CREATE TABLE IF NOT EXISTS background_subagent_artifacts (
+            artifact_ref TEXT PRIMARY KEY,
+            namespace_id TEXT NOT NULL,
+            attempt_id TEXT NOT NULL UNIQUE,
+            expires_at TEXT NOT NULL,
+            artifact TEXT NOT NULL,
+            FOREIGN KEY (attempt_id) REFERENCES background_subagent_records(attempt_id)
+                ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS ix_background_subagent_artifact_expiry
+            ON background_subagent_artifacts(namespace_id, expires_at, artifact_ref);
+    ",
+        hook_version: None,
+    },
+    SqliteMigration {
+        id: "20260715_000007_background_terminal_fingerprint",
+        description: "persist canonical background-subagent terminal commit fingerprints",
+        sql: r"
+        ALTER TABLE background_subagent_records
+            ADD COLUMN terminal_fingerprint TEXT;
+    ",
+        hook_version: None,
+    },
 ];

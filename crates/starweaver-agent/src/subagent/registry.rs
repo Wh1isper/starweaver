@@ -27,6 +27,7 @@ use crate::bundles::attach_environment;
 
 use super::supervisor::{
     BackgroundSubagentAcceptance, BackgroundSubagentChildControl, BackgroundSubagentContextDelta,
+    DurableLeaseRefresh,
 };
 use super::{
     BackgroundSubagentDeliveryClaim, BackgroundSubagentError, BackgroundSubagentExecutionStatus,
@@ -203,7 +204,7 @@ impl BackgroundSubagentCapability {
         Self { monitor }
     }
 
-    fn drain_into_context(&self, context: &mut AgentContext) {
+    async fn drain_into_context(&self, context: &mut AgentContext) {
         self.monitor.apply_context_deltas(context);
         let agent_id = context.agent_id.as_str().to_string();
         context.messages.subscribe(agent_id);
@@ -213,12 +214,16 @@ impl BackgroundSubagentCapability {
             .map_or_else(|| context.agent_id.as_str(), starweaver_core::RunId::as_str);
         for claimed in self
             .monitor
-            .claim_pending_messages(claim_scope, context.run_id.as_ref())
+            .claim_pending_messages_durable(claim_scope, context.run_id.as_ref())
+            .await
         {
             context.send_message(claimed.message);
-            let _ = self
-                .monitor
-                .acknowledge_delivery(&claimed.attempt_id, &claimed.claim_id);
+            if !self.monitor.durable_delivery_enabled() {
+                let _ = self
+                    .monitor
+                    .acknowledge_delivery_durable(&claimed.attempt_id, &claimed.claim_id)
+                    .await;
+            }
         }
     }
 }
@@ -235,7 +240,7 @@ impl AgentCapability for BackgroundSubagentCapability {
         context: &mut AgentContext,
     ) -> CapabilityResult<()> {
         context.dependencies.insert_arc(self.monitor.clone());
-        self.drain_into_context(context);
+        self.drain_into_context(context).await;
         Ok(())
     }
 
@@ -246,7 +251,7 @@ impl AgentCapability for BackgroundSubagentCapability {
         messages: Vec<starweaver_model::ModelMessage>,
     ) -> CapabilityResult<Vec<starweaver_model::ModelMessage>> {
         context.dependencies.insert_arc(self.monitor.clone());
-        self.drain_into_context(context);
+        self.drain_into_context(context).await;
         Ok(messages)
     }
 
@@ -807,7 +812,7 @@ impl SubagentRegistry {
                             )?;
                         }
                         monitor
-                            .accept(BackgroundSubagentAcceptance {
+                            .accept_durable(BackgroundSubagentAcceptance {
                                 attempt_id: attempt_id.clone(),
                                 agent_id: agent_id.clone(),
                                 subagent_name: subagent_name.clone(),
@@ -817,22 +822,25 @@ impl SubagentRegistry {
                                 parent_run_id: durable_parent_run_id(&parent_context),
                                 is_resume,
                             })
+                            .await
                             .map_err(|error| background_tool_error(&tool_name, &error))?;
                         let target_agent_id = parent_context.agent_id.as_str().to_string();
                         let background_context = context.clone();
-                        let finalizer = tokio::spawn(run_background_delegate(
-                            BackgroundDelegateExecution {
-                                registry,
-                                monitor: monitor.clone(),
-                                context_handle,
-                                tool_context: background_context,
-                                arguments,
-                                attempt_id: attempt_id.clone(),
-                                agent_id: agent_id.clone(),
-                                target_agent_id,
-                            },
-                        ));
-                        monitor.attach_finalizer_handle(&attempt_id, finalizer);
+                        monitor
+                            .spawn_finalizer(
+                                attempt_id.clone(),
+                                run_background_delegate(BackgroundDelegateExecution {
+                                    registry,
+                                    monitor: monitor.clone(),
+                                    context_handle,
+                                    tool_context: background_context,
+                                    arguments,
+                                    attempt_id: attempt_id.clone(),
+                                    agent_id: agent_id.clone(),
+                                    target_agent_id,
+                                }),
+                            )
+                            .map_err(|error| background_tool_error(&tool_name, &error))?;
                         let status = if is_resume { "continued" } else { "accepted" };
                         Ok(ToolResult::new(serde_json::json!({
                             "status": status,
@@ -1258,6 +1266,18 @@ Resume a terminal background conversation only when you already have its agent I
     }
 }
 
+struct BackgroundDelegateWorkerCompletion {
+    delegated: Result<SubagentResult, AgentError>,
+    child_run_id: Option<starweaver_core::RunId>,
+    context_delta: BackgroundSubagentContextDelta,
+}
+
+enum BackgroundDelegateWorkerOutcome {
+    Finished(Box<Result<BackgroundDelegateWorkerCompletion, AgentError>>),
+    CancellationDeadline,
+    OwnerLost,
+}
+
 struct BackgroundDelegateExecution {
     registry: Arc<SubagentRegistry>,
     monitor: Arc<BackgroundSubagentMonitor>,
@@ -1269,6 +1289,7 @@ struct BackgroundDelegateExecution {
     target_agent_id: String,
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run_background_delegate(execution: BackgroundDelegateExecution) {
     let BackgroundDelegateExecution {
         registry,
@@ -1280,130 +1301,220 @@ async fn run_background_delegate(execution: BackgroundDelegateExecution) {
         agent_id,
         target_agent_id,
     } = execution;
-    monitor.transition(&attempt_id, BackgroundSubagentExecutionStatus::Starting);
+    if let Err(error) = monitor
+        .transition_durable(&attempt_id, BackgroundSubagentExecutionStatus::Starting)
+        .await
+    {
+        if let Some(result) = monitor
+            .record_terminal_with_retry(
+                &attempt_id,
+                BackgroundSubagentExecutionStatus::Failed,
+                None,
+                Some(error.to_string()),
+            )
+            .await
+        {
+            deliver_background_result(
+                &monitor,
+                &context_handle,
+                &attempt_id,
+                &target_agent_id,
+                &result,
+            )
+            .await;
+        }
+        return;
+    }
     let cancellation = monitor
         .child_control(&attempt_id)
         .map(|control| control.cancellation);
-    let worker = tokio::spawn(run_background_delegate_inner(
+    let worker_cancellation = cancellation.clone();
+    let cancellation_grace = monitor.limits().cancellation_grace;
+    let cancellation_deadline = async move {
+        if let Some(cancellation) = worker_cancellation {
+            cancellation.cancelled().await;
+            tokio::time::sleep(cancellation_grace).await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    let mut worker = Box::pin(run_background_delegate_inner(
         registry,
         monitor.clone(),
         context_handle.clone(),
         tool_context,
-        arguments.clone(),
+        arguments,
         attempt_id.clone(),
         agent_id,
     ));
-    monitor.attach_abort_handle(&attempt_id, worker.abort_handle());
+    tokio::pin!(cancellation_deadline);
 
-    let (status, content, error, child_run_id) = match worker.await {
-        Ok(Ok((output, child_run_id))) => (
-            BackgroundSubagentExecutionStatus::Completed,
-            Some(output),
-            None,
-            child_run_id,
-        ),
-        Ok(Err(error)) => {
-            let cancelled = cancellation
-                .as_ref()
-                .is_some_and(starweaver_core::CancellationToken::is_cancelled);
-            (
-                if cancelled {
-                    BackgroundSubagentExecutionStatus::Cancelled
-                } else {
-                    BackgroundSubagentExecutionStatus::Failed
-                },
-                None,
-                Some(error.to_string()),
-                None,
-            )
+    let worker_outcome = if let Some(interval) = monitor.durable_heartbeat_interval() {
+        let mut heartbeat = tokio::time::interval(interval);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        heartbeat.tick().await;
+        loop {
+            tokio::select! {
+                result = &mut worker => {
+                    break BackgroundDelegateWorkerOutcome::Finished(Box::new(result));
+                }
+                () = &mut cancellation_deadline => {
+                    break BackgroundDelegateWorkerOutcome::CancellationDeadline;
+                }
+                _ = heartbeat.tick() => {
+                    let refresh = monitor.heartbeat_durable_with_retry(&attempt_id);
+                    tokio::pin!(refresh);
+                    let refresh = tokio::select! {
+                        result = &mut worker => {
+                            break BackgroundDelegateWorkerOutcome::Finished(Box::new(result));
+                        }
+                        () = &mut cancellation_deadline => {
+                            break BackgroundDelegateWorkerOutcome::CancellationDeadline;
+                        }
+                        refresh = &mut refresh => refresh,
+                    };
+                    match refresh {
+                        DurableLeaseRefresh::Renewed => {}
+                        DurableLeaseRefresh::RetryableFailure => {
+                            heartbeat.reset_after(monitor.durable_transient_retry_delay());
+                        }
+                        DurableLeaseRefresh::TerminalObserved
+                        | DurableLeaseRefresh::ConfirmedOwnerLoss => {
+                            break BackgroundDelegateWorkerOutcome::OwnerLost;
+                        }
+                    }
+                }
+            }
         }
-        Err(join_error) => (
-            if join_error.is_cancelled() {
-                BackgroundSubagentExecutionStatus::Cancelled
-            } else {
-                BackgroundSubagentExecutionStatus::Failed
+    } else {
+        tokio::select! {
+            result = &mut worker => {
+                BackgroundDelegateWorkerOutcome::Finished(Box::new(result))
             },
+            () = &mut cancellation_deadline => {
+                BackgroundDelegateWorkerOutcome::CancellationDeadline
+            },
+        }
+    };
+    drop(worker);
+    let mut context_delta = None;
+    let (status, content, error, child_run_id) = match worker_outcome {
+        BackgroundDelegateWorkerOutcome::Finished(worker_result) => match *worker_result {
+            Ok(completion) => {
+                context_delta = Some(completion.context_delta);
+                match completion.delegated {
+                    Ok(result) => (
+                        BackgroundSubagentExecutionStatus::Completed,
+                        Some(result.output().to_string()),
+                        None,
+                        completion.child_run_id,
+                    ),
+                    Err(error) => {
+                        let cancelled = cancellation
+                            .as_ref()
+                            .is_some_and(starweaver_core::CancellationToken::is_cancelled);
+                        (
+                            if cancelled {
+                                BackgroundSubagentExecutionStatus::Cancelled
+                            } else {
+                                BackgroundSubagentExecutionStatus::Failed
+                            },
+                            None,
+                            Some(error.to_string()),
+                            completion.child_run_id,
+                        )
+                    }
+                }
+            }
+            Err(error) => {
+                let cancelled = cancellation
+                    .as_ref()
+                    .is_some_and(starweaver_core::CancellationToken::is_cancelled);
+                (
+                    if cancelled {
+                        BackgroundSubagentExecutionStatus::Cancelled
+                    } else {
+                        BackgroundSubagentExecutionStatus::Failed
+                    },
+                    None,
+                    Some(error.to_string()),
+                    None,
+                )
+            }
+        },
+        BackgroundDelegateWorkerOutcome::CancellationDeadline => (
+            BackgroundSubagentExecutionStatus::Cancelled,
             None,
-            Some(if join_error.is_cancelled() {
-                "background subagent task aborted after cancellation deadline".to_string()
-            } else {
-                "background subagent task terminated unexpectedly".to_string()
-            }),
+            Some("background subagent task aborted after cancellation deadline".to_string()),
             None,
         ),
+        BackgroundDelegateWorkerOutcome::OwnerLost => {
+            monitor.abandon_after_owner_loss(&attempt_id);
+            return;
+        }
     };
     monitor.set_child_run_id(&attempt_id, child_run_id);
-    let Some(result) = monitor.record_terminal(&attempt_id, status, content, error) else {
-        monitor.detach_finalizer_handle(&attempt_id);
+    let Some(result) = monitor
+        .record_terminal_with_retry(&attempt_id, status, content, error)
+        .await
+    else {
         return;
     };
-    let message = background_result_message(&monitor, &result, &target_agent_id);
+    if let Some(delta) = context_delta {
+        monitor.publish_committed_context_delta(&attempt_id, &context_handle, &delta);
+    }
     deliver_background_result(
         &monitor,
         &context_handle,
         &attempt_id,
         &target_agent_id,
-        message,
-    );
-    monitor.notify_completion(&attempt_id);
-    monitor.detach_finalizer_handle(&attempt_id);
+        &result,
+    )
+    .await;
 }
 
-fn background_result_message(
-    monitor: &BackgroundSubagentMonitor,
-    result: &BackgroundSubagentTaskResult,
-    target_agent_id: &str,
-) -> BusMessage {
-    let message_text = match (&result.content, &result.error) {
-        (Some(output), _) => output.clone(),
-        (_, Some(error)) => format!(
-            "Background delegate '{}' (agent_id: {}, attempt_id: {}) {}: {error}",
-            result.subagent_name,
-            result.agent_id,
-            result.attempt_id.as_str(),
-            result.status.as_str(),
-        ),
-        _ => format!(
-            "Background delegate '{}' (agent_id: {}, attempt_id: {}) {}",
-            result.subagent_name,
-            result.agent_id,
-            result.attempt_id.as_str(),
-            result.status.as_str(),
-        ),
-    };
-    BusMessage::text(message_text, result.agent_id.clone())
-        .with_id(monitor.get_task_result_message_id(&result.attempt_id))
-        .with_target(target_agent_id)
-}
-
-fn deliver_background_result(
+async fn deliver_background_result(
     monitor: &BackgroundSubagentMonitor,
     context_handle: &AgentContextHandle,
     attempt_id: &SubagentAttemptId,
     target_agent_id: &str,
-    message: BusMessage,
+    result: &BackgroundSubagentTaskResult,
 ) {
+    let parent_snapshot = context_handle.snapshot();
+    let parent_run_id = parent_snapshot.run_id.clone();
+    let mut delivered_directly = false;
     if !monitor.is_waiting(attempt_id)
         && monitor.direct_delivery_allowed(attempt_id)
-        && context_handle
-            .snapshot()
-            .messages
-            .is_subscribed(target_agent_id)
+        && parent_snapshot.messages.is_subscribed(target_agent_id)
+        && (!monitor.durable_delivery_enabled() || parent_run_id.is_some())
     {
         let claim_id = format!("active-turn:{}", attempt_id.as_str());
         let claim = BackgroundSubagentDeliveryClaim {
             claim_id: claim_id.clone(),
-            continuation_run_id: None,
+            continuation_run_id: parent_run_id,
             deadline: Utc::now() + chrono::Duration::seconds(60),
         };
-        if monitor.claim_delivery(attempt_id, claim).is_ok() {
+        if monitor
+            .claim_delivery_durable(attempt_id, claim)
+            .await
+            .is_ok()
+        {
+            let message = monitor.terminal_result_message(result, target_agent_id);
             context_handle.update(|context| {
                 context.send_message(message);
             });
-            let _ = monitor.acknowledge_delivery(attempt_id, &claim_id);
+            if !monitor.durable_delivery_enabled() {
+                let _ = monitor
+                    .acknowledge_delivery_durable(attempt_id, &claim_id)
+                    .await;
+            }
+            delivered_directly = true;
         }
+    }
+    if delivered_directly {
+        monitor.notify_completion(attempt_id);
     } else {
-        monitor.enqueue_message(attempt_id.clone(), message);
+        monitor.enqueue_terminal_fallback_and_notify(result);
     }
 }
 
@@ -1415,7 +1526,7 @@ async fn run_background_delegate_inner(
     arguments: DelegateArgs,
     attempt_id: SubagentAttemptId,
     agent_id: String,
-) -> Result<(String, Option<starweaver_core::RunId>), AgentError> {
+) -> Result<BackgroundDelegateWorkerCompletion, AgentError> {
     let mut parent_context = context_handle.snapshot();
     let base_usage = parent_context.usage.clone();
     let base_usage_snapshot_keys = parent_context
@@ -1424,6 +1535,11 @@ async fn run_background_delegate_inner(
         .cloned()
         .collect::<BTreeSet<_>>();
     let base_event_count = parent_context.events.events().len();
+    let base_subagent_history = parent_context
+        .subagent_history
+        .get(&agent_id)
+        .cloned()
+        .unwrap_or_default();
     parent_context.trace_context = tool_context.trace_context.clone();
     if let Some(trace_recorder) = tool_context.dependency::<TraceRecorderHandle>() {
         parent_context
@@ -1447,7 +1563,10 @@ async fn run_background_delegate_inner(
     let control = monitor
         .child_control(&attempt_id)
         .ok_or_else(|| AgentError::Capability("background attempt control was lost".to_string()))?;
-    monitor.transition(&attempt_id, BackgroundSubagentExecutionStatus::Running);
+    monitor
+        .transition_durable(&attempt_id, BackgroundSubagentExecutionStatus::Running)
+        .await
+        .map_err(|error| AgentError::Capability(error.to_string()))?;
     // A model-tool-call stream sink is drained only for the lifetime of that
     // tool future. Background execution therefore retains terminal/context
     // evidence here and leaves live streaming to a host-owned sink.
@@ -1469,9 +1588,13 @@ async fn run_background_delegate_inner(
         &base_usage_snapshot_keys,
         base_event_count,
         &agent_id,
+        &base_subagent_history,
     );
-    monitor.merge_or_stage_context_delta(&attempt_id, &context_handle, delta);
-    delegated.map(|result| (result.output().to_string(), child_run_id))
+    Ok(BackgroundDelegateWorkerCompletion {
+        delegated,
+        child_run_id,
+        context_delta: delta,
+    })
 }
 
 const MAX_WAIT_SUBAGENT_TIMEOUT_SECONDS: f64 = 300.0;
@@ -1522,7 +1645,7 @@ async fn wait_for_one_background_subagent(
             "message": "Subagent is still running.",
         });
     };
-    match consume_background_result(monitor, context_handle, attempt_id, target) {
+    match consume_background_result(monitor, context_handle, attempt_id, target).await {
         Ok(()) => format_background_result(&result),
         Err(error) => format_unavailable_background_result(&result, &error),
     }
@@ -1560,11 +1683,17 @@ async fn wait_for_all_background_subagents(
     let mut formatted_results = Vec::new();
     for attempt_id in &attempt_ids {
         if let Some(result) = results_by_id.get(attempt_id).and_then(Clone::clone) {
-            let formatted =
-                match consume_background_result(monitor, context_handle, attempt_id, target) {
-                    Ok(()) => format_background_result(&result),
-                    Err(error) => format_unavailable_background_result(&result, &error),
-                };
+            let formatted = match consume_background_result(
+                monitor,
+                context_handle,
+                attempt_id,
+                target,
+            )
+            .await
+            {
+                Ok(()) => format_background_result(&result),
+                Err(error) => format_unavailable_background_result(&result, &error),
+            };
             formatted_results.push(formatted);
         } else {
             timed_out = true;
@@ -1596,19 +1725,25 @@ async fn wait_for_all_background_subagents(
     })
 }
 
-fn consume_background_result(
+async fn consume_background_result(
     monitor: &BackgroundSubagentMonitor,
     context_handle: &AgentContextHandle,
     attempt_id: &SubagentAttemptId,
     target: &str,
 ) -> Result<(), BackgroundSubagentError> {
     let claim_id = format!("wait:{}", attempt_id.as_str());
+    let parent_run_id = context_handle.snapshot().run_id;
+    if monitor.durable_delivery_enabled() && parent_run_id.is_none() {
+        return Err(BackgroundSubagentError::Durability(
+            "durable result consumption requires a parent run identity".to_string(),
+        ));
+    }
     let claim = BackgroundSubagentDeliveryClaim {
         claim_id: claim_id.clone(),
-        continuation_run_id: None,
+        continuation_run_id: parent_run_id,
         deadline: Utc::now() + chrono::Duration::seconds(60),
     };
-    monitor.claim_delivery(attempt_id, claim)?;
+    monitor.claim_delivery_durable(attempt_id, claim).await?;
     let message_id = monitor.get_task_result_message_id(attempt_id);
     context_handle.update(|context| {
         let mut message_ids = BTreeSet::new();
@@ -1617,7 +1752,13 @@ fn consume_background_result(
             .messages
             .mark_consumed(target.to_string(), &message_ids);
     });
-    monitor.acknowledge_delivery(attempt_id, &claim_id)
+    if monitor.durable_delivery_enabled() {
+        Ok(())
+    } else {
+        monitor
+            .acknowledge_delivery_durable(attempt_id, &claim_id)
+            .await
+    }
 }
 
 fn format_unavailable_background_result(
@@ -1742,9 +1883,14 @@ fn ensure_main_agent_tool(context: &ToolContext, tool_name: &str) -> Result<(), 
 }
 
 fn background_tool_error(tool_name: &str, error: &BackgroundSubagentError) -> ToolError {
+    let message = if matches!(error, BackgroundSubagentError::Durability(_)) {
+        "background subagent durable admission failed".to_string()
+    } else {
+        error.to_string()
+    };
     ToolError::UserError {
         tool: tool_name.to_string(),
-        message: error.to_string(),
+        message,
     }
 }
 

@@ -41,12 +41,25 @@ struct ActiveTuiRun {
 }
 
 struct TuiRuntimeShutdownGuard {
-    coordinator: CliRuntimeCoordinator,
+    coordinator: Option<CliRuntimeCoordinator>,
+}
+
+impl TuiRuntimeShutdownGuard {
+    fn shutdown(&mut self) -> CliResult<()> {
+        let Some(coordinator) = self.coordinator.as_ref() else {
+            return Ok(());
+        };
+        coordinator.shutdown(TUI_BACKGROUND_SHUTDOWN_TIMEOUT)?;
+        self.coordinator = None;
+        Ok(())
+    }
 }
 
 impl Drop for TuiRuntimeShutdownGuard {
     fn drop(&mut self) {
-        self.coordinator.shutdown(TUI_BACKGROUND_SHUTDOWN_TIMEOUT);
+        if let Some(coordinator) = self.coordinator.as_ref() {
+            let _ = coordinator.shutdown(TUI_BACKGROUND_SHUTDOWN_TIMEOUT);
+        }
     }
 }
 
@@ -198,8 +211,8 @@ impl CliService {
         let mut coordinator_config = self.config.clone();
         coordinator_config.oauth_refresh.enabled = false;
         let coordinator = CliRuntimeCoordinator::new(coordinator_config)?;
-        let _shutdown_guard = TuiRuntimeShutdownGuard {
-            coordinator: coordinator.clone(),
+        let mut shutdown_guard = TuiRuntimeShutdownGuard {
+            coordinator: Some(coordinator.clone()),
         };
         let mut active_run: Option<ActiveTuiRun> = None;
         let mut queued_prompt: Option<(PromptInput, String, Option<GoalCommandOptions>)> = None;
@@ -323,6 +336,7 @@ impl CliService {
             let event = crate::tui::InteractiveTui::poll_event(&mut state, poll_timeout)?;
             match event {
                 Some(crate::tui::InteractiveTuiEvent::Quit) if active_run.is_none() => {
+                    shutdown_guard.shutdown()?;
                     return Ok(());
                 }
                 Some(crate::tui::InteractiveTuiEvent::Cancel) => {

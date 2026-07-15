@@ -43,6 +43,7 @@
       "durability",
       "session-stream",
       "session-search",
+      "session-management",
       "sdk-app",
       "subagents",
       "mcp"

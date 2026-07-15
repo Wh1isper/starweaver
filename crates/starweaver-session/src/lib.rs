@@ -3,6 +3,7 @@
 //! Shared durable session contracts for Starweaver.
 
 mod approval;
+mod background;
 mod claim;
 mod error;
 mod evidence;
@@ -19,6 +20,17 @@ pub use approval::{
     ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, DeferredToolRequest,
     DeferredToolRequests, DeferredToolResult, DeferredToolResults, ToolApprovalDecision,
     ToolReturnRecordInput,
+};
+pub use background::{
+    AcquireBackgroundSubagentContinuation, BACKGROUND_SUBAGENT_RECORD_VERSION,
+    BackgroundSubagentArtifact, BackgroundSubagentArtifactLimits,
+    BackgroundSubagentContinuationCause, BackgroundSubagentContinuationReceipt,
+    BackgroundSubagentRecord, BackgroundSubagentTerminalCommit,
+    DEFAULT_BACKGROUND_RESULT_RETENTION_SECS, DurableBackgroundSubagentDeliveryClaim,
+    DurableBackgroundSubagentDeliveryRelease, DurableBackgroundSubagentDeliveryStatus,
+    DurableBackgroundSubagentExecutionStatus, DurableBackgroundSubagentOwnerLease,
+    DurableBackgroundSubagentResultRef, DurableBackgroundSubagentRetentionStatus,
+    background_subagent_input_digest, background_subagent_result_digest,
 };
 pub use claim::{HitlResumeClaim, HitlResumeClaimState};
 pub use error::{SessionStoreError, SessionStoreResult};

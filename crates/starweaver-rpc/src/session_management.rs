@@ -436,6 +436,10 @@ impl AgentSessionControl for RpcAgentSessionAdapter {
         {
             return Err(map_control_store_for_session(&store, &command.session_id, error).await);
         }
+        self.coordinator
+            .cancel_session_subagents(&command.session_id, std::time::Duration::from_secs(10))
+            .await
+            .map_err(map_control_host)?;
         for run in store
             .list_runs(&command.session_id)
             .await
@@ -876,9 +880,9 @@ fn map_control_store(error: starweaver_session::SessionStoreError) -> AgentSessi
     use starweaver_session::SessionStoreError;
     let code = match error {
         SessionStoreError::NotFound(_) => AgentSessionControlErrorCode::NotFound,
-        SessionStoreError::AlreadyExists(_) | SessionStoreError::Conflict(_) => {
-            AgentSessionControlErrorCode::Conflict
-        }
+        SessionStoreError::AlreadyExists(_)
+        | SessionStoreError::Conflict(_)
+        | SessionStoreError::QuotaExceeded(_) => AgentSessionControlErrorCode::Conflict,
         SessionStoreError::IdempotencyConflict(_) => {
             AgentSessionControlErrorCode::IdempotencyConflict
         }

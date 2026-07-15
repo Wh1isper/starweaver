@@ -34,6 +34,9 @@ pub struct RpcProfileConfig {
     /// First-party SDK toolset names enabled for this profile.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub toolsets: Vec<String>,
+    /// RPC-owned subagent declarations available to this parent profile.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagents: Vec<String>,
     /// Unit-test-only deterministic response. Never deserialized from RPC config.
     #[serde(skip)]
     pub(crate) test_response: Option<String>,
@@ -48,9 +51,26 @@ impl Default for RpcProfileConfig {
             model_config: None,
             instructions: Vec::new(),
             toolsets: Vec::new(),
+            subagents: Vec::new(),
             test_response: None,
         }
     }
+}
+
+/// One RPC-owned named subagent backed by another configured profile.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RpcSubagentConfig {
+    /// Child profile used to materialize the subagent runtime.
+    pub profile: String,
+    /// Optional model-visible description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Parent tools that must be inherited or delegation is unavailable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_tools: Vec<String>,
+    /// Parent tools inherited when available.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub optional_tools: Vec<String>,
 }
 
 /// Provider endpoint configuration owned by the standalone RPC product.
@@ -155,6 +175,8 @@ pub struct RpcConfig {
     pub profiles: BTreeMap<String, RpcProfileConfig>,
     /// RPC-owned provider endpoint definitions.
     pub providers: BTreeMap<String, RpcProviderConfig>,
+    /// RPC-owned named subagent declarations.
+    pub subagents: BTreeMap<String, RpcSubagentConfig>,
     /// HTTP transport authentication and request-origin policy.
     pub http_auth: RpcHttpAuthConfig,
     /// Optional RPC-owned session-search provider configuration.
@@ -166,6 +188,7 @@ struct FileConfig {
     server: Option<FileServerConfig>,
     profiles: Option<BTreeMap<String, RpcProfileConfig>>,
     providers: Option<BTreeMap<String, RpcProviderConfig>>,
+    subagents: Option<BTreeMap<String, RpcSubagentConfig>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -265,6 +288,7 @@ impl RpcConfig {
         if let Some(configured) = file.providers {
             providers.extend(configured);
         }
+        let subagents = file.subagents.unwrap_or_default();
         Ok(Self {
             config_path,
             database_path,
@@ -273,6 +297,7 @@ impl RpcConfig {
             default_profile,
             profiles,
             providers,
+            subagents,
             http_auth,
             session_search,
         })
@@ -295,6 +320,7 @@ impl RpcConfig {
             default_profile: DEFAULT_PROFILE_NAME.to_string(),
             profiles: BTreeMap::from([(DEFAULT_PROFILE_NAME.to_string(), profile)]),
             providers: default_provider_configs(),
+            subagents: BTreeMap::new(),
             http_auth: RpcHttpAuthConfig::default(),
             session_search: RpcSessionSearchConfig::default(),
         }

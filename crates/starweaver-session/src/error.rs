@@ -17,6 +17,9 @@ pub enum SessionStoreError {
     /// One idempotency key was reused for a different normalized command.
     #[error("session idempotency conflict: {0}")]
     IdempotencyConflict(String),
+    /// A trusted host retention or admission quota was exceeded.
+    #[error("session quota exceeded: {0}")]
+    QuotaExceeded(String),
     /// The session already owns a live run admission.
     #[error("session run conflict: {0}")]
     RunConflict(String),

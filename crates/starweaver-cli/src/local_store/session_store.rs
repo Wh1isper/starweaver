@@ -218,6 +218,10 @@ impl SessionStore for LocalSessionStore {
             .await
     }
 
+    async fn drain_background_subagent_operations(&self) -> SessionStoreResult<()> {
+        self.store.drain_background_subagent_operations().await
+    }
+
     async fn save_session(&self, session: SessionRecord) -> SessionStoreResult<()> {
         self.store.save_session(session).await
     }

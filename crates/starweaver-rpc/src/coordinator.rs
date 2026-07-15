@@ -15,10 +15,11 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use starweaver_agent::{
     AgentContext, AgentControlHandle, AgentSessionControlHandle, AgentSessionQueryHandle,
-    AgentStreamDropPolicy, AgentStreamOptions, attach_agent_session_control,
+    AgentStreamDropPolicy, AgentStreamOptions, BackgroundSubagentSupervisor,
+    BackgroundSubagentTaskResult, SubagentDelegationMode, attach_agent_session_control,
     attach_agent_session_query,
 };
-use starweaver_core::{ConversationId, RunId, SessionId};
+use starweaver_core::{ConversationId, RunId, SessionId, SubagentAttemptId};
 use starweaver_environment::{
     ShellProcessStatus, SwitchableEnvironmentProvider, SwitchableEnvironmentTarget,
 };
@@ -28,9 +29,12 @@ use starweaver_rpc_core::{
 };
 use starweaver_runtime::{AgentInput, AgentStreamRecord};
 use starweaver_session::{
-    AcquireRunAdmission, AgentSessionOperation, AgentSessionScope, DurableControlReceipt,
-    InputPart, LOCAL_SESSION_NAMESPACE, ManagedRunTarget, RunAdmissionLease, RunRecord, RunStatus,
-    SessionStore,
+    AcquireBackgroundSubagentContinuation, AcquireRunAdmission, AgentSessionOperation,
+    AgentSessionScope, BackgroundSubagentContinuationCause, BackgroundSubagentRecord,
+    DurableBackgroundSubagentDeliveryStatus, DurableBackgroundSubagentRetentionStatus,
+    DurableControlReceipt, InputPart, LOCAL_SESSION_NAMESPACE, ManagedRunTarget, RunAdmissionLease,
+    RunAdmissionReceipt, RunRecord, RunStatus, SessionDeletionFence, SessionStatus, SessionStore,
+    SessionStoreError,
 };
 use starweaver_storage::SqliteStorage;
 use starweaver_stream::{
@@ -52,6 +56,10 @@ const RPC_PROFILE_METADATA_KEY: &str = "rpc.profile";
 const ACTIVE_LEASE_TTL: Duration = Duration::from_secs(30);
 const ACTIVE_LEASE_HEARTBEAT: Duration = Duration::from_secs(10);
 const TERMINAL_CACHE_LIMIT: usize = 64;
+const BACKGROUND_COMPLETION_TASK_LIMIT: usize = 256;
+const BACKGROUND_RECORD_SCAN_LIMIT: usize = 1_024;
+const BACKGROUND_RETENTION_CLEANUP_LIMIT: usize = 256;
+const BACKGROUND_CONTINUATION_LEASE_TTL: Duration = Duration::from_secs(30);
 
 type RpcBoxFuture<'a, T> = Pin<Box<dyn Future<Output = RpcHostResult<T>> + Send + 'a>>;
 
@@ -179,6 +187,9 @@ pub struct RpcRuntimeCoordinator {
     active: Arc<Mutex<HashMap<ManagedRunTarget, ActiveRun>>>,
     terminal: Arc<Mutex<VecDeque<TerminalRun>>>,
     tasks: Arc<Mutex<HashMap<ManagedRunTarget, JoinHandle<()>>>>,
+    background_tasks: Arc<Mutex<HashMap<SubagentAttemptId, JoinHandle<()>>>>,
+    background_reconciler: Arc<Mutex<Option<JoinHandle<()>>>>,
+    supervisors: Arc<Mutex<HashMap<SessionId, Arc<BackgroundSubagentSupervisor>>>>,
     accepting: Arc<AtomicBool>,
     host_instance_id: Arc<String>,
 }
@@ -200,9 +211,116 @@ impl RpcRuntimeCoordinator {
             active: Arc::new(Mutex::new(HashMap::new())),
             terminal: Arc::new(Mutex::new(VecDeque::with_capacity(TERMINAL_CACHE_LIMIT))),
             tasks: Arc::new(Mutex::new(HashMap::new())),
+            background_tasks: Arc::new(Mutex::new(HashMap::new())),
+            background_reconciler: Arc::new(Mutex::new(None)),
+            supervisors: Arc::new(Mutex::new(HashMap::new())),
             accepting: Arc::new(AtomicBool::new(true)),
             host_instance_id: Arc::new(format!("rpc-host-{}", uuid::Uuid::new_v4())),
         }
+    }
+
+    fn supervisor_for_session(
+        &self,
+        session_id: &SessionId,
+    ) -> RpcHostResult<Arc<BackgroundSubagentSupervisor>> {
+        let mut supervisors = self.supervisors.lock().map_err(active_registry_error)?;
+        if let Some(supervisor) = supervisors.get(session_id) {
+            return Ok(supervisor.clone());
+        }
+        let coordinator = self.clone();
+        let callback = Arc::new(move |result: &BackgroundSubagentTaskResult| {
+            coordinator.spawn_background_completion_task(result.attempt_id.clone());
+        });
+        let store: Arc<dyn SessionStore> = Arc::new(self.storage.session_store());
+        let supervisor = Arc::new(
+            BackgroundSubagentSupervisor::new()
+                .with_durable_store(store, LOCAL_SESSION_NAMESPACE)
+                .with_durable_owner((*self.host_instance_id).clone(), 1, ACTIVE_LEASE_TTL)
+                .with_completion_callback(callback),
+        );
+        supervisors.insert(session_id.clone(), supervisor.clone());
+        drop(supervisors);
+        Ok(supervisor)
+    }
+
+    fn ensure_background_reconciler(&self) -> RpcHostResult<()> {
+        let mut slot = self
+            .background_reconciler
+            .lock()
+            .map_err(active_registry_error)?;
+        if slot.as_ref().is_some_and(|task| !task.is_finished()) {
+            return Ok(());
+        }
+        let coordinator = self.clone();
+        *slot = Some(tokio::spawn(async move {
+            let mut interval = tokio::time::interval(ACTIVE_LEASE_HEARTBEAT);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                if !coordinator.accepting.load(Ordering::Acquire) {
+                    return;
+                }
+                let store = coordinator.storage.session_store();
+                let _ = store
+                    .expire_background_subagent_retention(
+                        LOCAL_SESSION_NAMESPACE,
+                        chrono::Utc::now(),
+                        BACKGROUND_RETENTION_CLEANUP_LIMIT,
+                    )
+                    .await;
+                if store
+                    .reconcile_background_subagents(LOCAL_SESSION_NAMESPACE, chrono::Utc::now())
+                    .await
+                    .is_err()
+                {
+                    continue;
+                }
+                let Ok(records) = store
+                    .list_pending_background_subagents(
+                        LOCAL_SESSION_NAMESPACE,
+                        None,
+                        BACKGROUND_RECORD_SCAN_LIMIT,
+                    )
+                    .await
+                else {
+                    continue;
+                };
+                for record in records {
+                    coordinator.spawn_background_completion_task(record.attempt_id);
+                }
+            }
+        }));
+        drop(slot);
+        Ok(())
+    }
+
+    fn spawn_background_completion_task(&self, attempt_id: SubagentAttemptId) {
+        if !self.accepting.load(Ordering::Acquire) {
+            return;
+        }
+        let Ok(mut tasks) = self.background_tasks.lock() else {
+            return;
+        };
+        tasks.retain(|_, task| !task.is_finished());
+        if tasks.contains_key(&attempt_id) || tasks.len() >= BACKGROUND_COMPLETION_TASK_LIMIT {
+            return;
+        }
+        let coordinator = self.clone();
+        let task_attempt_id = attempt_id.clone();
+        let task = tokio::spawn(async move {
+            let mut delay = Duration::from_millis(25);
+            for attempt in 0..3 {
+                match Box::pin(coordinator.handle_background_completion(&task_attempt_id)).await {
+                    Err(_) if attempt < 2 => {
+                        tokio::time::sleep(delay).await;
+                        delay = delay.saturating_mul(4);
+                    }
+                    Ok(_) | Err(_) => return,
+                }
+            }
+        });
+        tasks.insert(attempt_id, task);
     }
 
     /// Start one live run directly through `AgentRuntime`.
@@ -212,17 +330,22 @@ impl RpcRuntimeCoordinator {
     /// Returns storage or runtime construction failures.
     #[must_use]
     pub fn start(&self, request: RpcRunRequest) -> RpcBoxFuture<'_, RpcStartedRun> {
-        Box::pin(self.start_inner(request))
+        Box::pin(self.start_inner(request, None))
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn start_inner(&self, request: RpcRunRequest) -> RpcHostResult<RpcStartedRun> {
+    async fn start_inner(
+        &self,
+        request: RpcRunRequest,
+        preadmitted: Option<RunAdmissionReceipt>,
+    ) -> RpcHostResult<RpcStartedRun> {
         if !self.accepting.load(Ordering::Acquire) {
             return Err(RpcHostError::Runtime(
                 "RPC coordinator is shutting down and no longer accepts runs".to_string(),
             ));
         }
         self.reap_finished_tasks().await?;
+        self.reap_finished_background_tasks().await?;
         let session = if let Some(session_id) = request.session_id.as_ref() {
             self.storage
                 .session_store()
@@ -241,41 +364,54 @@ impl RpcRuntimeCoordinator {
                 .await?
         };
         let session_id = session.session_id.clone();
-        let run_id = RunId::new();
-        let mut run = RunRecord::new(
-            session_id.clone(),
-            run_id,
-            session
-                .state
-                .conversation_id
-                .clone()
-                .unwrap_or_else(ConversationId::new),
-        );
-        run.input.clone_from(&request.durable_input);
-        run.profile = Some(request.profile.clone());
-        run.restore_from_run_id
-            .clone_from(&request.restore_from_run_id);
-        run.trigger_type = Some("rpc".to_string());
-        run.status = RunStatus::Queued;
-        run.metadata
-            .insert(RPC_PROFILE_METADATA_KEY.to_string(), json!(request.profile));
-        let admission = self
-            .storage
-            .session_store()
-            .acquire_run_admission(AcquireRunAdmission {
-                run,
-                namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
-                host_instance_id: (*self.host_instance_id).clone(),
-                admission_id: format!("admission_{}", uuid::Uuid::new_v4()),
-                lease_expires_at: chrono::Utc::now()
-                    + chrono::Duration::from_std(ACTIVE_LEASE_TTL).unwrap_or_default(),
-                idempotency_key: request.idempotency_key.clone(),
-                command_fingerprint: request.command_fingerprint.clone(),
-            })
-            .await?;
+        let launch_preadmitted = preadmitted.is_some();
+        let admission = if let Some(admission) = preadmitted {
+            if admission.run.session_id != session_id
+                || admission.run.input != request.durable_input
+                || admission.run.profile.as_deref() != Some(request.profile.as_str())
+                || admission.run.restore_from_run_id != request.restore_from_run_id
+                || admission.lease.host_instance_id != *self.host_instance_id
+            {
+                return Err(RpcHostError::Invalid(
+                    "pre-admitted continuation does not match its runtime request".to_string(),
+                ));
+            }
+            admission
+        } else {
+            let mut run = RunRecord::new(
+                session_id.clone(),
+                RunId::new(),
+                session
+                    .state
+                    .conversation_id
+                    .clone()
+                    .unwrap_or_else(ConversationId::new),
+            );
+            run.input.clone_from(&request.durable_input);
+            run.profile = Some(request.profile.clone());
+            run.restore_from_run_id
+                .clone_from(&request.restore_from_run_id);
+            run.trigger_type = Some("rpc".to_string());
+            run.status = RunStatus::Queued;
+            run.metadata
+                .insert(RPC_PROFILE_METADATA_KEY.to_string(), json!(request.profile));
+            self.storage
+                .session_store()
+                .acquire_run_admission(AcquireRunAdmission {
+                    run,
+                    namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+                    host_instance_id: (*self.host_instance_id).clone(),
+                    admission_id: format!("admission_{}", uuid::Uuid::new_v4()),
+                    lease_expires_at: chrono::Utc::now()
+                        + chrono::Duration::from_std(ACTIVE_LEASE_TTL).unwrap_or_default(),
+                    idempotency_key: request.idempotency_key.clone(),
+                    command_fingerprint: request.command_fingerprint.clone(),
+                })
+                .await?
+        };
         let run_id = admission.run.run_id.clone();
         let target = admission.lease.target.clone();
-        if admission.idempotent_replay {
+        if admission.idempotent_replay && !launch_preadmitted {
             let status = self
                 .storage
                 .session_store()
@@ -291,6 +427,30 @@ impl RpcRuntimeCoordinator {
                 status,
                 idempotent_replay: true,
             });
+        }
+        let supervisor = self.supervisor_for_session(&session_id)?;
+        if admission.run.trigger_type.as_deref() != Some("async_subagent_result") {
+            let pending = self
+                .storage
+                .session_store()
+                .list_pending_background_subagents(
+                    LOCAL_SESSION_NAMESPACE,
+                    Some(&session_id),
+                    BACKGROUND_RECORD_SCAN_LIMIT,
+                )
+                .await?;
+            for mut record in pending {
+                if record.delivery_status == DurableBackgroundSubagentDeliveryStatus::Undelivered {
+                    let resolved_content = resolve_background_result_content(
+                        &self.storage.session_store(),
+                        &mut record,
+                    )
+                    .await?;
+                    supervisor
+                        .hydrate_durable_result(&record, resolved_content)
+                        .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+                }
+            }
         }
 
         let prepared: RpcHostResult<_> = async {
@@ -318,6 +478,16 @@ impl RpcRuntimeCoordinator {
                 None => session.state.clone(),
             };
             state.session_id = Some(session_id.clone());
+            state.run_id = Some(run_id.clone());
+            state.parent_run_id.clone_from(&admission.run.parent_run_id);
+            state
+                .parent_task_id
+                .clone_from(&admission.run.parent_task_id);
+            if !admission.run.trace_context.is_empty() {
+                state
+                    .trace_snapshot
+                    .clone_from(&admission.run.trace_context);
+            }
             state.metadata.insert(
                 DURABLE_RUN_ID_METADATA_KEY.to_string(),
                 json!(run_id.as_str()),
@@ -389,6 +559,8 @@ impl RpcRuntimeCoordinator {
             let mut runtime = self
                 .catalog
                 .runtime_builder(&request.profile)?
+                .subagent_delegation_mode(SubagentDelegationMode::Async)
+                .background_subagent_supervisor(supervisor.clone())
                 .context(context)
                 .environment(resolved_environment.provider.clone())
                 .durable_session_id(session_id.clone())
@@ -427,6 +599,7 @@ impl RpcRuntimeCoordinator {
             }
         };
         let control = handle.control_handle();
+        supervisor.begin_parent_run(run_id.clone());
         if let Err(error) = self
             .environment_manager
             .mark_run_started(run_id.as_str(), &resolved_environment.attachments)
@@ -448,6 +621,7 @@ impl RpcRuntimeCoordinator {
                 .session_store()
                 .release_run_admission(&admission.lease)
                 .await;
+            supervisor.end_parent_run(&run_id);
             return Err(RpcHostError::Invalid(error.message));
         }
         let initial_status = RpcRunStatus {
@@ -497,6 +671,7 @@ impl RpcRuntimeCoordinator {
                 .session_store()
                 .release_run_admission(&admission.lease)
                 .await;
+            supervisor.end_parent_run(&run_id);
             return Err(error.into());
         }
 
@@ -511,6 +686,8 @@ impl RpcRuntimeCoordinator {
         let admission_id = admission.lease.admission_id.clone();
         let fencing_generation = admission.lease.fencing_generation;
         let mut worker_lease = admission.lease;
+        let worker_supervisor = supervisor.clone();
+        let completion_coordinator = self.clone();
         let task = tokio::spawn(async move {
             let projection_context =
                 DisplayProjectionContext::new(worker_session_id.clone(), worker_run_id.clone());
@@ -636,6 +813,18 @@ impl RpcRuntimeCoordinator {
                     "failed to persist terminal durable run status".to_string()
                 });
             }
+            if let Err(delivery_error) = finalize_parent_deliveries_with_retry(
+                &worker_supervisor,
+                &worker_run_id,
+                terminal_durable && durable_status == RunStatus::Completed,
+            )
+            .await
+            {
+                final_status.error.get_or_insert_with(|| {
+                    format!("failed to finalize background result delivery: {delivery_error}")
+                });
+            }
+            worker_supervisor.end_parent_run(&worker_run_id);
             if let Ok(registry) = active.lock()
                 && let Some(active_run) = registry.get(&worker_target)
             {
@@ -662,6 +851,9 @@ impl RpcRuntimeCoordinator {
                     cache.pop_front();
                 }
             }
+            let _ = completion_coordinator
+                .schedule_session_background_results(&worker_session_id)
+                .await;
         });
         self.tasks
             .lock()
@@ -693,6 +885,27 @@ impl RpcRuntimeCoordinator {
         for task in self.take_finished_tasks()? {
             task.await
                 .map_err(|error| RpcHostError::Runtime(format!("RPC run task failed: {error}")))?;
+        }
+        Ok(())
+    }
+
+    async fn reap_finished_background_tasks(&self) -> RpcHostResult<()> {
+        let finished = {
+            let mut tasks = self
+                .background_tasks
+                .lock()
+                .map_err(active_registry_error)?;
+            let all = std::mem::take(&mut *tasks);
+            let (finished, running): (HashMap<_, _>, HashMap<_, _>) =
+                all.into_iter().partition(|(_, task)| task.is_finished());
+            *tasks = running;
+            drop(tasks);
+            finished.into_values().collect::<Vec<_>>()
+        };
+        for task in finished {
+            task.await.map_err(|error| {
+                RpcHostError::Runtime(format!("RPC background continuation task failed: {error}"))
+            })?;
         }
         Ok(())
     }
@@ -1056,17 +1269,231 @@ impl RpcRuntimeCoordinator {
         Ok(events)
     }
 
+    #[allow(clippy::too_many_lines)]
+    async fn handle_background_completion(
+        &self,
+        attempt_id: &SubagentAttemptId,
+    ) -> RpcHostResult<Option<RpcStartedRun>> {
+        if !self.accepting.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        let store = self.storage.session_store();
+        let mut background = store.load_background_subagent(attempt_id).await?;
+        if !background.execution_status.is_terminal()
+            || background.delivery_status == DurableBackgroundSubagentDeliveryStatus::Delivered
+            || background
+                .automatic_continuation_suppressed_by_run_id
+                .is_some()
+        {
+            return Ok(None);
+        }
+        if background.delivery_status == DurableBackgroundSubagentDeliveryStatus::Claimed {
+            store
+                .reconcile_background_subagents(&background.namespace_id, chrono::Utc::now())
+                .await?;
+            background = store.load_background_subagent(attempt_id).await?;
+            if background.delivery_status != DurableBackgroundSubagentDeliveryStatus::Undelivered
+                || background
+                    .automatic_continuation_suppressed_by_run_id
+                    .is_some()
+            {
+                return Ok(None);
+            }
+        }
+        let session = store.load_session(&background.parent_session_id).await?;
+        let fence = store
+            .session_continuation_fence(&background.namespace_id, &background.parent_session_id)
+            .await?;
+        if !fence.continuation_allowed || session.status != SessionStatus::Active {
+            return Ok(None);
+        }
+        let parent = store
+            .load_run(&background.parent_session_id, &background.parent_run_id)
+            .await?;
+        if parent.status == RunStatus::Cancelled {
+            return Ok(None);
+        }
+        self.catalog.profile(&background.profile)?;
+        let artifact_content = resolve_background_artifact_content(&store, &mut background).await?;
+        let continuation_text = background.continuation_text(artifact_content.as_deref());
+        let durable_input = background.continuation_input(artifact_content.as_deref());
+        let continuation_run_id =
+            RunId::from_string(format!("run_async_subagent_{}", attempt_id.as_str()));
+        let mut run = RunRecord::new(
+            background.parent_session_id.clone(),
+            continuation_run_id.clone(),
+            session
+                .state
+                .conversation_id
+                .clone()
+                .unwrap_or_else(ConversationId::new),
+        );
+        run.input.clone_from(&durable_input);
+        run.profile = Some(background.profile.clone());
+        run.restore_from_run_id = Some(background.parent_run_id.clone());
+        run.parent_run_id = Some(background.parent_run_id.clone());
+        run.trace_context = background.trace_context.clone().unwrap_or_default();
+        run.trigger_type = Some("async_subagent_result".to_string());
+        run.status = RunStatus::Queued;
+        run.metadata.insert(
+            RPC_PROFILE_METADATA_KEY.to_string(),
+            json!(background.profile),
+        );
+        run.metadata.insert(
+            "starweaver.async_subagent.attempt_id".to_string(),
+            json!(background.attempt_id.as_str()),
+        );
+        run.metadata.insert(
+            "starweaver.async_subagent.agent_id".to_string(),
+            json!(background.agent_id),
+        );
+        run.metadata.insert(
+            "starweaver.async_subagent.parent_run_id".to_string(),
+            json!(background.parent_run_id.as_str()),
+        );
+        if let Some(child_run_id) = background.child_run_id.as_ref() {
+            run.metadata.insert(
+                "starweaver.async_subagent.child_run_id".to_string(),
+                json!(child_run_id.as_str()),
+            );
+        }
+        let idempotency_key = format!("async-subagent:{}", attempt_id.as_str());
+        let command_fingerprint = command_fingerprint(
+            "async_subagent_result",
+            &(
+                background.parent_session_id.as_str(),
+                background.parent_run_id.as_str(),
+                background.attempt_id.as_str(),
+                background.agent_id.as_str(),
+                background.child_run_id.as_ref().map(RunId::as_str),
+                continuation_text.as_str(),
+                background.profile.as_str(),
+            ),
+        )
+        .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+        let claim_id = format!("rpc-continuation:{}", attempt_id.as_str());
+        let cause = BackgroundSubagentContinuationCause::new(&background, &durable_input)
+            .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+        let receipt = store
+            .acquire_background_subagent_continuation(AcquireBackgroundSubagentContinuation {
+                attempt_id: attempt_id.clone(),
+                claim_id: claim_id.clone(),
+                claim_deadline: chrono::Utc::now()
+                    + chrono::Duration::from_std(BACKGROUND_CONTINUATION_LEASE_TTL)
+                        .unwrap_or_default(),
+                cause: cause.clone(),
+                admission: AcquireRunAdmission {
+                    run,
+                    namespace_id: background.namespace_id.clone(),
+                    host_instance_id: (*self.host_instance_id).clone(),
+                    admission_id: format!("admission_{}", uuid::Uuid::new_v4()),
+                    lease_expires_at: chrono::Utc::now()
+                        + chrono::Duration::from_std(ACTIVE_LEASE_TTL).unwrap_or_default(),
+                    idempotency_key: idempotency_key.clone(),
+                    command_fingerprint: command_fingerprint.clone(),
+                },
+            })
+            .await?;
+        if receipt.cause != cause {
+            return Err(RpcHostError::Runtime(
+                "continuation admission receipt did not attest the submitted cause".to_string(),
+            ));
+        }
+        let admitted_continuation_run_id = receipt.admission.run.run_id.clone();
+        let restore_from_run_id = receipt.admission.run.restore_from_run_id.clone();
+        let started = Box::pin(self.start_inner(
+            RpcRunRequest {
+                durable_input,
+                input: AgentInput::text(continuation_text),
+                session_id: Some(background.parent_session_id),
+                restore_from_run_id,
+                profile: background.profile,
+                environment_attachments: Vec::new(),
+                idempotency_key,
+                command_fingerprint,
+                install_session_management: true,
+            },
+            Some(receipt.admission),
+        ))
+        .await?;
+        store
+            .acknowledge_background_subagent_delivery(attempt_id, &claim_id)
+            .await?;
+        if let Ok(supervisors) = self.supervisors.lock()
+            && let Some(supervisor) = supervisors.get(&started.session_id)
+        {
+            let _ = supervisor.mark_delivery_from_host(
+                attempt_id,
+                &claim_id,
+                &admitted_continuation_run_id,
+            );
+        }
+        Ok(Some(started))
+    }
+
+    async fn schedule_session_background_results(
+        &self,
+        session_id: &SessionId,
+    ) -> RpcHostResult<()> {
+        if !self.accepting.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let records = self
+            .storage
+            .session_store()
+            .list_pending_background_subagents(
+                LOCAL_SESSION_NAMESPACE,
+                Some(session_id),
+                BACKGROUND_RECORD_SCAN_LIMIT,
+            )
+            .await?;
+        for record in records {
+            if record.execution_status.is_terminal()
+                && record.delivery_status != DurableBackgroundSubagentDeliveryStatus::Delivered
+                && record.automatic_continuation_suppressed_by_run_id.is_none()
+            {
+                self.spawn_background_completion_task(record.attempt_id);
+            }
+        }
+        Ok(())
+    }
+
     /// Reconcile expired owners during host startup. Durable running alone is not controllable.
     ///
     /// # Errors
     ///
     /// Returns an error when durable admission reconciliation fails.
     pub async fn reconcile_startup(&self) -> RpcHostResult<Vec<ManagedRunTarget>> {
-        self.storage
-            .session_store()
+        let store = self.storage.session_store();
+        let reconciled_runs = store
             .reconcile_expired_run_admissions(LOCAL_SESSION_NAMESPACE, chrono::Utc::now())
-            .await
-            .map_err(Into::into)
+            .await?;
+        store
+            .expire_background_subagent_retention(
+                LOCAL_SESSION_NAMESPACE,
+                chrono::Utc::now(),
+                BACKGROUND_RETENTION_CLEANUP_LIMIT,
+            )
+            .await?;
+        store
+            .reconcile_background_subagents(LOCAL_SESSION_NAMESPACE, chrono::Utc::now())
+            .await?;
+        let backgrounds = store
+            .list_pending_background_subagents(
+                LOCAL_SESSION_NAMESPACE,
+                None,
+                BACKGROUND_RECORD_SCAN_LIMIT,
+            )
+            .await?;
+        for background in backgrounds {
+            if background.execution_status.is_terminal()
+                && background.delivery_status != DurableBackgroundSubagentDeliveryStatus::Delivered
+            {
+                self.spawn_background_completion_task(background.attempt_id);
+            }
+        }
+        self.ensure_background_reconciler()?;
+        Ok(reconciled_runs)
     }
 
     /// Stop admission, cooperatively interrupt live runs, and join owned finalizers.
@@ -1076,6 +1503,30 @@ impl RpcRuntimeCoordinator {
     /// Returns an error when the registry is unavailable or finalizers exceed the timeout.
     pub async fn shutdown(&self, timeout: Duration) -> RpcHostResult<()> {
         self.accepting.store(false, Ordering::Release);
+        let deadline = tokio::time::Instant::now() + timeout;
+        let supervisors = self
+            .supervisors
+            .lock()
+            .map_err(active_registry_error)?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut supervisor_error = None;
+        for supervisor in supervisors {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if let Err(error) = supervisor.shutdown_checked(Some(remaining)).await {
+                supervisor_error.get_or_insert_with(|| error.to_string());
+            }
+        }
+        let reconciler = self
+            .background_reconciler
+            .lock()
+            .map_err(active_registry_error)?
+            .take();
+        if let Some(reconciler) = reconciler {
+            reconciler.abort();
+            let _ = reconciler.await;
+        }
         let controls = self
             .active
             .lock()
@@ -1086,22 +1537,227 @@ impl RpcRuntimeCoordinator {
         for control in controls {
             let _ = control.interrupt(Some("RPC host shutdown".to_string()));
         }
-        let tasks = self
+        let mut tasks = self
             .tasks
             .lock()
             .map_err(active_registry_error)?
             .drain()
             .map(|(_, task)| task)
+            .chain(
+                self.background_tasks
+                    .lock()
+                    .map_err(active_registry_error)?
+                    .drain()
+                    .map(|(_, task)| task),
+            )
             .collect::<Vec<_>>();
-        let join_all = async {
-            for task in tasks {
-                let _ = task.await;
+        let mut timed_out = false;
+        for task in &mut tasks {
+            if tokio::time::timeout_at(deadline, &mut *task).await.is_err() {
+                timed_out = true;
+                task.abort();
             }
-        };
-        tokio::time::timeout(timeout, join_all)
-            .await
-            .map_err(|_| RpcHostError::Runtime("RPC run shutdown timed out".to_string()))?;
+        }
+        for task in tasks {
+            if !task.is_finished() {
+                task.abort();
+            }
+            let _ = task.await;
+        }
+        self.storage
+            .session_store()
+            .reconcile_background_subagents(LOCAL_SESSION_NAMESPACE, chrono::Utc::now())
+            .await?;
+        if timed_out {
+            return Err(RpcHostError::Runtime(
+                "RPC shutdown exceeded its drain deadline after aborting owned tasks".to_string(),
+            ));
+        }
+        if let Some(error) = supervisor_error {
+            return Err(RpcHostError::Runtime(format!(
+                "RPC shutdown could not durably terminalize every background subagent: {error}"
+            )));
+        }
         Ok(())
+    }
+
+    /// Inspect one durable background attempt through the trusted RPC host application boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the durable attempt does not exist or storage fails.
+    pub async fn background_attempt(
+        &self,
+        attempt_id: &SubagentAttemptId,
+    ) -> RpcHostResult<BackgroundSubagentRecord> {
+        self.storage
+            .session_store()
+            .load_background_subagent(attempt_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Request cancellation by durable attempt identity without requiring a parent model turn.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the attempt is unknown, has no live owner, or cancellation fails.
+    pub async fn cancel_background_attempt(
+        &self,
+        attempt_id: &SubagentAttemptId,
+        reason: Option<String>,
+    ) -> RpcHostResult<starweaver_agent::BackgroundSubagentCancellationReceipt> {
+        let supervisors = self
+            .supervisors
+            .lock()
+            .map_err(active_registry_error)?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for supervisor in supervisors {
+            if supervisor
+                .active_tasks()
+                .iter()
+                .any(|info| &info.attempt_id == attempt_id)
+            {
+                return supervisor
+                    .request_cancellation_with_reason(
+                        attempt_id,
+                        format!("rpc-admin-cancel:{}", uuid::Uuid::new_v4()),
+                        reason,
+                    )
+                    .map_err(|error| RpcHostError::Runtime(error.to_string()));
+            }
+        }
+        let record = self.background_attempt(attempt_id).await?;
+        if record.execution_status.is_terminal() {
+            return Ok(starweaver_agent::BackgroundSubagentCancellationReceipt {
+                attempt_id: record.attempt_id,
+                agent_id: record.agent_id,
+                cancellation_id: format!("rpc-admin-terminal:{}", uuid::Uuid::new_v4()),
+                status: record.execution_status.as_str().to_string(),
+            });
+        }
+        Err(RpcHostError::NotFound(
+            "durable background attempt has no live owner in this host process".to_string(),
+        ))
+    }
+
+    pub(crate) async fn cancel_session_subagents(
+        &self,
+        session_id: &SessionId,
+        timeout: Duration,
+    ) -> RpcHostResult<()> {
+        let supervisor = self
+            .supervisors
+            .lock()
+            .map_err(active_registry_error)?
+            .get(session_id)
+            .cloned();
+        if let Some(supervisor) = supervisor {
+            let attempts = supervisor
+                .active_tasks()
+                .into_iter()
+                .map(|info| info.attempt_id)
+                .collect::<Vec<_>>();
+            for attempt_id in &attempts {
+                let _ = supervisor.request_cancellation_with_reason(
+                    attempt_id,
+                    format!("session-delete:{}", uuid::Uuid::new_v4()),
+                    Some("owning session deletion".to_string()),
+                );
+            }
+            supervisor.wait_for_attempts(&attempts, timeout).await;
+        }
+        let remaining = self
+            .storage
+            .session_store()
+            .list_background_subagents(
+                LOCAL_SESSION_NAMESPACE,
+                Some(session_id),
+                BACKGROUND_RECORD_SCAN_LIMIT,
+            )
+            .await?
+            .into_iter()
+            .any(|record| !record.execution_status.is_terminal());
+        if remaining {
+            return Err(RpcHostError::Runtime(
+                "session still owns active background subagents".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn tombstone_session_fenced(
+        &self,
+        session_id: &SessionId,
+        timeout: Duration,
+    ) -> RpcHostResult<starweaver_session::SessionRecord> {
+        let store = self.storage.session_store();
+        let session = store.load_session(session_id).await?;
+        if session.status == SessionStatus::Deleted {
+            return Ok(session);
+        }
+        let fence_id = match &session.deletion_fence {
+            SessionDeletionFence::Stable => {
+                let fence_id = format!("rpc-admin-delete:{}", uuid::Uuid::new_v4());
+                let idempotency_key = fence_id.clone();
+                let fingerprint = command_fingerprint(
+                    "rpc_admin_delete_session",
+                    &(session_id.as_str(), session.revision, fence_id.as_str()),
+                )
+                .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+                store
+                    .acquire_session_deletion_fence(
+                        session_id,
+                        session.revision,
+                        &fence_id,
+                        "rpc-admin",
+                        &idempotency_key,
+                        &fingerprint,
+                    )
+                    .await?;
+                fence_id
+            }
+            SessionDeletionFence::Deleting { fence_id, .. }
+            | SessionDeletionFence::Deleted { fence_id, .. } => fence_id.clone(),
+        };
+        self.cancel_session_subagents(session_id, timeout).await?;
+        for run in store.list_runs(session_id).await? {
+            if run.status.is_active() {
+                let target = Self::target(session_id, &run.run_id);
+                if self.is_controllable(&target) {
+                    self.cancel(
+                        session_id,
+                        &run.run_id,
+                        Some("session deletion fence".to_string()),
+                    )
+                    .await?;
+                    self.await_terminal(session_id, &run.run_id, Some(timeout))
+                        .await?;
+                }
+            }
+        }
+        let supervisor = self
+            .supervisors
+            .lock()
+            .map_err(active_registry_error)?
+            .get(session_id)
+            .cloned();
+        if let Some(supervisor) = supervisor.as_ref() {
+            supervisor
+                .shutdown_checked(Some(timeout))
+                .await
+                .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+        }
+        let tombstoned = store.tombstone_session(session_id, &fence_id).await?;
+        if supervisor.is_some() {
+            self.supervisors
+                .lock()
+                .map_err(active_registry_error)?
+                .remove(session_id);
+        }
+        Ok(tombstoned)
     }
 
     pub(crate) fn is_controllable(&self, target: &ManagedRunTarget) -> bool {
@@ -1745,6 +2401,82 @@ async fn publish_record(
     }
 }
 
+async fn finalize_parent_deliveries_with_retry(
+    supervisor: &BackgroundSubagentSupervisor,
+    run_id: &RunId,
+    committed: bool,
+) -> Result<(), starweaver_agent::BackgroundSubagentError> {
+    let mut delay = Duration::from_millis(10);
+    for attempt in 0..3 {
+        match supervisor
+            .finalize_parent_deliveries(run_id, committed)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(error) if attempt == 2 => return Err(error),
+            Err(_) => {
+                tokio::time::sleep(delay).await;
+                delay = delay.saturating_mul(4);
+            }
+        }
+    }
+    unreachable!("bounded delivery retry loop always returns")
+}
+
+async fn resolve_background_artifact_content<S: SessionStore + ?Sized>(
+    store: &S,
+    record: &mut BackgroundSubagentRecord,
+) -> RpcHostResult<Option<String>> {
+    if record.retention_status != DurableBackgroundSubagentRetentionStatus::Artifact {
+        return Ok(None);
+    }
+    let artifact_ref = record
+        .result_ref
+        .as_ref()
+        .and_then(|result| result.artifact_ref.as_deref())
+        .ok_or_else(|| {
+            RpcHostError::Runtime(
+                "artifact-retained background result is missing its reference".to_string(),
+            )
+        })?
+        .to_string();
+    match store.load_background_subagent_artifact(&artifact_ref).await {
+        Ok(artifact) => Ok(Some(artifact.content)),
+        Err(SessionStoreError::NotFound(_)) => {
+            store
+                .expire_background_subagent_retention(
+                    &record.namespace_id,
+                    chrono::Utc::now(),
+                    BACKGROUND_RETENTION_CLEANUP_LIMIT,
+                )
+                .await?;
+            *record = store.load_background_subagent(&record.attempt_id).await?;
+            if record.retention_status == DurableBackgroundSubagentRetentionStatus::Expired {
+                Ok(None)
+            } else {
+                Err(RpcHostError::Runtime(
+                    "background result artifact is unavailable before its retention state expired"
+                        .to_string(),
+                ))
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn resolve_background_result_content<S: SessionStore + ?Sized>(
+    store: &S,
+    record: &mut BackgroundSubagentRecord,
+) -> RpcHostResult<Option<String>> {
+    if let Some(content) = resolve_background_artifact_content(store, record).await? {
+        return Ok(Some(content));
+    }
+    Ok(
+        (record.retention_status == DurableBackgroundSubagentRetentionStatus::Expired)
+            .then(|| record.continuation_outcome(None)),
+    )
+}
+
 fn status_from_record(run: &RunRecord) -> RpcRunStatus {
     RpcRunStatus {
         session_id: run.session_id.as_str().to_string(),
@@ -1784,6 +2516,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use starweaver_session::DurableBackgroundSubagentDeliveryRelease;
 
     #[tokio::test]
     async fn starts_and_awaits_a_run_without_cli_types() {
@@ -1877,6 +2610,480 @@ mod tests {
             .await
             .unwrap_err();
         assert!(conflict.to_string().contains("idempotency"));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::expect_used, clippy::too_many_lines)]
+    async fn durable_background_result_starts_exactly_one_causal_continuation() {
+        use starweaver_session::{
+            BACKGROUND_SUBAGENT_RECORD_VERSION, DurableBackgroundSubagentExecutionStatus,
+            DurableBackgroundSubagentResultRef, DurableBackgroundSubagentRetentionStatus,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
+        let coordinator = RpcRuntimeCoordinator::new(
+            config,
+            catalog,
+            storage.clone(),
+            EnvironmentAttachmentManager::new(),
+        );
+        let parent = coordinator
+            .start(RpcRunRequest {
+                durable_input: vec![InputPart::text("parent input")],
+                input: AgentInput::text("parent input"),
+                session_id: None,
+                restore_from_run_id: None,
+                profile: "default".to_string(),
+                environment_attachments: Vec::new(),
+                idempotency_key: "background-parent".to_string(),
+                command_fingerprint: "background-parent-v1".to_string(),
+                install_session_management: false,
+            })
+            .await
+            .unwrap();
+        coordinator
+            .await_terminal(
+                &parent.session_id,
+                &parent.run_id,
+                Some(Duration::from_secs(5)),
+            )
+            .await
+            .unwrap();
+
+        let store = storage.session_store();
+        let parent_before = store
+            .load_run(&parent.session_id, &parent.run_id)
+            .await
+            .unwrap();
+        let intervening = coordinator
+            .start(RpcRunRequest {
+                durable_input: vec![InputPart::text("intervening input")],
+                input: AgentInput::text("intervening input"),
+                session_id: Some(parent.session_id.clone()),
+                restore_from_run_id: Some(parent.run_id.clone()),
+                profile: "default".to_string(),
+                environment_attachments: Vec::new(),
+                idempotency_key: "background-intervening".to_string(),
+                command_fingerprint: "background-intervening-v1".to_string(),
+                install_session_management: false,
+            })
+            .await
+            .unwrap();
+        coordinator
+            .await_terminal(
+                &intervening.session_id,
+                &intervening.run_id,
+                Some(Duration::from_secs(5)),
+            )
+            .await
+            .unwrap();
+        let now = chrono::Utc::now();
+        let attempt_id = SubagentAttemptId::from_string("rpc-background-attempt");
+        let child_run_id = RunId::from_string("rpc-background-child");
+        let mut background = BackgroundSubagentRecord {
+            schema_version: BACKGROUND_SUBAGENT_RECORD_VERSION,
+            attempt_id: attempt_id.clone(),
+            agent_id: "rpc-background-agent".to_string(),
+            linked_task_id: None,
+            subagent_name: "researcher".to_string(),
+            namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+            parent_session_id: parent.session_id.clone(),
+            parent_run_id: parent.run_id.clone(),
+            child_run_id: None,
+            continuation_run_id: None,
+            profile: "default".to_string(),
+            owner_lease: starweaver_session::DurableBackgroundSubagentOwnerLease {
+                host_instance_id: (*coordinator.host_instance_id).clone(),
+                fencing_generation: 1,
+                heartbeat_at: now,
+                lease_expires_at: now + chrono::Duration::minutes(1),
+            },
+            execution_status: DurableBackgroundSubagentExecutionStatus::Accepted,
+            result_ref: None,
+            failure_category: None,
+            cancellation_reason: None,
+            delivery_status: DurableBackgroundSubagentDeliveryStatus::Undelivered,
+            delivery_claim: None,
+            delivered_claim_id: None,
+            automatic_continuation_suppressed_by_run_id: None,
+            retention_status: DurableBackgroundSubagentRetentionStatus::Inline,
+            retention_expires_at: None,
+            trace_context: None,
+            accepted_at: now,
+            updated_at: now,
+            terminal_at: None,
+        };
+        store
+            .record_background_subagent_acceptance(background.clone())
+            .await
+            .unwrap();
+        background.execution_status = DurableBackgroundSubagentExecutionStatus::Starting;
+        background.updated_at = now + chrono::Duration::milliseconds(1);
+        store
+            .update_background_subagent_execution(background.clone())
+            .await
+            .unwrap();
+        background.execution_status = DurableBackgroundSubagentExecutionStatus::Running;
+        background.child_run_id = Some(child_run_id.clone());
+        background.updated_at = now + chrono::Duration::milliseconds(2);
+        store
+            .update_background_subagent_execution(background.clone())
+            .await
+            .unwrap();
+        let full_artifact_content = "durable child full artifact result".to_string();
+        let artifact_ref = format!(
+            "starweaver:background-subagent-result:{}",
+            attempt_id.as_str()
+        );
+        let artifact_digest =
+            starweaver_session::BackgroundSubagentArtifact::content_digest(&full_artifact_content);
+        background.execution_status = DurableBackgroundSubagentExecutionStatus::Completed;
+        background.result_ref = Some(DurableBackgroundSubagentResultRef {
+            content: Some("durable child preview".to_string()),
+            artifact_ref: Some(artifact_ref.clone()),
+            digest: Some(artifact_digest.clone()),
+            size_bytes: u64::try_from(full_artifact_content.len()).unwrap(),
+            ..DurableBackgroundSubagentResultRef::default()
+        });
+        background.retention_status = DurableBackgroundSubagentRetentionStatus::Artifact;
+        background.updated_at = now + chrono::Duration::milliseconds(3);
+        background.terminal_at = Some(background.updated_at);
+        background.retention_expires_at = Some(background.updated_at + chrono::Duration::hours(1));
+        store
+            .commit_background_subagent_terminal(
+                starweaver_session::BackgroundSubagentTerminalCommit {
+                    record: background,
+                    artifact: Some(starweaver_session::BackgroundSubagentArtifact {
+                        artifact_ref,
+                        namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+                        attempt_id: attempt_id.clone(),
+                        content: full_artifact_content.clone(),
+                        digest: artifact_digest.clone(),
+                        size_bytes: u64::try_from(full_artifact_content.len()).unwrap(),
+                        created_at: now + chrono::Duration::milliseconds(3),
+                        expires_at: now
+                            + chrono::Duration::milliseconds(3)
+                            + chrono::Duration::hours(1),
+                    }),
+                    artifact_limits: Some(starweaver_session::BackgroundSubagentArtifactLimits {
+                        max_single_bytes: 1_000_000,
+                        max_retained_bytes: 10_000_000,
+                    }),
+                },
+            )
+            .await
+            .unwrap();
+
+        let continuation = Box::pin(coordinator.handle_background_completion(&attempt_id))
+            .await
+            .unwrap()
+            .expect("terminal result should admit a continuation");
+        coordinator
+            .await_terminal(
+                &continuation.session_id,
+                &continuation.run_id,
+                Some(Duration::from_secs(5)),
+            )
+            .await
+            .unwrap();
+
+        let delivered = store.load_background_subagent(&attempt_id).await.unwrap();
+        assert_eq!(
+            delivered.delivery_status,
+            DurableBackgroundSubagentDeliveryStatus::Delivered
+        );
+        assert_eq!(
+            delivered.continuation_run_id.as_ref(),
+            Some(&continuation.run_id)
+        );
+        let mut expired_projection = delivered.clone();
+        expired_projection.retention_status = DurableBackgroundSubagentRetentionStatus::Expired;
+        expired_projection.retention_expires_at = None;
+        if let Some(result_ref) = expired_projection.result_ref.as_mut() {
+            result_ref.content = None;
+            result_ref.artifact_ref = None;
+        }
+        let expired_text = expired_projection.continuation_text(None);
+        assert!(expired_text.contains("Retained background result content expired"));
+        assert!(expired_text.contains(&artifact_digest));
+        let continuation_record = store
+            .load_run(&continuation.session_id, &continuation.run_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            continuation_record.trigger_type.as_deref(),
+            Some("async_subagent_result")
+        );
+        assert_eq!(
+            continuation_record.parent_run_id.as_ref(),
+            Some(&parent.run_id)
+        );
+        assert_eq!(
+            continuation_record.restore_from_run_id.as_ref(),
+            Some(&intervening.run_id)
+        );
+        assert_eq!(
+            continuation_record
+                .metadata
+                .get("starweaver.async_subagent.attempt_id"),
+            Some(&json!(attempt_id.as_str()))
+        );
+        assert_eq!(
+            continuation_record
+                .metadata
+                .get("starweaver.async_subagent.child_run_id"),
+            Some(&json!(child_run_id.as_str()))
+        );
+        assert_eq!(continuation_record.input.len(), 1);
+        let InputPart::Text { text, .. } = &continuation_record.input[0] else {
+            panic!("background continuation input must be text");
+        };
+        assert!(text.contains(&full_artifact_content), "{text}");
+        assert!(!text.contains("durable child preview"), "{text}");
+
+        assert!(
+            Box::pin(coordinator.handle_background_completion(&attempt_id))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let parent_after = store
+            .load_run(&parent.session_id, &parent.run_id)
+            .await
+            .unwrap();
+        assert_eq!(parent_after, parent_before);
+        let continuations = store
+            .list_runs(&parent.session_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|run| run.trigger_type.as_deref() == Some("async_subagent_result"))
+            .collect::<Vec<_>>();
+        assert_eq!(continuations.len(), 1);
+        assert_eq!(continuations[0].run_id, continuation.run_id);
+
+        let cancelled_parent_id = RunId::from_string("cancelled-background-parent");
+        let mut cancelled_parent = RunRecord::new(
+            parent.session_id.clone(),
+            cancelled_parent_id.clone(),
+            ConversationId::new(),
+        );
+        cancelled_parent.status = RunStatus::Cancelled;
+        cancelled_parent.profile = Some("default".to_string());
+        cancelled_parent.input = vec![InputPart::text("cancelled parent")];
+        store.append_run(cancelled_parent).await.unwrap();
+        let pending_attempt = SubagentAttemptId::from_string("pending-after-parent-cancel");
+        let pending_now = chrono::Utc::now();
+        let mut pending = delivered.clone();
+        pending.attempt_id = pending_attempt.clone();
+        pending.agent_id = "pending-agent-after-cancel".to_string();
+        pending.parent_run_id = parent.run_id.clone();
+        pending.child_run_id = None;
+        pending.execution_status = DurableBackgroundSubagentExecutionStatus::Accepted;
+        pending.result_ref = None;
+        pending.delivery_status = DurableBackgroundSubagentDeliveryStatus::Undelivered;
+        pending.delivery_claim = None;
+        pending.delivered_claim_id = None;
+        pending.automatic_continuation_suppressed_by_run_id = None;
+        pending.continuation_run_id = None;
+        pending.retention_status = DurableBackgroundSubagentRetentionStatus::Inline;
+        pending.retention_expires_at = None;
+        pending.owner_lease.host_instance_id = (*coordinator.host_instance_id).clone();
+        pending.owner_lease.heartbeat_at = pending_now;
+        pending.owner_lease.lease_expires_at = pending_now + chrono::Duration::minutes(1);
+        pending.accepted_at = pending_now;
+        pending.updated_at = pending_now;
+        pending.terminal_at = None;
+        store
+            .record_background_subagent_acceptance(pending.clone())
+            .await
+            .unwrap();
+        pending.execution_status = DurableBackgroundSubagentExecutionStatus::Starting;
+        pending.updated_at = pending_now + chrono::Duration::milliseconds(1);
+        store
+            .update_background_subagent_execution(pending.clone())
+            .await
+            .unwrap();
+        pending.execution_status = DurableBackgroundSubagentExecutionStatus::Running;
+        pending.child_run_id = Some(RunId::from_string("pending-child-after-cancel"));
+        pending.updated_at = pending_now + chrono::Duration::milliseconds(2);
+        store
+            .update_background_subagent_execution(pending.clone())
+            .await
+            .unwrap();
+        pending.execution_status = DurableBackgroundSubagentExecutionStatus::Completed;
+        pending.result_ref = Some(DurableBackgroundSubagentResultRef {
+            content: Some("pending result after cancelled parent".to_string()),
+            size_bytes: 37,
+            ..DurableBackgroundSubagentResultRef::default()
+        });
+        pending.updated_at = pending_now + chrono::Duration::milliseconds(3);
+        pending.terminal_at = Some(pending.updated_at);
+        pending.retention_expires_at = Some(pending.updated_at + chrono::Duration::hours(1));
+        store
+            .record_background_subagent_terminal(pending)
+            .await
+            .unwrap();
+
+        let live_consumer_run_id = RunId::from_string("live-background-consumer");
+        let live_consumer = RunRecord::new(
+            parent.session_id.clone(),
+            live_consumer_run_id.clone(),
+            ConversationId::new(),
+        );
+        let live_consumer_admission = store
+            .acquire_run_admission(AcquireRunAdmission {
+                run: live_consumer,
+                namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+                host_instance_id: (*coordinator.host_instance_id).clone(),
+                admission_id: "live-background-consumer-admission".to_string(),
+                lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+                idempotency_key: "live-background-consumer".to_string(),
+                command_fingerprint: "live-background-consumer-v1".to_string(),
+            })
+            .await
+            .unwrap();
+        let live_claim_id = "live-background-consumer-claim";
+        store
+            .claim_background_subagent_delivery(
+                &pending_attempt,
+                starweaver_session::DurableBackgroundSubagentDeliveryClaim {
+                    claim_id: live_claim_id.to_string(),
+                    continuation_run_id: Some(live_consumer_run_id.clone()),
+                    deadline: chrono::Utc::now() + chrono::Duration::milliseconds(10),
+                },
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            Box::pin(coordinator.handle_background_completion(&pending_attempt))
+                .await
+                .unwrap()
+                .is_none(),
+            "the completion handler must not steal an expired claim from a live admitted consumer"
+        );
+        let live_claimed = store
+            .load_background_subagent(&pending_attempt)
+            .await
+            .unwrap();
+        assert_eq!(
+            live_claimed.delivery_status,
+            DurableBackgroundSubagentDeliveryStatus::Claimed
+        );
+        assert_eq!(
+            live_claimed
+                .delivery_claim
+                .as_ref()
+                .map(|claim| claim.claim_id.as_str()),
+            Some(live_claim_id)
+        );
+        store
+            .release_background_subagent_delivery(
+                &pending_attempt,
+                live_claim_id,
+                DurableBackgroundSubagentDeliveryRelease::Retryable,
+            )
+            .await
+            .unwrap();
+        store
+            .update_run_status(
+                &parent.session_id,
+                &live_consumer_run_id,
+                RunStatus::Cancelled,
+                Some("live-claim fixture cleanup".to_string()),
+            )
+            .await
+            .unwrap();
+        store
+            .release_run_admission(&live_consumer_admission.lease)
+            .await
+            .unwrap();
+
+        let cancelled_parent_claim_id = "cancelled-parent-active-turn-claim";
+        store
+            .claim_background_subagent_delivery(
+                &pending_attempt,
+                starweaver_session::DurableBackgroundSubagentDeliveryClaim {
+                    claim_id: cancelled_parent_claim_id.to_string(),
+                    continuation_run_id: Some(cancelled_parent_id.clone()),
+                    deadline: chrono::Utc::now() + chrono::Duration::minutes(1),
+                },
+            )
+            .await
+            .unwrap();
+        let released = store
+            .release_background_subagent_delivery(
+                &pending_attempt,
+                cancelled_parent_claim_id,
+                DurableBackgroundSubagentDeliveryRelease::ConsumerTerminated {
+                    run_id: cancelled_parent_id.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            released.delivery_status,
+            DurableBackgroundSubagentDeliveryStatus::Undelivered
+        );
+        assert_eq!(
+            released
+                .automatic_continuation_suppressed_by_run_id
+                .as_ref(),
+            Some(&cancelled_parent_id)
+        );
+        store
+            .reconcile_background_subagents(LOCAL_SESSION_NAMESPACE, chrono::Utc::now())
+            .await
+            .unwrap();
+        assert!(
+            Box::pin(coordinator.handle_background_completion(&pending_attempt))
+                .await
+                .unwrap()
+                .is_none(),
+            "a cancelled consumer suppresses automatic redelivery even when the causal parent completed"
+        );
+
+        let explicit = coordinator
+            .start(RpcRunRequest {
+                durable_input: vec![InputPart::text("continue explicitly")],
+                input: AgentInput::text("continue explicitly"),
+                session_id: Some(parent.session_id.clone()),
+                restore_from_run_id: Some(parent.run_id.clone()),
+                profile: "default".to_string(),
+                environment_attachments: Vec::new(),
+                idempotency_key: "explicit-after-cancelled-parent".to_string(),
+                command_fingerprint: "explicit-after-cancelled-parent-v1".to_string(),
+                install_session_management: false,
+            })
+            .await
+            .unwrap();
+        coordinator
+            .await_terminal(
+                &explicit.session_id,
+                &explicit.run_id,
+                Some(Duration::from_secs(5)),
+            )
+            .await
+            .unwrap();
+        let consumed = store
+            .load_background_subagent(&pending_attempt)
+            .await
+            .unwrap();
+        assert_eq!(
+            consumed.delivery_status,
+            DurableBackgroundSubagentDeliveryStatus::Delivered
+        );
+        let claim_id = consumed
+            .delivered_claim_id
+            .as_deref()
+            .expect("explicit run must own the durable delivery claim");
+        assert!(claim_id.contains(explicit.run_id.as_str()), "{claim_id}");
+        assert!(claim_id.contains(pending_attempt.as_str()), "{claim_id}");
     }
 
     #[tokio::test]

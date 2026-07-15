@@ -6,8 +6,11 @@ use starweaver_core::{RunId, SessionId};
 use starweaver_stream::AgentStreamRecord;
 
 use crate::{
-    AcquireRunAdmission, DurableControlReceipt, RunAdmissionLease, RunAdmissionReceipt,
-    SessionContinuationFence, UpdateManagedSession,
+    AcquireBackgroundSubagentContinuation, AcquireRunAdmission,
+    BackgroundSubagentContinuationReceipt, BackgroundSubagentRecord,
+    DurableBackgroundSubagentDeliveryClaim, DurableBackgroundSubagentDeliveryRelease,
+    DurableControlReceipt, RunAdmissionLease, RunAdmissionReceipt, SessionContinuationFence,
+    UpdateManagedSession,
     approval::{ApprovalRecord, DeferredToolRecord},
     claim::HitlResumeClaim,
     error::{SessionStoreError, SessionStoreResult},
@@ -227,6 +230,153 @@ pub trait SessionStore: Send + Sync {
         _receipt_id: &str,
         _state: &str,
     ) -> SessionStoreResult<DurableControlReceipt> {
+        management_unsupported()
+    }
+
+    /// Wait for store-owned background-subagent operations whose caller futures may have ended.
+    ///
+    /// Implementations that detach non-cancellable database or network work must retain and drain
+    /// that work here. Cancellation-safe implementations must explicitly return success; the
+    /// default fails closed so a store cannot accidentally claim a complete shutdown guarantee.
+    async fn drain_background_subagent_operations(&self) -> SessionStoreResult<()> {
+        management_unsupported()
+    }
+
+    /// Idempotently persist one accepted durable background-subagent attempt.
+    async fn record_background_subagent_acceptance(
+        &self,
+        _record: BackgroundSubagentRecord,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        management_unsupported()
+    }
+
+    /// Persist a monotonic non-terminal lifecycle transition or child-run correlation.
+    async fn update_background_subagent_execution(
+        &self,
+        _record: BackgroundSubagentRecord,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        management_unsupported()
+    }
+
+    /// Extend an active background execution lease for its current fenced owner.
+    async fn heartbeat_background_subagent(
+        &self,
+        _attempt_id: &starweaver_core::SubagentAttemptId,
+        _host_instance_id: &str,
+        _fencing_generation: u64,
+        _lease_expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        management_unsupported()
+    }
+
+    /// Atomically persist terminal evidence and its optional oversized-result artifact.
+    async fn commit_background_subagent_terminal(
+        &self,
+        commit: crate::BackgroundSubagentTerminalCommit,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        if commit.artifact.is_some() {
+            return management_unsupported();
+        }
+        self.record_background_subagent_terminal(commit.record)
+            .await
+    }
+
+    /// Load one retained background-result artifact by stable reference.
+    async fn load_background_subagent_artifact(
+        &self,
+        _artifact_ref: &str,
+    ) -> SessionStoreResult<crate::BackgroundSubagentArtifact> {
+        management_unsupported()
+    }
+
+    /// Expire retained background-result content while preserving minimal audit evidence.
+    async fn expire_background_subagent_retention(
+        &self,
+        _namespace_id: &str,
+        _now: chrono::DateTime<chrono::Utc>,
+        _limit: usize,
+    ) -> SessionStoreResult<Vec<BackgroundSubagentRecord>> {
+        management_unsupported()
+    }
+
+    /// Idempotently persist immutable terminal outcome before delivery becomes claimable.
+    async fn record_background_subagent_terminal(
+        &self,
+        _record: BackgroundSubagentRecord,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        management_unsupported()
+    }
+
+    /// Load one durable background attempt by globally unique attempt identity.
+    async fn load_background_subagent(
+        &self,
+        _attempt_id: &starweaver_core::SubagentAttemptId,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        management_unsupported()
+    }
+
+    /// List bounded durable background attempts in one host namespace and optional session.
+    async fn list_background_subagents(
+        &self,
+        _namespace_id: &str,
+        _session_id: Option<&SessionId>,
+        _limit: usize,
+    ) -> SessionStoreResult<Vec<BackgroundSubagentRecord>> {
+        management_unsupported()
+    }
+
+    /// List terminal results still awaiting or holding logical delivery ownership.
+    async fn list_pending_background_subagents(
+        &self,
+        _namespace_id: &str,
+        _session_id: Option<&SessionId>,
+        _limit: usize,
+    ) -> SessionStoreResult<Vec<BackgroundSubagentRecord>> {
+        management_unsupported()
+    }
+
+    /// Atomically claim one terminal result, allowing exact-claim idempotent replay.
+    async fn claim_background_subagent_delivery(
+        &self,
+        _attempt_id: &starweaver_core::SubagentAttemptId,
+        _claim: DurableBackgroundSubagentDeliveryClaim,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        management_unsupported()
+    }
+
+    /// Acknowledge one matching claim as logically delivered.
+    async fn acknowledge_background_subagent_delivery(
+        &self,
+        _attempt_id: &starweaver_core::SubagentAttemptId,
+        _claim_id: &str,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        management_unsupported()
+    }
+
+    /// Release one matching claim with a durable retry or consumer-termination disposition.
+    async fn release_background_subagent_delivery(
+        &self,
+        _attempt_id: &starweaver_core::SubagentAttemptId,
+        _claim_id: &str,
+        _release: DurableBackgroundSubagentDeliveryRelease,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        management_unsupported()
+    }
+
+    /// Atomically admit a continuation run and consume its background result exactly once.
+    async fn acquire_background_subagent_continuation(
+        &self,
+        _request: AcquireBackgroundSubagentContinuation,
+    ) -> SessionStoreResult<BackgroundSubagentContinuationReceipt> {
+        management_unsupported()
+    }
+
+    /// Classify lost in-process executions and reclaim expired delivery claims after restart.
+    async fn reconcile_background_subagents(
+        &self,
+        _namespace_id: &str,
+        _now: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<Vec<BackgroundSubagentRecord>> {
         management_unsupported()
     }
 

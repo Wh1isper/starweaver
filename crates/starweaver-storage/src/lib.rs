@@ -71,6 +71,8 @@ mod tests {
                 "20260711_000003_split_display_and_replay_families",
                 "20260712_000004_evidence_outbox_and_resume_claims",
                 "20260714_000005_agent_session_management",
+                "20260714_000006_async_subagent_delivery",
+                "20260715_000007_background_terminal_fingerprint",
             ]
         );
         let second = migrate_sqlite_database(&database_path).expect("second migration");

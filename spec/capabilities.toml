@@ -83,6 +83,24 @@ implementation = ["crates/starweaver-session/src/search.rs", "crates/starweaver-
 contract_tests = ["crates/starweaver-session/src/search.rs", "crates/starweaver-storage/src/session_search.rs", "crates/starweaver-cli/src/lib.rs", "crates/starweaver-rpc-core/tests/session_search.rs", "crates/starweaver-rpc/src/service.rs"]
 
 [[capability]]
+id = "session.agent_management"
+owner = "starweaver-session"
+stability = "provisional"
+status = "implemented"
+normative_spec = "spec/ops/08-agent-session-management.md"
+implementation = ["crates/starweaver-session/src/management.rs", "crates/starweaver-agent/src/bundles/session_management.rs", "crates/starweaver-cli/src/service.rs", "crates/starweaver-rpc/src/session_management.rs", "crates/starweaver-rpc/src/coordinator.rs"]
+contract_tests = ["crates/starweaver-session/tests/session_store_contract.rs", "crates/starweaver-agent/src/bundles/session_management.rs", "crates/starweaver-cli/src/profiles.rs", "crates/starweaver-rpc/src/session_management.rs"]
+
+[[capability]]
+id = "agent.async_subagents"
+owner = "starweaver-agent"
+stability = "provisional"
+status = "implemented"
+normative_spec = "spec/sdk/06-async-subagent-execution.md"
+implementation = ["crates/starweaver-agent/src/subagent/supervisor.rs", "crates/starweaver-agent/src/subagent/registry.rs", "crates/starweaver-session/src/background.rs", "crates/starweaver-storage/src/session_store/background.rs", "crates/starweaver-cli/src/runtime_coordinator.rs", "crates/starweaver-rpc/src/coordinator.rs"]
+contract_tests = ["crates/starweaver-agent/tests/delegation_tool.rs", "crates/starweaver-session/tests/session_store_contract.rs", "crates/starweaver-storage/tests/session_store_contract.rs", "crates/starweaver-cli/src/lib.rs", "crates/starweaver-rpc/src/coordinator.rs"]
+
+[[capability]]
 id = "session.atomic_storage"
 owner = "starweaver-storage"
 stability = "stable"
