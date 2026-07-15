@@ -1,6 +1,6 @@
 //! JSON-RPC host protocol helpers for Starweaver.
 
-use std::future::Future;
+use std::{collections::BTreeSet, future::Future};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -46,6 +46,8 @@ pub const IDEMPOTENCY_CONFLICT: i64 = -32_012;
 pub const RUN_CONFLICT: i64 = -32_013;
 /// Starweaver host error code for an unavailable environment attachment.
 pub const ENVIRONMENT_UNAVAILABLE: i64 = -32_031;
+/// Starweaver host error code for an installed but unavailable session-search provider.
+pub const SESSION_SEARCH_UNAVAILABLE: i64 = -32_032;
 /// Starweaver host error code for configuration or profile resolution failures.
 pub const CONFIGURATION_FAILED: i64 = -32_050;
 
@@ -54,7 +56,9 @@ pub const HOST_PROTOCOL_NAME: &str = "starweaver.host";
 /// Supported breaking host-control protocol generation.
 pub const HOST_PROTOCOL_MAJOR: u32 = 1;
 /// Current host-control protocol documentation and fixture revision.
-pub const HOST_PROTOCOL_REVISION: &str = "2026-07-11";
+pub const HOST_PROTOCOL_REVISION: &str = "2026-07-14";
+/// Optional feature id advertised only when a session-search provider is installed.
+pub const SESSION_SEARCH_FEATURE: &str = "session.search";
 /// Implemented host-control feature vocabulary.
 pub const HOST_PROTOCOL_FEATURES: &[&str] = &[
     "sessions",
@@ -68,12 +72,22 @@ pub const HOST_PROTOCOL_FEATURES: &[&str] = &[
 /// Return the current typed host-control protocol identity.
 #[must_use]
 pub fn host_protocol_identity() -> ProtocolIdentity {
+    host_protocol_identity_with_session_search(false)
+}
+
+/// Return the host identity with optional search feature negotiation.
+#[must_use]
+pub fn host_protocol_identity_with_session_search(installed: bool) -> ProtocolIdentity {
+    let mut features = HOST_PROTOCOL_FEATURES.to_vec();
+    if installed {
+        features.push(SESSION_SEARCH_FEATURE);
+    }
     ProtocolIdentity::new(
         HOST_PROTOCOL_NAME,
         HOST_PROTOCOL_MAJOR,
         HOST_PROTOCOL_REVISION,
     )
-    .with_features(HOST_PROTOCOL_FEATURES.iter().copied())
+    .with_features(features)
 }
 
 /// Optional initialize negotiation fields accepted from host clients.
@@ -90,6 +104,133 @@ pub struct HostInitializeParams {
 pub struct RunInput {
     /// Ordered durable input parts.
     pub parts: Vec<starweaver_session::InputPart>,
+}
+
+/// Host-protocol filter projection for `session.search`.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionSearchFilters {
+    /// Allowed session statuses.
+    #[serde(
+        default,
+        alias = "sessionStatus",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub status: Vec<starweaver_session::SessionStatus>,
+    /// Allowed run statuses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub run_status: Vec<starweaver_session::RunStatus>,
+    /// Exact profile name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// Exact workspace display value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// Session creation range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<starweaver_session::SessionSearchTimeRange>,
+    /// Session update range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated: Option<starweaver_session::SessionSearchTimeRange>,
+    /// Explicit session id allowlist.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub session_ids: BTreeSet<starweaver_core::SessionId>,
+    /// Host-approved display visibility classes.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub display_visibilities: BTreeSet<starweaver_session::SessionSearchVisibility>,
+}
+
+/// Typed `session.search` request. Tenant/scope authority is intentionally absent.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionSearchParams {
+    /// Optional literal query text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    /// Query interpretation mode.
+    #[serde(default)]
+    pub mode: starweaver_session::SessionSearchQueryMode,
+    /// Typed filters.
+    #[serde(default)]
+    pub filters: SessionSearchFilters,
+    /// Projection families; empty requests provider defaults.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub sources: BTreeSet<starweaver_session::SessionSearchSource>,
+    /// Grouping level.
+    #[serde(default)]
+    pub granularity: starweaver_session::SessionSearchGranularity,
+    /// Stable result ordering.
+    #[serde(default)]
+    pub sort: starweaver_session::SessionSearchSort,
+    /// Requested page size.
+    #[serde(default = "default_session_search_limit")]
+    pub limit: u32,
+    /// Opaque next-page cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+impl SessionSearchParams {
+    /// Convert the host DTO into the product-neutral query contract.
+    #[must_use]
+    pub fn into_query(self) -> starweaver_session::SessionSearchQuery {
+        starweaver_session::SessionSearchQuery {
+            text: self.query,
+            mode: self.mode,
+            filter: starweaver_session::SessionSearchFilter {
+                session_statuses: self.filters.status,
+                run_statuses: self.filters.run_status,
+                profile: self.filters.profile,
+                workspace: self.filters.workspace,
+                created: self.filters.created,
+                updated: self.filters.updated,
+                session_ids: self.filters.session_ids,
+                display_visibilities: self.filters.display_visibilities,
+            },
+            sources: self.sources,
+            granularity: self.granularity,
+            sort: self.sort,
+            limit: self.limit,
+            cursor: self.cursor,
+        }
+    }
+}
+
+/// Typed host result for `session.search`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSearchResult {
+    /// Discovery hits.
+    pub hits: Vec<starweaver_session::SessionSearchHit>,
+    /// Opaque cursor for the next page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    /// Completeness and freshness.
+    pub coverage: starweaver_session::SessionSearchCoverage,
+}
+
+impl From<starweaver_session::SessionSearchPage> for SessionSearchResult {
+    fn from(page: starweaver_session::SessionSearchPage) -> Self {
+        Self {
+            hits: page.hits,
+            next_cursor: page.next_cursor,
+            coverage: page.coverage,
+        }
+    }
+}
+
+/// Optional detailed initialize projection for an installed provider.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSearchFeatureCapabilities {
+    /// Provider is installed for this server context.
+    pub available: bool,
+    /// Safe provider behavior advertisement.
+    pub provider: starweaver_session::SessionSearchCapabilities,
+}
+
+const fn default_session_search_limit() -> u32 {
+    20
 }
 
 /// Validate a client's requested host identity when present.

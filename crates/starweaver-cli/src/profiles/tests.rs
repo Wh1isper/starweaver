@@ -305,3 +305,34 @@ async fn configured_subagent_delegate_inherits_parent_model_settings_and_config(
         vec!["subagent_started", "subagent_completed"]
     );
 }
+
+#[test]
+fn cli_model_catalog_exposes_query_only_session_tools() {
+    let config = test_config();
+    let names = list_default_tools(&config)
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<BTreeSet<_>>();
+    for name in [
+        "list_sessions",
+        "get_session",
+        "list_session_runs",
+        "get_session_run",
+        "replay_session_run",
+    ] {
+        assert!(names.contains(name), "missing CLI query tool {name}");
+    }
+    for name in [
+        "create_session",
+        "update_session",
+        "delete_session",
+        "start_session_run",
+        "steer_session_run",
+        "interrupt_session_run",
+    ] {
+        assert!(
+            !names.contains(name),
+            "CLI must not expose control tool {name}"
+        );
+    }
+}

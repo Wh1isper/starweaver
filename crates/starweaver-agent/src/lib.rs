@@ -37,6 +37,7 @@ use starweaver_model::{ModelAdapter, ModelProfile, ToolDefinition};
 use starweaver_runtime::Agent as RuntimeAgent;
 
 pub use bundles::{
+    AgentSessionControl, AgentSessionControlHandle, AgentSessionQuery, AgentSessionQueryHandle,
     DEFAULT_SHELL_REVIEW_PROMPT, EnvironmentContextCapability, EnvironmentHandle,
     HostMediaCapabilities, HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle,
     HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
@@ -50,10 +51,12 @@ pub use bundles::{
     SkillReloadDecision, SkillReloadReason, SkillReloadReport, SkillReloadSchedule,
     SkillReloadScheduleState, SkillScanDiagnostic, SkillScanDiagnosticKind, SkillScanReport,
     SkillScheduledReloadResult, SkillSourceKind, SkillSourceScope, ToolProxyNamePrefixError,
-    ToolProxyToolset, attach_environment, attach_process_shell, attach_shell_review,
-    attach_shell_review_handle, context_tools, core_toolsets, dynamic_tool_proxy,
-    environment_toolsets, filesystem_tools, host_io_tools, namespaced_toolset,
-    parse_skill_markdown, process_shell_toolsets, shell_tools, skill_tools, task_tools,
+    ToolProxyToolset, agent_session_control_tools, agent_session_query_tools,
+    attach_agent_session_control, attach_agent_session_query, attach_environment,
+    attach_process_shell, attach_shell_review, attach_shell_review_handle, context_tools,
+    core_toolsets, dynamic_tool_proxy, environment_toolsets, filesystem_tools, host_io_tools,
+    namespaced_toolset, parse_skill_markdown, process_shell_toolsets, shell_tools, skill_tools,
+    task_tools,
 };
 pub use filters::{
     CacheFriendlyCompactCapability, DEFAULT_FILTER_ORDER, MediaUploadRequest, MediaUploader,
@@ -128,12 +131,19 @@ pub use starweaver_runtime::{
     model_request_stream, resolve_capability_order, tool_call,
 };
 pub use starweaver_session::{
-    ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, DeferredToolRequest,
-    DeferredToolRequests, DeferredToolResult, DeferredToolResults, ExecutionStatus,
-    InMemorySessionStore, InputPart, RunRecord, RunStatus as SessionRunStatus, SessionFilter,
-    SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError,
-    SessionStoreExecutor, SessionStoreResult, StreamCursorRef, ToolApprovalDecision,
-    ToolReturnRecordInput,
+    AcquireRunAdmission, AgentDisplayPage, AgentReplayQuery, AgentRunListQuery, AgentRunPage,
+    AgentRunView, AgentSessionControlError, AgentSessionControlErrorCode, AgentSessionInclude,
+    AgentSessionListQuery, AgentSessionOperation, AgentSessionPage, AgentSessionQueryError,
+    AgentSessionQueryErrorCode, AgentSessionScope, AgentSessionView, ApprovalDecision,
+    ApprovalRecord, ApprovalStatus, CreateManagedSession, DeferredToolRecord, DeferredToolRequest,
+    DeferredToolRequests, DeferredToolResult, DeferredToolResults, DeleteManagedSession,
+    DurableControlReceipt, ExecutionStatus, InMemorySessionStore, InputPart, InterruptManagedRun,
+    ManagedRunTarget, ManagedSessionPatch, ManagedSessionTarget, RunAdmissionLease,
+    RunAdmissionReceipt, RunControlReceipt, RunRecord, RunStartReceipt,
+    RunStatus as SessionRunStatus, SessionContinuationFence, SessionDeletionFence, SessionFilter,
+    SessionMutationReceipt, SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore,
+    SessionStoreError, SessionStoreExecutor, SessionStoreResult, StartManagedRun, SteerManagedRun,
+    StreamCursorRef, ToolApprovalDecision, ToolReturnRecordInput, UpdateManagedSession,
 };
 pub use starweaver_stream::{
     DefaultDisplayMessageProjector, DisplayMessage, DisplayMessageKind, DisplayMessageProjector,
@@ -178,10 +188,15 @@ pub use streaming::{
     AgentStreamStatus, AgentStreamStatusSnapshot,
 };
 pub use subagent::{
-    AgentApp, BackgroundSubagentCapability, BackgroundSubagentMonitor, BackgroundSubagentTaskInfo,
-    BackgroundSubagentTaskResult, BackgroundSubagentTaskStatus, DELEGATE_BACKEND_TOOL_NAME,
-    DynSubagentExecutionHook, SPAWN_DELEGATE_TOOL_NAME, SubagentCapabilityInheritancePolicy,
-    SubagentConfig, SubagentDelegationMode, SubagentExecutionHook, SubagentExecutionMetadata,
+    AgentApp, BackgroundSubagentCancellationReceipt, BackgroundSubagentCapability,
+    BackgroundSubagentCompletionCallback, BackgroundSubagentDeliveryClaim,
+    BackgroundSubagentDeliveryStatus, BackgroundSubagentError, BackgroundSubagentExecutionStatus,
+    BackgroundSubagentLimits, BackgroundSubagentMonitor, BackgroundSubagentRetentionStatus,
+    BackgroundSubagentSteeringReceipt, BackgroundSubagentSupervisor, BackgroundSubagentTaskInfo,
+    BackgroundSubagentTaskResult, BackgroundSubagentTaskStatus, CANCEL_SUBAGENT_TOOL_NAME,
+    DELEGATE_BACKEND_TOOL_NAME, DynSubagentExecutionHook, SPAWN_DELEGATE_TOOL_NAME,
+    STEER_SUBAGENT_TOOL_NAME, SubagentCapabilityInheritancePolicy, SubagentConfig,
+    SubagentDelegationMode, SubagentExecutionHook, SubagentExecutionMetadata,
     SubagentExecutionOutcome, SubagentParentTools, SubagentRegistry, SubagentResult, SubagentTask,
     SubagentToolInheritanceError, SubagentToolInheritancePolicy, WAIT_SUBAGENT_TOOL_NAME,
 };
@@ -319,6 +334,7 @@ pub struct AgentBuilder {
     capability_bundles: Vec<Arc<dyn CapabilityBundle>>,
     subagents: SubagentRegistry,
     subagent_delegation_mode: SubagentDelegationMode,
+    background_subagent_supervisor: Option<Arc<BackgroundSubagentSupervisor>>,
     executor: Option<starweaver_runtime::DynAgentExecutor>,
     trace_recorder: Option<starweaver_runtime::DynTraceRecorder>,
     media_uploader: Option<Arc<dyn MediaUploader>>,
@@ -355,6 +371,7 @@ impl AgentBuilder {
             capability_bundles: Vec::new(),
             subagents: SubagentRegistry::new(),
             subagent_delegation_mode: SubagentDelegationMode::default(),
+            background_subagent_supervisor: None,
             executor: None,
             trace_recorder: None,
             media_uploader: None,
@@ -640,6 +657,16 @@ impl AgentBuilder {
         self
     }
 
+    /// Inject a host-owned supervisor that may outlive individual parent runtimes.
+    #[must_use]
+    pub fn background_subagent_supervisor(
+        mut self,
+        supervisor: Arc<BackgroundSubagentSupervisor>,
+    ) -> Self {
+        self.background_subagent_supervisor = Some(supervisor);
+        self
+    }
+
     /// Set runtime trace recorder.
     #[must_use]
     pub fn trace_recorder(mut self, recorder: starweaver_runtime::DynTraceRecorder) -> Self {
@@ -696,7 +723,11 @@ impl AgentBuilder {
         let subagents = (!subagents.is_empty()).then(|| Arc::new(subagents));
         let background_subagents = subagent_delegation_mode
             .needs_background_monitor()
-            .then(|| Arc::new(BackgroundSubagentMonitor::new()));
+            .then(|| {
+                self.background_subagent_supervisor
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(BackgroundSubagentSupervisor::new()))
+            });
         let model_profile_capabilities = model_capabilities_from_profile(self.model.profile());
         let mut configured_model_config = self.model_config;
         if !model_profile_capabilities.is_empty() {
@@ -720,21 +751,26 @@ impl AgentBuilder {
         let media_capability_hook = Arc::new(HostMediaCapabilityHook { media_capabilities });
         let mut tools = self.tools;
         let trace_recorder = self.trace_recorder.clone();
-        if let Some(subagents) = &subagents {
+        if let Some(subagents) = &subagents
+            && subagent_delegation_mode.is_enabled()
+        {
             if subagent_delegation_mode.exposes_blocking_delegate() {
                 tools.insert(subagents.delegate_tool());
             }
-            if subagent_delegation_mode.exposes_async_delegate() {
-                tools.insert(subagents.hidden_delegate_backend_tool());
-                if let Some(monitor) = &background_subagents {
-                    tools.insert(subagents.async_delegate_tool(monitor.clone()));
-                    tools.insert(subagents.wait_subagent_tool(monitor.clone()));
-                }
+            if subagent_delegation_mode.exposes_async_delegate()
+                && let Some(monitor) = &background_subagents
+            {
+                tools.insert(subagents.async_delegate_tool(monitor.clone()));
+                tools.insert(subagents.steer_subagent_tool(monitor.clone()));
+                tools.insert(subagents.cancel_subagent_tool(monitor.clone()));
+                tools.insert(subagents.wait_subagent_tool(monitor.clone()));
             }
             if subagent_delegation_mode.exposes_spawn_delegate()
                 && let Some(monitor) = &background_subagents
             {
                 tools.insert(subagents.spawn_delegate_tool(monitor.clone()));
+                tools.insert(subagents.steer_subagent_tool(monitor.clone()));
+                tools.insert(subagents.cancel_subagent_tool(monitor.clone()));
                 tools.insert(subagents.wait_subagent_tool(monitor.clone()));
             }
             tools.insert(subagents.subagent_info_tool());
@@ -747,6 +783,7 @@ impl AgentBuilder {
         let parent_tools = tool_preview.clone();
         if let Some(subagents) = &subagents {
             match subagent_delegation_mode {
+                SubagentDelegationMode::Disabled => {}
                 SubagentDelegationMode::Blocking => {
                     if let Some(instruction) = subagents.delegate_instruction(Some(&parent_tools)) {
                         tools.insert_instruction(instruction);

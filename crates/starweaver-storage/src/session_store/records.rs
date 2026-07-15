@@ -154,5 +154,6 @@ pub fn apply_run_to_session(session: &mut SessionRecord, run: &RunRecord) {
             session.active_run_id = None;
         }
     }
+    session.revision = session.revision.saturating_add(1);
     session.updated_at = run.updated_at;
 }

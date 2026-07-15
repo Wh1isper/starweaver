@@ -5,11 +5,19 @@ use std::sync::Arc;
 use chrono::Utc;
 use starweaver_context::{AgentCheckpoint, AgentRunState, ResumableState};
 use starweaver_core::{
-    AgentExecutionNode, AgentId, ConversationId, RunId, RunLifecycle, SessionId,
+    AgentExecutionNode, AgentId, ConversationId, RunId, RunLifecycle, SessionId, SubagentAttemptId,
 };
 use starweaver_session::{
-    HitlResumeClaim, RelatedRunUpdate, RunEvidenceCommit, RunRecord, RunStatus, SessionStore,
-    SessionStoreError, StreamPublicationTarget, StreamPublicationTargets,
+    AcquireBackgroundSubagentContinuation, AcquireRunAdmission, BACKGROUND_SUBAGENT_RECORD_VERSION,
+    BackgroundSubagentArtifact, BackgroundSubagentArtifactLimits,
+    BackgroundSubagentContinuationCause, BackgroundSubagentRecord,
+    BackgroundSubagentTerminalCommit, DurableBackgroundSubagentDeliveryClaim,
+    DurableBackgroundSubagentDeliveryRelease, DurableBackgroundSubagentDeliveryStatus,
+    DurableBackgroundSubagentExecutionStatus, DurableBackgroundSubagentOwnerLease,
+    DurableBackgroundSubagentResultRef, DurableBackgroundSubagentRetentionStatus, HitlResumeClaim,
+    InputPart, LOCAL_SESSION_NAMESPACE, RelatedRunUpdate, RunEvidenceCommit, RunRecord, RunStatus,
+    SessionRecord, SessionStore, SessionStoreError, StreamPublicationTarget,
+    StreamPublicationTargets,
 };
 
 pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix: &str) {
@@ -206,6 +214,983 @@ pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix:
         .commit_run_evidence(conflicting)
         .await
         .expect_err("conflicting evidence retry must fail");
+}
+
+#[allow(dead_code)]
+pub async fn assert_background_subagent_contract(store: Arc<dyn SessionStore>, suffix: &str) {
+    store
+        .drain_background_subagent_operations()
+        .await
+        .expect("background operation drain capability");
+    let session_id = SessionId::from_string(format!("background-session-{suffix}"));
+    let parent_run_id = RunId::from_string(format!("background-parent-{suffix}"));
+    let conversation_id = ConversationId::from_string(format!("background-conversation-{suffix}"));
+    store
+        .save_session(SessionRecord::new(session_id.clone()))
+        .await
+        .expect("save background parent session");
+    let mut parent = RunRecord::new(
+        session_id.clone(),
+        parent_run_id.clone(),
+        conversation_id.clone(),
+    );
+    parent.status = RunStatus::Completed;
+    parent.profile = Some("default".to_string());
+    store
+        .append_run(parent)
+        .await
+        .expect("save background parent run");
+
+    let now = Utc::now();
+    let attempt_id = SubagentAttemptId::from_string(format!("background-attempt-{suffix}"));
+    let mut record = BackgroundSubagentRecord {
+        schema_version: BACKGROUND_SUBAGENT_RECORD_VERSION,
+        attempt_id: attempt_id.clone(),
+        agent_id: format!("background-agent-{suffix}"),
+        linked_task_id: None,
+        subagent_name: "researcher".to_string(),
+        namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+        parent_session_id: session_id.clone(),
+        parent_run_id: parent_run_id.clone(),
+        child_run_id: None,
+        continuation_run_id: None,
+        profile: "default".to_string(),
+        owner_lease: DurableBackgroundSubagentOwnerLease {
+            host_instance_id: format!("background-owner-{suffix}"),
+            fencing_generation: 1,
+            heartbeat_at: now,
+            lease_expires_at: now + chrono::Duration::minutes(1),
+        },
+        execution_status: DurableBackgroundSubagentExecutionStatus::Accepted,
+        result_ref: None,
+        failure_category: None,
+        cancellation_reason: None,
+        delivery_status: DurableBackgroundSubagentDeliveryStatus::Undelivered,
+        delivery_claim: None,
+        delivered_claim_id: None,
+        automatic_continuation_suppressed_by_run_id: None,
+        retention_status: DurableBackgroundSubagentRetentionStatus::Inline,
+        retention_expires_at: None,
+        trace_context: None,
+        accepted_at: now,
+        updated_at: now,
+        terminal_at: None,
+    };
+    store
+        .record_background_subagent_acceptance(record.clone())
+        .await
+        .expect("record acceptance");
+    store
+        .record_background_subagent_acceptance(record.clone())
+        .await
+        .expect("acceptance retry is idempotent");
+    let mut competing = record.clone();
+    competing.attempt_id =
+        SubagentAttemptId::from_string(format!("background-competing-attempt-{suffix}"));
+    competing.owner_lease.host_instance_id = format!("background-competing-owner-{suffix}");
+    assert!(matches!(
+        store.record_background_subagent_acceptance(competing).await,
+        Err(SessionStoreError::Conflict(_))
+    ));
+    record.execution_status = DurableBackgroundSubagentExecutionStatus::Starting;
+    record.updated_at = now + chrono::Duration::milliseconds(1);
+    store
+        .update_background_subagent_execution(record.clone())
+        .await
+        .expect("record starting");
+    record.execution_status = DurableBackgroundSubagentExecutionStatus::Running;
+    record.child_run_id = Some(RunId::from_string(format!("background-child-{suffix}")));
+    record.updated_at = now + chrono::Duration::milliseconds(2);
+    store
+        .update_background_subagent_execution(record.clone())
+        .await
+        .expect("record running");
+    record.execution_status = DurableBackgroundSubagentExecutionStatus::Completed;
+    record.result_ref = Some(DurableBackgroundSubagentResultRef {
+        content: Some("durable result".to_string()),
+        size_bytes: 14,
+        ..DurableBackgroundSubagentResultRef::default()
+    });
+    record.terminal_at = Some(now + chrono::Duration::milliseconds(3));
+    record.updated_at = record.terminal_at.expect("terminal timestamp");
+    record.retention_expires_at = Some(record.updated_at + chrono::Duration::hours(1));
+    store
+        .record_background_subagent_terminal(record.clone())
+        .await
+        .expect("record terminal outcome");
+    store
+        .record_background_subagent_terminal(record.clone())
+        .await
+        .expect("exact inline terminal retry is idempotent");
+    let mut forged_inline = record.clone();
+    forged_inline
+        .result_ref
+        .as_mut()
+        .expect("inline terminal evidence")
+        .content = Some("forged-result!".to_string());
+    assert!(matches!(
+        store
+            .record_background_subagent_terminal(forged_inline)
+            .await,
+        Err(SessionStoreError::Conflict(_))
+    ));
+    let mut forged_owner_generation = record.clone();
+    forged_owner_generation.owner_lease.fencing_generation = forged_owner_generation
+        .owner_lease
+        .fencing_generation
+        .saturating_add(1);
+    assert!(matches!(
+        store
+            .record_background_subagent_terminal(forged_owner_generation)
+            .await,
+        Err(SessionStoreError::Conflict(_))
+    ));
+
+    let claim = DurableBackgroundSubagentDeliveryClaim {
+        claim_id: format!("background-claim-{suffix}"),
+        continuation_run_id: None,
+        deadline: Utc::now() + chrono::Duration::minutes(1),
+    };
+    store
+        .claim_background_subagent_delivery(&attempt_id, claim.clone())
+        .await
+        .expect("claim terminal delivery");
+    store
+        .claim_background_subagent_delivery(
+            &attempt_id,
+            DurableBackgroundSubagentDeliveryClaim {
+                claim_id: format!("background-conflict-{suffix}"),
+                ..claim.clone()
+            },
+        )
+        .await
+        .expect_err("another unexpired claim must conflict");
+    store
+        .release_background_subagent_delivery(
+            &attempt_id,
+            &claim.claim_id,
+            DurableBackgroundSubagentDeliveryRelease::Retryable,
+        )
+        .await
+        .expect("release failed pre-admission claim");
+    store
+        .release_background_subagent_delivery(
+            &attempt_id,
+            &claim.claim_id,
+            DurableBackgroundSubagentDeliveryRelease::ConsumerTerminated {
+                run_id: parent_run_id.clone(),
+            },
+        )
+        .await
+        .expect_err("an undelivered result cannot fake a terminated-consumer release");
+
+    let continuation_run_id = RunId::from_string(format!("background-continuation-{suffix}"));
+    let mut continuation = RunRecord::new(
+        session_id.clone(),
+        continuation_run_id.clone(),
+        conversation_id,
+    );
+    continuation.input = record.continuation_input(None);
+    continuation.profile = Some("default".to_string());
+    continuation.parent_run_id = Some(parent_run_id.clone());
+    continuation.trigger_type = Some("async_subagent_result".to_string());
+    continuation.metadata.insert(
+        "starweaver.async_subagent.attempt_id".to_string(),
+        serde_json::json!(attempt_id.as_str()),
+    );
+    continuation.metadata.insert(
+        "starweaver.async_subagent.agent_id".to_string(),
+        serde_json::json!(record.agent_id.as_str()),
+    );
+    continuation.metadata.insert(
+        "starweaver.async_subagent.parent_run_id".to_string(),
+        serde_json::json!(parent_run_id.as_str()),
+    );
+    continuation.metadata.insert(
+        "starweaver.async_subagent.child_run_id".to_string(),
+        serde_json::json!(record.child_run_id.as_ref().expect("child run").as_str()),
+    );
+    let continuation_claim_id = format!("background-continuation-claim-{suffix}");
+    let cause = BackgroundSubagentContinuationCause::new(&record, &continuation.input)
+        .expect("canonical continuation cause");
+    let request = AcquireBackgroundSubagentContinuation {
+        attempt_id: attempt_id.clone(),
+        claim_id: continuation_claim_id.clone(),
+        claim_deadline: Utc::now() + chrono::Duration::minutes(1),
+        cause,
+        admission: AcquireRunAdmission {
+            run: continuation,
+            namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+            host_instance_id: format!("background-host-{suffix}"),
+            admission_id: format!("background-admission-{suffix}"),
+            lease_expires_at: Utc::now() + chrono::Duration::minutes(1),
+            idempotency_key: format!("background-idempotency-{suffix}"),
+            command_fingerprint: format!("background-fingerprint-{suffix}"),
+        },
+    };
+    let mut forged_cause = request.clone();
+    forged_cause.cause.agent_id = format!("forged-agent-{suffix}");
+    assert!(matches!(
+        store
+            .acquire_background_subagent_continuation(forged_cause)
+            .await,
+        Err(SessionStoreError::Conflict(_))
+    ));
+    let mut forged_input = request.clone();
+    forged_input.admission.run.input = vec![InputPart::text("unrelated input")];
+    forged_input.cause =
+        BackgroundSubagentContinuationCause::new(&record, &forged_input.admission.run.input)
+            .expect("forged input digest");
+    assert!(matches!(
+        store
+            .acquire_background_subagent_continuation(forged_input)
+            .await,
+        Err(SessionStoreError::Conflict(_))
+    ));
+    let mut missing_input = request.clone();
+    missing_input.admission.run.input.clear();
+    missing_input.cause =
+        BackgroundSubagentContinuationCause::new(&record, &missing_input.admission.run.input)
+            .expect("missing input digest");
+    assert!(matches!(
+        store
+            .acquire_background_subagent_continuation(missing_input)
+            .await,
+        Err(SessionStoreError::Conflict(_))
+    ));
+    let admitted = store
+        .acquire_background_subagent_continuation(request.clone())
+        .await
+        .expect("atomically admit background continuation");
+    assert_eq!(admitted.admission.run.run_id, continuation_run_id);
+    assert_eq!(admitted.cause, request.cause);
+    assert_eq!(
+        admitted.background.delivery_status,
+        DurableBackgroundSubagentDeliveryStatus::Delivered
+    );
+    let replay = store
+        .acquire_background_subagent_continuation(request.clone())
+        .await
+        .expect("exact continuation replay");
+    assert!(replay.admission.idempotent_replay);
+    assert_eq!(replay.cause, request.cause);
+    let mut forged_replay = request;
+    forged_replay.admission.run.input = vec![InputPart::text("forged replay input")];
+    forged_replay.cause =
+        BackgroundSubagentContinuationCause::new(&record, &forged_replay.admission.run.input)
+            .expect("forged replay digest");
+    assert!(matches!(
+        store
+            .acquire_background_subagent_continuation(forged_replay)
+            .await,
+        Err(SessionStoreError::Conflict(_))
+    ));
+    let delivered = store
+        .acknowledge_background_subagent_delivery(&attempt_id, &continuation_claim_id)
+        .await
+        .expect("acknowledge started continuation");
+    assert_eq!(
+        delivered.delivery_status,
+        DurableBackgroundSubagentDeliveryStatus::Delivered
+    );
+    assert_eq!(
+        delivered.continuation_run_id.as_ref(),
+        Some(&continuation_run_id)
+    );
+    let replay_after_delivery = store
+        .record_background_subagent_terminal(record.clone())
+        .await
+        .expect("exact terminal retry tolerates later delivery projection");
+    assert_eq!(
+        replay_after_delivery.delivery_status,
+        DurableBackgroundSubagentDeliveryStatus::Delivered
+    );
+
+    let claim_now = Utc::now();
+    let run_owned_attempt =
+        SubagentAttemptId::from_string(format!("background-run-owned-claim-{suffix}"));
+    let mut run_owned = record.clone();
+    run_owned.attempt_id = run_owned_attempt.clone();
+    run_owned.agent_id = format!("background-run-owned-agent-{suffix}");
+    run_owned.child_run_id = None;
+    run_owned.continuation_run_id = None;
+    run_owned.execution_status = DurableBackgroundSubagentExecutionStatus::Accepted;
+    run_owned.result_ref = None;
+    run_owned.failure_category = None;
+    run_owned.cancellation_reason = None;
+    run_owned.delivery_status = DurableBackgroundSubagentDeliveryStatus::Undelivered;
+    run_owned.delivery_claim = None;
+    run_owned.delivered_claim_id = None;
+    run_owned.automatic_continuation_suppressed_by_run_id = None;
+    run_owned.retention_status = DurableBackgroundSubagentRetentionStatus::Inline;
+    run_owned.retention_expires_at = None;
+    run_owned.owner_lease.host_instance_id = format!("run-owned-owner-{suffix}");
+    run_owned.owner_lease.heartbeat_at = claim_now;
+    run_owned.owner_lease.lease_expires_at = claim_now + chrono::Duration::minutes(5);
+    run_owned.accepted_at = claim_now;
+    run_owned.updated_at = claim_now;
+    run_owned.terminal_at = None;
+    store
+        .record_background_subagent_acceptance(run_owned.clone())
+        .await
+        .expect("accept run-owned claim attempt");
+    run_owned.execution_status = DurableBackgroundSubagentExecutionStatus::Starting;
+    run_owned.updated_at = claim_now + chrono::Duration::milliseconds(1);
+    store
+        .update_background_subagent_execution(run_owned.clone())
+        .await
+        .expect("start run-owned claim attempt");
+    run_owned.execution_status = DurableBackgroundSubagentExecutionStatus::Running;
+    run_owned.updated_at = claim_now + chrono::Duration::milliseconds(2);
+    store
+        .update_background_subagent_execution(run_owned.clone())
+        .await
+        .expect("run run-owned claim attempt");
+    run_owned.execution_status = DurableBackgroundSubagentExecutionStatus::Completed;
+    run_owned.result_ref = Some(DurableBackgroundSubagentResultRef {
+        content: Some("run-owned result".to_string()),
+        size_bytes: 16,
+        ..DurableBackgroundSubagentResultRef::default()
+    });
+    run_owned.updated_at = claim_now + chrono::Duration::milliseconds(3);
+    run_owned.terminal_at = Some(run_owned.updated_at);
+    run_owned.retention_expires_at = Some(claim_now + chrono::Duration::hours(1));
+    store
+        .record_background_subagent_terminal(run_owned)
+        .await
+        .expect("commit run-owned result");
+    let run_owned_claim_id = format!("run-owned-claim-{suffix}");
+    store
+        .claim_background_subagent_delivery(
+            &run_owned_attempt,
+            DurableBackgroundSubagentDeliveryClaim {
+                claim_id: run_owned_claim_id.clone(),
+                continuation_run_id: Some(continuation_run_id.clone()),
+                deadline: claim_now - chrono::Duration::milliseconds(1),
+            },
+        )
+        .await
+        .expect("claim result for active continuation run");
+    store
+        .claim_background_subagent_delivery(
+            &run_owned_attempt,
+            DurableBackgroundSubagentDeliveryClaim {
+                claim_id: format!("run-owned-steal-{suffix}"),
+                continuation_run_id: None,
+                deadline: claim_now + chrono::Duration::minutes(1),
+            },
+        )
+        .await
+        .expect_err("an expired deadline cannot steal from a live admitted consumer");
+    store
+        .reconcile_background_subagents(LOCAL_SESSION_NAMESPACE, claim_now)
+        .await
+        .expect("reconcile expired run-owned claim");
+    assert_eq!(
+        store
+            .load_background_subagent(&run_owned_attempt)
+            .await
+            .expect("load retained run-owned claim")
+            .delivery_status,
+        DurableBackgroundSubagentDeliveryStatus::Claimed,
+        "a live admitted consumer retains ownership past the delivery deadline"
+    );
+    store
+        .update_run_status(
+            &session_id,
+            &continuation_run_id,
+            RunStatus::Cancelled,
+            Some("cancelled consumer".to_string()),
+        )
+        .await
+        .expect("terminalize run-owned consumer");
+    store
+        .claim_background_subagent_delivery(
+            &run_owned_attempt,
+            DurableBackgroundSubagentDeliveryClaim {
+                claim_id: format!("run-owned-after-cancel-{suffix}"),
+                continuation_run_id: None,
+                deadline: claim_now + chrono::Duration::minutes(1),
+            },
+        )
+        .await
+        .expect_err("claim CAS atomically releases and suppresses a cancelled consumer");
+    let suppressed = store
+        .load_background_subagent(&run_owned_attempt)
+        .await
+        .expect("load suppressed pending result");
+    assert_eq!(
+        suppressed.delivery_status,
+        DurableBackgroundSubagentDeliveryStatus::Undelivered
+    );
+    assert_eq!(
+        suppressed
+            .automatic_continuation_suppressed_by_run_id
+            .as_ref(),
+        Some(&continuation_run_id)
+    );
+    let explicit_claim_id = format!("explicit-after-cancel-{suffix}");
+    store
+        .claim_background_subagent_delivery(
+            &run_owned_attempt,
+            DurableBackgroundSubagentDeliveryClaim {
+                claim_id: explicit_claim_id.clone(),
+                continuation_run_id: Some(RunId::from_string(format!(
+                    "explicit-consumer-{suffix}"
+                ))),
+                deadline: Utc::now() + chrono::Duration::minutes(1),
+            },
+        )
+        .await
+        .expect("explicit later run may claim a suppressed result");
+    let explicitly_delivered = store
+        .acknowledge_background_subagent_delivery(&run_owned_attempt, &explicit_claim_id)
+        .await
+        .expect("explicit later run consumes suppressed result");
+    assert_eq!(
+        explicitly_delivered.delivery_status,
+        DurableBackgroundSubagentDeliveryStatus::Delivered
+    );
+    assert!(
+        explicitly_delivered
+            .automatic_continuation_suppressed_by_run_id
+            .is_none()
+    );
+
+    let artifact_now = Utc::now();
+    let artifact_attempt = SubagentAttemptId::from_string(format!("background-artifact-{suffix}"));
+    let mut artifact_record = record.clone();
+    artifact_record.attempt_id = artifact_attempt.clone();
+    artifact_record.agent_id = format!("background-artifact-agent-{suffix}");
+    artifact_record.child_run_id = None;
+    artifact_record.execution_status = DurableBackgroundSubagentExecutionStatus::Accepted;
+    artifact_record.result_ref = None;
+    artifact_record.delivery_status = DurableBackgroundSubagentDeliveryStatus::Undelivered;
+    artifact_record.delivery_claim = None;
+    artifact_record.delivered_claim_id = None;
+    artifact_record.continuation_run_id = None;
+    artifact_record.retention_status = DurableBackgroundSubagentRetentionStatus::Inline;
+    artifact_record.retention_expires_at = None;
+    artifact_record.owner_lease.host_instance_id = format!("artifact-owner-{suffix}");
+    artifact_record.owner_lease.heartbeat_at = artifact_now;
+    artifact_record.owner_lease.lease_expires_at = artifact_now + chrono::Duration::minutes(5);
+    artifact_record.accepted_at = artifact_now;
+    artifact_record.updated_at = artifact_now;
+    artifact_record.terminal_at = None;
+    store
+        .record_background_subagent_acceptance(artifact_record.clone())
+        .await
+        .expect("accept artifact-backed attempt");
+    artifact_record.execution_status = DurableBackgroundSubagentExecutionStatus::Starting;
+    artifact_record.updated_at = artifact_now + chrono::Duration::milliseconds(1);
+    store
+        .update_background_subagent_execution(artifact_record.clone())
+        .await
+        .expect("start artifact-backed attempt");
+    artifact_record.execution_status = DurableBackgroundSubagentExecutionStatus::Running;
+    artifact_record.child_run_id = Some(RunId::from_string(format!("artifact-child-{suffix}")));
+    artifact_record.updated_at = artifact_now + chrono::Duration::milliseconds(2);
+    store
+        .update_background_subagent_execution(artifact_record.clone())
+        .await
+        .expect("run artifact-backed attempt");
+    let full_content = "oversized-result-".repeat(64);
+    let artifact_ref = format!("starweaver:background-subagent-result:{suffix}");
+    let digest = BackgroundSubagentArtifact::content_digest(&full_content);
+    let expires_at = artifact_now + chrono::Duration::minutes(1);
+    artifact_record.execution_status = DurableBackgroundSubagentExecutionStatus::Completed;
+    artifact_record.result_ref = Some(DurableBackgroundSubagentResultRef {
+        content: Some("oversized-result-preview".to_string()),
+        artifact_ref: Some(artifact_ref.clone()),
+        digest: Some(digest.clone()),
+        size_bytes: u64::try_from(full_content.len()).expect("artifact size"),
+        ..DurableBackgroundSubagentResultRef::default()
+    });
+    artifact_record.retention_status = DurableBackgroundSubagentRetentionStatus::Artifact;
+    artifact_record.retention_expires_at = Some(expires_at);
+    artifact_record.updated_at = artifact_now + chrono::Duration::milliseconds(3);
+    artifact_record.terminal_at = Some(artifact_record.updated_at);
+    let artifact = BackgroundSubagentArtifact {
+        artifact_ref: artifact_ref.clone(),
+        namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+        attempt_id: artifact_attempt,
+        content: full_content.clone(),
+        digest,
+        size_bytes: u64::try_from(full_content.len()).expect("artifact size"),
+        created_at: artifact_record.updated_at,
+        expires_at,
+    };
+    let artifact_commit = BackgroundSubagentTerminalCommit {
+        record: artifact_record.clone(),
+        artifact: Some(artifact.clone()),
+        artifact_limits: Some(BackgroundSubagentArtifactLimits {
+            max_single_bytes: 1_000_000,
+            max_retained_bytes: 10_000_000,
+        }),
+    };
+    let mut missing_artifact_limits = artifact_commit.clone();
+    missing_artifact_limits.artifact_limits = None;
+    assert!(matches!(
+        store
+            .commit_background_subagent_terminal(missing_artifact_limits)
+            .await,
+        Err(SessionStoreError::Conflict(_))
+    ));
+    let mut insufficient_artifact_limits = artifact_commit.clone();
+    insufficient_artifact_limits.artifact_limits = Some(BackgroundSubagentArtifactLimits {
+        max_single_bytes: artifact.size_bytes.saturating_sub(1),
+        max_retained_bytes: artifact.size_bytes,
+    });
+    assert!(matches!(
+        store
+            .commit_background_subagent_terminal(insufficient_artifact_limits)
+            .await,
+        Err(SessionStoreError::QuotaExceeded(_))
+    ));
+    store
+        .commit_background_subagent_terminal(artifact_commit.clone())
+        .await
+        .expect("atomically commit artifact-backed terminal result");
+    assert_eq!(
+        store
+            .load_background_subagent_artifact(&artifact_ref)
+            .await
+            .expect("load complete artifact"),
+        artifact
+    );
+    store
+        .commit_background_subagent_terminal(artifact_commit.clone())
+        .await
+        .expect("exact artifact commit retry is idempotent");
+    let completed_consumer_claim_id = format!("artifact-completed-consumer-{suffix}");
+    store
+        .claim_background_subagent_delivery(
+            &artifact_record.attempt_id,
+            DurableBackgroundSubagentDeliveryClaim {
+                claim_id: completed_consumer_claim_id.clone(),
+                continuation_run_id: Some(parent_run_id.clone()),
+                deadline: Utc::now() - chrono::Duration::milliseconds(1),
+            },
+        )
+        .await
+        .expect("claim artifact result for completed consumer reconciliation");
+    store
+        .claim_background_subagent_delivery(
+            &artifact_record.attempt_id,
+            DurableBackgroundSubagentDeliveryClaim {
+                claim_id: format!("artifact-completed-steal-{suffix}"),
+                continuation_run_id: None,
+                deadline: Utc::now() + chrono::Duration::minutes(1),
+            },
+        )
+        .await
+        .expect_err("claim CAS atomically acknowledges an already-completed consumer");
+    let completed_consumer_delivery = store
+        .load_background_subagent(&artifact_record.attempt_id)
+        .await
+        .expect("load completed consumer delivery");
+    assert_eq!(
+        completed_consumer_delivery.delivery_status,
+        DurableBackgroundSubagentDeliveryStatus::Delivered
+    );
+    assert_eq!(
+        completed_consumer_delivery.continuation_run_id.as_ref(),
+        Some(&parent_run_id)
+    );
+    let aggregate_now = Utc::now();
+    let aggregate_attempt =
+        SubagentAttemptId::from_string(format!("background-artifact-aggregate-{suffix}"));
+    let aggregate_ref = format!("{artifact_ref}:aggregate-overflow");
+    let aggregate_expires_at = aggregate_now + chrono::Duration::minutes(1);
+    let mut aggregate_record = artifact_record.clone();
+    aggregate_record.attempt_id = aggregate_attempt.clone();
+    aggregate_record.agent_id = format!("background-artifact-aggregate-agent-{suffix}");
+    aggregate_record.child_run_id = None;
+    aggregate_record.execution_status = DurableBackgroundSubagentExecutionStatus::Accepted;
+    aggregate_record.result_ref = None;
+    aggregate_record.retention_status = DurableBackgroundSubagentRetentionStatus::Inline;
+    aggregate_record.retention_expires_at = None;
+    aggregate_record.owner_lease.host_instance_id = format!("aggregate-owner-{suffix}");
+    aggregate_record.owner_lease.heartbeat_at = aggregate_now;
+    aggregate_record.owner_lease.lease_expires_at = aggregate_now + chrono::Duration::minutes(5);
+    aggregate_record.accepted_at = aggregate_now;
+    aggregate_record.updated_at = aggregate_now;
+    aggregate_record.terminal_at = None;
+    store
+        .record_background_subagent_acceptance(aggregate_record.clone())
+        .await
+        .expect("accept aggregate quota attempt");
+    aggregate_record.execution_status = DurableBackgroundSubagentExecutionStatus::Starting;
+    aggregate_record.updated_at = aggregate_now + chrono::Duration::milliseconds(1);
+    store
+        .update_background_subagent_execution(aggregate_record.clone())
+        .await
+        .expect("start aggregate quota attempt");
+    aggregate_record.execution_status = DurableBackgroundSubagentExecutionStatus::Running;
+    aggregate_record.updated_at = aggregate_now + chrono::Duration::milliseconds(2);
+    store
+        .update_background_subagent_execution(aggregate_record.clone())
+        .await
+        .expect("run aggregate quota attempt");
+    aggregate_record.execution_status = DurableBackgroundSubagentExecutionStatus::Completed;
+    aggregate_record.result_ref = Some(DurableBackgroundSubagentResultRef {
+        content: Some("oversized-result-preview".to_string()),
+        artifact_ref: Some(aggregate_ref.clone()),
+        digest: Some(artifact.digest.clone()),
+        size_bytes: artifact.size_bytes,
+        ..DurableBackgroundSubagentResultRef::default()
+    });
+    aggregate_record.retention_status = DurableBackgroundSubagentRetentionStatus::Artifact;
+    aggregate_record.retention_expires_at = Some(aggregate_expires_at);
+    aggregate_record.updated_at = aggregate_now + chrono::Duration::milliseconds(3);
+    aggregate_record.terminal_at = Some(aggregate_record.updated_at);
+    let aggregate_overflow = BackgroundSubagentTerminalCommit {
+        record: aggregate_record,
+        artifact: Some(BackgroundSubagentArtifact {
+            artifact_ref: aggregate_ref,
+            namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+            attempt_id: aggregate_attempt,
+            content: full_content.clone(),
+            digest: artifact.digest.clone(),
+            size_bytes: artifact.size_bytes,
+            created_at: aggregate_now + chrono::Duration::milliseconds(3),
+            expires_at: aggregate_expires_at,
+        }),
+        artifact_limits: Some(BackgroundSubagentArtifactLimits {
+            max_single_bytes: artifact.size_bytes,
+            max_retained_bytes: artifact.size_bytes.saturating_mul(2).saturating_sub(1),
+        }),
+    };
+    assert!(matches!(
+        store
+            .commit_background_subagent_terminal(aggregate_overflow)
+            .await,
+        Err(SessionStoreError::QuotaExceeded(_))
+    ));
+    let mut conflicting = artifact_commit.clone();
+    conflicting.artifact.as_mut().expect("artifact").content = "x".repeat(full_content.len());
+    assert!(matches!(
+        store.commit_background_subagent_terminal(conflicting).await,
+        Err(SessionStoreError::Conflict(_))
+    ));
+    assert!(
+        store
+            .expire_background_subagent_retention(
+                LOCAL_SESSION_NAMESPACE,
+                expires_at - chrono::Duration::milliseconds(1),
+                32,
+            )
+            .await
+            .expect("retention before deadline")
+            .is_empty()
+    );
+    let expired = store
+        .expire_background_subagent_retention(
+            LOCAL_SESSION_NAMESPACE,
+            expires_at + chrono::Duration::milliseconds(1),
+            32,
+        )
+        .await
+        .expect("expire artifact");
+    assert_eq!(expired.len(), 1);
+    assert_eq!(
+        expired[0].retention_status,
+        DurableBackgroundSubagentRetentionStatus::Expired
+    );
+    assert_eq!(
+        expired[0].execution_status,
+        DurableBackgroundSubagentExecutionStatus::Completed
+    );
+    assert_eq!(
+        expired[0].delivery_status,
+        DurableBackgroundSubagentDeliveryStatus::Delivered
+    );
+    assert!(matches!(
+        store.load_background_subagent_artifact(&artifact_ref).await,
+        Err(SessionStoreError::NotFound(_))
+    ));
+    let replay = store
+        .commit_background_subagent_terminal(artifact_commit.clone())
+        .await
+        .expect("terminal retry after expiry");
+    assert_eq!(
+        replay.retention_status,
+        DurableBackgroundSubagentRetentionStatus::Expired
+    );
+    let unrelated_content = "unrelated-artifact-content".repeat(32);
+    let unrelated_digest = BackgroundSubagentArtifact::content_digest(&unrelated_content);
+    let unrelated_ref = format!("{artifact_ref}:unrelated-after-expiry");
+    let mut unrelated_after_expiry = artifact_commit;
+    let unrelated_artifact = unrelated_after_expiry
+        .artifact
+        .as_mut()
+        .expect("unrelated replay artifact");
+    unrelated_artifact.artifact_ref.clone_from(&unrelated_ref);
+    unrelated_artifact.content.clone_from(&unrelated_content);
+    unrelated_artifact.digest.clone_from(&unrelated_digest);
+    unrelated_artifact.size_bytes =
+        u64::try_from(unrelated_content.len()).expect("unrelated artifact size");
+    let unrelated_result = unrelated_after_expiry
+        .record
+        .result_ref
+        .as_mut()
+        .expect("unrelated replay terminal evidence");
+    unrelated_result.artifact_ref = Some(unrelated_ref);
+    unrelated_result.digest = Some(unrelated_digest);
+    unrelated_result.size_bytes = unrelated_artifact.size_bytes;
+    assert!(matches!(
+        store
+            .commit_background_subagent_terminal(unrelated_after_expiry)
+            .await,
+        Err(SessionStoreError::Conflict(_))
+    ));
+    assert!(
+        store
+            .expire_background_subagent_retention(
+                LOCAL_SESSION_NAMESPACE,
+                expires_at + chrono::Duration::seconds(1),
+                32,
+            )
+            .await
+            .expect("repeat expiry")
+            .is_empty()
+    );
+
+    let lost_attempt = SubagentAttemptId::from_string(format!("background-lost-{suffix}"));
+    record.attempt_id = lost_attempt.clone();
+    record.agent_id = format!("background-lost-agent-{suffix}");
+    record.execution_status = DurableBackgroundSubagentExecutionStatus::Accepted;
+    record.child_run_id = None;
+    record.continuation_run_id = None;
+    record.result_ref = None;
+    record.delivery_status = DurableBackgroundSubagentDeliveryStatus::Undelivered;
+    record.delivery_claim = None;
+    record.delivered_claim_id = None;
+    record.retention_status = DurableBackgroundSubagentRetentionStatus::Inline;
+    record.retention_expires_at = None;
+    record.accepted_at = Utc::now();
+    record.updated_at = record.accepted_at;
+    record.terminal_at = None;
+    record.owner_lease.host_instance_id = format!("background-foreign-owner-{suffix}");
+    record.owner_lease.fencing_generation = 7;
+    record.owner_lease.heartbeat_at = record.accepted_at;
+    record.owner_lease.lease_expires_at = record.accepted_at + chrono::Duration::minutes(1);
+    store
+        .record_background_subagent_acceptance(record)
+        .await
+        .expect("record process-local attempt");
+    store
+        .reconcile_background_subagents(LOCAL_SESSION_NAMESPACE, Utc::now())
+        .await
+        .expect("preserve unexpired foreign owner");
+    assert_eq!(
+        store
+            .load_background_subagent(&lost_attempt)
+            .await
+            .expect("load live foreign attempt")
+            .execution_status,
+        DurableBackgroundSubagentExecutionStatus::Accepted
+    );
+    store
+        .heartbeat_background_subagent(
+            &lost_attempt,
+            "stale-owner",
+            7,
+            Utc::now() + chrono::Duration::minutes(2),
+        )
+        .await
+        .expect_err("foreign owner heartbeat must be fenced");
+    let heartbeat = store
+        .heartbeat_background_subagent(
+            &lost_attempt,
+            &format!("background-foreign-owner-{suffix}"),
+            7,
+            Utc::now() + chrono::Duration::minutes(2),
+        )
+        .await
+        .expect("current owner heartbeat");
+    store
+        .reconcile_background_subagents(
+            LOCAL_SESSION_NAMESPACE,
+            heartbeat.owner_lease.lease_expires_at + chrono::Duration::milliseconds(1),
+        )
+        .await
+        .expect("reconcile expired process owner");
+    let lost = store
+        .load_background_subagent(&lost_attempt)
+        .await
+        .expect("load interrupted attempt");
+    assert_eq!(
+        lost.execution_status,
+        DurableBackgroundSubagentExecutionStatus::Failed
+    );
+    assert_eq!(lost.failure_category.as_deref(), Some("host_process_lost"));
+    let lost_retention_deadline = lost
+        .retention_expires_at
+        .expect("reconciliation retention deadline");
+    let reconciled_expiry = store
+        .expire_background_subagent_retention(
+            LOCAL_SESSION_NAMESPACE,
+            lost_retention_deadline + chrono::Duration::milliseconds(1),
+            32,
+        )
+        .await
+        .expect("expire reconciled terminal retention");
+    let expired_lost = reconciled_expiry
+        .iter()
+        .find(|expired| expired.attempt_id == lost_attempt)
+        .expect("reconciled terminal was included in retention expiry");
+    assert_eq!(
+        expired_lost.retention_status,
+        DurableBackgroundSubagentRetentionStatus::Expired
+    );
+    assert!(
+        expired_lost
+            .result_ref
+            .as_ref()
+            .expect("expired reconciled result reference")
+            .error
+            .is_none()
+    );
+    let reconciled_replay = store
+        .record_background_subagent_terminal(lost.clone())
+        .await
+        .expect("exact reconciled terminal replay after retention expiry");
+    assert_eq!(
+        reconciled_replay.retention_status,
+        DurableBackgroundSubagentRetentionStatus::Expired
+    );
+    let mut forged_reconciled_terminal = lost.clone();
+    forged_reconciled_terminal
+        .result_ref
+        .as_mut()
+        .expect("reconciled terminal result")
+        .error = Some("forged host restart failure".to_string());
+    assert!(matches!(
+        store
+            .record_background_subagent_terminal(forged_reconciled_terminal)
+            .await,
+        Err(SessionStoreError::Conflict(_))
+    ));
+
+    let expired_now = Utc::now();
+    let expired_attempt =
+        SubagentAttemptId::from_string(format!("background-expired-owner-{suffix}"));
+    let mut expired_owner = lost.clone();
+    expired_owner.attempt_id = expired_attempt.clone();
+    expired_owner.agent_id = format!("background-expired-owner-agent-{suffix}");
+    expired_owner.execution_status = DurableBackgroundSubagentExecutionStatus::Accepted;
+    expired_owner.child_run_id = None;
+    expired_owner.continuation_run_id = None;
+    expired_owner.result_ref = None;
+    expired_owner.failure_category = None;
+    expired_owner.delivery_status = DurableBackgroundSubagentDeliveryStatus::Undelivered;
+    expired_owner.delivery_claim = None;
+    expired_owner.delivered_claim_id = None;
+    expired_owner.automatic_continuation_suppressed_by_run_id = None;
+    expired_owner.retention_status = DurableBackgroundSubagentRetentionStatus::Inline;
+    expired_owner.retention_expires_at = None;
+    expired_owner.owner_lease.host_instance_id = format!("expired-owner-{suffix}");
+    expired_owner.owner_lease.heartbeat_at = expired_now;
+    expired_owner.owner_lease.lease_expires_at = expired_now + chrono::Duration::milliseconds(500);
+    expired_owner.accepted_at = expired_owner.owner_lease.heartbeat_at;
+    expired_owner.updated_at = expired_owner.accepted_at;
+    expired_owner.terminal_at = None;
+    let mut already_expired = expired_owner.clone();
+    already_expired.attempt_id =
+        SubagentAttemptId::from_string(format!("background-already-expired-{suffix}"));
+    already_expired.agent_id = format!("background-already-expired-agent-{suffix}");
+    already_expired.owner_lease.heartbeat_at = expired_now - chrono::Duration::minutes(2);
+    already_expired.owner_lease.lease_expires_at = expired_now - chrono::Duration::minutes(1);
+    already_expired.accepted_at = already_expired.owner_lease.heartbeat_at;
+    already_expired.updated_at = already_expired.accepted_at;
+    store
+        .record_background_subagent_acceptance(already_expired)
+        .await
+        .expect_err("store-owned now rejects an already-expired acceptance lease");
+    store
+        .record_background_subagent_acceptance(expired_owner.clone())
+        .await
+        .expect("record short-lived owner for fencing contract");
+    tokio::time::sleep(std::time::Duration::from_millis(550)).await;
+    let mut expired_update = expired_owner.clone();
+    expired_update.execution_status = DurableBackgroundSubagentExecutionStatus::Starting;
+    expired_update.updated_at = expired_now;
+    store
+        .update_background_subagent_execution(expired_update)
+        .await
+        .expect_err("expired owner cannot advance execution");
+    store
+        .heartbeat_background_subagent(
+            &expired_attempt,
+            &expired_owner.owner_lease.host_instance_id,
+            expired_owner.owner_lease.fencing_generation,
+            expired_now + chrono::Duration::minutes(1),
+        )
+        .await
+        .expect_err("expired owner cannot revive its lease");
+    let mut expired_terminal = expired_owner;
+    expired_terminal.execution_status = DurableBackgroundSubagentExecutionStatus::Failed;
+    expired_terminal.failure_category = Some("execution_error".to_string());
+    expired_terminal.result_ref = Some(DurableBackgroundSubagentResultRef {
+        error: Some("stale terminal write".to_string()),
+        size_bytes: 20,
+        ..DurableBackgroundSubagentResultRef::default()
+    });
+    expired_terminal.updated_at = expired_now;
+    expired_terminal.terminal_at = Some(expired_now);
+    expired_terminal.retention_expires_at = Some(expired_now + chrono::Duration::hours(1));
+    store
+        .record_background_subagent_terminal(expired_terminal)
+        .await
+        .expect_err("expired owner cannot commit first terminal evidence");
+
+    let replay_now = Utc::now();
+    let replay_attempt =
+        SubagentAttemptId::from_string(format!("background-terminal-replay-{suffix}"));
+    let mut replay_record = lost;
+    replay_record.attempt_id = replay_attempt;
+    replay_record.agent_id = format!("background-terminal-replay-agent-{suffix}");
+    replay_record.execution_status = DurableBackgroundSubagentExecutionStatus::Accepted;
+    replay_record.child_run_id = None;
+    replay_record.continuation_run_id = None;
+    replay_record.result_ref = None;
+    replay_record.failure_category = None;
+    replay_record.delivery_status = DurableBackgroundSubagentDeliveryStatus::Undelivered;
+    replay_record.delivery_claim = None;
+    replay_record.delivered_claim_id = None;
+    replay_record.automatic_continuation_suppressed_by_run_id = None;
+    replay_record.retention_status = DurableBackgroundSubagentRetentionStatus::Inline;
+    replay_record.retention_expires_at = None;
+    replay_record.owner_lease.host_instance_id = format!("terminal-replay-owner-{suffix}");
+    replay_record.owner_lease.heartbeat_at = replay_now;
+    replay_record.owner_lease.lease_expires_at = replay_now + chrono::Duration::milliseconds(100);
+    replay_record.accepted_at = replay_now;
+    replay_record.updated_at = replay_now;
+    replay_record.terminal_at = None;
+    store
+        .record_background_subagent_acceptance(replay_record.clone())
+        .await
+        .expect("record short-lived terminal replay owner");
+    replay_record.execution_status = DurableBackgroundSubagentExecutionStatus::Failed;
+    replay_record.failure_category = Some("execution_error".to_string());
+    replay_record.result_ref = Some(DurableBackgroundSubagentResultRef {
+        error: Some("terminal before expiry".to_string()),
+        size_bytes: 22,
+        ..DurableBackgroundSubagentResultRef::default()
+    });
+    replay_record.updated_at = replay_now + chrono::Duration::milliseconds(1);
+    replay_record.terminal_at = Some(replay_record.updated_at);
+    replay_record.retention_expires_at = Some(replay_now + chrono::Duration::hours(1));
+    store
+        .record_background_subagent_terminal(replay_record.clone())
+        .await
+        .expect("commit terminal before owner expiry");
+    tokio::time::sleep(std::time::Duration::from_millis(125)).await;
+    store
+        .record_background_subagent_terminal(replay_record)
+        .await
+        .expect("exact terminal replay remains valid after owner expiry");
 }
 
 fn resumable_state(

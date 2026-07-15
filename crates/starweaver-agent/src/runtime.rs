@@ -32,8 +32,9 @@ use thiserror::Error;
 
 use crate::{
     AgentApp, AgentBuilder, AgentHitlError, AgentHitlResults, AgentRunOptions, AgentSession,
-    AgentStreamCompletion, AgentStreamError, AgentStreamHandle, AgentStreamOptions, MediaUploader,
-    SkillRegistry, SkillScanReport, SubagentConfig, SubagentDelegationMode, SubagentRegistry,
+    AgentStreamCompletion, AgentStreamError, AgentStreamHandle, AgentStreamOptions,
+    BackgroundSubagentSupervisor, MediaUploader, SkillRegistry, SkillScanReport, SubagentConfig,
+    SubagentDelegationMode, SubagentRegistry,
 };
 
 const DURABLE_SESSION_ID_METADATA_KEY: &str = "starweaver.durable_session_id";
@@ -398,6 +399,16 @@ impl AgentRuntimeBuilder {
     #[must_use]
     pub fn subagent_delegation_mode(mut self, mode: SubagentDelegationMode) -> Self {
         self.builder = self.builder.subagent_delegation_mode(mode);
+        self
+    }
+
+    /// Inject a host-owned background-subagent supervisor.
+    #[must_use]
+    pub fn background_subagent_supervisor(
+        mut self,
+        supervisor: Arc<BackgroundSubagentSupervisor>,
+    ) -> Self {
+        self.builder = self.builder.background_subagent_supervisor(supervisor);
         self
     }
 

@@ -2,7 +2,7 @@
   "identity": {
     "name": "starweaver.host",
     "major": 1,
-    "revision": "2026-07-11",
+    "revision": "2026-07-14",
     "features": [
       "sessions",
       "runs",

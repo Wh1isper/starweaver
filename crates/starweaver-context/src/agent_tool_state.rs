@@ -1,6 +1,6 @@
 //! Durable agent-owned state used by tool bundles.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use starweaver_core::Metadata;
@@ -49,6 +49,13 @@ pub struct AgentToolState {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub loaded_tool_namespaces: Vec<String>,
+    /// Applied background-subagent context-delta operation ids.
+    #[serde(
+        default,
+        rename = "background_context_delta_ids",
+        skip_serializing_if = "BTreeSet::is_empty"
+    )]
+    pub background_context_delta_ids: BTreeSet<String>,
 }
 
 impl std::fmt::Debug for AgentToolState {
@@ -64,6 +71,10 @@ impl std::fmt::Debug for AgentToolState {
             .field("tasks", &self.tasks)
             .field("loaded_tool_names", &self.loaded_tool_names)
             .field("loaded_tool_namespaces", &self.loaded_tool_namespaces)
+            .field(
+                "background_context_delta_ids",
+                &self.background_context_delta_ids,
+            )
             .finish()
     }
 }

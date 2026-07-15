@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap, VecDeque},
     env,
     io::IsTerminal as _,
     sync::mpsc,
@@ -40,6 +40,29 @@ struct ActiveTuiRun {
     cancelling: bool,
 }
 
+struct TuiRuntimeShutdownGuard {
+    coordinator: Option<CliRuntimeCoordinator>,
+}
+
+impl TuiRuntimeShutdownGuard {
+    fn shutdown(&mut self) -> CliResult<()> {
+        let Some(coordinator) = self.coordinator.as_ref() else {
+            return Ok(());
+        };
+        coordinator.shutdown(TUI_BACKGROUND_SHUTDOWN_TIMEOUT)?;
+        self.coordinator = None;
+        Ok(())
+    }
+}
+
+impl Drop for TuiRuntimeShutdownGuard {
+    fn drop(&mut self) {
+        if let Some(coordinator) = self.coordinator.as_ref() {
+            let _ = coordinator.shutdown(TUI_BACKGROUND_SHUTDOWN_TIMEOUT);
+        }
+    }
+}
+
 enum TuiRunMessage {
     Stream(Box<AgentStreamRecord>),
     Completed(CompletedPromptRun),
@@ -49,6 +72,7 @@ enum TuiRunMessage {
 const TUI_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const TUI_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(33);
 const TUI_MIN_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const TUI_BACKGROUND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl CliService {
     pub(super) fn tui(&mut self, command: &TuiCommand) -> CliResult<String> {
@@ -184,14 +208,32 @@ impl CliService {
             state.set_snapshot(&snapshot);
         }
         let mut tui = crate::tui::InteractiveTui::enter()?;
+        let mut coordinator_config = self.config.clone();
+        coordinator_config.oauth_refresh.enabled = false;
+        let coordinator = CliRuntimeCoordinator::new(coordinator_config)?;
+        let mut shutdown_guard = TuiRuntimeShutdownGuard {
+            coordinator: Some(coordinator.clone()),
+        };
         let mut active_run: Option<ActiveTuiRun> = None;
         let mut queued_prompt: Option<(PromptInput, String, Option<GoalCommandOptions>)> = None;
+        let mut pending_background_wakes = HashMap::<String, VecDeque<String>>::new();
+        let mut suppressed_background_sessions = BTreeSet::<String>::new();
         let mut persisted_profile = state.profile.clone();
         let mut persisted_render_mode = initial_render_mode;
         let mut dirty = true;
         let now = Instant::now();
         let mut last_render = now.checked_sub(TUI_FRAME_INTERVAL).unwrap_or(now);
         loop {
+            if let Some(session_id) = state.session_id.as_deref() {
+                for completion in coordinator.take_background_completions(session_id) {
+                    let attempts = pending_background_wakes
+                        .entry(completion.session_id)
+                        .or_default();
+                    if !attempts.contains(&completion.attempt_id) {
+                        attempts.push_back(completion.attempt_id);
+                    }
+                }
+            }
             while let Some(run) = active_run.as_mut() {
                 match run.receiver.try_recv() {
                     Ok(TuiRunMessage::Stream(record)) => {
@@ -202,6 +244,7 @@ impl CliService {
                         let was_cancelled = completed.status == "cancelled";
                         let failed = completed.status == "failed";
                         if was_cancelled {
+                            suppressed_background_sessions.insert(completed.session_id.clone());
                             state.session_id = Some(completed.session_id.clone());
                             state.cancel_run("cancelled by user");
                         } else if failed {
@@ -217,15 +260,20 @@ impl CliService {
                             && !failed
                             && let Some((prompt, display_prompt, goal)) = queued_prompt.take()
                         {
+                            if let Some(session_id) = state.session_id.as_ref() {
+                                pending_background_wakes.remove(session_id);
+                            }
                             state.begin_run(&display_prompt);
                             active_run = Some(spawn_tui_run(
                                 &self.config,
+                                coordinator.clone(),
                                 command,
                                 state.session_id.clone(),
                                 Some(state.session_affinity_id.clone()),
                                 prompt,
                                 Some(state.profile.clone()),
                                 goal,
+                                None,
                             ));
                         }
                         break;
@@ -246,6 +294,33 @@ impl CliService {
                 }
             }
 
+            if active_run.is_none()
+                && let Some(session_id) = state.session_id.clone()
+                && !suppressed_background_sessions.contains(&session_id)
+            {
+                let next_attempt = pending_background_wakes
+                    .get_mut(&session_id)
+                    .and_then(VecDeque::pop_front)
+                    .filter(|attempt_id| {
+                        coordinator.background_completion_is_undelivered(&session_id, attempt_id)
+                    });
+                if let Some(attempt_id) = next_attempt {
+                    state.begin_background_continuation();
+                    active_run = Some(spawn_tui_run(
+                        &self.config,
+                        coordinator.clone(),
+                        command,
+                        Some(session_id),
+                        Some(state.session_affinity_id.clone()),
+                        PromptInput::text(""),
+                        Some(state.profile.clone()),
+                        None,
+                        Some(attempt_id),
+                    ));
+                    dirty = true;
+                }
+            }
+
             if dirty && last_render.elapsed() >= TUI_FRAME_INTERVAL {
                 tui.render(&mut state)?;
                 last_render = Instant::now();
@@ -261,6 +336,7 @@ impl CliService {
             let event = crate::tui::InteractiveTui::poll_event(&mut state, poll_timeout)?;
             match event {
                 Some(crate::tui::InteractiveTuiEvent::Quit) if active_run.is_none() => {
+                    shutdown_guard.shutdown()?;
                     return Ok(());
                 }
                 Some(crate::tui::InteractiveTuiEvent::Cancel) => {
@@ -363,15 +439,21 @@ impl CliService {
                         dirty = true;
                         continue;
                     }
+                    if let Some(session_id) = state.session_id.as_ref() {
+                        suppressed_background_sessions.remove(session_id);
+                        pending_background_wakes.remove(session_id);
+                    }
                     state.begin_run(&display_prompt);
                     active_run = Some(spawn_tui_run(
                         &self.config,
+                        coordinator.clone(),
                         command,
                         state.session_id.clone(),
                         Some(state.session_affinity_id.clone()),
                         prompt,
                         Some(state.profile.clone()),
                         goal,
+                        None,
                     ));
                     dirty = true;
                 }
@@ -388,24 +470,24 @@ impl CliService {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_tui_run(
     config: &CliConfig,
+    coordinator: CliRuntimeCoordinator,
     command: &TuiCommand,
     session_id: Option<String>,
     session_affinity_id: Option<String>,
     prompt_input: PromptInput,
     profile: Option<String>,
     goal: Option<GoalCommandOptions>,
+    background_attempt_id: Option<String>,
 ) -> ActiveTuiRun {
     let command = command.clone();
     let (ui_sender, receiver) = mpsc::channel::<TuiRunMessage>();
-    let mut config = config.clone();
-    config.oauth_refresh.enabled = false;
-    let environment_attachments = match tui_environment_attachments(&config) {
+    let environment_attachments = match tui_environment_attachments(config) {
         Ok(attachments) => attachments,
         Err(error) => {
             let _ = ui_sender.send(TuiRunMessage::Failed(error.to_string()));
-            let coordinator = CliRuntimeCoordinator::new(config);
             return ActiveTuiRun {
                 receiver,
                 coordinator,
@@ -414,7 +496,6 @@ fn spawn_tui_run(
             };
         }
     };
-    let coordinator = CliRuntimeCoordinator::new(config);
     let run_command = RunCommand {
         prompt: Some(prompt_input.text.clone()),
         prompt_parts: Vec::new(),
@@ -435,7 +516,11 @@ fn spawn_tui_run(
         session_affinity_id,
         environment_attachments,
     };
-    let started = match coordinator.start_run_with_raw(run_command, Some(prompt_input)) {
+    let started = match coordinator.start_run_with_raw(
+        run_command,
+        Some(prompt_input),
+        background_attempt_id,
+    ) {
         Ok(started) => started,
         Err(error) => {
             let _ = ui_sender.send(TuiRunMessage::Failed(error.to_string()));

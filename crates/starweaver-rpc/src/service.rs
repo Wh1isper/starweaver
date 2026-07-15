@@ -12,25 +12,28 @@ use serde_json::{Value, json};
 use starweaver_core::{ProtocolIdentity, RunId, SessionId};
 use starweaver_rpc_core::{
     HostInitializeParams, INVALID_PARAMS, JsonRpcOutcome, METHOD_NOT_FOUND, NOT_INITIALIZED,
-    RpcError, RunInput, error_response, handle_json_rpc_text_async, host_protocol_identity,
+    RpcError, RunInput, SessionSearchFeatureCapabilities, SessionSearchParams, SessionSearchResult,
+    error_response, handle_json_rpc_text_async, host_protocol_identity_with_session_search,
     replay_cursor_from_params, replay_result, validate_host_initialize,
 };
 use starweaver_runtime::AgentInput;
 use starweaver_session::{
-    ApprovalStatus, ExecutionStatus, InputPart, SessionFilter, SessionStore, SessionStoreResult,
+    ApprovalStatus, ExecutionStatus, InputPart, SessionFilter, SessionSearchError,
+    SessionSearchProvider, SessionSearchScope, SessionStore, SessionStoreResult,
 };
-use starweaver_storage::SqliteStorage;
+use starweaver_storage::{LocalSessionSearchLimits, LocalSessionSearchProvider, SqliteStorage};
 use starweaver_stream::ReplayScope;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
 use crate::{
-    RpcAgentCatalog, RpcConfig, RpcHostError, RpcRunRequest, RpcRuntimeCoordinator,
+    RpcAgentCatalog, RpcConfig, RpcHostError, RpcHostResult, RpcRunRequest, RpcRuntimeCoordinator,
     environment_manager::EnvironmentAttachmentManager,
+    session_management::command_fingerprint,
     state::{read_current_session, write_current_session},
 };
 
-const MAX_HTTP_RUN_AWAIT: Duration = Duration::from_secs(30);
+const MAX_RUN_AWAIT: Duration = Duration::from_secs(30);
 
 async fn run_storage<T, F>(storage: SqliteStorage, operation: F) -> Result<T, RpcError>
 where
@@ -63,6 +66,8 @@ pub struct RpcService {
     storage: SqliteStorage,
     coordinator: RpcRuntimeCoordinator,
     environment_manager: EnvironmentAttachmentManager,
+    session_search: Option<Arc<dyn SessionSearchProvider>>,
+    session_search_scope: SessionSearchScope,
     notifications: RpcNotificationMode,
     runtime: Arc<Runtime>,
 }
@@ -134,16 +139,47 @@ impl RpcService {
             storage.clone(),
             environment_manager.clone(),
         );
+        let session_search_scope =
+            SessionSearchScope::local(config.database_path.to_string_lossy().into_owned());
+        let session_search = if config.session_search.enabled {
+            let limits = LocalSessionSearchLimits {
+                max_query_bytes: config.session_search.max_query_bytes,
+                max_page_size: config.session_search.max_page_size,
+                max_display_files: config.session_search.max_display_files,
+                max_total_display_bytes: config.session_search.max_total_display_bytes,
+                max_display_hits: config.session_search.max_display_hits,
+                max_scan_duration: Duration::from_millis(config.session_search.scan_timeout_ms),
+                ..LocalSessionSearchLimits::default()
+            };
+            let mut provider = LocalSessionSearchProvider::new(
+                Arc::new(storage.session_store()),
+                &session_search_scope,
+            )
+            .with_limits(limits);
+            if let Some(root) = config.session_search.display_root.as_ref() {
+                provider = provider.with_display_root(root.clone());
+            }
+            Some(Arc::new(provider) as Arc<dyn SessionSearchProvider>)
+        } else {
+            None
+        };
         let runtime = Runtime::new().map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+        runtime.block_on(coordinator.reconcile_startup())?;
         Ok(Self {
             config,
             catalog,
             storage,
             coordinator,
             environment_manager,
+            session_search,
+            session_search_scope,
             notifications,
             runtime: Arc::new(runtime),
         })
+    }
+
+    pub(crate) fn shutdown_owned_runtime(&self, timeout: Duration) -> RpcHostResult<()> {
+        self.runtime.block_on(self.coordinator.shutdown(timeout))
     }
 
     /// Open an uninitialized stateful protocol connection.
@@ -173,7 +209,13 @@ impl RpcService {
     async fn dispatch(&self, method: &str, params: &Value) -> Result<Value, RpcError> {
         match method {
             "initialize" => self.initialize_result(params),
-            "shutdown" => Ok(json!({"status": "shutdown"})),
+            "shutdown" => {
+                self.coordinator
+                    .shutdown(Duration::from_secs(10))
+                    .await
+                    .map_err(rpc_error)?;
+                Ok(json!({"status": "shutdown"}))
+            }
             "diagnostics.get" => Ok(json!({
                 "sdk": starweaver_core::sdk_name(),
                 "version": env!("CARGO_PKG_VERSION"),
@@ -268,6 +310,31 @@ impl RpcService {
                     .map_err(rpc_error)?;
                 Ok(json!({"sessions": sessions}))
             }
+            "session.search" => {
+                let provider = self.session_search.as_ref().ok_or_else(|| {
+                    RpcError::new(
+                        starweaver_rpc_core::UNSUPPORTED_FEATURE,
+                        "session.search is not installed",
+                    )
+                })?;
+                let params = serde_json::from_value::<SessionSearchParams>(params.clone())
+                    .map_err(|error| {
+                        RpcError::new(
+                            INVALID_PARAMS,
+                            format!("invalid session.search params: {error}"),
+                        )
+                    })?;
+                let page = provider
+                    .search(&self.session_search_scope, params.into_query())
+                    .await
+                    .map_err(session_search_error)?;
+                serde_json::to_value(SessionSearchResult::from(page)).map_err(|error| {
+                    RpcError::new(
+                        starweaver_rpc_core::SERVER_ERROR,
+                        format!("failed to encode session search result: {error}"),
+                    )
+                })
+            }
             "session.get" => {
                 let session_id = SessionId::from_string(required_string(params, "sessionId")?);
                 let runs_limit = optional_usize(params, "runs")?.unwrap_or(20);
@@ -298,12 +365,16 @@ impl RpcService {
             }
             "session.delete" => {
                 let session_id = SessionId::from_string(required_string(params, "sessionId")?);
-                let storage_session_id = session_id.clone();
-                let deleted = run_storage(self.storage.clone(), move |storage| {
-                    storage.delete_session(&storage_session_id)
-                })
-                .await?;
-                Ok(json!({"sessionId": session_id, "deleted": deleted}))
+                let session = self
+                    .coordinator
+                    .tombstone_session_fenced(&session_id, Duration::from_secs(10))
+                    .await
+                    .map_err(rpc_error)?;
+                Ok(json!({
+                    "sessionId": session_id,
+                    "deleted": session.status == starweaver_session::SessionStatus::Deleted,
+                    "revision": session.revision,
+                }))
             }
             "run.start" => self.run_start(params).await,
             "run.prompt" => self.run_prompt(params).await,
@@ -322,15 +393,9 @@ impl RpcService {
                     .get("timeoutMs")
                     .and_then(Value::as_u64)
                     .map(Duration::from_millis);
-                let timeout = if self.notifications == RpcNotificationMode::ReplayOnly {
-                    Some(
-                        requested
-                            .unwrap_or(MAX_HTTP_RUN_AWAIT)
-                            .min(MAX_HTTP_RUN_AWAIT),
-                    )
-                } else {
-                    requested
-                };
+                // Both stdio and HTTP prohibit unbounded blocking so a control connection cannot
+                // be held forever by run.await.
+                let timeout = Some(requested.unwrap_or(MAX_RUN_AWAIT).min(MAX_RUN_AWAIT));
                 let status = self
                     .coordinator
                     .await_terminal(&session_id, &run_id, timeout)
@@ -339,19 +404,21 @@ impl RpcService {
                 Ok(json!({"status": status}))
             }
             "run.cancel" => {
-                let run_id = RunId::from_string(required_string(params, "runId")?);
+                let (session_id, run_id) = run_identity(params)?;
                 self.coordinator
                     .cancel(
+                        &session_id,
                         &run_id,
                         params
                             .get("reason")
                             .and_then(Value::as_str)
                             .map(ToString::to_string),
                     )
+                    .await
                     .map_err(rpc_error)
             }
             "run.steer" => {
-                let run_id = RunId::from_string(required_string(params, "runId")?);
+                let (session_id, run_id) = run_identity(params)?;
                 let text = required_string(params, "text")?;
                 let steering_id = params
                     .get("steeringId")
@@ -361,7 +428,7 @@ impl RpcService {
                         ToString::to_string,
                     );
                 self.coordinator
-                    .steer(&run_id, steering_id, text)
+                    .steer(&session_id, &run_id, steering_id, text)
                     .await
                     .map_err(rpc_error)
             }
@@ -567,8 +634,9 @@ impl RpcService {
 
     async fn run_prompt(&self, params: &Value) -> Result<Value, RpcError> {
         let started = self.start_run_from_params(params).await?;
-        let timeout =
-            (self.notifications == RpcNotificationMode::ReplayOnly).then_some(MAX_HTTP_RUN_AWAIT);
+        // run.prompt is bounded on every transport; clients use run.start plus status/replay for
+        // long-lived work.
+        let timeout = Some(MAX_RUN_AWAIT);
         let status = self
             .coordinator
             .await_terminal(&started.session_id, &started.run_id, timeout)
@@ -589,6 +657,9 @@ impl RpcService {
         params: &Value,
     ) -> Result<crate::RpcStartedRun, RpcError> {
         let mut request = run_request(&self.catalog, params)?;
+        // HTTP/replay-only callers do not acquire model-visible mutation authority merely by
+        // selecting a profile. A future typed HTTP session-management scope can opt in.
+        request.install_session_management = self.notifications == RpcNotificationMode::Live;
         let refs = starweaver_rpc_core::environment_attachment_refs(params)?;
         let materialized = self
             .environment_manager
@@ -606,10 +677,14 @@ impl RpcService {
             (Ok(started), Ok(())) => Ok(started),
             (Err(error), Ok(())) => Err(error),
             (Ok(started), Err(cleanup)) => {
-                let _receipt = self.coordinator.cancel(
-                    &started.run_id,
-                    Some("environment lease reservation cleanup failed".to_string()),
-                );
+                let _receipt = self
+                    .coordinator
+                    .cancel(
+                        &started.session_id,
+                        &started.run_id,
+                        Some("environment lease reservation cleanup failed".to_string()),
+                    )
+                    .await;
                 Err(RpcError::new(
                     starweaver_rpc_core::SERVER_ERROR,
                     format!(
@@ -634,7 +709,7 @@ impl RpcService {
         let cursor = replay_cursor_from_params(params, scope)?;
         let events = self
             .coordinator
-            .replay(&run_id, cursor, None)
+            .replay(&session_id, &run_id, cursor, None)
             .await
             .map_err(rpc_error)?;
         let status = self
@@ -658,7 +733,7 @@ impl RpcService {
         let limit = optional_usize(params, "limit")?;
         let events = self
             .coordinator
-            .replay(&run_id, cursor.clone(), limit)
+            .replay(&session_id, &run_id, cursor.clone(), limit)
             .await
             .map_err(rpc_error)?;
         let next_sequence = events.last().map_or_else(
@@ -703,8 +778,15 @@ impl RpcService {
             })?;
         validate_host_initialize(&params)?;
         let live = self.notifications == RpcNotificationMode::Live;
+        let search_capabilities =
+            self.session_search
+                .as_ref()
+                .map(|provider| SessionSearchFeatureCapabilities {
+                    available: true,
+                    provider: provider.capabilities(),
+                });
         Ok(json!({
-            "protocol": host_protocol_identity(),
+            "protocol": host_protocol_identity_with_session_search(self.session_search.is_some()),
             "serverInfo": {
                 "name": "starweaver-rpc",
                 "version": env!("CARGO_PKG_VERSION"),
@@ -729,6 +811,7 @@ impl RpcService {
                 "defaultStreamPayload": "display_message",
                 "approvals": true,
                 "deferred": true,
+                "sessionSearch": search_capabilities,
             },
             "config": {
                 "globalDir": self.config.state_dir.parent(),
@@ -776,17 +859,35 @@ fn run_request(catalog: &RpcAgentCatalog, params: &Value) -> Result<RpcRunReques
         .unwrap_or_else(|| catalog.default_profile())
         .to_string();
     catalog.profile(&profile)?;
+    let session_id = optional_session_id(params, "sessionId");
+    let idempotency_key = params
+        .get("idempotencyKey")
+        .and_then(Value::as_str)
+        .map_or_else(|| format!("run_{}", Uuid::new_v4()), ToString::to_string);
+    let restore_from_run_id = params
+        .get("restoreFromRunId")
+        .or_else(|| params.get("runId"))
+        .and_then(Value::as_str)
+        .map(|value| RunId::from_string(value.to_string()));
+    let fingerprint_input = json!({
+        "sessionId": session_id,
+        "profile": profile,
+        "input": durable_input,
+        "restoreFromRunId": restore_from_run_id,
+        "environmentAttachments": params.get("environmentAttachments"),
+    });
+    let command_fingerprint = command_fingerprint("rpc_run_start", &fingerprint_input)
+        .map_err(|error| RpcError::new(INVALID_PARAMS, error.to_string()))?;
     Ok(RpcRunRequest {
         durable_input,
         input,
-        session_id: optional_session_id(params, "sessionId"),
-        restore_from_run_id: params
-            .get("restoreFromRunId")
-            .or_else(|| params.get("runId"))
-            .and_then(Value::as_str)
-            .map(|value| RunId::from_string(value.to_string())),
+        session_id,
+        restore_from_run_id,
         profile,
         environment_attachments: Vec::new(),
+        idempotency_key,
+        command_fingerprint,
+        install_session_management: false,
     })
 }
 
@@ -884,6 +985,27 @@ fn rpc_error(error: impl Into<RpcHostError>) -> RpcError {
     error.into().into()
 }
 
+fn session_search_error(error: SessionSearchError) -> RpcError {
+    match error {
+        SessionSearchError::InvalidQuery(message) | SessionSearchError::InvalidCursor(message) => {
+            RpcError::new(INVALID_PARAMS, message)
+        }
+        SessionSearchError::Unsupported(message) => {
+            RpcError::new(starweaver_rpc_core::UNSUPPORTED_FEATURE, message)
+        }
+        SessionSearchError::Unavailable(message) => {
+            RpcError::new(starweaver_rpc_core::SESSION_SEARCH_UNAVAILABLE, message)
+        }
+        SessionSearchError::PermissionDenied => RpcError::new(
+            starweaver_rpc_core::SERVER_ERROR,
+            "session search permission denied",
+        ),
+        SessionSearchError::Failed(_) => {
+            RpcError::new(starweaver_rpc_core::SERVER_ERROR, "session search failed")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -896,7 +1018,7 @@ mod tests {
             "jsonrpc": "2.0",
             "id": id,
             "method": method,
-            "protocol": host_protocol_identity(),
+            "protocol": starweaver_rpc_core::host_protocol_identity(),
             "params": params
         })
         .to_string()
@@ -1097,6 +1219,75 @@ mod tests {
         assert_eq!(capabilities["streamSubscribe"], false);
         assert_eq!(capabilities["environmentAttachments"], true);
         assert_eq!(capabilities["environmentActiveMounts"], true);
+        assert!(
+            result["protocol"]["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature == "session.search")
+        );
+        assert_eq!(capabilities["sessionSearch"]["available"], true);
+        assert_eq!(
+            capabilities["sessionSearch"]["provider"]["provider"],
+            "local"
+        );
+    }
+
+    #[test]
+    fn session_search_uses_rpc_owned_provider_and_typed_projection() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        let service = RpcService::live(config).unwrap();
+        let run = service.handle_text(&request(
+            1,
+            "run.prompt",
+            json!({"prompt": "rpc searchable literal [value]*"}),
+        ));
+        assert!(run.response.unwrap().get("result").is_some());
+        let outcome = service.handle_text(&request(
+            2,
+            "session.search",
+            json!({
+                "query": "[value]*",
+                "sources": ["run_input"],
+                "granularity": "run",
+                "limit": 20
+            }),
+        ));
+        let response = outcome.response.unwrap();
+        let result = &response["result"];
+        assert_eq!(result["hits"].as_array().unwrap().len(), 1);
+        assert_eq!(result["hits"][0]["source"], "run_input");
+        assert_eq!(result["coverage"]["state"], "complete");
+        assert!(result["hits"][0].get("location").is_some());
+        assert!(result["hits"][0]["session"].get("state").is_none());
+    }
+
+    #[test]
+    fn session_search_is_not_advertised_or_dispatched_when_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = RpcConfig::for_tests(temp.path());
+        config.session_search.enabled = false;
+        let service = RpcService::live(config).unwrap();
+        let initialized = service.handle_text(&request(1, "initialize", json!({})));
+        let result = &initialized.response.unwrap()["result"];
+        assert!(
+            !result["protocol"]["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature == "session.search")
+        );
+        assert!(result["capabilities"]["sessionSearch"].is_null());
+        let outcome = service.handle_text(&request(
+            2,
+            "session.search",
+            json!({"query": "anything", "limit": 20}),
+        ));
+        assert_eq!(
+            outcome.response.unwrap()["error"]["code"],
+            starweaver_rpc_core::UNSUPPORTED_FEATURE
+        );
     }
 
     #[test]

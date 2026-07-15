@@ -16,6 +16,7 @@ mod prompt_input;
 mod runner;
 pub(crate) mod runtime_coordinator;
 pub(crate) mod service;
+pub mod session_management;
 mod slash_commands;
 mod tui;
 mod update_check;
@@ -583,6 +584,36 @@ You are a helper.
         assert!(tools.contains(&"delegate".to_string()));
         assert!(tools.contains(&"subagent_info".to_string()));
 
+        let worker_agent = profile
+            .build_agent_with_delegation(starweaver_agent::SubagentDelegationMode::Disabled, None)
+            .unwrap();
+        assert!(
+            !worker_agent
+                .tools()
+                .names()
+                .contains(&"delegate".to_string())
+        );
+        assert!(
+            !worker_agent
+                .tools()
+                .names()
+                .contains(&"subagent_info".to_string())
+        );
+
+        let supervisor = std::sync::Arc::new(starweaver_agent::BackgroundSubagentSupervisor::new());
+        let interactive_agent = profile
+            .build_agent_with_delegation(
+                starweaver_agent::SubagentDelegationMode::Async,
+                Some(supervisor),
+            )
+            .unwrap();
+        let interactive_tools = interactive_agent.tools().names();
+        assert!(interactive_tools.contains(&"delegate".to_string()));
+        assert!(interactive_tools.contains(&"steer_subagent".to_string()));
+        assert!(interactive_tools.contains(&"cancel_subagent".to_string()));
+        assert!(interactive_tools.contains(&"wait_subagent".to_string()));
+        assert!(!interactive_tools.contains(&"__delegate_backend".to_string()));
+
         let run = output(
             temp.path(),
             &[
@@ -692,6 +723,121 @@ prompt = "Review carefully."
             serde_json::from_str(sessions.lines().next().unwrap()).unwrap();
         assert_eq!(value["run_count"], 1);
         assert_eq!(value["head_success_run_id"], value["head_run_id"]);
+    }
+
+    #[test]
+    fn session_search_supports_human_json_and_opaque_pagination() {
+        let temp = tempfile::tempdir().unwrap();
+        output(temp.path(), &["-p", "first searchable prompt"]).unwrap();
+        output(
+            temp.path(),
+            &["-p", "second searchable prompt", "--new-session"],
+        )
+        .unwrap();
+
+        let json_output = output(
+            temp.path(),
+            &[
+                "session",
+                "search",
+                "searchable prompt",
+                "--source",
+                "run_input",
+                "--granularity",
+                "run",
+                "--limit",
+                "1",
+                "--output",
+                "json",
+            ],
+        )
+        .unwrap();
+        let first: serde_json::Value = serde_json::from_str(json_output.trim()).unwrap();
+        assert_eq!(first["hits"].as_array().unwrap().len(), 1);
+        assert_eq!(first["hits"][0]["source"], "run_input");
+        assert_eq!(first["coverage"]["state"], "complete");
+        let cursor = first["nextCursor"].as_str().unwrap();
+        assert!(cursor.starts_with("ssc1."));
+
+        let second = output(
+            temp.path(),
+            &[
+                "session",
+                "search",
+                "searchable prompt",
+                "--source",
+                "run_input",
+                "--granularity",
+                "run",
+                "--limit",
+                "1",
+                "--after",
+                cursor,
+                "--output",
+                "json",
+            ],
+        )
+        .unwrap();
+        let second: serde_json::Value = serde_json::from_str(second.trim()).unwrap();
+        assert_eq!(second["hits"].as_array().unwrap().len(), 1);
+        assert_ne!(
+            first["hits"][0]["session"]["sessionId"],
+            second["hits"][0]["session"]["sessionId"]
+        );
+
+        let human = output(
+            temp.path(),
+            &[
+                "session",
+                "search",
+                "first searchable",
+                "--source",
+                "run_input",
+            ],
+        )
+        .unwrap();
+        assert!(human.contains("session_id=session_"));
+        assert!(human.contains("source=run_input"));
+    }
+
+    #[test]
+    fn session_search_rejects_cursor_reuse_for_another_query() {
+        let temp = tempfile::tempdir().unwrap();
+        output(temp.path(), &["-p", "shared token one"]).unwrap();
+        output(temp.path(), &["-p", "shared token two", "--new-session"]).unwrap();
+        let first = output(
+            temp.path(),
+            &[
+                "session",
+                "search",
+                "shared token",
+                "--source",
+                "run_input",
+                "--limit",
+                "1",
+                "--output",
+                "json",
+            ],
+        )
+        .unwrap();
+        let first: serde_json::Value = serde_json::from_str(first.trim()).unwrap();
+        let cursor = first["nextCursor"].as_str().unwrap();
+        let error = output(
+            temp.path(),
+            &[
+                "session",
+                "search",
+                "different token",
+                "--source",
+                "run_input",
+                "--limit",
+                "1",
+                "--after",
+                cursor,
+            ],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cursor"));
     }
 
     #[test]

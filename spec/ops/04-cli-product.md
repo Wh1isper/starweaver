@@ -15,6 +15,8 @@ Prioritize the CLI as the bootstrap product for Starweaver:
 - CLI commands and TUI interactions over CLI-owned application coordination
 - direct local and remote envd connectivity through shared environment abstractions
 - TUI as the terminal interface of the CLI product
+- async-only model-visible subagent delegation under a TUI-lifetime supervisor
+- query-only model access to the selected CLI session store
 - display-protocol-first rendering
 - persisted `DisplayMessage` records as the session restore source
 - TUI renderers and CLI JSONL over the same Starweaver `DisplayMessage` stream
@@ -99,7 +101,8 @@ Primary postponed migration gaps:
 
 - normalized JSON output for CLI management subsets
 - live stdout streaming for one-shot headless output
-- deeper TUI session/task/HITL/media workflows
+- deeper TUI session/task/HITL/media workflows, including the query-only agent session bundle
+- TUI-lifetime async subagent supervision, completion wake-up, cancellation, and shutdown drain
 - startup asset seeding and config import
 - envd environment attachments, active-run mount/unmount/list controls, and
   lifecycle stream projection
@@ -205,11 +208,27 @@ The `starweaver` launcher may dispatch `starweaver rpc ...` to the separately in
 
 Legacy `starweaver-cli rpc` and `starweaver cli rpc` forms may exist only during a deprecation window as external-process launchers. They must not host RPC handlers in the CLI process and should be removed after standalone migration is complete.
 
+### Agent-Facing Session Query
+
+CLI/TUI injects a narrow query-only session capability into its agent. The model can list/search sessions, inspect bounded session/run summaries, and replay sanitized user-visible display messages from the selected CLI store. Search is conditional on the optional provider; list/get/replay remain available without it.
+
+The CLI agent cannot create, update, delete, switch, resume, steer, interrupt, or trim sessions/runs through this bundle. Human CLI commands remain separate CLI-owned workflows and can retain their existing explicit mutation/confirmation behavior. Query results do not implicitly change current session, model selection, workspace, or transcript.
+
+The adapter applies CLI-owned namespace/workspace policy and never routes through RPC. Full query schemas, projection safety, and product asymmetry are specified in `08-agent-session-management.md`.
+
+### Async Subagent Product Profile
+
+Interactive TUI uses the async-only model-visible delegation profile from `../sdk/06-async-subagent-execution.md`: `delegate` returns immediately, the blocking backend is hidden, and the TUI-lifetime supervisor owns task/control handles, per-attempt results, completion wake-up, and bounded shutdown.
+
+One-shot headless CLI retains blocking delegation because the process cannot promise detached lifetime; worker mode exposes no subagent delegation. Foreground-turn cancellation and workflow shutdown remain distinct so pending child results cannot wake a just-cancelled turn or leak into a different selected session.
+
 ### CLI/TUI Acceptance
 
 - Headless CLI and TUI tests link no `starweaver-rpc` implementation.
 - CLI/TUI can run against local providers and authenticated envd endpoints without starting the Starweaver host RPC server.
 - CLI/TUI sessions, replay, cancellation, steering, and approval behavior use shared contracts while retaining CLI-owned application state.
+- CLI model tools expose session query only; mutation/control definitions and handles are absent and guessed calls fail closed.
+- TUI async subagent results return to their original supervisor/session scope, parent continuations are serialized, and shutdown leaves no detached child tasks.
 - The CLI manifest does not depend on `starweaver-rpc`; any optional use of `starweaver-rpc-core` is limited to product-neutral projection or client contracts.
 
 ## Display Protocol as the UI Boundary

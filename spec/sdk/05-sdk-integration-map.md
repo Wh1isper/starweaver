@@ -12,27 +12,28 @@ This spec maps application-facing agent concepts into Starweaver's first-party S
 
 ## Module Map
 
-| Feature family        | Target                                                     | Registry capability             | Spec owner                              | Validation path                |
-| --------------------- | ---------------------------------------------------------- | ------------------------------- | --------------------------------------- | ------------------------------ |
-| agent construction    | `AgentBuilder`, `AgentApp`, `AgentSession`                 | `runtime.agent_loop`            | `sdk/01-agent-sdk-app.md`               | SDK session and builder tests  |
-| lifecycle hooks       | runtime hooks and capability lifecycle                     | `runtime.capability_middleware` | `core/03-tools-output-capabilities.md`  | capability tests               |
-| capability middleware | ordered wrappers, IDs, per-run instances                   | `runtime.capability_middleware` | `core/03-tools-output-capabilities.md`  | capability ordering tests      |
-| context compaction    | ordered message-preparation capabilities and context state | —                               | `core/04-context-state-executor.md`     | capability/filter tests        |
-| policy guards         | request guards, approval/deferred metadata                 | —                               | `core/03-tools-output-capabilities.md`  | guard/control-flow tests       |
-| streaming             | runtime stream records and service/CLI adapters            | `stream.versioned_records`      | `core/01`, `ops/03`, `ops/04`           | stream/replay tests            |
-| context stores        | notes, message bus, state, tasks, usage                    | `context.versioned_checkpoints` | `core/04-context-state-executor.md`     | context and bundle tests       |
-| environment           | provider families and policy                               | `environment.provider`          | `sdk/02-environment-provider.md`        | fake/local/process tests       |
-| filters               | named policy filter capabilities                           | —                               | this spec and `ops/07`                  | SDK filter order tests         |
-| toolsets              | first-party bundles, MCP, proxy                            | —                               | `sdk/03-first-party-tool-bundles.md`    | toolset/proxy/MCP tests        |
-| toolset wrappers      | filtered/prepared/renamed/approval/dynamic/deferred        | —                               | `core/03-tools-output-capabilities.md`  | wrapper tests                  |
-| deferred tools        | SDK requests/results and inline handlers                   | —                               | `ops/03`, `core/03`                     | control-flow and service tests |
-| subagents             | specs, registry, inherited tools, lifecycle                | —                               | `sdk/04-subagents-skills.md`            | subagent tests                 |
-| skills                | fileops-loaded skills and tool summaries                   | —                               | `sdk/04-subagents-skills.md`            | skill tests                    |
-| media                 | binary/resource/data-url parts and preflight               | —                               | `sdk/03-first-party-tool-bundles.md`    | media/preflight/provider tests |
-| config/specs          | AgentSpec, presets, host handles                           | —                               | `sdk/01-agent-sdk-app.md`               | spec/profile tests             |
-| UI projection         | AG-UI/Vercel display projection                            | `stream.ui_projection`          | `ops/02-shared-execution-components.md` | adapter conformance tests      |
-| model wrappers        | fallback/concurrency/instrumentation wrappers              | `model.wrappers`                | `core/02-model-provider-replay.md`      | model wrapper tests            |
-| provider lifecycle    | future provider-owned lifecycle depth                      | —                               | future model RFC                        | future contract tests          |
+| Feature family        | Target                                                     | Registry capability             | Spec owner                                                                 | Validation path                  |
+| --------------------- | ---------------------------------------------------------- | ------------------------------- | -------------------------------------------------------------------------- | -------------------------------- |
+| agent construction    | `AgentBuilder`, `AgentApp`, `AgentSession`                 | `runtime.agent_loop`            | `sdk/01-agent-sdk-app.md`                                                  | SDK session and builder tests    |
+| lifecycle hooks       | runtime hooks and capability lifecycle                     | `runtime.capability_middleware` | `core/03-tools-output-capabilities.md`                                     | capability tests                 |
+| capability middleware | ordered wrappers, IDs, per-run instances                   | `runtime.capability_middleware` | `core/03-tools-output-capabilities.md`                                     | capability ordering tests        |
+| context compaction    | ordered message-preparation capabilities and context state | —                               | `core/04-context-state-executor.md`                                        | capability/filter tests          |
+| policy guards         | request guards, approval/deferred metadata                 | —                               | `core/03-tools-output-capabilities.md`                                     | guard/control-flow tests         |
+| streaming             | runtime stream records and service/CLI adapters            | `stream.versioned_records`      | `core/01`, `ops/03`, `ops/04`                                              | stream/replay tests              |
+| context stores        | notes, message bus, state, tasks, usage                    | `context.versioned_checkpoints` | `core/04-context-state-executor.md`                                        | context and bundle tests         |
+| environment           | provider families and policy                               | `environment.provider`          | `sdk/02-environment-provider.md`                                           | fake/local/process tests         |
+| filters               | named policy filter capabilities                           | —                               | this spec; `core/03-tools-output-capabilities.md`                          | SDK filter order tests           |
+| toolsets              | first-party bundles, MCP, proxy                            | —                               | `sdk/03-first-party-tool-bundles.md`                                       | toolset/proxy/MCP tests          |
+| toolset wrappers      | filtered/prepared/renamed/approval/dynamic/deferred        | —                               | `core/03-tools-output-capabilities.md`                                     | wrapper tests                    |
+| deferred tools        | SDK requests/results and inline handlers                   | —                               | `ops/03`, `core/03`                                                        | control-flow and service tests   |
+| subagents             | specs, registry, inherited tools, async supervisor         | —                               | `sdk/04-subagents-skills.md`; `sdk/06-async-subagent-execution.md`         | subagent lifecycle/product tests |
+| agent session tools   | query/control bundles over host-injected capabilities      | —                               | `sdk/03-first-party-tool-bundles.md`; `ops/08-agent-session-management.md` | bundle and product tests         |
+| skills                | fileops-loaded skills and tool summaries                   | —                               | `sdk/04-subagents-skills.md`                                               | skill tests                      |
+| media                 | binary/resource/data-url parts and preflight               | —                               | `sdk/03-first-party-tool-bundles.md`                                       | media/preflight/provider tests   |
+| config/specs          | AgentSpec, presets, host handles                           | —                               | `sdk/01-agent-sdk-app.md`                                                  | spec/profile tests               |
+| UI projection         | AG-UI/Vercel display projection                            | `stream.ui_projection`          | `ops/02-shared-execution-components.md`                                    | adapter conformance tests        |
+| model wrappers        | fallback/concurrency/instrumentation wrappers              | `model.wrappers`                | `core/02-model-provider-replay.md`                                         | model wrapper tests              |
+| provider lifecycle    | future provider-owned lifecycle depth                      | —                               | future model RFC                                                           | future contract tests            |
 
 ## Filters as Capabilities
 
@@ -139,17 +140,18 @@ Remaining work:
 
 ## Subagent Integration
 
-Current support includes serializable subagent configs, frontmatter parsing, inherited tools, denied tools, optional/required/auto-inherited policies, lifecycle events, trace parent propagation, and nested delegation guardrails.
+Current support includes serializable subagent configs, frontmatter parsing, inherited tools, denied tools, optional/required/auto-inherited policies, lifecycle events, trace parent propagation, nested delegation guardrails, optional async model-visible `delegate`, hidden blocking backend, bounded wait, and in-process result delivery.
 
-Remaining work:
+Remaining work is governed by `06-async-subagent-execution.md`:
 
-- Durable subagent polling through shared sessions/runs.
-- Cancellation/resume propagation through service runtime.
-- Worker mode behavior in CLI.
+- A product-lifetime supervisor that owns child task/control handles instead of detached per-runtime work.
+- Distinct `SubagentAttemptId` allocation for post-terminal conversation continuation, retention across waiting/checkpoint resume, per-attempt notification identity, and bounded result retention.
+- Model-visible steer/cancel, cancellation/resume propagation, shutdown drain, and host completion callbacks.
+- Serialized delta context/usage merge under concurrent child completion.
+- TUI async-only, one-shot headless blocking, worker-disabled, and durable RPC continuation profiles.
 - Subagent model/settings/config overrides aligned with Starweaver config.
-- Unified subagent tool schema with available-subagent descriptions and `subagent_info` style inspection.
 - Self-fork behavior for current-context child agents.
-- Lifecycle stream evidence for started, streamed, completed, failed, cancelled, and resumed subagent work.
+- Lifecycle stream evidence for accepted, started, waiting, steered, cancel-requested, completed, failed, cancelled, resumed, and delivered work.
 
 ## Media Processing
 

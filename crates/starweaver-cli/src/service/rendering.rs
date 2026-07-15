@@ -2,7 +2,10 @@ use std::fmt::Write as _;
 
 use clap_complete::Shell;
 use serde_json::{Value, json};
-use starweaver_session::{ApprovalRecord, ApprovalStatus, DeferredToolRecord};
+use starweaver_session::{
+    ApprovalRecord, ApprovalStatus, DeferredToolRecord, SessionSearchCoverageState,
+    SessionSearchPage,
+};
 use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 
 use super::{PromptRunExecution, render_json_lines};
@@ -42,6 +45,72 @@ pub(super) fn render_sessions(
             serde_json::to_string(&json!({"sessions": sessions, "status": "list"}))?
         )),
         OutputMode::Silent => Ok(format!("sessions={}\nstatus=list\n", sessions.len())),
+    }
+}
+
+pub(super) fn render_session_search(
+    page: &SessionSearchPage,
+    output: OutputMode,
+) -> CliResult<String> {
+    match output {
+        OutputMode::Text => {
+            let mut lines = String::new();
+            for hit in &page.hits {
+                let source = serde_json::to_value(hit.source)?
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .to_string();
+                let _ = writeln!(
+                    lines,
+                    "session_id={} run_id={} updated={} source={} title={} snippet={}",
+                    hit.session.session_id.as_str(),
+                    hit.run_id
+                        .as_ref()
+                        .map_or("", starweaver_core::RunId::as_str),
+                    hit.session.updated_at.to_rfc3339(),
+                    source,
+                    hit.session.title.as_deref().unwrap_or_default(),
+                    hit.snippet
+                        .as_ref()
+                        .map_or("", |snippet| snippet.text.as_str())
+                );
+            }
+            if page.coverage.state != SessionSearchCoverageState::Complete {
+                let _ = writeln!(
+                    lines,
+                    "warning: session search coverage is {:?}",
+                    page.coverage.state
+                );
+                for warning in &page.coverage.warnings {
+                    let _ = writeln!(lines, "warning: {}", warning.message);
+                }
+            }
+            if let Some(cursor) = page.next_cursor.as_deref() {
+                let _ = writeln!(lines, "next_cursor={cursor}");
+            }
+            Ok(lines)
+        }
+        OutputMode::DisplayJsonl | OutputMode::AguiJsonl => {
+            let mut lines = String::new();
+            for hit in &page.hits {
+                lines.push_str(&serde_json::to_string(hit)?);
+                lines.push('\n');
+            }
+            lines.push_str(&serde_json::to_string(&json!({
+                "type": "session_search_page",
+                "nextCursor": page.next_cursor,
+                "coverage": page.coverage,
+            }))?);
+            lines.push('\n');
+            Ok(lines)
+        }
+        OutputMode::Json => Ok(format!("{}\n", serde_json::to_string(page)?)),
+        OutputMode::Silent => Ok(format!(
+            "hits={}\nnext_cursor={}\ncoverage={:?}\nstatus=search\n",
+            page.hits.len(),
+            page.next_cursor.as_deref().unwrap_or_default(),
+            page.coverage.state
+        )),
     }
 }
 

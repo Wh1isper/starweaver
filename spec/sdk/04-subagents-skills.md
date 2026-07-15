@@ -2,6 +2,8 @@
 
 Subagents and skills let applications scale beyond one prompt loop. The SDK layer owns their application ergonomics, while the core runtime provides stable context, tool, event, and checkpoint contracts.
 
+This document owns subagent configuration, inheritance, the programmatic blocking execution backend, and skill loading. The host-supervised model-visible async topology, including `delegate`, steer/cancel/wait, completion delivery, product lifetime, and durability, is specified in `06-async-subagent-execution.md`.
+
 ## Subagent Contracts
 
 Serializable configuration lives in `SubagentSpec`:
@@ -22,7 +24,7 @@ Runtime configuration lives in `SubagentConfig` and includes an executable agent
 
 Starweaver does not expose an `include_builtin_subagents` flag. Hosts register first-party or product-specific subagents explicitly through `AgentSpecRegistry` or `SubagentRegistry`, then select them with `all_subagents` or named `subagents` in `AgentSpec`. This keeps product-owned agents visible in configuration and avoids an implicit global preset set.
 
-## Delegation Flow
+## Programmatic Blocking Delegation Flow
 
 ```mermaid
 sequenceDiagram
@@ -80,18 +82,20 @@ flowchart TD
     policy --> child
 ```
 
-## Unified Delegation Tool
+## Unified Delegation Backend
 
-The SDK should support a unified parent-facing delegation tool that lets the model choose a subagent by name. It should include:
+The SDK supports a unified delegation implementation that lets a caller choose a subagent by name. Long-lived products expose it to the model only through the asynchronous `delegate` wrapper; the blocking implementation remains the hidden `__delegate_backend` and a programmatic Rust API. It should include:
 
 - JSON schema listing available subagents
 - descriptions and instructions
-- task id
-- metadata
+- subagent attempt id plus optional linked task-bundle id
+- host-generated metadata outside the model schema
 - timeout/retry policy
 - tool inheritance policy
 - lifecycle event emission
-- durable polling extension point
+- durable execution and completion-delivery extension points
+
+Async products must not expose both blocking `delegate` and asynchronous `spawn_delegate` as their canonical model topology. They expose async `delegate`, `steer_subagent`, `cancel_subagent`, bounded `wait_subagent`, and `subagent_info`; one-shot hosts that cannot own background work use blocking programmatic/model delegation explicitly.
 
 ## Skills
 
@@ -143,7 +147,7 @@ Starweaver should support:
 
 Subagent and skill execution should record:
 
-- task id
+- subagent attempt id and optional linked task-bundle id
 - parent run id
 - child run id
 - lifecycle events
@@ -154,7 +158,7 @@ Subagent and skill execution should record:
 - checkpoint references
 - trace id and span id references
 
-Durable service runtime can use this record for polling, resume, cancellation, and audit.
+Durable service runtime can use this record for polling, resume, cancellation, and audit. Async delegation uses a distinct `SubagentAttemptId`: post-terminal conversation continuation receives a new attempt while retaining its `AgentId`, whereas waiting/checkpoint execution resume retains the existing attempt under a new lease generation when needed. Per-attempt notification and result state must not be keyed only by reusable `AgentId`. Parent lineage records provenance and does not grant cross-session authority.
 
 ## Acceptance Gates
 
@@ -165,7 +169,8 @@ Durable service runtime can use this record for polling, resume, cancellation, a
 - parent-child note tests
 - inherited dependency tests
 - inherited tool policy tests
-- unified delegation tool tests
+- unified hidden-backend and programmatic delegation tests
+- async supervisor, attempt identity, steer/cancel/wait, delivery, and shutdown tests from `06-async-subagent-execution.md`
 - skill parser, precedence, reload, activation, and toolset tests
 - skill fileops tests over virtual provider and local provider fixtures
 - nested delegation guard tests

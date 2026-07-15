@@ -5,10 +5,11 @@ use starweaver_context::ResumableState;
 use starweaver_core::{RunId, SessionId};
 use starweaver_runtime::{AgentCheckpoint, AgentStreamRecord};
 use starweaver_session::{
-    ApprovalRecord, CompactRunTrace, CompactSessionTrace, DeferredToolRecord, EnvironmentStateRef,
-    HitlResumeClaim, PendingStreamPublication, RunEvidenceCommit, RunRecord, RunStatus,
-    SessionFilter, SessionRecord, SessionStatus, SessionStore, SessionStoreResult, StreamCursorRef,
-    StreamPublicationTarget,
+    AcquireRunAdmission, ApprovalRecord, CompactRunTrace, CompactSessionTrace, DeferredToolRecord,
+    DurableControlReceipt, EnvironmentStateRef, HitlResumeClaim, ManagedRunTarget,
+    PendingStreamPublication, RunAdmissionLease, RunAdmissionReceipt, RunEvidenceCommit, RunRecord,
+    RunStatus, SessionContinuationFence, SessionFilter, SessionRecord, SessionStatus, SessionStore,
+    SessionStoreResult, StreamCursorRef, StreamPublicationTarget, UpdateManagedSession,
 };
 use starweaver_storage::SqliteSessionStore;
 
@@ -90,6 +91,135 @@ impl SessionStore for LocalSessionStore {
         self.store
             .acknowledge_stream_publication(publication_id, target)
             .await
+    }
+
+    async fn create_session_idempotent(
+        &self,
+        session: SessionRecord,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        self.store
+            .create_session_idempotent(session, idempotency_key, command_fingerprint)
+            .await
+    }
+
+    async fn update_managed_session(
+        &self,
+        command: UpdateManagedSession,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        self.store
+            .update_managed_session(command, command_fingerprint)
+            .await
+    }
+
+    async fn acquire_session_deletion_fence(
+        &self,
+        session_id: &SessionId,
+        expected_revision: u64,
+        fence_id: &str,
+        requested_by: &str,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        self.store
+            .acquire_session_deletion_fence(
+                session_id,
+                expected_revision,
+                fence_id,
+                requested_by,
+                idempotency_key,
+                command_fingerprint,
+            )
+            .await
+    }
+
+    async fn tombstone_session(
+        &self,
+        session_id: &SessionId,
+        fence_id: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        self.store.tombstone_session(session_id, fence_id).await
+    }
+
+    async fn session_continuation_fence(
+        &self,
+        namespace_id: &str,
+        session_id: &SessionId,
+    ) -> SessionStoreResult<SessionContinuationFence> {
+        self.store
+            .session_continuation_fence(namespace_id, session_id)
+            .await
+    }
+
+    async fn acquire_run_admission(
+        &self,
+        request: AcquireRunAdmission,
+    ) -> SessionStoreResult<RunAdmissionReceipt> {
+        self.store.acquire_run_admission(request).await
+    }
+
+    async fn heartbeat_run_admission(
+        &self,
+        lease: &RunAdmissionLease,
+        lease_expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<RunAdmissionLease> {
+        self.store
+            .heartbeat_run_admission(lease, lease_expires_at)
+            .await
+    }
+
+    async fn release_run_admission(&self, lease: &RunAdmissionLease) -> SessionStoreResult<()> {
+        self.store.release_run_admission(lease).await
+    }
+
+    async fn load_run_admission(
+        &self,
+        target: &ManagedRunTarget,
+    ) -> SessionStoreResult<Option<RunAdmissionLease>> {
+        self.store.load_run_admission(target).await
+    }
+
+    async fn reconcile_expired_run_admissions(
+        &self,
+        namespace_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<Vec<ManagedRunTarget>> {
+        self.store
+            .reconcile_expired_run_admissions(namespace_id, now)
+            .await
+    }
+
+    async fn load_control_receipt(
+        &self,
+        target: &ManagedRunTarget,
+        idempotency_key: &str,
+    ) -> SessionStoreResult<Option<DurableControlReceipt>> {
+        self.store
+            .load_control_receipt(target, idempotency_key)
+            .await
+    }
+
+    async fn reserve_control_receipt(
+        &self,
+        receipt: DurableControlReceipt,
+    ) -> SessionStoreResult<DurableControlReceipt> {
+        self.store.reserve_control_receipt(receipt).await
+    }
+
+    async fn update_control_receipt_state(
+        &self,
+        receipt_id: &str,
+        state: &str,
+    ) -> SessionStoreResult<DurableControlReceipt> {
+        self.store
+            .update_control_receipt_state(receipt_id, state)
+            .await
+    }
+
+    async fn drain_background_subagent_operations(&self) -> SessionStoreResult<()> {
+        self.store.drain_background_subagent_operations().await
     }
 
     async fn save_session(&self, session: SessionRecord) -> SessionStoreResult<()> {

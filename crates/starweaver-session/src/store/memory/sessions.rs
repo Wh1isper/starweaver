@@ -14,6 +14,9 @@ impl InMemorySessionStore {
     pub(super) fn save_session_record(&self, mut session: SessionRecord) -> SessionStoreResult<()> {
         let mut inner = self.inner.lock().map_err(store_failed)?;
         session.updated_at = Utc::now();
+        if let Some(current) = inner.sessions.get(&session.session_id) {
+            session.revision = current.revision.saturating_add(1);
+        }
         inner.sessions.insert(session.session_id.clone(), session);
         Ok(())
     }
@@ -72,6 +75,7 @@ impl InMemorySessionStore {
             .get_mut(session_id)
             .ok_or_else(|| SessionStoreError::NotFound(session_id.as_str().to_string()))?;
         session.status = status;
+        session.revision = session.revision.saturating_add(1);
         session.updated_at = Utc::now();
         Ok(())
     }
@@ -87,6 +91,7 @@ impl InMemorySessionStore {
             .get_mut(session_id)
             .ok_or_else(|| SessionStoreError::NotFound(session_id.as_str().to_string()))?;
         session.state = state;
+        session.revision = session.revision.saturating_add(1);
         session.updated_at = Utc::now();
         Ok(())
     }
@@ -102,6 +107,7 @@ impl InMemorySessionStore {
             .get_mut(session_id)
             .ok_or_else(|| SessionStoreError::NotFound(session_id.as_str().to_string()))?;
         session.environment_state = Some(environment_state);
+        session.revision = session.revision.saturating_add(1);
         session.updated_at = Utc::now();
         Ok(())
     }

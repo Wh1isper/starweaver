@@ -24,6 +24,7 @@ SDK layer:
 - `sdk/03-first-party-tool-bundles.md` — filesystem, shell, search, media, task, skill, and tool-proxy bundles implemented through capabilities and context
 - `sdk/04-subagents-skills.md` — serializable subagent specs, delegation lifecycle, inherited tools, skills, and nested coordination
 - `sdk/05-sdk-integration-map.md` — SDK integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
+- `sdk/06-async-subagent-execution.md` — async-only model-visible delegation, steering, cancellation, bounded fan-in, host continuation, durability, and product lifetime policy
 - `sdk/python/README.md` - Python SDK product contract, in-process tools, sessions, streams, active control, ecosystem integration, and validation
 
 Agent SDK environment layer:
@@ -71,6 +72,8 @@ Operations and products:
 - `ops/04-cli-product.md` — CLI-first product surface, display-message rendering, launcher dispatch, and GitHub install/update flow
 - `ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 - `ops/06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP transport profiles, typed method/event/error contracts, replay subscriptions, projections, and idempotency
+- `ops/07-session-search.md` — optional product-neutral session search, local SQLite/filesystem discovery, external index ingestion, and independent CLI/RPC integration
+- `ops/08-agent-session-management.md` — agent-facing session query/control tools, query-only CLI policy, grant-gated RPC mutations, and lifecycle-safe run creation/steering/interruption
 
 `capabilities.toml` is the single source for current capability implementation status. `capability-status.md` is generated from it and is the normative human-readable status view. Feature maps, roadmaps, and backlogs are non-normative design views and must defer current status to that generated file. Implemented registry entries must name an owning workspace crate, normative spec, implementation paths, and contract-test evidence; `make capability-check` validates the registry, verifies those references, and rejects a stale generated status view.
 

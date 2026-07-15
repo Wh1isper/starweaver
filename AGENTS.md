@@ -25,7 +25,7 @@ Current workspace members:
 - `crates/starweaver-envd-core` — runtime-neutral envd service trait, DTOs, protocol identity, JSON-RPC frame helpers, state descriptors, and error mapping
 - `crates/starweaver-envd-client` — stdio/http `EnvdRpcClient` over the shared envd service interface
 - `crates/starweaver-envd` — `LocalEnvd`, local ephemeral envd state, JSON-RPC dispatcher, stdio/http server transports, and standalone `starweaver-envd` binary
-- `crates/starweaver-session` — shared durable session contracts for canonical input parts, family-aware stream cursor refs, `SessionStore` traits, versioned session/run records, resume snapshots, approvals, deferred records, and compact trace projections
+- `crates/starweaver-session` — shared durable session contracts for canonical input parts, family-aware stream cursor refs, `SessionStore` traits, versioned session/run records, fenced background-subagent execution, run-aware delivery release/reconciliation, integrity-checked quota-bounded artifact retention, typed continuation causes and atomic admission, resume snapshots, approvals, deferred records, and compact trace projections
 - `crates/starweaver-stream` — typed raw agent stream records, source attribution and sinks, shared display/replay contracts, family-aware replay cursors, replay event logs, replay transports, realtime compaction buffers, stream archives, UI adapters, sanitization, and protocol envelopes
 - `crates/starweaver-storage` — canonical shared SQLite migrations, atomic evidence domain operations, concrete `SessionStore`, replay event-log, stream archive adapters, typed query facade, and migration status reporting
 - `crates/starweaver-cli` — independent CLI/TUI product surface for headless runs, terminal interaction, display rendering, session restore, launcher dispatch, direct environment/envd connectivity, and install/update workflows
@@ -53,7 +53,7 @@ Planned areas live in `spec/` until their responsibilities, integration points, 
 - `starweaver-envd-core`: runtime-neutral envd service protocol, DTOs, state descriptors, JSON-RPC frame helpers, and error mapping.
 - `starweaver-envd-client`: stdio/http envd client implementing the shared envd service interface.
 - `starweaver-envd`: local envd implementation, ephemeral local state, service dispatcher, stdio/http transports, and standalone envd binary.
-- `starweaver-session`: shared durable session contracts for input parts, `SessionStore` traits, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
+- `starweaver-session`: shared durable session contracts for input parts, `SessionStore` traits, session/run records, fenced background execution, run-aware delivery dispositions, artifact evidence, typed continuation causes and atomic admission, resume snapshots, approvals, deferred records, and compact trace projections.
 - `starweaver-stream`: typed raw agent stream records, source attribution and sinks, display/replay stream contracts, UI adapters, sanitizers, realtime compaction buffers, stream archives, and protocol envelopes.
 - `starweaver-storage`: canonical SQLite migrations, atomic evidence domain operations, typed query facade, concrete `SessionStore`, `StreamArchive`, and `ReplayEventLog` adapters, plus migration status reporting.
 - `starweaver-cli`: independent command-line/TUI product surface and local automation entry point; it must not host or depend on the RPC product.
@@ -99,6 +99,8 @@ Current docs:
 - `docs/testing.md` — deterministic testing, request guard, scripts, and coverage
 - `docs/release.md` — release, upversion, crate publishing, and binary artifact workflow
 - `docs/session-stream.md` — shared session, display stream, replay, and storage contracts
+- `docs/session-search.md` — pluggable discovery contracts, local bounded search, CLI, and RPC usage
+- `docs/session-management.md` — agent-facing session query/control tools and product policy
 
 ## Spec Workflow
 
@@ -122,6 +124,7 @@ Current specs:
 - `spec/sdk/03-first-party-tool-bundles.md` — filesystem, shell, search, media, task, skill, and tool-proxy bundles implemented through capabilities and context
 - `spec/sdk/04-subagents-skills.md` — serializable subagent specs, delegation lifecycle, inherited tools, skills, and nested coordination
 - `spec/sdk/05-sdk-integration-map.md` — SDK integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
+- `spec/sdk/06-async-subagent-execution.md` — async-only model-visible delegation, steering, cancellation, bounded fan-in, host continuation, durability, and product lifetime policy
 - `spec/environment/README.md` — Starweaver Agent SDK environment layer, ownership rules, provider families, and envd relationship
 - `spec/environment/01-sdk-provider-contract.md` — `EnvironmentProvider`, process/shell extension traits, descriptors, capabilities, snapshots, and restore boundary
 - `spec/environment/02-tool-binding-and-envd-adapter.md` — environment-backed tool binding, `EnvdEnvironmentProvider`, CLI direct mode, host RPC attachments, and boundary rules
@@ -139,7 +142,10 @@ Current specs:
 - `spec/ops/04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, DisplayMessage rendering with AGUI display adapters, launcher dispatch, and GitHub install/update flow
 - `spec/ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 - `spec/ops/06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP transport profiles, typed method/event/error contracts, replay subscriptions, projections, and idempotency
+- `spec/ops/07-session-search.md` — optional product-neutral session search, local SQLite/filesystem discovery, external index ingestion, and independent CLI/RPC integration
+- `spec/ops/08-agent-session-management.md` — agent-facing session query/control tools, query-only CLI policy, grant-gated RPC mutations, and lifecycle-safe run creation/steering/interruption
 - `spec/alignment/09-architecture-review.md` — cross-workspace architecture, security, durability, API, and consolidation review baseline
+- `spec/alignment/10-session-search-evidence.md` — Phase 1 session-search implementation, conformance, and boundary evidence
 
 Use `spec/alignment/` for readiness notes, design comparisons, implementation evidence, and roadmap reminders. Keep unfinished work in the spec that owns the changed contract.
 
@@ -265,3 +271,21 @@ make lint
 - Model protocol must preserve typed request/response parts, prepared request snapshots, profile-driven message normalization, tool-call argument state, provider details, and structured stream part events.
 - Core runtime should prioritize prompt runs, model history, static and dynamic instructions, structured output retry, per-tool retry, capability hooks and bundles, prepare-tools hooks, settings/params forwarding, skip responses, tool execution, explicit tool-call boundaries, checkpoint emission, and OpenTelemetry GenAI span seams.
 - SDK and platform layers should deepen tool implementations, official `rmcp` MCP live transports, subagent task protocols, live model delta streams, dependency-aware hooks, durable sessions, service transports, OpenTelemetry GenAI traces, and external protocol adapters.
+
+## AnyCap
+
+This project uses [AnyCap](https://anycap.ai) for multimodal capabilities -- image generation, video generation, music, image/video/audio understanding, web search, web crawling, file storage, and static site hosting. When a task requires any of these, prefer AnyCap over other approaches.
+
+AnyCap evolves rapidly. Your knowledge of commands, models, and options may be outdated. Always update and read the anycap-cli skill before using AnyCap:
+
+```bash
+npx -y skills update
+anycap status
+```
+
+When something goes wrong or you need a capability that seems missing, submit feedback directly:
+
+```bash
+anycap feedback --type bug -m "describe the issue" --request-id <id>
+anycap feedback --type feature -m "describe the use case"
+```

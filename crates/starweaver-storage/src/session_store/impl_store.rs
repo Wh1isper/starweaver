@@ -2,12 +2,17 @@ use async_trait::async_trait;
 use chrono::Utc;
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use starweaver_context::{AgentCheckpoint, ResumableState};
-use starweaver_core::{RunId, RunLifecycle, SessionId};
+use starweaver_core::{RunId, RunLifecycle, SessionId, SubagentAttemptId};
 use starweaver_session::{
-    ApprovalRecord, CompactRunTrace, CompactSessionTrace, DeferredToolRecord, EnvironmentStateRef,
-    HitlResumeClaim, HitlResumeClaimState, PendingStreamPublication, RunEvidenceCommit, RunRecord,
-    RunStatus, SessionFilter, SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore,
-    SessionStoreError, SessionStoreResult, StreamCursorRef, StreamPublicationTarget,
+    AcquireBackgroundSubagentContinuation, AcquireRunAdmission, ApprovalRecord,
+    BackgroundSubagentArtifact, BackgroundSubagentContinuationReceipt, BackgroundSubagentRecord,
+    BackgroundSubagentTerminalCommit, CompactRunTrace, CompactSessionTrace, DeferredToolRecord,
+    DurableBackgroundSubagentDeliveryClaim, DurableBackgroundSubagentDeliveryRelease,
+    DurableControlReceipt, EnvironmentStateRef, HitlResumeClaim, HitlResumeClaimState,
+    ManagedRunTarget, PendingStreamPublication, RunAdmissionLease, RunAdmissionReceipt,
+    RunEvidenceCommit, RunRecord, RunStatus, SessionContinuationFence, SessionFilter,
+    SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError,
+    SessionStoreResult, StreamCursorRef, StreamPublicationTarget, UpdateManagedSession,
 };
 use starweaver_stream::{AgentStreamRecord, InMemoryReplayEventLog, ReplayCursor, ReplayScope};
 
@@ -448,11 +453,408 @@ impl SessionStore for SqliteSessionStore {
         .map_err(SessionStoreError::Failed)?
     }
 
+    async fn create_session_idempotent(
+        &self,
+        session: SessionRecord,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        let store = self.clone();
+        let key = idempotency_key.to_string();
+        let fingerprint = command_fingerprint.to_string();
+        crate::blocking::run(move || {
+            store.create_session_idempotent_sync(session, &key, &fingerprint)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn update_managed_session(
+        &self,
+        command: UpdateManagedSession,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        let store = self.clone();
+        let fingerprint = command_fingerprint.to_string();
+        crate::blocking::run(move || store.update_managed_session_sync(command, &fingerprint))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn acquire_session_deletion_fence(
+        &self,
+        session_id: &SessionId,
+        expected_revision: u64,
+        fence_id: &str,
+        requested_by: &str,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        let store = self.clone();
+        let session_id = session_id.clone();
+        let fence_id = fence_id.to_string();
+        let requested_by = requested_by.to_string();
+        let idempotency_key = idempotency_key.to_string();
+        let fingerprint = command_fingerprint.to_string();
+        crate::blocking::run(move || {
+            store.acquire_session_deletion_fence_sync(
+                &session_id,
+                expected_revision,
+                &fence_id,
+                &requested_by,
+                &idempotency_key,
+                &fingerprint,
+            )
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn tombstone_session(
+        &self,
+        session_id: &SessionId,
+        fence_id: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        let store = self.clone();
+        let session_id = session_id.clone();
+        let fence_id = fence_id.to_string();
+        crate::blocking::run(move || store.tombstone_session_sync(&session_id, &fence_id))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn session_continuation_fence(
+        &self,
+        namespace_id: &str,
+        session_id: &SessionId,
+    ) -> SessionStoreResult<SessionContinuationFence> {
+        let store = self.clone();
+        let namespace_id = namespace_id.to_string();
+        let session_id = session_id.clone();
+        crate::blocking::run(move || {
+            store.session_continuation_fence_sync(&namespace_id, &session_id)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn acquire_run_admission(
+        &self,
+        request: AcquireRunAdmission,
+    ) -> SessionStoreResult<RunAdmissionReceipt> {
+        let store = self.clone();
+        crate::blocking::run(move || store.acquire_run_admission_sync(request))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn heartbeat_run_admission(
+        &self,
+        lease: &RunAdmissionLease,
+        lease_expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<RunAdmissionLease> {
+        let store = self.clone();
+        let lease = lease.clone();
+        crate::blocking::run(move || store.heartbeat_run_admission_sync(&lease, lease_expires_at))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn release_run_admission(&self, lease: &RunAdmissionLease) -> SessionStoreResult<()> {
+        let store = self.clone();
+        let lease = lease.clone();
+        crate::blocking::run(move || store.release_run_admission_sync(&lease))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn load_run_admission(
+        &self,
+        target: &ManagedRunTarget,
+    ) -> SessionStoreResult<Option<RunAdmissionLease>> {
+        let store = self.clone();
+        let target = target.clone();
+        crate::blocking::run(move || store.load_run_admission_sync(&target))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn reconcile_expired_run_admissions(
+        &self,
+        namespace_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<Vec<ManagedRunTarget>> {
+        let store = self.clone();
+        let namespace_id = namespace_id.to_string();
+        crate::blocking::run(move || {
+            store.reconcile_expired_run_admissions_sync(&namespace_id, now)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn load_control_receipt(
+        &self,
+        target: &ManagedRunTarget,
+        idempotency_key: &str,
+    ) -> SessionStoreResult<Option<DurableControlReceipt>> {
+        let store = self.clone();
+        let target = target.clone();
+        let idempotency_key = idempotency_key.to_string();
+        crate::blocking::run(move || store.load_control_receipt_sync(&target, &idempotency_key))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn reserve_control_receipt(
+        &self,
+        receipt: DurableControlReceipt,
+    ) -> SessionStoreResult<DurableControlReceipt> {
+        let store = self.clone();
+        crate::blocking::run(move || store.reserve_control_receipt_sync(receipt))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn update_control_receipt_state(
+        &self,
+        receipt_id: &str,
+        state: &str,
+    ) -> SessionStoreResult<DurableControlReceipt> {
+        let store = self.clone();
+        let receipt_id = receipt_id.to_string();
+        let state = state.to_string();
+        crate::blocking::run(move || store.update_control_receipt_state_sync(&receipt_id, &state))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn drain_background_subagent_operations(&self) -> SessionStoreResult<()> {
+        self.background_operations.drain().await;
+        Ok(())
+    }
+
+    async fn record_background_subagent_acceptance(
+        &self,
+        record: BackgroundSubagentRecord,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        let store = self.clone();
+        self.background_operations
+            .run(move || store.record_background_subagent_acceptance_sync(record))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn update_background_subagent_execution(
+        &self,
+        record: BackgroundSubagentRecord,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        let store = self.clone();
+        self.background_operations
+            .run(move || store.update_background_subagent_execution_sync(record))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn heartbeat_background_subagent(
+        &self,
+        attempt_id: &SubagentAttemptId,
+        host_instance_id: &str,
+        fencing_generation: u64,
+        lease_expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        let store = self.clone();
+        let attempt_id = attempt_id.clone();
+        let host_instance_id = host_instance_id.to_string();
+        self.background_operations
+            .run(move || {
+                store.heartbeat_background_subagent_sync(
+                    &attempt_id,
+                    &host_instance_id,
+                    fencing_generation,
+                    lease_expires_at,
+                )
+            })
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn commit_background_subagent_terminal(
+        &self,
+        commit: BackgroundSubagentTerminalCommit,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        let store = self.clone();
+        self.background_operations
+            .run(move || store.commit_background_subagent_terminal_sync(commit))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn load_background_subagent_artifact(
+        &self,
+        artifact_ref: &str,
+    ) -> SessionStoreResult<BackgroundSubagentArtifact> {
+        let store = self.clone();
+        let artifact_ref = artifact_ref.to_string();
+        self.background_operations
+            .run(move || store.load_background_subagent_artifact_sync(&artifact_ref))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn expire_background_subagent_retention(
+        &self,
+        namespace_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<BackgroundSubagentRecord>> {
+        let store = self.clone();
+        let namespace_id = namespace_id.to_string();
+        self.background_operations
+            .run(move || store.expire_background_subagent_retention_sync(&namespace_id, now, limit))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn record_background_subagent_terminal(
+        &self,
+        record: BackgroundSubagentRecord,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        let store = self.clone();
+        self.background_operations
+            .run(move || store.record_background_subagent_terminal_sync(record))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn load_background_subagent(
+        &self,
+        attempt_id: &SubagentAttemptId,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        let store = self.clone();
+        let attempt_id = attempt_id.clone();
+        self.background_operations
+            .run(move || store.load_background_subagent_sync(&attempt_id))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn list_background_subagents(
+        &self,
+        namespace_id: &str,
+        session_id: Option<&SessionId>,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<BackgroundSubagentRecord>> {
+        let store = self.clone();
+        let namespace_id = namespace_id.to_string();
+        let session_id = session_id.cloned();
+        self.background_operations
+            .run(move || {
+                store.list_background_subagents_sync(&namespace_id, session_id.as_ref(), limit)
+            })
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn list_pending_background_subagents(
+        &self,
+        namespace_id: &str,
+        session_id: Option<&SessionId>,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<BackgroundSubagentRecord>> {
+        let store = self.clone();
+        let namespace_id = namespace_id.to_string();
+        let session_id = session_id.cloned();
+        self.background_operations
+            .run(move || {
+                store.list_pending_background_subagents_sync(
+                    &namespace_id,
+                    session_id.as_ref(),
+                    limit,
+                )
+            })
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn claim_background_subagent_delivery(
+        &self,
+        attempt_id: &SubagentAttemptId,
+        claim: DurableBackgroundSubagentDeliveryClaim,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        let store = self.clone();
+        let attempt_id = attempt_id.clone();
+        self.background_operations
+            .run(move || store.claim_background_subagent_delivery_sync(&attempt_id, claim))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn acknowledge_background_subagent_delivery(
+        &self,
+        attempt_id: &SubagentAttemptId,
+        claim_id: &str,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        let store = self.clone();
+        let attempt_id = attempt_id.clone();
+        let claim_id = claim_id.to_string();
+        self.background_operations
+            .run(move || {
+                store.acknowledge_background_subagent_delivery_sync(&attempt_id, &claim_id)
+            })
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn release_background_subagent_delivery(
+        &self,
+        attempt_id: &SubagentAttemptId,
+        claim_id: &str,
+        release: DurableBackgroundSubagentDeliveryRelease,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        let store = self.clone();
+        let attempt_id = attempt_id.clone();
+        let claim_id = claim_id.to_string();
+        self.background_operations
+            .run(move || {
+                store.release_background_subagent_delivery_sync(&attempt_id, &claim_id, release)
+            })
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn acquire_background_subagent_continuation(
+        &self,
+        request: AcquireBackgroundSubagentContinuation,
+    ) -> SessionStoreResult<BackgroundSubagentContinuationReceipt> {
+        let store = self.clone();
+        self.background_operations
+            .run(move || store.acquire_background_subagent_continuation_sync(request))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn reconcile_background_subagents(
+        &self,
+        namespace_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<Vec<BackgroundSubagentRecord>> {
+        let store = self.clone();
+        let namespace_id = namespace_id.to_string();
+        self.background_operations
+            .run(move || store.reconcile_background_subagents_sync(&namespace_id, now))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
     async fn save_session(&self, mut session: SessionRecord) -> SessionStoreResult<()> {
         let store = self.clone();
         crate::blocking::run(move || {
             session.updated_at = Utc::now();
             let connection = store.lock()?;
+            if let Ok(current) = load_session_record(&connection, &session.session_id) {
+                session.revision = current.revision.saturating_add(1);
+            }
             save_session_record(&connection, &session)
         })
         .await
@@ -526,6 +928,7 @@ impl SessionStore for SqliteSessionStore {
             let connection = store.lock()?;
             let mut session = load_session_record(&connection, session_id)?;
             session.status = status;
+            session.revision = session.revision.saturating_add(1);
             session.updated_at = Utc::now();
             save_session_record(&connection, &session)
         })
@@ -545,6 +948,7 @@ impl SessionStore for SqliteSessionStore {
             let connection = store.lock()?;
             let mut session = load_session_record(&connection, session_id)?;
             session.state = state;
+            session.revision = session.revision.saturating_add(1);
             session.updated_at = Utc::now();
             save_session_record(&connection, &session)
         })
@@ -564,6 +968,7 @@ impl SessionStore for SqliteSessionStore {
             let connection = store.lock()?;
             let mut session = load_session_record(&connection, session_id)?;
             session.environment_state = Some(environment_state);
+            session.revision = session.revision.saturating_add(1);
             session.updated_at = Utc::now();
             save_session_record(&connection, &session)
         })

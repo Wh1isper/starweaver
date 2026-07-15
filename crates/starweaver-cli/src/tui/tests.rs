@@ -2002,6 +2002,19 @@ fn text_delta_after_unfinished_thinking_starts_visible_line() {
 }
 
 #[test]
+fn background_continuation_does_not_render_an_empty_user_prompt() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_background_continuation();
+
+    assert!(state.running);
+    assert!(body_has_line(
+        &state,
+        "Background subagent result received; continuing session."
+    ));
+    assert!(!body_has_line(&state, "User:"));
+}
+
+#[test]
 fn begin_run_does_not_precreate_empty_assistant_transcript_item() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.begin_run("respond");

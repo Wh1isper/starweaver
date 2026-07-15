@@ -39,6 +39,8 @@
 - [Graph Inspection](graph.md)
 - [Durability](durability.md)
 - [Session and Stream Contracts](session-stream.md)
+- [Session Search](session-search.md)
+- [Agent Session Management](session-management.md)
 - [SDK Apps](sdk-app.md)
 - [Subagents](subagents.md)
 - [MCP](mcp.md)

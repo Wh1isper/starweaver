@@ -9,7 +9,7 @@ use starweaver_core::{
 };
 use starweaver_stream::{ReplayCursor, ReplayCursorFamily, ReplayScope};
 
-use crate::input::InputPart;
+use crate::{input::InputPart, management::SessionDeletionFence};
 
 /// Current durable session status.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -22,6 +22,8 @@ pub enum SessionStatus {
     Archived,
     /// Session reached a failed terminal state.
     Failed,
+    /// Session is tombstoned. Retained evidence is not model-visible.
+    Deleted,
 }
 
 /// Durable run status composed from admission state and the shared runtime lifecycle.
@@ -398,6 +400,18 @@ impl<'de> Deserialize<'de> for StreamCursorRef {
 pub struct SessionRecord {
     /// Session id.
     pub session_id: SessionId,
+    /// Host-derived store/tenant namespace. Legacy records default to `local`.
+    #[serde(default = "default_session_namespace")]
+    pub namespace_id: String,
+    /// Host-derived owner/principal. Lineage and metadata never assign authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
+    /// Monotonic optimistic concurrency revision.
+    #[serde(default = "initial_session_revision")]
+    pub revision: u64,
+    /// Deletion/continuation fence.
+    #[serde(default)]
+    pub deletion_fence: SessionDeletionFence,
     /// User-facing title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -443,6 +457,14 @@ pub struct SessionRecord {
     pub metadata: Metadata,
 }
 
+fn default_session_namespace() -> String {
+    crate::LOCAL_SESSION_NAMESPACE.to_string()
+}
+
+const fn initial_session_revision() -> u64 {
+    1
+}
+
 impl starweaver_core::VersionedRecord for SessionRecord {
     const SCHEMA: &'static str = "starweaver.session.session_record";
     const ALLOW_BARE_V0: bool = true;
@@ -455,6 +477,10 @@ impl SessionRecord {
         let now = Utc::now();
         Self {
             session_id,
+            namespace_id: default_session_namespace(),
+            owner_id: None,
+            revision: initial_session_revision(),
+            deletion_fence: SessionDeletionFence::Stable,
             title: None,
             workspace: None,
             profile: None,

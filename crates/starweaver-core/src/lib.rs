@@ -18,7 +18,7 @@ mod xml;
 pub use attachments::RunAttachments;
 pub use cancellation::CancellationToken;
 pub use events::{AgentEvent, TASK_SNAPSHOT_EVENT_KIND};
-pub use ids::{AgentId, CheckpointId, ConversationId, RunId, SessionId, TaskId};
+pub use ids::{AgentId, CheckpointId, ConversationId, RunId, SessionId, SubagentAttemptId, TaskId};
 pub use lifecycle::{AgentExecutionNode, RunLifecycle};
 pub use protocol::{
     ProtocolError, ProtocolIdentity, VersionedEnvelope, VersionedRecord, VersionedRecordError,
@@ -118,6 +118,11 @@ mod tests {
         assert_eq!(
             CheckpointId::from_string("ckpt-fixed").as_str(),
             "ckpt-fixed"
+        );
+        assert!(SubagentAttemptId::new().as_str().starts_with("subattempt_"));
+        assert_eq!(
+            SubagentAttemptId::from_string("subattempt-fixed").as_str(),
+            "subattempt-fixed"
         );
         assert!(TaskId::new().as_str().starts_with("task_"));
         assert_eq!(TaskId::from_string("task-fixed").as_str(), "task-fixed");

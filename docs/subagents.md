@@ -138,6 +138,74 @@ assert_eq!(result.content["output"], "child");
 # }
 ```
 
+## Asynchronous Delegation
+
+The SDK keeps blocking delegation as its compatibility default. Long-lived hosts can opt into async-only model delegation by injecting one `BackgroundSubagentSupervisor` that outlives individual parent runtimes:
+
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+
+use starweaver_agent::{
+    AgentBuilder, BackgroundSubagentSupervisor, SubagentConfig, SubagentDelegationMode, TestModel,
+};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
+let supervisor = Arc::new(BackgroundSubagentSupervisor::new());
+let agent = AgentBuilder::new(Arc::new(TestModel::with_text("parent")))
+    .subagent(SubagentConfig::new("research", child))
+    .subagent_delegation_mode(SubagentDelegationMode::Async)
+    .background_subagent_supervisor(supervisor.clone())
+    .build();
+
+let names = agent.tools().names();
+assert!(names.contains(&"delegate".to_string()));
+assert!(names.contains(&"steer_subagent".to_string()));
+assert!(names.contains(&"cancel_subagent".to_string()));
+assert!(names.contains(&"wait_subagent".to_string()));
+
+supervisor
+    .shutdown_checked(Some(Duration::from_secs(1)))
+    .await?;
+# Ok(())
+# }
+```
+
+Async `delegate` returns a stable background `agent_id` and a new `attempt_id` for each execution attempt. Use the attempt ID for `steer_subagent`, `cancel_subagent`, and one bounded `wait_subagent`; do not implement polling loops. A post-terminal continuation may reuse its known `agent_id`, but receives a fresh attempt ID. Unknown caller-supplied agent IDs and arbitrary model-supplied host metadata are rejected.
+
+A host that enables this mode must also keep the task runtime alive, serialize parent continuations, deliver the supervisor completion callback, and call `shutdown_checked` before dropping its runtime. A deadline error retains owned work: keep the supervisor and runtime alive and retry. The no-result `shutdown` method is a best-effort compatibility helper, not the strict product-host lifecycle API. Interactive CLI/TUI uses async-only delegation with a session-scoped supervisor. One-shot CLI runs remain blocking, while worker mode uses `SubagentDelegationMode::Disabled` and installs no delegation tools.
+
+### Durable RPC delegation
+
+The standalone RPC host materializes named subagents from RPC-owned profiles. Parent profiles explicitly select the names they expose:
+
+```toml
+[profiles.default]
+model_id = "openai-responses:gpt-5"
+subagents = ["research"]
+
+[profiles.research]
+model_id = "openai-responses:gpt-5-mini"
+toolsets = ["filesystem", "grep"]
+
+[subagents.research]
+profile = "research"
+description = "Collect bounded evidence"
+required_tools = ["grep"]
+optional_tools = ["view"]
+```
+
+RPC always exposes the async-only topology for configured subagents: `delegate`, `steer_subagent`, `cancel_subagent`, `wait_subagent`, and `subagent_info`. The hidden blocking backend remains executable internally but is absent from model definitions; `spawn_delegate` is not installed. Child profiles have nested subagents disabled.
+
+One supervisor is retained per durable session for the service lifetime. Acceptance, fenced owner lease and heartbeat, execution transitions, terminal outcome, result retention, delivery claims, and parent/child/continuation IDs are persisted through `SessionStore`. The store rejects a second active attempt for the same session-scoped `agent_id`. A late terminal result is atomically linked to one new run with `trigger_type = "async_subagent_result"`; RPC never mutates the terminal parent run. Continuation admission binds a typed cause (`attempt_id`, agent and run identities, result digest/size, and trace) to the SHA-256 digest of the exact canonical durable input. The store independently derives that input, including complete artifact content or an expiry summary, and returns a store-derived cause in the receipt before marking delivery complete. Exact callback or restart retries cannot admit another logical continuation for the same attempt.
+
+Inline result previews are bounded. Oversized successful output is atomically committed to a host-owned artifact with its preview, pre-truncation byte size, versioned domain-separated digest, and retention deadline. SDK and session storage use the same result-digest helper. Per-artifact and aggregate namespace byte limits are enforced in the same storage transaction against store-owned current time, after exact terminal retries are recognized; in-process prechecks count only unexpired projections. The first terminal commit also stores a fingerprint of the complete immutable result, artifact binding, trace, owner generation, terminal timestamp, and initial retention projection. Restart reconciliation stores the same fingerprint when it synthesizes a process-loss terminal outcome, and retention expiry atomically backfills a missing legacy fingerprint only while the complete terminal projection still exists. Already-expired legacy evidence without a fingerprint remains fail closed. Later replay compares that fingerprint even after mutable delivery or retention state changes. Loads reject expired or digest-mismatched content, and RPC resolves complete artifact content before continuation admission or pending-result hydration. Expiry deletes retained content while preserving terminal, delivery, digest, size, and terminal-commit fingerprint audit evidence. Durable failure text is reduced to a safe public category.
+
+On startup and during service operation, RPC preserves non-terminal attempts with an unexpired foreign-host owner lease and rejects an acceptance whose lease is already expired at store-owned current time. An expired owner cannot revive itself by heartbeat, advance execution, or make the first terminal commit; only exact replay of already-committed terminal evidence remains idempotent. The reconciler retains a deadline-expired result claim while its linked consumer run is active under a live matching admission lease, acknowledges a durably completed consumer, and releases absent, failed/cancelled, or lease-lost consumers. Completion handlers invoke reconciliation and reload the record; they never sleep until a claim deadline or directly release a run-owned claim. Failed/cancelled consumer release records a durable automatic-continuation suppression run ID, so reconciliation cannot immediately create a replacement automatic run while a later explicit run can still consume the result exactly once. A cancelled causal parent, deletion fence, inactive session, unknown profile, or shutdown likewise suppresses automatic continuation while preserving durable result evidence. Service shutdown stops admission, cooperatively cancels children, aborts and joins every owned worker under one deadline, and reconciles remaining records. Context deltas become visible only after terminal persistence succeeds; resumed child history contributes only a validated suffix. Finalizers are registered behind a start barrier, panic becomes failed terminal evidence delivered through the normal fallback-message and callback path, and shutdown drains both finalizers and their owned execution workers. Durable panic terminal writes use the ordinary fenced retry and heartbeat loop. Transient commit, heartbeat, and store-read failures retain local active ownership and retry at or below the heartbeat interval; one in-flight heartbeat refresh is selected alongside worker completion and cancellation so a slow store call cannot starve either branch. An applied commit whose response was lost is recovered by exact terminal replay. Local active state is abandoned only after a stale fence, missing record, changed owner, or expired lease confirms owner loss. Shutdown treats confirmed owner loss as drained, bounds each forced terminal-persistence await by its absolute deadline, and still drains late finalizers after an error. Checked shutdown calls are serialized, and a cancellation-safe drain guard re-registers temporarily removed finalizer handles if the shutdown future itself is cancelled. Active evidence without a live finalizer skips the cooperative wait so retry budget remains available for store drain and exact replay. A successful `shutdown_checked` drains every finalizer and store-owned background operation. If its deadline expires, it returns without an unbounded join and retains unfinished finalizer handles and SQLite blocking-operation tracking; keep the runtime and supervisor alive, then retry checked shutdown so the store can drain and exact-replay any terminal commit. Store implementations must explicitly provide either a cancellation-safe no-op drain or actual outstanding-operation tracking; the default fails closed.
+
+Durable attempt inspection and cancellation are trusted RPC application operations. They are not added to the external v1 JSON-RPC method table and do not reuse session CRUD or `run.cancel` semantics.
+
 ## Lifecycle Events
 
 Delegation publishes typed lifecycle payloads through the parent context event bus. Applications can observe `subagent_started`, `subagent_completed`, and `subagent_failed` records and deserialize the payload as `SubagentLifecycleEvent`.
@@ -175,7 +243,7 @@ assert_eq!(started.task_id.as_str(), "research-1");
 
 When the `delegate` tool runs inside a parent agent stream, child stream records are merged into the parent stream with `AgentStreamRecord.source` set to subagent attribution. The source records the child agent id, child agent name, task id, child run id, parent run id, and the original child sequence before rebasing into the parent sequence.
 
-Delegation is still blocking: the parent waits for the child run to finish, then emits the attributed child records before the parent tool return. This preserves durable ordering and lets live handles, stream archives, and replay consumers identify child records without changing the top-level stream event enum.
+In blocking mode, the parent waits for the child run to finish and emits attributed child records before the parent tool return. In async mode, child records retain the same source attribution while the supervisor owns the attempt independently of the accepting parent turn. Both modes let live handles, stream archives, and replay consumers identify child records without changing the top-level stream event enum.
 
 ## Markdown Configuration
 

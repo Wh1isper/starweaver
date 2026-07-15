@@ -145,8 +145,42 @@ impl Default for CheckpointId {
     }
 }
 
+/// Identifier for one asynchronous subagent execution attempt.
+///
+/// This is deliberately distinct from [`TaskId`], which identifies an optional
+/// task-bundle work item. A resumed waiting execution retains its attempt id;
+/// a new post-terminal conversation turn receives a new attempt id.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SubagentAttemptId(String);
+
+impl SubagentAttemptId {
+    /// Create a new random subagent attempt identifier.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(format!("subattempt_{}", Uuid::new_v4()))
+    }
+
+    /// Create an identifier from a caller-provided string.
+    #[must_use]
+    pub fn from_string(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// Return the string representation.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for SubagentAttemptId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Task identifier shared by runtime, SDK, and service layers.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct TaskId(String);
 
 impl TaskId {

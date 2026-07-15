@@ -8,6 +8,8 @@ The operations layer turns core runtime evidence and SDK contracts into validate
 - provider replay coverage
 - feature coverage matrix
 - shared session storage and stream protocol components
+- optional pluggable session discovery across local and external indexes
+- agent-facing session query/control with query-only CLI and grant-gated RPC policy
 - durable execution and service runtime contracts
 - OpenTelemetry GenAI observability
 - Langfuse-friendly OTLP export
@@ -25,6 +27,8 @@ flowchart TD
     specs[Specs and implementation plan]
     sdk[SDK]
     session[Shared session contracts]
+    search[Optional session search contract]
+    management[Agent session query/control]
     stream[Shared stream contracts]
     storage[Shared SQLite storage]
     cli[CLI and TUI product]
@@ -37,13 +41,22 @@ flowchart TD
     specs --> ci
     replay --> ci
     sdk --> session
+    sdk --> management
     sdk --> stream
+    session --> search
+    session --> management
+    search --> management
     session --> storage
+    search --> storage
     stream --> storage
     storage --> cli
+    search --> cli
+    management --> cli
     session --> cli
     stream --> cli
     storage --> rpc
+    search --> rpc
+    management --> rpc
     session --> rpc
     stream --> rpc
     hostrpc --> rpc
@@ -65,6 +78,8 @@ flowchart TD
 - `04-cli-product.md` — independent CLI/TUI product surface with headless stdio display streams, session restore, direct envd connectivity, launcher dispatch, and install/update flow
 - `05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 - `06-json-rpc-host-protocol.md` — independent standalone RPC product protocol, transport profiles, typed method/event/error contracts, stream replay/subscription semantics, projections, idempotency, and acceptance gates
+- `07-session-search.md` — optional product-neutral session search contract, local SQLite/filesystem provider, external index ingestion, and independent CLI/RPC integration
+- `08-agent-session-management.md` — agent-facing query/control bundles, composite identity and ownership, query-only CLI policy, grant-gated RPC CRUD/run control, and lifecycle prerequisites
 
 ## Readiness Model
 

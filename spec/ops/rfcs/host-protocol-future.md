@@ -2617,12 +2617,17 @@ Architecture review:
   environment data/effect plane.
 - Runtime checkpoint and stream record types remain durable upstream evidence, not a new protocol crate.
 - Session and stream persistence are accessed through shared contracts.
+- Agent-facing session tools call typed in-process application operations and never loop back through JSON-RPC.
+- Async subagent execution remains a parent-owned child topology and is not projected as session CRUD.
 - Projection stays at protocol/product edges.
 
 Wire review:
 
 - Every request and response has a typed schema.
 - Every mutating request has an idempotency story.
+- Resource authorization combines principal, namespace, ownership/delegation, and operation grant rather than relying on method scope alone.
+- Run targets use composite namespace/session/run identity; run ids are not assumed globally unique.
+- Session updates use typed patches and expected revisions; run status/evidence has no generic patch method.
 - Every replay/live event carries a scope and cursor.
 - Every list method has a pagination story.
 - Every error has a machine-readable kind.
@@ -2648,6 +2653,9 @@ Operational review:
 - Config reads are allowlisted.
 - Secrets are redacted.
 - Shutdown closes subscriptions predictably.
+- Run admission enforces the declared one-active-run model with a durable host lease and fencing generation.
+- Steering/interruption have durable control ids/receipts and startup orphan reconciliation.
+- Destructive session/run retention operations reject active targets and coordinate search tombstones.
 - Attachment manager leases have explicit scope and release behavior.
 - Transport profiles do not change method semantics.
 
@@ -2655,6 +2663,7 @@ Future-surface review:
 
 - Local socket and WebSocket can reuse the same protocol crate.
 - Desktop can consume the protocol from `starweaver-rpc` without linking or launching CLI internals.
+- Durable async-subagent operator control can add feature-gated `subagent.list/status/steer/cancel/await` methods keyed by `attempt_id`; these remain separate from session CRUD and top-level run control.
 - Platform adapters can bridge events without adopting AGUI as the core.
 - JSON Schema and golden fixtures can be generated from typed protocol structs.
 
