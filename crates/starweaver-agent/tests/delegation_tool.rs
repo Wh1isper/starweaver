@@ -6,13 +6,13 @@ use async_trait::async_trait;
 use starweaver_agent::{
     AgentBuilder, AgentCapability, AgentContext, AgentContextHandle, AgentRunState,
     AgentRuntimePolicy, AgentStreamEvent, AgentStreamSourceKind, BackgroundSubagentCapability,
-    BackgroundSubagentMonitor, CANCEL_SUBAGENT_TOOL_NAME, DELEGATE_BACKEND_TOOL_NAME, FunctionTool,
-    SPAWN_DELEGATE_TOOL_NAME, STEER_SUBAGENT_TOOL_NAME, SubagentConfig, SubagentDelegationMode,
-    SubagentExecutionHook, SubagentExecutionMetadata, SubagentExecutionOutcome,
-    SubagentParentTools, SubagentRegistry, SubagentToolInheritancePolicy, TestModel, ToolContext,
-    ToolError, ToolRegistry, ToolResult, WAIT_SUBAGENT_TOOL_NAME,
+    BackgroundSubagentLimits, BackgroundSubagentMonitor, CANCEL_SUBAGENT_TOOL_NAME,
+    DELEGATE_BACKEND_TOOL_NAME, FunctionTool, SPAWN_DELEGATE_TOOL_NAME, STEER_SUBAGENT_TOOL_NAME,
+    SubagentConfig, SubagentDelegationMode, SubagentExecutionHook, SubagentExecutionMetadata,
+    SubagentExecutionOutcome, SubagentParentTools, SubagentRegistry, SubagentToolInheritancePolicy,
+    TestModel, ToolContext, ToolError, ToolRegistry, ToolResult, WAIT_SUBAGENT_TOOL_NAME,
 };
-use starweaver_context::AgentInfo;
+use starweaver_context::{AgentInfo, Task, TaskStatus};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ToolCallPart,
@@ -447,6 +447,48 @@ async fn async_delegate_delivers_result_to_subscribed_parent_bus() {
 }
 
 #[tokio::test]
+async fn async_delegate_reports_child_failure_to_wait() {
+    let failing_model = starweaver_agent::FunctionModel::new(|_messages, _settings, _info| {
+        Err(starweaver_model::ModelError::Transport(
+            "background child failed".to_string(),
+        ))
+    });
+    let child = Arc::new(AgentBuilder::new(Arc::new(failing_model)).build());
+    let registry =
+        Arc::new(SubagentRegistry::new().with_subagent(SubagentConfig::new("child", child)));
+    let monitor = Arc::new(BackgroundSubagentMonitor::new());
+    let delegate = registry.async_delegate_tool(Arc::clone(&monitor));
+    let wait = registry.wait_subagent_tool(monitor);
+    let mut parent = AgentContext::default();
+    parent.messages.unsubscribe(parent.agent_id.as_str());
+    let context_handle = AgentContextHandle::new(parent.clone());
+
+    let delegated = delegate
+        .call(
+            delegation_tool_context(&parent, context_handle.clone()),
+            serde_json::json!({"name": "child", "prompt": "fail safely"}),
+        )
+        .await
+        .unwrap();
+    let attempt_id = delegated.content["attempt_id"].as_str().unwrap();
+    let failed = wait
+        .call(
+            delegation_tool_context(&parent, context_handle),
+            serde_json::json!({"attempt_id": attempt_id, "timeout_seconds": 2}),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(failed.content["status"], "failed");
+    assert!(
+        failed.content["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("background child failed"))
+    );
+    assert_eq!(failed.content["timed_out"], false);
+}
+
+#[tokio::test]
 async fn wait_subagent_returns_cached_result_and_marks_bus_message_consumed() {
     let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child output"))).build());
     let registry =
@@ -547,11 +589,13 @@ async fn wait_subagent_unknown_agent_reports_known_ids() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn async_delegate_rejects_unknown_model_metadata() {
     let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
     let registry =
         Arc::new(SubagentRegistry::new().with_subagent(SubagentConfig::new("child", child)));
-    let delegate = registry.async_delegate_tool(Arc::new(BackgroundSubagentMonitor::new()));
+    let monitor = Arc::new(BackgroundSubagentMonitor::new());
+    let delegate = registry.async_delegate_tool(Arc::clone(&monitor));
     let parent = AgentContext::default();
     let context_handle = AgentContextHandle::new(parent.clone());
 
@@ -587,6 +631,77 @@ async fn async_delegate_rejects_unknown_model_metadata() {
         unknown_task
             .to_string()
             .contains("linked_task_id is not present in the parent task scope")
+    );
+
+    let mut completed = Task::new("task-completed", "completed", "completed task");
+    completed.status = TaskStatus::Completed;
+    let mut blocked = Task::new("task-blocked", "blocked", "blocked task");
+    blocked.blocked_by.push("task-prerequisite".to_string());
+    let mut foreign_owned = Task::new("task-foreign", "foreign", "foreign task");
+    foreign_owned.owner = Some("other-worker".to_string());
+    for (task, expected) in [
+        (completed, "linked task is already completed"),
+        (blocked, "linked task is blocked"),
+        (foreign_owned, "linked task is owned by another worker"),
+    ] {
+        let task_id = task.id.clone();
+        let mut scoped_parent = parent.clone();
+        scoped_parent
+            .tools
+            .tasks
+            .tasks
+            .insert(task_id.clone(), task);
+        let scoped_handle = AgentContextHandle::new(scoped_parent.clone());
+        let error = delegate
+            .call(
+                delegation_tool_context(&scoped_parent, scoped_handle),
+                serde_json::json!({
+                    "name": "child",
+                    "prompt": "help",
+                    "linked_task_id": task_id
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(expected));
+    }
+
+    let valid = Task::new("task-valid", "valid", "valid task");
+    let mut valid_parent = parent.clone();
+    valid_parent
+        .tools
+        .tasks
+        .tasks
+        .insert(valid.id.clone(), valid.clone());
+    let valid_handle = AgentContextHandle::new(valid_parent.clone());
+    let accepted = delegate
+        .call(
+            delegation_tool_context(&valid_parent, valid_handle),
+            serde_json::json!({
+                "name": "child",
+                "prompt": "help",
+                "linked_task_id": valid.id
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted.content["status"], "accepted");
+    assert_eq!(accepted.content["linked_task_id"], valid.id);
+    let accepted_attempt_id = accepted.content["attempt_id"].as_str().unwrap().to_string();
+    for _ in 0..50 {
+        if !monitor.has_active_tasks() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(!monitor.has_active_tasks());
+    assert_eq!(
+        monitor.task_results()
+            [&starweaver_core::SubagentAttemptId::from_string(accepted_attempt_id)]
+            .linked_task_id
+            .as_ref()
+            .map(starweaver_core::TaskId::as_str),
+        Some(valid.id.as_str())
     );
 
     assert_eq!(delegate.parameters_schema()["additionalProperties"], false);
@@ -805,6 +920,264 @@ async fn wait_subagent_without_agent_id_reports_running_timeout() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(!slow_monitor.has_active_tasks());
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn background_control_tools_manage_completion_during_cancellation_grace() {
+    let tool_entered = Arc::new(tokio::sync::Notify::new());
+    let tool_release = Arc::new(tokio::sync::Notify::new());
+    let child_model = TestModel::with_responses(vec![
+        starweaver_model::tool_call_response("call_block", "block", serde_json::json!({})),
+        ModelResponse::text("completed during cancellation grace"),
+    ]);
+    let block_tool = Arc::new(FunctionTool::new(
+        "block",
+        Some("Block until the test releases the child".to_string()),
+        serde_json::json!({"type": "object"}),
+        {
+            let tool_entered = Arc::clone(&tool_entered);
+            let tool_release = Arc::clone(&tool_release);
+            move |_ctx: ToolContext, _args: serde_json::Value| {
+                let tool_entered = Arc::clone(&tool_entered);
+                let tool_release = Arc::clone(&tool_release);
+                async move {
+                    tool_entered.notify_one();
+                    tool_release.notified().await;
+                    Ok(ToolResult::new(serde_json::json!({"released": true})))
+                }
+            }
+        },
+    ));
+    let child = Arc::new(
+        AgentBuilder::new(Arc::new(child_model))
+            .tool(block_tool)
+            .policy(AgentRuntimePolicy {
+                max_steps: 4,
+                ..AgentRuntimePolicy::default()
+            })
+            .build(),
+    );
+    let registry =
+        Arc::new(SubagentRegistry::new().with_subagent(SubagentConfig::new("child", child)));
+    let monitor = Arc::new(BackgroundSubagentMonitor::with_limits(
+        BackgroundSubagentLimits {
+            cancellation_grace: std::time::Duration::from_millis(10),
+            ..BackgroundSubagentLimits::default()
+        },
+    ));
+    let delegate = registry.async_delegate_tool(Arc::clone(&monitor));
+    let wait = registry.wait_subagent_tool(Arc::clone(&monitor));
+    let steer = registry.steer_subagent_tool(Arc::clone(&monitor));
+    let cancel = registry.cancel_subagent_tool(Arc::clone(&monitor));
+    let info = registry.subagent_info_tool();
+    let control_tools = ToolRegistry::new()
+        .with_tool(Arc::clone(&wait))
+        .with_tool(Arc::clone(&steer))
+        .with_tool(Arc::clone(&cancel));
+
+    let mut parent = AgentContext::default();
+    parent.messages.unsubscribe(parent.agent_id.as_str());
+    parent.dependencies.insert_arc(Arc::clone(&monitor));
+    let context_handle = AgentContextHandle::new(parent.clone());
+    let delegated = delegate
+        .call(
+            delegation_tool_context(&parent, context_handle.clone()),
+            serde_json::json!({"name": "child", "prompt": "wait for control"}),
+        )
+        .await
+        .unwrap();
+    let attempt_id = delegated.content["attempt_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let agent_id = delegated.content["agent_id"].as_str().unwrap().to_string();
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), tool_entered.notified())
+            .await
+            .is_ok(),
+        "child tool entered"
+    );
+
+    let active_tools = control_tools
+        .definitions_for_context(&parent)
+        .into_iter()
+        .map(|definition| definition.name)
+        .collect::<Vec<_>>();
+    assert!(active_tools.contains(&WAIT_SUBAGENT_TOOL_NAME.to_string()));
+    assert!(active_tools.contains(&STEER_SUBAGENT_TOOL_NAME.to_string()));
+    assert!(active_tools.contains(&CANCEL_SUBAGENT_TOOL_NAME.to_string()));
+
+    let info_context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(parent.dependencies.clone());
+    let active_info = info
+        .call(info_context.clone(), serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        active_info.content["background"]["active"][0]["attempt_id"],
+        attempt_id
+    );
+    assert_eq!(
+        active_info.content["background"]["active"][0]["agent_id"],
+        agent_id
+    );
+    assert!(
+        active_info.content["background"]["retained"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let control_context = delegation_tool_context(&parent, context_handle.clone());
+    let steered = steer
+        .call(
+            control_context.clone(),
+            serde_json::json!({
+                "attempt_id": attempt_id,
+                "message": "finish with the new constraint",
+                "steering_id": "steer-test"
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(steered.content["status"], "queued");
+    assert_eq!(steered.content["steering_id"], "steer-test");
+    let duplicate_steer = steer
+        .call(
+            control_context.clone(),
+            serde_json::json!({
+                "attempt_id": attempt_id,
+                "message": "finish with the new constraint",
+                "steering_id": "steer-test"
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(duplicate_steer.content, steered.content);
+
+    let unknown_steer = steer
+        .call(
+            control_context.clone(),
+            serde_json::json!({
+                "attempt_id": "subattempt-missing",
+                "message": "ignored",
+                "steering_id": " "
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(unknown_steer.to_string().contains("attempt not found"));
+
+    let missing_context = steer
+        .call(
+            ToolContext::new(RunId::default(), ConversationId::default(), 0),
+            serde_json::json!({"attempt_id": attempt_id, "message": "ignored"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        missing_context
+            .to_string()
+            .contains("missing AgentContextHandle dependency")
+    );
+
+    let nested_parent = AgentContext {
+        parent_run_id: Some(RunId::from_string("parent-run")),
+        ..AgentContext::default()
+    };
+    let nested_handle = AgentContextHandle::new(nested_parent.clone());
+    let nested_cancel = cancel
+        .call(
+            delegation_tool_context(&nested_parent, nested_handle),
+            serde_json::json!({"attempt_id": attempt_id}),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        nested_cancel
+            .to_string()
+            .contains("cancel_subagent is only available to the owning main agent")
+    );
+
+    let cancelled = cancel
+        .call(
+            control_context.clone(),
+            serde_json::json!({
+                "attempt_id": attempt_id,
+                "reason": "test cancellation",
+                "cancellation_id": "cancel-test"
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cancelled.content["status"], "cancellation_requested");
+    assert_eq!(cancelled.content["cancellation_id"], "cancel-test");
+    let duplicate_cancel = cancel
+        .call(
+            control_context.clone(),
+            serde_json::json!({
+                "attempt_id": attempt_id,
+                "reason": "test cancellation",
+                "cancellation_id": "cancel-test"
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(duplicate_cancel.content, cancelled.content);
+
+    let unknown_cancel = cancel
+        .call(
+            control_context.clone(),
+            serde_json::json!({
+                "attempt_id": "subattempt-missing",
+                "cancellation_id": " "
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(unknown_cancel.to_string().contains("attempt not found"));
+
+    let terminal = wait
+        .call(
+            control_context,
+            serde_json::json!({"attempt_id": attempt_id, "timeout_seconds": 2}),
+        )
+        .await
+        .unwrap();
+    tool_release.notify_waiters();
+    // Cancellation is cooperative: this deterministic model completes after its
+    // blocked tool is interrupted, before the cancellation grace expires.
+    assert_eq!(terminal.content["status"], "completed");
+    assert_eq!(terminal.content["cancellation_reason"], "test cancellation");
+
+    let retained_tools = control_tools
+        .definitions_for_context(&parent)
+        .into_iter()
+        .map(|definition| definition.name)
+        .collect::<Vec<_>>();
+    assert!(retained_tools.contains(&WAIT_SUBAGENT_TOOL_NAME.to_string()));
+    assert!(!retained_tools.contains(&STEER_SUBAGENT_TOOL_NAME.to_string()));
+    assert!(!retained_tools.contains(&CANCEL_SUBAGENT_TOOL_NAME.to_string()));
+    let retained_info = info
+        .call(info_context, serde_json::json!({}))
+        .await
+        .unwrap();
+    assert!(
+        retained_info.content["background"]["active"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        retained_info.content["background"]["retained"][0]["attempt_id"],
+        attempt_id
+    );
+    assert_eq!(
+        retained_info.content["background"]["retained"][0]["status"],
+        "completed"
+    );
 }
 
 #[tokio::test]
@@ -1109,6 +1482,140 @@ async fn subagent_execution_hook_wraps_delegated_child_run() {
     assert_eq!(calls[1]["output"], "child wrapped");
     assert_eq!(calls[1]["requests"], 1);
     assert!(calls[1]["run_id"].as_str().is_some());
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn subagent_execution_hooks_report_before_after_and_child_failures() {
+    #[derive(Clone, Copy)]
+    enum HookFailure {
+        Before,
+        After,
+        ObserveChildFailure,
+    }
+
+    struct FailureHook {
+        failure: HookFailure,
+        observed_child_failure: std::sync::atomic::AtomicBool,
+    }
+
+    impl FailureHook {
+        const fn new(failure: HookFailure) -> Self {
+            Self {
+                failure,
+                observed_child_failure: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SubagentExecutionHook for FailureHook {
+        async fn before_subagent_run(
+            &self,
+            _metadata: SubagentExecutionMetadata,
+            _child_context: &mut AgentContext,
+        ) -> Result<(), starweaver_agent::AgentError> {
+            if matches!(self.failure, HookFailure::Before) {
+                return Err(starweaver_agent::AgentError::Capability(
+                    "before hook failed".to_string(),
+                ));
+            }
+            Ok(())
+        }
+
+        async fn after_subagent_run(
+            &self,
+            _metadata: SubagentExecutionMetadata,
+            _child_context: &AgentContext,
+            outcome: SubagentExecutionOutcome,
+        ) -> Result<(), starweaver_agent::AgentError> {
+            if matches!(outcome, SubagentExecutionOutcome::Failed { .. }) {
+                self.observed_child_failure
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            if matches!(self.failure, HookFailure::After) {
+                return Err(starweaver_agent::AgentError::Capability(
+                    "after hook failed".to_string(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    for (name, failure, expected, expected_hook) in [
+        (
+            "before",
+            HookFailure::Before,
+            "before hook failed",
+            "before_subagent_run",
+        ),
+        (
+            "after",
+            HookFailure::After,
+            "after hook failed",
+            "after_subagent_run",
+        ),
+    ] {
+        let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
+        let registry = SubagentRegistry::new().with_subagent(
+            SubagentConfig::new(name, child)
+                .with_execution_hook(Arc::new(FailureHook::new(failure))),
+        );
+        let mut context = AgentContext::default();
+        let error = registry
+            .delegate(name, "exercise hook failure", &mut context)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(expected));
+        let failure_event = context
+            .events
+            .events()
+            .iter()
+            .find(|event| event.kind == "subagent_failed")
+            .unwrap();
+        assert_eq!(failure_event.payload["metadata"]["hook"], expected_hook);
+        assert!(
+            failure_event.payload["metadata"]["error"]
+                .as_str()
+                .is_some_and(|message| message.contains(expected))
+        );
+        assert!(
+            !context
+                .events
+                .events()
+                .iter()
+                .any(|event| event.kind == "subagent_completed")
+        );
+    }
+
+    let failure_hook = Arc::new(FailureHook::new(HookFailure::ObserveChildFailure));
+    let failing_model = starweaver_agent::FunctionModel::new(|_messages, _settings, _info| {
+        Err(starweaver_model::ModelError::Transport(
+            "child transport failed".to_string(),
+        ))
+    });
+    let child = Arc::new(AgentBuilder::new(Arc::new(failing_model)).build());
+    let registry = SubagentRegistry::new().with_subagent(
+        SubagentConfig::new("failing", child).with_execution_hook(failure_hook.clone()),
+    );
+    let mut context = AgentContext::default();
+    let error = registry
+        .delegate("failing", "exercise child failure", &mut context)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("child transport failed"));
+    assert!(
+        failure_hook
+            .observed_child_failure
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "usage_snapshot")
+    );
 }
 
 #[tokio::test]
