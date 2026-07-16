@@ -5,13 +5,13 @@ use std::{
 };
 
 use crate::{
-    EnvironmentError, EnvironmentPolicy, EnvironmentResult, join_logical_path, normalize_path,
-    normalize_str_path, parent_path, path_contains, strip_path_prefix,
+    DEFAULT_VISIBLE_DOT_DIR_NAMES, EnvironmentError, EnvironmentPolicy, EnvironmentResult,
+    join_logical_path, normalize_path, normalize_str_path, parent_path, path_contains,
+    strip_path_prefix,
 };
 
 const DEFAULT_FILE_TREE_SKIPPED_DIR_NAMES: &[&str] =
     &["node_modules", ".git", ".venv", "__pycache__"];
-const DEFAULT_FILE_TREE_VISIBLE_DOT_DIR_NAMES: &[&str] = &[".agents"];
 pub const DEFAULT_FILE_TREE_MAX_DEPTH: usize = 3;
 
 pub fn render_virtual_file_tree_listing(
@@ -299,7 +299,7 @@ fn classify_file_tree_entry_visibility(name: &str, is_dir: bool) -> (bool, bool)
     if !name.starts_with('.') {
         return (false, false);
     }
-    if is_dir && DEFAULT_FILE_TREE_VISIBLE_DOT_DIR_NAMES.contains(&name) {
+    if is_dir && DEFAULT_VISIBLE_DOT_DIR_NAMES.contains(&name) {
         return (false, false);
     }
     if !is_dir && name == ".env" {
@@ -313,7 +313,7 @@ pub fn file_tree_directory_is_visible(name: &str) -> bool {
 }
 
 pub fn file_tree_directory_depth_increment(name: &str) -> usize {
-    usize::from(!DEFAULT_FILE_TREE_VISIBLE_DOT_DIR_NAMES.contains(&name))
+    usize::from(!DEFAULT_VISIBLE_DOT_DIR_NAMES.contains(&name))
 }
 
 fn is_gitignored(

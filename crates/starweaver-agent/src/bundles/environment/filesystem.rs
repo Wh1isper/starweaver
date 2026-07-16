@@ -25,6 +25,20 @@ use reading::read_text;
 use search::{glob_files, grep_files};
 use text::{format_size, read_text_file, truncate_chars};
 
+const SKILL_DOCUMENT_NAME: &str = "SKILL.md";
+const SKILL_DOCUMENT_REMINDER: &str = "Skill documents were found in the results. Before applying a skill, read each relevant SKILL.md in full with `view`; paths and grep snippets are not sufficient to assess applicability, and discovery alone does not activate a skill.";
+
+fn is_skill_document(path: &str) -> bool {
+    path.replace('\\', "/")
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name == SKILL_DOCUMENT_NAME)
+}
+
+fn add_skill_document_reminder(result: &mut serde_json::Value) {
+    result["system-reminder"] = serde_json::Value::String(SKILL_DOCUMENT_REMINDER.to_string());
+}
+
 /// Create filesystem tools backed by the `EnvironmentHandle` stored in `AgentContext`.
 #[must_use]
 pub fn filesystem_tools() -> DynToolset {

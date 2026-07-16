@@ -6,7 +6,10 @@ use grep_matcher::Matcher;
 use grep_regex::RegexMatcher;
 use grep_searcher::{Searcher, Sink, SinkContext, SinkFinish, SinkMatch};
 
-use crate::{EnvironmentError, EnvironmentResult, FileGrepMatch, FileGrepOptions};
+use crate::{
+    EnvironmentError, EnvironmentResult, FileGrepMatch, FileGrepOptions, include_path,
+    normalize_path,
+};
 
 pub fn search_text(
     path: &str,
@@ -51,7 +54,26 @@ pub fn local_search_walk_builder(
     include_ignored: bool,
 ) -> ignore::WalkBuilder {
     let mut builder = ignore::WalkBuilder::new(search_root);
-    builder.hidden(!include_hidden);
+    builder.hidden(false);
+    if !include_hidden {
+        let search_root = search_root.to_path_buf();
+        builder.filter_entry(move |entry| {
+            let Ok(relative) = entry.path().strip_prefix(&search_root) else {
+                return false;
+            };
+            if relative.as_os_str().is_empty() {
+                return true;
+            }
+            let relative = normalize_path(relative);
+            if !include_path(&relative, false) {
+                return false;
+            }
+            relative != ".agents"
+                || entry
+                    .file_type()
+                    .is_some_and(|file_type| file_type.is_dir())
+        });
+    }
     builder.ignore(!include_ignored);
     builder.git_ignore(!include_ignored);
     builder.git_global(!include_ignored);

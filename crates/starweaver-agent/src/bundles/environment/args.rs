@@ -137,7 +137,7 @@ pub(super) struct GlobArgs {
     /// Logical root to search from.
     #[serde(alias = "path", default = "default_root")]
     pub(super) root: String,
-    /// Include hidden dot paths such as .git, .venv, and .env.
+    /// Include hidden dot paths such as .git, .venv, and .env. The search root's direct .agents child is always visible.
     #[serde(default)]
     pub(super) include_hidden: bool,
     /// Include files ignored by .gitignore and nested ignore files.
@@ -170,7 +170,7 @@ pub(super) struct GrepArgs {
     /// Maximum files to search. Use -1 for unlimited.
     #[serde(default = "default_grep_max_files")]
     pub(super) max_files: isize,
-    /// Include hidden dot paths such as .git, .venv, and .env.
+    /// Include hidden dot paths such as .git, .venv, and .env. The search root's direct .agents child is always visible.
     #[serde(default)]
     pub(super) include_hidden: bool,
     /// Include files ignored by .gitignore and nested ignore files.

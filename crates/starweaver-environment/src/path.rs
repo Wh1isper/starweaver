@@ -10,6 +10,7 @@ use crate::{EnvironmentError, EnvironmentResult, types::ShellReviewEnvironmentCo
 
 pub const DEFAULT_TMP_DIR: &str = ".starweaver/tmp";
 pub const LOCAL_TMP_DIR_PREFIX: &str = "starweaver-";
+pub const DEFAULT_VISIBLE_DOT_DIR_NAMES: &[&str] = &[".agents"];
 
 pub fn join_logical_path(root: &str, child: &str) -> String {
     if root.is_empty() || root == "." {
@@ -438,9 +439,14 @@ pub fn normalize_str_path(path: &str) -> String {
 
 pub fn include_path(path: &str, include_hidden: bool) -> bool {
     include_hidden
-        || !normalize_str_path(path)
+        || normalize_str_path(path)
             .split('/')
-            .any(|segment| segment.starts_with('.') && segment.len() > 1)
+            .enumerate()
+            .all(|(index, segment)| {
+                !segment.starts_with('.')
+                    || segment.len() <= 1
+                    || (index == 0 && DEFAULT_VISIBLE_DOT_DIR_NAMES.contains(&segment))
+            })
 }
 
 pub fn path_contains(prefix: &str, path: &str) -> bool {

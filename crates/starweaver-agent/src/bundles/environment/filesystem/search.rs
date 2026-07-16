@@ -4,7 +4,7 @@ use starweaver_environment::{FileGlobOptions, FileGrepOptions};
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
 use super::{
-    GlobArgs, GrepArgs,
+    GlobArgs, GrepArgs, add_skill_document_reminder, is_skill_document,
     output::{guard_glob_output, guard_grep_output},
     tool_config_from_context,
 };
@@ -35,11 +35,26 @@ pub(super) async fn glob_files(
         )
         .await
         .map_err(|error| tool_environment_error("glob", error))?;
-    let result = serde_json::json!({
+    let mut contains_skill_document = false;
+    for entry in &matches {
+        if is_skill_document(&entry.path)
+            && provider
+                .stat(&entry.path)
+                .await
+                .is_ok_and(|stat| stat.is_file)
+        {
+            contains_skill_document = true;
+            break;
+        }
+    }
+    let mut result = serde_json::json!({
         "root": arguments.root,
         "pattern": arguments.pattern,
         "matches": matches,
     });
+    if contains_skill_document {
+        add_skill_document_reminder(&mut result);
+    }
     guard_glob_output(provider.as_ref(), &tool_config, result).await
 }
 

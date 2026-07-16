@@ -451,6 +451,74 @@ async fn virtual_provider_search_respects_root_hidden_limits_and_invalid_pattern
 }
 
 #[tokio::test]
+async fn virtual_provider_search_exposes_only_the_search_roots_direct_agents_directory() {
+    let provider = VirtualEnvironmentProvider::new("test")
+        .with_file(".agents/skills/root/SKILL.md", "needle root\n")
+        .with_file(".agents/.private/secret.txt", "needle private\n")
+        .with_file(".hidden/secret.txt", "needle hidden\n")
+        .with_file(
+            "project/.agents/skills/project/SKILL.md",
+            "needle project\n",
+        )
+        .with_file("project/.hidden/secret.txt", "needle project hidden\n");
+
+    let root_matches = provider
+        .glob("", "SKILL.md", FileGlobOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        root_matches,
+        vec![FileGlobMatch {
+            path: ".agents/skills/root/SKILL.md".to_string(),
+        }]
+    );
+
+    let project_matches = provider
+        .glob("project", "SKILL.md", FileGlobOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        project_matches,
+        vec![FileGlobMatch {
+            path: "project/.agents/skills/project/SKILL.md".to_string(),
+        }]
+    );
+
+    let grep_matches = provider
+        .grep("", "needle", FileGrepOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(grep_matches.len(), 1);
+    assert_eq!(grep_matches[0].path, ".agents/skills/root/SKILL.md");
+
+    let agents_file =
+        VirtualEnvironmentProvider::new("test").with_file(".agents", "not a directory");
+    assert!(
+        agents_file
+            .glob("", ".agents", FileGlobOptions::default())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        agents_file
+            .glob(
+                "",
+                ".agents",
+                FileGlobOptions {
+                    include_hidden: true,
+                    ..FileGlobOptions::default()
+                },
+            )
+            .await
+            .unwrap(),
+        vec![FileGlobMatch {
+            path: ".agents".to_string(),
+        }]
+    );
+}
+
+#[tokio::test]
 async fn local_provider_range_reads_seek_without_materializing_the_prefix() {
     use std::io::{Seek as _, SeekFrom, Write as _};
 
@@ -627,6 +695,122 @@ async fn local_provider_search_respects_gitignore_hidden_and_policy() {
     ));
 
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn local_provider_search_exposes_agents_without_exposing_other_hidden_paths() {
+    let root = unique_test_dir();
+    std::fs::create_dir_all(root.join(".agents/skills/root")).unwrap();
+    std::fs::create_dir_all(root.join(".agents/.private")).unwrap();
+    std::fs::create_dir_all(root.join(".hidden")).unwrap();
+    std::fs::create_dir_all(root.join("project/.agents/skills/project")).unwrap();
+    std::fs::create_dir_all(root.join("project/.hidden")).unwrap();
+    std::fs::write(root.join(".agents/skills/root/SKILL.md"), "needle root\n").unwrap();
+    std::fs::write(root.join(".agents/.private/secret.txt"), "needle private\n").unwrap();
+    std::fs::write(root.join(".hidden/secret.txt"), "needle hidden\n").unwrap();
+    std::fs::write(
+        root.join("project/.agents/skills/project/SKILL.md"),
+        "needle project\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("project/.hidden/secret.txt"),
+        "needle project hidden\n",
+    )
+    .unwrap();
+
+    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+        files: FilePolicy::read_only(),
+        shell: ShellPolicy::default(),
+    });
+
+    let root_matches = provider
+        .glob("", "SKILL.md", FileGlobOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        root_matches,
+        vec![FileGlobMatch {
+            path: ".agents/skills/root/SKILL.md".to_string(),
+        }]
+    );
+
+    let project_matches = provider
+        .glob("project", "SKILL.md", FileGlobOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        project_matches,
+        vec![FileGlobMatch {
+            path: "project/.agents/skills/project/SKILL.md".to_string(),
+        }]
+    );
+
+    let grep_matches = provider
+        .grep("", "needle", FileGrepOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(grep_matches.len(), 1);
+    assert_eq!(grep_matches[0].path, ".agents/skills/root/SKILL.md");
+
+    std::fs::write(root.join(".gitignore"), ".agents/\n").unwrap();
+    assert!(
+        provider
+            .glob("", "SKILL.md", FileGlobOptions::default())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let ignored_matches = provider
+        .glob(
+            "",
+            "SKILL.md",
+            FileGlobOptions {
+                include_ignored: true,
+                ..FileGlobOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(ignored_matches.len(), 1);
+    assert_eq!(ignored_matches[0].path, ".agents/skills/root/SKILL.md");
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_provider_search_does_not_follow_agents_or_root_directory_symlinks() {
+    let root = unique_test_dir();
+    let store = unique_test_dir();
+    std::fs::create_dir_all(root.join("project")).unwrap();
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::write(store.join("SKILL.md"), "needle external\n").unwrap();
+    std::os::unix::fs::symlink(&store, root.join("project/.agents")).unwrap();
+    std::os::unix::fs::symlink(root.join("project"), root.join("project-alias")).unwrap();
+
+    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+        files: FilePolicy::read_only(),
+        shell: ShellPolicy::default(),
+    });
+
+    assert!(
+        provider
+            .glob("project", "SKILL.md", FileGlobOptions::default())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        provider
+            .glob("project-alias", "SKILL.md", FileGlobOptions::default())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(store).unwrap();
 }
 
 #[tokio::test]

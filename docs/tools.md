@@ -251,7 +251,7 @@ assert_eq!(result.output, "done");
 # }
 ```
 
-`glob` and `grep` use ripgrep-style matching over the active `EnvironmentProvider`. Bare patterns such as `*.rs` match at any depth, scoped patterns such as `src/*.rs` match one path segment under `src`, and recursive patterns such as `**/*.rs` match root-level and nested Rust files.
+`glob` and `grep` use ripgrep-style matching over the active `EnvironmentProvider`. Bare patterns such as `*.rs` match at any depth, scoped patterns such as `src/*.rs` match one path segment under `src`, and recursive patterns such as `**/*.rs` match root-level and nested Rust files. With hidden paths disabled, the selected search root's direct `.agents/` child remains visible so Skill entrypoints can be discovered; other hidden paths stay excluded, provider ignore rules still apply, and directory symlinks are not followed. `glob`, `grep`, and `ls` add a reminder when returned results contain a regular `SKILL.md` file so callers know to read the relevant document in full before activation. The environment-context file tree uses the same `.agents/` visibility exception.
 
 ## Tool proxy
 

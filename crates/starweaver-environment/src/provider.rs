@@ -9,8 +9,9 @@ use crate::{
     EnvironmentError, EnvironmentLifecycleSnapshot, EnvironmentResult, EnvironmentState,
     FileGlobMatch, FileGlobOptions, FileGrepMatch, FileGrepOptions, FileListOptions,
     FileListResult, FileStat, PathGlob, ProgramCommand, ShellCommand, ShellOutput,
-    ShellProcessSnapshot, ShellReviewEnvironmentContext, include_path, list_ignore_match,
-    path_match_candidates, search_text,
+    ShellProcessSnapshot, ShellReviewEnvironmentContext, include_path, join_logical_path,
+    list_ignore_match, normalize_str_path, path_contains, path_match_candidates, search_text,
+    strip_path_prefix,
 };
 
 /// Shared environment provider reference.
@@ -145,10 +146,35 @@ pub trait EnvironmentProvider: Send + Sync {
         options: FileGlobOptions,
     ) -> EnvironmentResult<Vec<FileGlobMatch>> {
         let path_glob = PathGlob::new(pattern)?;
+        let root = normalize_str_path(path);
+        let root_is_current = root.is_empty() || root == ".";
         let mut glob_matches = Vec::new();
         for entry in self.list(path).await? {
-            if include_path(&entry, options.include_hidden) && path_glob.is_match(&entry) {
-                glob_matches.push(FileGlobMatch { path: entry });
+            let normalized_entry = normalize_str_path(&entry);
+            let entry_is_root_scoped = !root_is_current && path_contains(&root, &normalized_entry);
+            let logical_entry = if root_is_current || entry_is_root_scoped {
+                entry
+            } else {
+                join_logical_path(path, &entry)
+            };
+            let relative = if entry_is_root_scoped {
+                strip_path_prefix(&root, &normalized_entry)
+            } else {
+                normalized_entry.as_str()
+            };
+            let agents_entry_is_directory = options.include_hidden
+                || relative != ".agents"
+                || self
+                    .stat(&logical_entry)
+                    .await
+                    .is_ok_and(|stat| stat.is_dir);
+            if include_path(relative, options.include_hidden)
+                && agents_entry_is_directory
+                && path_glob.is_match(relative)
+            {
+                glob_matches.push(FileGlobMatch {
+                    path: logical_entry,
+                });
                 if options.max_results > 0 && glob_matches.len() >= options.max_results {
                     break;
                 }

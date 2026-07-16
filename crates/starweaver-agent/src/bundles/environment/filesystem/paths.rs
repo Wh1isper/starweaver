@@ -2,11 +2,14 @@
 
 use std::sync::LazyLock;
 
-use starweaver_environment::{EnvironmentError, FileListOptions};
+use starweaver_environment::{EnvironmentError, EnvironmentProvider, FileListOptions};
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
 use tokio::sync::Semaphore;
 
-use super::{DeleteArgs, FilePathArgs, ListArgs, MkdirArgs, PathPairsArgs, tool_execution_error};
+use super::{
+    DeleteArgs, FilePathArgs, ListArgs, MkdirArgs, PathPairsArgs, add_skill_document_reminder,
+    is_skill_document, output::guard_ls_output, tool_config_from_context, tool_execution_error,
+};
 use crate::bundles::environment::common::limit_or_unlimited;
 use crate::bundles::environment::handle::environment_provider;
 use crate::bundles::helpers::tool_environment_error;
@@ -20,6 +23,7 @@ pub(super) async fn list_files(
     arguments: ListArgs,
 ) -> Result<ToolResult, ToolError> {
     let provider = environment_provider(&context, "ls")?;
+    let tool_config = tool_config_from_context(&context, "ls")?;
     let ignore = arguments.ignore.unwrap_or_default();
     let max_entries = limit_or_unlimited("ls", "max_entries", arguments.max_entries)?;
     let _permit = LS_CONCURRENCY_LIMIT
@@ -36,19 +40,59 @@ pub(super) async fn list_files(
         )
         .await
         .map_err(|error| tool_environment_error("ls", error))?;
+    let contains_skill_document =
+        listing_contains_skill_document(provider.as_ref(), &arguments.path, &listing.entries).await;
     let mut result = serde_json::json!({
         "path": arguments.path,
         "ignore": ignore,
         "max_entries": arguments.max_entries,
         "entries": listing.entries,
     });
+    if contains_skill_document {
+        add_skill_document_reminder(&mut result);
+    }
     if listing.truncated {
         result["truncated"] = serde_json::json!(true);
         result["total_entries"] = serde_json::json!(listing.total_entries);
         result["showing"] =
             serde_json::json!(result["entries"].as_array().map_or(0, std::vec::Vec::len));
     }
-    Ok(ToolResult::new(result))
+    guard_ls_output(provider.as_ref(), &tool_config, result).await
+}
+
+async fn listing_contains_skill_document(
+    provider: &dyn EnvironmentProvider,
+    listed_path: &str,
+    entries: &[String],
+) -> bool {
+    for entry in entries {
+        if !is_skill_document(entry) {
+            continue;
+        }
+        let entry_path = listed_entry_path(listed_path, entry);
+        if provider
+            .stat(&entry_path)
+            .await
+            .is_ok_and(|stat| stat.is_file)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn listed_entry_path(listed_path: &str, entry: &str) -> String {
+    let listed_path = listed_path.trim_end_matches(['/', '\\']);
+    if listed_path.is_empty()
+        || listed_path == "."
+        || entry == listed_path
+        || entry.starts_with(&format!("{listed_path}/"))
+        || entry.starts_with(&format!("{listed_path}\\"))
+    {
+        entry.to_string()
+    } else {
+        format!("{listed_path}/{entry}")
+    }
 }
 
 pub(super) async fn mkdir_paths(

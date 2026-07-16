@@ -89,7 +89,8 @@ pub(super) fn filesystem_tools() -> DynToolset {
 - Use `root` to limit traversal to one subdirectory when the search scope is known.
 - For multiple directories, issue multiple glob tool calls in parallel, one root per call; if they share a parent, use that parent as `root` and narrow `pattern`.
 - Prefer glob before grep when you need to inspect candidate file names first.
-- Set `include_hidden=true` for dotfiles and hidden directories.
+- The search root's direct `.agents/` child remains visible by default so Skill entrypoints can be discovered; use `include_hidden=true` for other dotfiles and hidden directories.
+- `.agents/` still follows provider ignore rules; set `include_ignored=true` only when ignored paths are intentionally needed.
 - Set `include_ignored=true` for generated, dependency, cache, and build outputs.
 - Very large results are saved to a temp file with `output_file_path`; use view to read it.
 </best-practices>
@@ -103,7 +104,8 @@ pub(super) fn filesystem_tools() -> DynToolset {
 - For multiple directories, issue multiple grep tool calls in parallel, one root per call; if they share a parent, use that parent as `root` and narrow `include`.
 - Use glob first when you need to inspect candidate file names.
 - Keep `context_lines` low for broad scans and raise it for targeted inspection.
-- Set `include_hidden=true` for dotfiles and hidden directories.
+- The search root's direct `.agents/` child remains visible by default so Skill entrypoints can be discovered; use `include_hidden=true` for other dotfiles and hidden directories.
+- `.agents/` still follows provider ignore rules; set `include_ignored=true` only when ignored paths are intentionally needed.
 - Set `include_ignored=true` for generated, dependency, cache, and build outputs.
 - Increase `max_files`, `max_results`, or `max_matches_per_file` deliberately after narrowing scope.
 </best-practices>
