@@ -93,6 +93,8 @@ pub fn upversion(args: &[String]) -> Result<(), String> {
             .arg("1")
             .current_dir(&root),
     )?;
+    crate::capabilities::update_verified_release(&root, version)?;
+    crate::capabilities::check(&["--bless".to_string()])?;
     println!("Updated workspace version to {version}");
     Ok(())
 }

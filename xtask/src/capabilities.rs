@@ -33,6 +33,16 @@ struct Capability {
     contract_tests: Vec<String>,
 }
 
+pub fn update_verified_release(root: &Path, version: &str) -> Result<(), String> {
+    let registry_path = root.join("spec/capabilities.toml");
+    let source = fs::read_to_string(&registry_path)
+        .map_err(|error| format!("{}: {error}", registry_path.display()))?;
+    let updated = replace_verified_release(&source, version)?;
+    fs::write(&registry_path, updated)
+        .map_err(|error| format!("{}: {error}", registry_path.display()))?;
+    Ok(())
+}
+
 pub fn check(args: &[String]) -> Result<(), String> {
     let bless = match args {
         [] => false,
@@ -56,6 +66,26 @@ pub fn check(args: &[String]) -> Result<(), String> {
         registry.last_verified_release
     );
     Ok(())
+}
+
+fn replace_verified_release(source: &str, version: &str) -> Result<String, String> {
+    let registry: CapabilityRegistry = toml::from_str(source)
+        .map_err(|error| format!("invalid spec/capabilities.toml: {error}"))?;
+    let current = format!(
+        "last_verified_release = \"{}\"",
+        registry.last_verified_release
+    );
+    if source.matches(&current).count() != 1 {
+        return Err(
+            "spec/capabilities.toml must contain one canonical last_verified_release declaration"
+                .to_string(),
+        );
+    }
+    Ok(source.replacen(
+        &current,
+        &format!("last_verified_release = \"{version}\""),
+        1,
+    ))
 }
 
 fn validate_status_view_references(root: &Path) -> Result<(), String> {
@@ -387,7 +417,26 @@ fn validate_evidence_path(
 
 #[cfg(test)]
 mod tests {
-    use super::valid_id;
+    use super::{replace_verified_release, valid_id};
+
+    #[test]
+    fn replaces_verified_release_without_changing_capabilities() {
+        let source = r#"schema_version = 1
+last_verified_release = "0.7.0"
+capability = []
+"#;
+        let updated = match replace_verified_release(source, "0.8.0") {
+            Ok(updated) => updated,
+            Err(error) => panic!("verified release should update: {error}"),
+        };
+        assert_eq!(
+            updated,
+            r#"schema_version = 1
+last_verified_release = "0.8.0"
+capability = []
+"#
+        );
+    }
 
     #[test]
     fn validates_capability_ids() {
