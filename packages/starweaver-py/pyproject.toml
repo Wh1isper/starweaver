@@ -1,6 +1,6 @@
 [project]
 name = "starweaver"
-version = "0.7.0"
+version = "0.8.0"
 description = "Python bindings for Starweaver"
 authors = [{ name = "wh1isper" }]
 readme = "README.md"
