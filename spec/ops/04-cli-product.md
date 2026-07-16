@@ -158,7 +158,8 @@ The CLI separates durable local sessions from provider-routing affinity:
 - Request metadata uses `starweaver.durable_session_id`, `starweaver.durable_run_id`, `cli.session_id`, and `cli.run_id` for durable trace/session correlation. Provider routing affinity is not inferred from these durable metadata keys; it must flow through `AgentContext.session_id` and typed provider settings.
 - `AgentContext.session_id` is the logical provider-affinity source consumed by runtime request building.
 - TUI creates a process-level `session_affinity_id` at startup and passes it through run metadata as `starweaver.session_affinity_id` for each run.
-- TUI `/clear`, durable session selection, and snapshot restore do not mutate `session_affinity_id`; they affect local transcript/history state only.
+- TUI `/clear`, durable session selection, and snapshot restore do not mutate `session_affinity_id`. `/clear` first detaches the durable current-session pointer, then clears conversation-scoped transcript, prompt history, composer, panel, and run state while preserving process-level model/display policy and cumulative usage.
+- Interactive background-subagent supervisors, completion callbacks, and pending wake queues are keyed by durable session id. `/clear` selects a fresh scope rather than cancelling the detached session's work; an old scope cannot wake the fresh context and becomes eligible again only when that durable session is explicitly reloaded.
 - Headless CLI runs set `AgentContext.session_id` from explicit `starweaver.session_affinity_id` metadata when present. If no explicit affinity exists and no restored context affinity exists, the durable session id is used only as the runtime context affinity, not as generic provider HTTP metadata.
 - Provider-specific routing is resolved through typed `ModelSettings` overlays: OpenAI prompt-cache keys, Codex OAuth session/thread headers, and opt-in Gateway `x-session-id`.
 

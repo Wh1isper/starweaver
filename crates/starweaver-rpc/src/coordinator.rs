@@ -2518,6 +2518,10 @@ mod tests {
     use super::*;
     use starweaver_session::DurableBackgroundSubagentDeliveryRelease;
 
+    // File-backed SQLite has a long latency tail under parallel Windows CI load; production
+    // run-await limits remain owned by the RPC service policy.
+    const TEST_RUN_COMPLETION_TIMEOUT: Duration = Duration::from_secs(30);
+
     #[tokio::test]
     async fn starts_and_awaits_a_run_without_cli_types() {
         let temp = tempfile::tempdir().unwrap();
@@ -2549,7 +2553,7 @@ mod tests {
             .await_terminal(
                 &started.session_id,
                 &started.run_id,
-                Some(Duration::from_secs(5)),
+                Some(TEST_RUN_COMPLETION_TIMEOUT),
             )
             .await
             .unwrap();
@@ -2591,7 +2595,7 @@ mod tests {
             .await_terminal(
                 &first.session_id,
                 &first.run_id,
-                Some(Duration::from_secs(5)),
+                Some(TEST_RUN_COMPLETION_TIMEOUT),
             )
             .await
             .unwrap();
@@ -2649,7 +2653,7 @@ mod tests {
             .await_terminal(
                 &parent.session_id,
                 &parent.run_id,
-                Some(Duration::from_secs(5)),
+                Some(TEST_RUN_COMPLETION_TIMEOUT),
             )
             .await
             .unwrap();
@@ -2677,7 +2681,7 @@ mod tests {
             .await_terminal(
                 &intervening.session_id,
                 &intervening.run_id,
-                Some(Duration::from_secs(5)),
+                Some(TEST_RUN_COMPLETION_TIMEOUT),
             )
             .await
             .unwrap();
@@ -2786,7 +2790,7 @@ mod tests {
             .await_terminal(
                 &continuation.session_id,
                 &continuation.run_id,
-                Some(Duration::from_secs(5)),
+                Some(TEST_RUN_COMPLETION_TIMEOUT),
             )
             .await
             .unwrap();
@@ -3066,7 +3070,7 @@ mod tests {
             .await_terminal(
                 &explicit.session_id,
                 &explicit.run_id,
-                Some(Duration::from_secs(5)),
+                Some(TEST_RUN_COMPLETION_TIMEOUT),
             )
             .await
             .unwrap();

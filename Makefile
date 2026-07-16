@@ -114,19 +114,19 @@ build: ## Build the workspace
 	@cargo build --workspace --all-targets --all-features --locked
 
 .PHONY: py-sync
-py-sync: ## Sync Python workspace dependencies with uv
-	@echo "Syncing Python workspace"
-	@uv sync --all-packages
+py-sync: ## Sync Python dependencies without building workspace packages
+	@echo "Syncing Python workspace dependencies"
+	@uv sync --all-packages --no-install-workspace --locked
 
 .PHONY: py-version
 py-version: py-sync ## Show the Python interpreter selected by uv
-	@uv run python --version
+	@uv run --no-sync python --version
 
 .PHONY: py-fmt
 py-fmt: py-sync ## Format Python package files with ruff
 	@echo "Formatting Python package"
-	@uv run ruff format $(PY_SOURCES)
-	@uv run ruff check --fix $(PY_SOURCES)
+	@uv run --no-sync ruff format $(PY_SOURCES)
+	@uv run --no-sync ruff check --fix $(PY_SOURCES)
 
 .PHONY: py-api-check
 py-api-check: ## Validate classified Python top-level API snapshot
@@ -134,16 +134,12 @@ py-api-check: ## Validate classified Python top-level API snapshot
 	@python3 scripts/check_python_api.py
 
 .PHONY: py-lint
-py-lint: py-api-check ## Lint and type-check Python package files with uv, ruff, and pyright
-	@echo "Checking Python lock file"
-	@uv lock --locked
-	@echo "Syncing Python workspace"
-	@uv sync --all-packages
+py-lint: py-api-check py-sync ## Lint and type-check Python package files with uv, ruff, and pyright
 	@echo "Running ruff"
-	@uv run ruff check $(PY_SOURCES)
-	@uv run ruff format --check $(PY_SOURCES)
+	@uv run --no-sync ruff check $(PY_SOURCES)
+	@uv run --no-sync ruff format --check $(PY_SOURCES)
 	@echo "Running pyright"
-	@uv run pyright
+	@uv run --no-sync pyright
 
 .PHONY: py-rust-check
 py-rust-check: ## Check the Rust extension crate for the Python package
@@ -157,9 +153,9 @@ py-rust-check: ## Check the Rust extension crate for the Python package
 .PHONY: py-test
 py-test: py-sync ## Run Python package tests through uv
 	@echo "Building Python package in editable mode"
-	@env -u CONDA_PREFIX -u CONDA_DEFAULT_ENV uv run maturin develop --skip-install --manifest-path $(PY_PACKAGE)/Cargo.toml --locked
+	@env -u CONDA_PREFIX -u CONDA_DEFAULT_ENV uv run --no-sync maturin develop --skip-install --manifest-path $(PY_PACKAGE)/Cargo.toml --locked
 	@echo "Running Python package tests"
-	@uv run pytest $(PY_PACKAGE)/tests -vv
+	@env PYTHONPATH="$(abspath $(PY_PACKAGE)/python)" uv run --no-sync pytest $(PY_PACKAGE)/tests -vv
 
 .PHONY: py-build
 py-build: py-sync ## Build Python package distributions with uv
@@ -170,7 +166,7 @@ py-build: py-sync ## Build Python package distributions with uv
 .PHONY: py-wheel-smoke
 py-wheel-smoke: py-build ## Install the built wheel into a clean venv and run smoke checks
 	@echo "Running Python wheel smoke"
-	@env -u CONDA_PREFIX -u CONDA_DEFAULT_ENV uv run python scripts/python_wheel_smoke.py $(PY_DIST_DIR)
+	@env -u CONDA_PREFIX -u CONDA_DEFAULT_ENV uv run --no-sync python scripts/python_wheel_smoke.py $(PY_DIST_DIR)
 
 .PHONY: py-check
 py-check: py-lint py-rust-check py-test py-wheel-smoke ## Run all Python package checks; defaults to Python 3.13

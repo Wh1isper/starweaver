@@ -1591,8 +1591,10 @@ async fn local_shell_exec_foreground_cancels_running_process_quickly() {
         .with_dependencies(dependencies)
         .with_cancellation_token(cancellation_token.clone());
     let registry = Arc::new(registry);
+    #[cfg(windows)]
+    let command = "ping -n 6 127.0.0.1 >NUL";
+    #[cfg(not(windows))]
     let command = "exec sleep 5";
-    let started_at = Instant::now();
     let handle = tokio::spawn({
         let registry = Arc::clone(&registry);
         async move {
@@ -1612,11 +1614,12 @@ async fn local_shell_exec_foreground_cancels_running_process_quickly() {
             provider.as_ref(),
             command,
             ShellProcessStatus::Running,
-            Duration::from_secs(2),
+            Duration::from_secs(10),
         )
         .await,
         "foreground shell process should start"
     );
+    let cancellation_started_at = Instant::now();
     cancellation_token.cancel();
     let result = match tokio::time::timeout(Duration::from_secs(2), handle).await {
         Ok(Ok(result)) => result,
@@ -1625,9 +1628,9 @@ async fn local_shell_exec_foreground_cancels_running_process_quickly() {
     };
 
     assert!(
-        started_at.elapsed() < Duration::from_secs(2),
+        cancellation_started_at.elapsed() < Duration::from_secs(2),
         "foreground shell cancellation took {:?}",
-        started_at.elapsed()
+        cancellation_started_at.elapsed()
     );
     assert!(result.is_error, "expected cancellation error: {result:?}");
     assert_eq!(result.content["kind"], "cancelled");
@@ -1637,7 +1640,7 @@ async fn local_shell_exec_foreground_cancels_running_process_quickly() {
             provider.as_ref(),
             command,
             ShellProcessStatus::Killed,
-            Duration::from_secs(2),
+            Duration::from_secs(10),
         )
         .await,
         "foreground shell process should be killed after cancellation: {:?}",

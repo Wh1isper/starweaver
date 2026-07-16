@@ -1,12 +1,12 @@
-use std::{collections::BTreeMap, sync::Arc, thread, time::Duration};
+use std::{collections::BTreeMap, future::Future, sync::Arc, thread, time::Duration};
 
 use starweaver_context::{
     AgentContext, CONTEXT_USAGE_CAPABILITY, HostCapabilities, ShellEnvironmentSnapshot, ToolConfig,
     ToolRuntimeSnapshot,
 };
 use starweaver_environment::{
-    DynProcessShellProvider, EnvironmentProvider, ShellCommand, ShellOutput, ShellProcessSnapshot,
-    ShellProcessStatus, ShellReviewEnvironmentContext,
+    DynProcessShellProvider, EnvironmentProvider, EnvironmentResult, ShellCommand, ShellOutput,
+    ShellProcessSnapshot, ShellProcessStatus, ShellReviewEnvironmentContext,
 };
 use starweaver_tools::{
     DynToolset, EmptyToolArgs, StaticToolset, ToolContext, ToolDependencyRequirements, ToolError,
@@ -21,7 +21,7 @@ use super::{
 };
 use crate::bundles::helpers::{
     static_sequential_tool_with_metadata, static_tool_with_metadata, tool_environment_error,
-    tool_invalid_arguments, tool_metadata_with_dependencies, tool_user_error,
+    tool_execution_error, tool_invalid_arguments, tool_metadata_with_dependencies, tool_user_error,
 };
 use crate::bundles::output::{
     DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT, append_guidance, dump_tool_output,
@@ -159,11 +159,11 @@ async fn shell_exec(
         {
             return Ok(blocked);
         }
-        let snapshot = provider
-            .start_process(shell_command)
-            .await
-            .map_err(|error| tool_environment_error("shell_exec", error))?;
-        return process_result(&context, &snapshot).await;
+        let (snapshot, mut process_guard) =
+            start_process_with_cleanup_handoff(provider, shell_command).await?;
+        let result = process_result(&context, &snapshot).await?;
+        process_guard.disarm();
+        return Ok(result);
     }
     let provider = environment_provider(&context, "shell_exec")?;
     if let Some(blocked) = review_shell_command_or_block(
@@ -218,12 +218,8 @@ async fn shell_exec_foreground_process(
     shell_command: ShellCommand,
     environment: &BTreeMap<String, String>,
 ) -> Result<ToolResult, ToolError> {
-    let started = process_provider
-        .start_process(shell_command)
-        .await
-        .map_err(|error| tool_environment_error("shell_exec", error))?;
-    let mut process_guard =
-        ForegroundProcessGuard::new(process_provider.clone(), started.process_id.clone());
+    let (started, mut process_guard) =
+        start_process_with_cleanup_handoff(process_provider.clone(), shell_command).await?;
     let snapshot = wait_process_polling(
         context,
         process_provider.clone(),
@@ -278,12 +274,44 @@ async fn shell_exec_output_result(
     ))
 }
 
-struct ForegroundProcessGuard {
+// A provider can register the process before its start future hands the snapshot
+// back to this tool. Keep that handoff in a detached task whose output already
+// owns cleanup, so caller cancellation still attempts to clean up an unobserved process.
+async fn start_process_with_cleanup_handoff(
+    provider: DynProcessShellProvider,
+    command: ShellCommand,
+) -> Result<(ShellProcessSnapshot, ProcessCleanupGuard), ToolError> {
+    let start_provider = provider.clone();
+    await_process_start_with_cleanup(provider, async move {
+        start_provider.start_process(command).await
+    })
+    .await
+}
+
+async fn await_process_start_with_cleanup<F>(
+    provider: DynProcessShellProvider,
+    start: F,
+) -> Result<(ShellProcessSnapshot, ProcessCleanupGuard), ToolError>
+where
+    F: Future<Output = EnvironmentResult<ShellProcessSnapshot>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        start.await.map(|snapshot| {
+            let process_id = snapshot.process_id.clone();
+            (snapshot, ProcessCleanupGuard::new(provider, process_id))
+        })
+    })
+    .await
+    .map_err(|error| tool_execution_error("shell_exec", error))?
+    .map_err(|error| tool_environment_error("shell_exec", error))
+}
+
+struct ProcessCleanupGuard {
     provider: Option<DynProcessShellProvider>,
     process_id: String,
 }
 
-impl ForegroundProcessGuard {
+impl ProcessCleanupGuard {
     fn new(provider: DynProcessShellProvider, process_id: String) -> Self {
         Self {
             provider: Some(provider),
@@ -296,7 +324,7 @@ impl ForegroundProcessGuard {
     }
 }
 
-impl Drop for ForegroundProcessGuard {
+impl Drop for ProcessCleanupGuard {
     fn drop(&mut self) {
         let Some(provider) = self.provider.take() else {
             return;
@@ -732,11 +760,70 @@ fn truncate_shell_output_without_file(content: &str, truncate_limit: usize) -> T
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use starweaver_context::DependencyStore;
     use starweaver_core::{ConversationId, RunId};
+    use starweaver_environment::{
+        EnvironmentPolicy, FilePolicy, LocalEnvironmentProvider, ShellPolicy,
+    };
+    use tokio::sync::oneshot;
 
     use super::*;
+
+    #[tokio::test]
+    async fn process_start_handoff_cleans_up_when_caller_is_cancelled() {
+        let root = tempfile::tempdir().unwrap();
+        let local_provider = Arc::new(LocalEnvironmentProvider::new(root.path()).with_policy(
+            EnvironmentPolicy {
+                files: FilePolicy::read_only(),
+                shell: ShellPolicy::allow_all(),
+            },
+        ));
+        let provider: DynProcessShellProvider = local_provider;
+        let start_provider = provider.clone();
+        let (started_sender, started_receiver) = oneshot::channel();
+        let (release_sender, release_receiver) = oneshot::channel();
+        #[cfg(windows)]
+        let command = "ping -n 31 127.0.0.1 >NUL";
+        #[cfg(not(windows))]
+        let command = "exec sleep 30";
+        let start = async move {
+            let snapshot = start_provider
+                .start_process(ShellCommand::shell(command))
+                .await?;
+            let _ = started_sender.send(snapshot.process_id.clone());
+            let _ = release_receiver.await;
+            Ok(snapshot)
+        };
+        let caller = tokio::spawn(await_process_start_with_cleanup(provider.clone(), start));
+        let process_id = tokio::time::timeout(Duration::from_secs(10), started_receiver)
+            .await
+            .expect("process start should not time out")
+            .expect("process start should be observed");
+
+        caller.abort();
+        match caller.await {
+            Err(error) => assert!(error.is_cancelled()),
+            Ok(_) => panic!("process start caller should be cancelled"),
+        }
+        release_sender
+            .send(())
+            .expect("detached process start should remain alive");
+
+        let status = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let snapshot = provider.wait_process(&process_id, 0).await.unwrap();
+                if snapshot.status != ShellProcessStatus::Running {
+                    break snapshot.status;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("orphaned process cleanup should not time out");
+        assert_eq!(status, ShellProcessStatus::Killed);
+    }
 
     #[test]
     fn shell_environment_prefers_dedicated_projection_and_keeps_legacy_fallback() {
