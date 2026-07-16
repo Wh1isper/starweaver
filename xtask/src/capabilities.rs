@@ -49,17 +49,20 @@ pub fn check(args: &[String]) -> Result<(), String> {
         [arg] if arg == "--bless" => true,
         _ => return Err("usage: check-capabilities [--bless]".to_string()),
     };
-    let root = root()?;
+    check_at(&root()?, bless)
+}
+
+pub fn check_at(root: &Path, bless: bool) -> Result<(), String> {
     let registry_path = root.join("spec/capabilities.toml");
     let source = fs::read_to_string(&registry_path)
         .map_err(|error| format!("{}: {error}", registry_path.display()))?;
     let registry: CapabilityRegistry =
         toml::from_str(&source).map_err(|error| format!("{}: {error}", registry_path.display()))?;
-    let workspace_version = workspace_version(&root)?;
-    let workspace_packages = workspace_packages(&root)?;
-    validate_registry(&root, &registry, &workspace_version, &workspace_packages)?;
-    validate_status_view_references(&root)?;
-    validate_or_write_generated_status(&root, &registry, bless)?;
+    let workspace_version = workspace_version(root)?;
+    let workspace_packages = workspace_packages(root)?;
+    validate_registry(root, &registry, &workspace_version, &workspace_packages)?;
+    validate_status_view_references(root)?;
+    validate_or_write_generated_status(root, &registry, bless)?;
     println!(
         "capability registry passed: {} entries verified for release {}; generated status is current",
         registry.capability.len(),
@@ -69,23 +72,48 @@ pub fn check(args: &[String]) -> Result<(), String> {
 }
 
 fn replace_verified_release(source: &str, version: &str) -> Result<String, String> {
-    let registry: CapabilityRegistry = toml::from_str(source)
+    let _: CapabilityRegistry = toml::from_str(source)
         .map_err(|error| format!("invalid spec/capabilities.toml: {error}"))?;
-    let current = format!(
-        "last_verified_release = \"{}\"",
-        registry.last_verified_release
-    );
-    if source.matches(&current).count() != 1 {
-        return Err(
-            "spec/capabilities.toml must contain one canonical last_verified_release declaration"
-                .to_string(),
-        );
+    let mut offset = 0;
+    let mut declaration = None;
+    for line in source.split_inclusive('\n') {
+        let content = line
+            .strip_suffix("\r\n")
+            .or_else(|| line.strip_suffix('\n'))
+            .unwrap_or(line);
+        let trimmed = content.trim_start();
+        if trimmed.starts_with('[') {
+            break;
+        }
+        if !trimmed.starts_with('#')
+            && trimmed
+                .split_once('=')
+                .is_some_and(|(key, _)| key.trim() == "last_verified_release")
+        {
+            match declaration {
+                Some(_) => {
+                    return Err(
+                        "spec/capabilities.toml contains duplicate last_verified_release declarations"
+                            .to_string(),
+                    );
+                }
+                None => declaration = Some((offset, offset + content.len(), trimmed)),
+            }
+        }
+        offset += line.len();
     }
-    Ok(source.replacen(
-        &current,
-        &format!("last_verified_release = \"{version}\""),
-        1,
-    ))
+    let Some((start, end, trimmed)) = declaration else {
+        return Err(
+            "spec/capabilities.toml is missing top-level last_verified_release".to_string(),
+        );
+    };
+    let indentation = &source[start..end][..source[start..end].len() - trimmed.len()];
+    let mut updated = String::with_capacity(source.len());
+    updated.push_str(&source[..start]);
+    updated.push_str(indentation);
+    write!(updated, "last_verified_release = \"{version}\"").map_err(|error| error.to_string())?;
+    updated.push_str(&source[end..]);
+    Ok(updated)
 }
 
 fn validate_status_view_references(root: &Path) -> Result<(), String> {
@@ -436,6 +464,21 @@ last_verified_release = "0.8.0"
 capability = []
 "#
         );
+    }
+
+    #[test]
+    fn replaces_only_the_top_level_verified_release_declaration() {
+        let source = r#"schema_version = 1
+# last_verified_release = "comment"
+last_verified_release="0.7.0"
+capability = []
+"#;
+        let updated = match replace_verified_release(source, "0.8.0") {
+            Ok(updated) => updated,
+            Err(error) => panic!("verified release should update: {error}"),
+        };
+        assert!(updated.contains("# last_verified_release = \"comment\""));
+        assert!(updated.contains("\nlast_verified_release = \"0.8.0\"\n"));
     }
 
     #[test]
