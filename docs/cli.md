@@ -448,7 +448,7 @@ Interactive slash commands:
 | Command            | Action                                              |
 | ------------------ | --------------------------------------------------- |
 | `/help`            | Print command help into the transcript              |
-| `/clear`           | Clear output                                        |
+| `/clear`           | Detach the session and start a fresh context        |
 | `/cost`            | Show usage/context summary                          |
 | `/display [mode]`  | Switch transcript display mode                      |
 | `/model`           | Open the in-TUI model profile selector              |
@@ -458,6 +458,8 @@ Interactive slash commands:
 | `/goal <task>`     | Run toward a verified goal                          |
 | `/paste-image`     | Attach image data from the system clipboard         |
 | `!<command>`       | Run a shell command and show output inline          |
+
+`/clear` succeeds only after the current-session pointer is cleared. It then removes the transcript, prompt recall, attachments, task/subagent panels, HITL state, goal state, and other conversation-scoped UI state. It preserves the selected profile, display policy, process-level provider affinity, and cumulative TUI usage shown by `/cost`. Background subagents remain owned by the detached durable session's supervisor scope, so their completions cannot wake the fresh context; reloading that session can resume its pending delivery.
 
 `/goal <task>` submits one runtime goal run. Goal progress is managed by runtime output validation: incomplete output emits `goal_iteration` and retries the model inside the same run, while verified completion or the iteration ceiling emits `goal_complete`. Configure the ceiling with `general.max_goal_iterations` in `config.toml`; the default is `10`.
 

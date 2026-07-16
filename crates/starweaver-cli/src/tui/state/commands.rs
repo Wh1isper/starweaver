@@ -23,10 +23,9 @@ impl InteractiveTuiState {
         }
         if input == "/clear" {
             self.clear_composer_input();
-            self.clear_context_view();
             self.pending_clear_context = true;
             self.footer_mode = FooterMode::Context;
-            self.input_status = Some("context cleared".to_string());
+            self.input_status = Some("clearing context".to_string());
             return LocalCommandOutcome::Consumed;
         }
         if input == "/cost" {

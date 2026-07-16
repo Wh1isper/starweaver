@@ -552,6 +552,9 @@ pub(super) fn handle_key_event(
                 state.push_history(steering.text.clone());
                 return Some(InteractiveTuiEvent::Steer(steering));
             }
+            if state.take_pending_clear_context() {
+                return Some(InteractiveTuiEvent::Clear);
+            }
         }
         KeyCode::Enter => {
             if state.take_paste_image_command() {

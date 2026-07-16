@@ -649,17 +649,25 @@ impl InteractiveTuiState {
         std::mem::take(&mut self.pending_clear_context)
     }
 
+    pub(crate) fn reject_context_clear(&mut self, status: impl Into<String>) {
+        self.input_status = Some(status.into());
+    }
+
     pub(crate) fn clear_context_view(&mut self) {
         self.session_id = None;
+        self.clear_composer();
+        self.history.clear();
+        self.history_draft.clear();
         self.timeline.clear();
         self.timeline_projection = TuiProjection::default();
         self.body.clear();
+        self.rendered_body_len = 0;
+        self.active_model_segment = None;
         self.context_tokens = None;
         self.latest_request_total_tokens = None;
         self.model_transport_status = None;
         self.current_run_id = None;
         self.current_run_usage = None;
-        self.usage_snapshots.clear();
         self.streaming_parts.clear();
         self.streaming_text_seen = false;
         self.streaming_reasoning_seen = false;
@@ -672,9 +680,21 @@ impl InteractiveTuiState {
         self.subagent_states.clear();
         self.pending_hitl = None;
         self.task_panel_items.clear();
+        self.pending_clear_context = false;
+        self.selection_mode = false;
+        self.selection_index = None;
+        self.pending_submission_display_prompt = None;
+        self.model_picker_open = false;
+        self.session_picker_open = false;
+        self.pending_session_command = None;
+        self.running = false;
+        self.cancel_requested = false;
         self.goal_task = None;
         self.goal_active = false;
+        self.goal_iteration = 0;
         self.pending_goal_submission = None;
+        self.footer_mode = FooterMode::Context;
+        self.input_status = Some("context cleared".to_string());
         self.phase = "cleared".to_string();
         self.status = "IDLE".to_string();
         self.scroll_to_bottom();

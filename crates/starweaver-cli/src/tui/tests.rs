@@ -1842,10 +1842,9 @@ fn begin_run_preserves_task_panel_items_for_next_prompt() {
 }
 
 #[test]
-fn clear_command_clears_transcript_and_emits_context_event() {
+fn clear_command_defers_context_reset_until_the_service_accepts_it() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.session_id = Some("session_clear".to_string());
-    let session_affinity_id = state.session_affinity_id.clone();
     state.context_tokens = Some(42);
     state.body.push("old transcript".to_string());
     state.input = "/clear".to_string();
@@ -1854,12 +1853,99 @@ fn clear_command_clears_transcript_and_emits_context_event() {
         handle_key_event(&mut state, key_code(KeyCode::Enter)),
         Some(InteractiveTuiEvent::Clear)
     );
+    assert_eq!(state.session_id.as_deref(), Some("session_clear"));
+    assert_eq!(state.body, ["old transcript"]);
+    assert_eq!(state.context_tokens, Some(42));
+    assert_eq!(state.input_status_text(), "clearing context");
+}
+
+#[test]
+fn clear_during_a_run_emits_a_rejectable_event_without_leaving_stale_pending_state() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.session_id = Some("session_running".to_string());
+    state.begin_run("active prompt");
+    state.input = "/clear".to_string();
+
+    assert_eq!(
+        handle_key_event(&mut state, key_code(KeyCode::Enter)),
+        Some(InteractiveTuiEvent::Clear)
+    );
+    assert!(state.running);
+    assert_eq!(state.session_id.as_deref(), Some("session_running"));
+    assert_eq!(state.input_status_text(), "clearing context");
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+}
+
+#[test]
+fn accepted_clear_resets_conversation_state_and_preserves_process_state() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.session_id = Some("session_clear".to_string());
+    let session_affinity_id = state.session_affinity_id.clone();
+    state.context_tokens = Some(42);
+    state.latest_request_total_tokens = Some(21);
+    state.current_run_id = Some("run_clear".to_string());
+    state.current_run_usage = Some(Usage {
+        input_tokens: 7,
+        output_tokens: 3,
+        ..Usage::default()
+    });
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "usage_snapshot",
+                serde_json::to_value(UsageSnapshot {
+                    run_id: "run_clear".to_string(),
+                    model_usages: BTreeMap::from([(
+                        "test:model".to_string(),
+                        Usage {
+                            input_tokens: 7,
+                            output_tokens: 3,
+                            total_tokens: 10,
+                            ..Usage::default()
+                        },
+                    )]),
+                    ..UsageSnapshot::default()
+                })
+                .unwrap(),
+            ),
+        },
+    ));
+    state.push_history("old prompt".to_string());
+    state.attach_image(PromptAttachment::image(
+        1,
+        b"image-bytes".to_vec(),
+        "image/png",
+    ));
+    state.goal_task = Some("old goal".to_string());
+    state.goal_active = true;
+    state.goal_iteration = 4;
+    state.open_selection_mode();
+
+    state.clear_context_view();
+
     assert!(state.session_id.is_none());
     assert!(state.body.is_empty());
     assert_eq!(state.context_tokens, None);
+    assert_eq!(state.latest_request_total_tokens, None);
+    assert_eq!(state.current_run_id, None);
+    assert_eq!(state.current_run_usage, None);
+    assert_eq!(state.pasted_image_count(), 0);
+    assert!(state.history.is_empty());
+    assert_eq!(state.history_index, None);
+    assert!(state.history_draft.is_empty());
+    assert!(!state.selection_mode_visible());
+    assert!(!state.goal_active);
+    assert_eq!(state.goal_task, None);
+    assert_eq!(state.goal_iteration, 0);
+    assert!(!state.running);
     assert_eq!(state.phase, "cleared");
     assert_eq!(state.input_status_text(), "context cleared");
     assert_eq!(state.session_affinity_id, session_affinity_id);
+
+    state.input = "/cost".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert!(body_has_line(&state, "[SYS]   Input:  7 tokens"));
 }
 
 #[test]
