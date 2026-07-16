@@ -30,6 +30,27 @@ impl LocalEnvironmentProvider {
         )
     }
 
+    pub(super) fn resolve_provider_search_root(
+        &self,
+        path: &str,
+    ) -> EnvironmentResult<Option<PathBuf>> {
+        let (_, filesystem_path) = self.resolve_authorized_request_path(path, false)?;
+        match std::fs::symlink_metadata(&filesystem_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return Ok(None),
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(map_io_error(&filesystem_path, &error)),
+        }
+        let allow_trusted_allowed_root_ancestors = !self.path_targets_managed_tmp(&filesystem_path);
+        self.resolve_physical_path(
+            &filesystem_path,
+            false,
+            path,
+            allow_trusted_allowed_root_ancestors,
+        )
+        .map(Some)
+    }
+
     /// Resolve a path entry for operations that mutate the entry itself instead
     /// of following it to mutate its target (for example unlink or rename).
     pub(super) fn resolve_provider_entry_path(&self, path: &str) -> EnvironmentResult<PathBuf> {

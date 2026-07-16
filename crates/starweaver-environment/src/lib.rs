@@ -28,13 +28,14 @@ pub(crate) use local_io::{
     copy_local_dir, create_local_tmp_dir, map_io_error, prepare_local_destination,
 };
 pub(crate) use path::{
-    DEFAULT_TMP_DIR, LOCAL_TMP_DIR_PREFIX, PathGlob, absolute_request_path, display_local_path,
-    include_path, is_absolute_request_path, is_provider_visible_absolute_path, is_tmp_path,
-    join_logical_path, logical_ancestors, normalize_absolute_request_path,
-    normalize_local_config_path, normalize_path, normalize_requested_path, normalize_str_path,
-    normalize_tmp_filename, normalize_tmp_namespace, parent_path, path_contains,
-    provider_visible_path_allowed_by_context, push_shell_review_context_path_candidates,
-    push_unique_candidate, push_unique_path, replace_logical_prefix, strip_path_prefix,
+    DEFAULT_TMP_DIR, DEFAULT_VISIBLE_DOT_DIR_NAMES, LOCAL_TMP_DIR_PREFIX, PathGlob,
+    absolute_request_path, display_local_path, include_path, is_absolute_request_path,
+    is_provider_visible_absolute_path, is_tmp_path, join_logical_path, logical_ancestors,
+    normalize_absolute_request_path, normalize_local_config_path, normalize_path,
+    normalize_requested_path, normalize_str_path, normalize_tmp_filename, normalize_tmp_namespace,
+    parent_path, path_contains, provider_visible_path_allowed_by_context,
+    push_shell_review_context_path_candidates, push_unique_candidate, push_unique_path,
+    replace_logical_prefix, strip_path_prefix,
 };
 pub use path::{matches_path_pattern, normalize_match_path, path_match_candidates};
 pub(crate) use search::{

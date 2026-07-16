@@ -11,7 +11,7 @@ use starweaver_core::{
 /// Glob options for provider-backed filesystem searches.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FileGlobOptions {
-    /// Include hidden dot paths.
+    /// Include hidden dot paths beyond the selected search root's direct `.agents` child.
     pub include_hidden: bool,
     /// Include provider-ignored files where the provider supports ignore files.
     pub include_ignored: bool,
@@ -43,7 +43,7 @@ pub struct FileGrepOptions {
     pub max_matches_per_file: usize,
     /// Maximum files to search. Zero means no explicit file limit.
     pub max_files: usize,
-    /// Include hidden dot paths.
+    /// Include hidden dot paths beyond the selected search root's direct `.agents` child.
     pub include_hidden: bool,
     /// Include provider-ignored files where the provider supports ignore files.
     pub include_ignored: bool,

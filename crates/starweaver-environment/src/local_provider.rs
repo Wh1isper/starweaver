@@ -655,7 +655,9 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
             let path = path.as_str();
             let pattern = pattern.as_str();
             let path_glob = PathGlob::new(pattern)?;
-            let search_root = provider.resolve_provider_path(path, false)?;
+            let Some(search_root) = provider.resolve_provider_search_root(path)? else {
+                return Ok(Vec::new());
+            };
             let builder = local_search_walk_builder(
                 &search_root,
                 options.include_hidden,
@@ -714,7 +716,9 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
                 .clone()
                 .unwrap_or_else(|| "**/*".to_string());
             let path_glob = PathGlob::new(&include)?;
-            let search_root = provider.resolve_provider_path(path, false)?;
+            let Some(search_root) = provider.resolve_provider_search_root(path)? else {
+                return Ok(Vec::new());
+            };
             let builder = local_search_walk_builder(
                 &search_root,
                 options.include_hidden,

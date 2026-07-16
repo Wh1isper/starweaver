@@ -992,6 +992,82 @@ async fn filesystem_view_native_media_returns_provider_backed_content_parts() {
 }
 
 #[tokio::test]
+async fn filesystem_search_and_list_add_skill_document_reminders() {
+    let provider = Arc::new(
+        VirtualEnvironmentProvider::new("test")
+            .with_file(".agents/skills/example/SKILL.md", "needle in skill\n")
+            .with_file(".hidden/secret.txt", "needle in hidden file\n"),
+    );
+    provider.create_dir("docs/SKILL.md", true).await.unwrap();
+    let mut registry = ToolRegistry::new();
+    registry.insert_toolset(&filesystem_tools());
+    let context = filesystem_shell_tool_context(provider);
+
+    let glob = execute_tool_call(
+        &registry,
+        context.clone(),
+        "skill-glob",
+        "glob",
+        serde_json::json!({"root": "", "pattern": "SKILL.md"}),
+    )
+    .await;
+    assert_eq!(glob.content["matches"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        glob.content["matches"][0]["path"],
+        ".agents/skills/example/SKILL.md"
+    );
+    assert!(
+        glob.content["system-reminder"]
+            .as_str()
+            .unwrap()
+            .contains("read each relevant SKILL.md in full")
+    );
+
+    let grep = execute_tool_call(
+        &registry,
+        context.clone(),
+        "skill-grep",
+        "grep",
+        serde_json::json!({"root": "", "pattern": "needle", "max_files": -1}),
+    )
+    .await;
+    assert_eq!(grep.content["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        grep.content["matches"][0]["path"],
+        ".agents/skills/example/SKILL.md"
+    );
+    assert!(grep.content["system-reminder"].is_string());
+
+    let ls = execute_tool_call(
+        &registry,
+        context.clone(),
+        "skill-ls",
+        "ls",
+        serde_json::json!({"path": ".agents/skills/example"}),
+    )
+    .await;
+    assert_eq!(
+        ls.content["entries"],
+        serde_json::json!([".agents/skills/example/SKILL.md"])
+    );
+    assert!(ls.content["system-reminder"].is_string());
+
+    let directory_only = execute_tool_call(
+        &registry,
+        context,
+        "skill-directory",
+        "glob",
+        serde_json::json!({"root": "docs", "pattern": "SKILL.md"}),
+    )
+    .await;
+    assert_eq!(
+        directory_only.content["matches"].as_array().unwrap().len(),
+        1
+    );
+    assert!(directory_only.content.get("system-reminder").is_none());
+}
+
+#[tokio::test]
 async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files() {
     let mut provider_value = VirtualEnvironmentProvider::new("test").with_shell_output(
         "big output",
@@ -1008,6 +1084,10 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
             format!("needle line {index}\n"),
         );
     }
+    provider_value = provider_value.with_file(
+        ".agents/skills/research/SKILL.md",
+        "needle in skill document\n",
+    );
     let provider = Arc::new(provider_value);
     let mut registry = ToolRegistry::new();
     registry.insert_toolset(&filesystem_tools());
@@ -1029,10 +1109,23 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
             },
         )
         .await;
-    assert_eq!(ls.content["entries"].as_array().unwrap().len(), 500);
+    assert!(ls.content["entries"].as_array().unwrap().len() <= 500);
     assert_eq!(ls.content["truncated"], true);
-    assert_eq!(ls.content["total_entries"], 899);
-    assert_eq!(ls.content["showing"], 500);
+    assert_eq!(ls.content["total_entries"], 900);
+    assert!(ls.content["showing"].as_u64().unwrap() <= 500);
+    assert!(ls.content["system-reminder"].is_string());
+    assert!(
+        serde_json::to_string(&ls.content).unwrap().len()
+            <= ToolConfig::default().filesystem_output_truncate_limit
+    );
+    let ls_path = ls.content["output_file_path"].as_str().unwrap();
+    assert!(
+        provider
+            .read_text(ls_path)
+            .await
+            .unwrap()
+            .contains("system-reminder")
+    );
     assert!(
         ls.content["entries"]
             .as_array()
@@ -1047,13 +1140,18 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
             &starweaver_model::ToolCallPart {
                 id: "glob".to_string(),
                 name: "glob".to_string(),
-                arguments: serde_json::json!({"path": "", "pattern": "*.rs", "max_results": -1})
+                arguments: serde_json::json!({"path": "", "pattern": "*", "max_results": -1})
                     .into(),
             },
         )
         .await;
     let glob_path = glob.content["output_file_path"].as_str().unwrap();
     assert!(glob_path.starts_with(".starweaver/tmp/glob-"));
+    assert!(glob.content["system-reminder"].is_string());
+    assert!(
+        serde_json::to_string(&glob.content).unwrap().len()
+            <= ToolConfig::default().filesystem_output_truncate_limit
+    );
     assert!(
         provider
             .read_text(glob_path)
@@ -1071,7 +1169,7 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
                 arguments: serde_json::json!({
                     "path": "",
                     "pattern": "needle",
-                    "include": "**/*.rs",
+                    "include": "**/*",
                     "max_results": -1,
                     "max_matches_per_file": 1,
                     "max_files": -1,
@@ -1082,6 +1180,11 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
         .await;
     let grep_path = grep.content["output_file_path"].as_str().unwrap();
     assert!(grep_path.starts_with(".starweaver/tmp/grep-"));
+    assert!(grep.content["system-reminder"].is_string());
+    assert!(
+        serde_json::to_string(&grep.content).unwrap().len()
+            <= ToolConfig::default().filesystem_output_truncate_limit
+    );
     assert!(
         provider
             .read_text(grep_path)

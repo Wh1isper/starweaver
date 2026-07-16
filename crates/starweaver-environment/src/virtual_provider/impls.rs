@@ -541,19 +541,26 @@ impl EnvironmentProvider for VirtualEnvironmentProvider {
         let prefix = path.trim_matches('/');
         let path_glob = PathGlob::new(pattern)?;
         let mut entries = BTreeSet::new();
+        let mut directories = BTreeSet::new();
         for file_path in self.all_file_keys()? {
-            entries.extend(logical_ancestors(&file_path));
+            let ancestors = logical_ancestors(&file_path);
+            directories.extend(ancestors.iter().cloned());
+            entries.extend(ancestors);
             entries.insert(file_path);
         }
-        entries.extend(self.all_dir_keys()?);
+        let explicit_directories = self.all_dir_keys()?;
+        directories.extend(explicit_directories.iter().cloned());
+        entries.extend(explicit_directories);
         let mut glob_matches = Vec::new();
         for entry in entries {
             if !prefix.is_empty() && entry == prefix {
                 continue;
             }
+            let relative = strip_path_prefix(prefix, &entry);
             if path_contains(prefix, &entry)
-                && include_path(&entry, options.include_hidden)
-                && path_glob.is_match(strip_path_prefix(prefix, &entry))
+                && include_path(relative, options.include_hidden)
+                && (options.include_hidden || relative != ".agents" || directories.contains(&entry))
+                && path_glob.is_match(relative)
             {
                 glob_matches.push(FileGlobMatch { path: entry });
                 if options.max_results > 0 && glob_matches.len() >= options.max_results {
