@@ -2982,9 +2982,11 @@ fn subagent_output_is_full_markdown_in_normal_and_concise() {
     let rendered = render_transcript_lines(&state.body, 80);
     assert!(has_segment(&rendered, "done", SegmentStyle::BOLD));
     assert!(rendered.iter().any(|line| {
-        line.segments.first().is_some_and(|segment| {
-            segment.text == "│ fn main() {}" && segment.style.contains(SegmentStyle::CYAN)
-        })
+        line_text(line) == "fn main() {}"
+            && line
+                .segments
+                .iter()
+                .all(|segment| segment.style.contains(SegmentStyle::CODE_BG))
     }));
 
     state.set_render_mode(TuiRenderMode::Concise);
@@ -4108,11 +4110,29 @@ fn markdown_renderer_styles_common_blocks_and_inline_spans() {
     assert!(has_segment(&rendered, "code", SegmentStyle::CYAN));
     assert!(has_segment(&rendered, "│ ", SegmentStyle::GREEN));
     assert!(has_segment(&rendered, "docs", SegmentStyle::UNDERLINED));
-    assert!(rendered.iter().any(|line| {
-        line.segments.first().is_some_and(|segment| {
-            segment.text == "│ fn main() {}" && segment.style.contains(SegmentStyle::CYAN)
-        })
-    }));
+    let Some(code_line) = rendered
+        .iter()
+        .find(|line| line_text(line) == "fn main() {}")
+    else {
+        panic!("rendered Rust code line is missing");
+    };
+    assert!(
+        code_line
+            .segments
+            .iter()
+            .all(|segment| segment.style.contains(SegmentStyle::CODE_BG))
+    );
+    let syntax_colors = code_line
+        .segments
+        .iter()
+        .filter_map(|segment| segment.style.foreground_rgb())
+        .collect::<Vec<_>>();
+    assert!(
+        syntax_colors
+            .windows(2)
+            .any(|colors| colors[0] != colors[1])
+    );
+    assert!(!line_text(code_line).starts_with('│'));
     assert!(rendered.iter().any(|line| {
         line.segments
             .first()
@@ -4153,8 +4173,10 @@ fn markdown_renderer_covers_extended_codex_blocks() {
     assert!(text.contains("left"));
     assert!(text.contains("right"));
     assert!(text.contains("<span>html</span>"));
-    assert!(text.contains("╭─ code"));
-    assert!(text.contains("│ plain code"));
+    assert!(text.contains("plain code"));
+    assert!(!text.contains("╭─ code"));
+    assert!(!text.contains("╰────"));
+    assert!(!text.contains("│ plain code"));
     assert!(text.contains("Small"));
     assert!(has_segment(&rendered, "gone", SegmentStyle::DIM));
     assert!(has_segment(&rendered, "Small", SegmentStyle::ITALIC));
@@ -4192,11 +4214,12 @@ fn transcript_renderer_batches_live_assistant_markdown_fences() {
     let rendered = render_transcript_lines(&lines, 100);
     let text = line_texts(&rendered).join("\n");
     assert!(text.contains("Created commit:"));
-    assert!(text.contains("╭─ text"));
-    assert!(text.contains("│ b238274 feat: add OAuth refresh and interactive CLI flows"));
-    assert!(text.contains("╭─ markdown"));
-    assert!(text.contains("│ • Add OAuth token stores, refresh supervisors, and provider hooks."));
-    assert!(!text.contains("╭─ code\n╰────"));
+    assert!(text.contains("b238274 feat: add OAuth refresh and interactive CLI flows"));
+    assert!(text.contains("• Add OAuth token stores, refresh supervisors, and provider hooks."));
+    assert!(!text.contains("│ b238274"));
+    assert!(!text.contains("│ • Add OAuth"));
+    assert!(!text.contains("╭─"));
+    assert!(!text.contains("╰────"));
 }
 
 #[test]

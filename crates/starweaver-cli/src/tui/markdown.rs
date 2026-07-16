@@ -1,4 +1,11 @@
+use std::sync::OnceLock;
+
 use pulldown_cmark::{CodeBlockKind, Event as MarkdownEvent, Options, Parser, Tag, TagEnd};
+use syntect::{
+    easy::HighlightLines,
+    highlighting::{FontStyle, Style, ThemeSet},
+    parsing::SyntaxSet,
+};
 use unicode_width::UnicodeWidthChar;
 
 use super::render::{
@@ -758,26 +765,13 @@ impl MarkdownRenderer {
             CodeBlockKind::Fenced(_) | CodeBlockKind::Indented => None,
         };
         self.code_buffer.clear();
-        if let Some(language) = self.code_language.as_deref() {
-            self.lines.push(StyledLine::styled(
-                format!("╭─ {language}"),
-                SegmentStyle::dim(),
-            ));
-        } else {
-            self.lines
-                .push(StyledLine::styled("╭─ code", SegmentStyle::dim()));
-        }
     }
 
     fn end_code_block(&mut self) {
-        for line in self.code_buffer.trim_end_matches('\n').lines() {
-            self.lines.push(StyledLine::styled(
-                format!("│ {line}"),
-                SegmentStyle::code_block(),
-            ));
-        }
-        self.lines
-            .push(StyledLine::styled("╰────", SegmentStyle::dim()));
+        self.lines.extend(render_code_block(
+            &self.code_buffer,
+            self.code_language.as_deref(),
+        ));
         self.in_code_block = false;
         self.code_language = None;
         self.code_buffer.clear();
@@ -886,6 +880,87 @@ impl MarkdownRenderer {
             .map(|segment| visible_width(&segment.text))
             .sum()
     }
+}
+
+fn render_code_block(code: &str, language: Option<&str>) -> Vec<StyledLine> {
+    let code = code.trim_end_matches('\n');
+    if code.is_empty() {
+        return Vec::new();
+    }
+
+    let Some(language) = language.and_then(normalize_code_language) else {
+        return plain_code_lines(code);
+    };
+    let syntaxes = code_syntaxes();
+    let Some(syntax) = syntaxes.find_syntax_by_token(language) else {
+        return plain_code_lines(code);
+    };
+    let themes = code_themes();
+    let Some(theme) = themes.themes.get("base16-ocean.dark") else {
+        return plain_code_lines(code);
+    };
+
+    let mut highlighter = HighlightLines::new(syntax, theme);
+    code.split('\n')
+        .map(|line| {
+            let line_with_ending = format!("{line}\n");
+            let Ok(regions) = highlighter.highlight_line(&line_with_ending, syntaxes) else {
+                return StyledLine::styled(line, SegmentStyle::code_block_surface());
+            };
+            let mut rendered = StyledLine {
+                segments: Vec::new(),
+            };
+            for (style, text) in regions {
+                let text = text.strip_suffix('\n').unwrap_or(text);
+                let text = text.strip_suffix('\r').unwrap_or(text);
+                rendered.push(text, syntect_segment_style(style));
+            }
+            if rendered.segments.is_empty() {
+                StyledLine::styled("", SegmentStyle::code_block_surface())
+            } else {
+                rendered
+            }
+        })
+        .collect()
+}
+
+fn plain_code_lines(code: &str) -> Vec<StyledLine> {
+    code.split('\n')
+        .map(|line| StyledLine::styled(line, SegmentStyle::code_block_surface()))
+        .collect()
+}
+
+fn normalize_code_language(language: &str) -> Option<&str> {
+    language
+        .trim()
+        .split(|character: char| character.is_whitespace() || matches!(character, ',' | '{'))
+        .next()
+        .filter(|language| !language.is_empty())
+}
+
+const fn syntect_segment_style(style: Style) -> SegmentStyle {
+    let mut segment_style =
+        SegmentStyle::syntax((style.foreground.r, style.foreground.g, style.foreground.b));
+    if style.font_style.contains(FontStyle::BOLD) {
+        segment_style = segment_style.merge(SegmentStyle::bold());
+    }
+    if style.font_style.contains(FontStyle::ITALIC) {
+        segment_style = segment_style.merge(SegmentStyle::italic());
+    }
+    if style.font_style.contains(FontStyle::UNDERLINE) {
+        segment_style = segment_style.merge(SegmentStyle::underlined());
+    }
+    segment_style
+}
+
+fn code_syntaxes() -> &'static SyntaxSet {
+    static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
+    SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+fn code_themes() -> &'static ThemeSet {
+    static THEMES: OnceLock<ThemeSet> = OnceLock::new();
+    THEMES.get_or_init(ThemeSet::load_defaults)
 }
 
 #[derive(Clone, Debug)]

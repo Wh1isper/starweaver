@@ -758,7 +758,10 @@ fn clamp_char_boundary(input: &str, cursor_byte: usize) -> usize {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) struct SegmentStyle(u16);
+pub(super) struct SegmentStyle {
+    flags: u16,
+    foreground_rgb: Option<(u8, u8, u8)>,
+}
 
 impl SegmentStyle {
     pub(super) const BOLD: u16 = 0b00_0000_0000_0001;
@@ -774,69 +777,98 @@ impl SegmentStyle {
     pub(super) const MAGENTA: u16 = 0b00_0100_0000_0000;
     pub(super) const STATUS_BG: u16 = 0b00_1000_0000_0000;
     pub(super) const MODE_BG: u16 = 0b01_0000_0000_0000;
+    pub(super) const CODE_BG: u16 = 0b10_0000_0000_0000;
+
+    const fn from_flags(flags: u16) -> Self {
+        Self {
+            flags,
+            foreground_rgb: None,
+        }
+    }
 
     pub(super) const fn bold() -> Self {
-        Self(Self::BOLD)
+        Self::from_flags(Self::BOLD)
     }
 
     pub(super) const fn italic() -> Self {
-        Self(Self::ITALIC)
+        Self::from_flags(Self::ITALIC)
     }
 
     pub(super) const fn underlined() -> Self {
-        Self(Self::UNDERLINED)
+        Self::from_flags(Self::UNDERLINED)
     }
 
     pub(super) const fn dim() -> Self {
-        Self(Self::DIM)
+        Self::from_flags(Self::DIM)
     }
 
     pub(super) const fn code() -> Self {
-        Self(Self::CYAN)
+        Self::from_flags(Self::CYAN)
     }
 
     pub(super) const fn code_block() -> Self {
-        Self(Self::CYAN)
+        Self::from_flags(Self::CYAN)
+    }
+
+    pub(super) const fn code_block_surface() -> Self {
+        Self::from_flags(Self::CYAN | Self::CODE_BG)
+    }
+
+    pub(super) const fn syntax(foreground_rgb: (u8, u8, u8)) -> Self {
+        Self {
+            flags: Self::CODE_BG,
+            foreground_rgb: Some(foreground_rgb),
+        }
     }
 
     pub(super) const fn link() -> Self {
-        Self(Self::CYAN | Self::UNDERLINED)
+        Self::from_flags(Self::CYAN | Self::UNDERLINED)
     }
 
     pub(super) const fn blockquote() -> Self {
-        Self(Self::GREEN)
+        Self::from_flags(Self::GREEN)
     }
 
     pub(super) const fn list_marker() -> Self {
-        Self(Self::BLUE)
+        Self::from_flags(Self::BLUE)
     }
 
     pub(super) const fn warning() -> Self {
-        Self(Self::YELLOW)
+        Self::from_flags(Self::YELLOW)
     }
 
     pub(super) const fn error() -> Self {
-        Self(Self::RED)
+        Self::from_flags(Self::RED)
     }
 
     pub(super) const fn status_bar() -> Self {
-        Self(Self::STATUS_BG)
+        Self::from_flags(Self::STATUS_BG)
     }
 
     pub(super) const fn mode_badge() -> Self {
-        Self(Self::MODE_BG)
+        Self::from_flags(Self::MODE_BG)
     }
 
     pub(super) const fn status_warning() -> Self {
-        Self(Self::STATUS_BG | Self::YELLOW)
+        Self::from_flags(Self::STATUS_BG | Self::YELLOW)
     }
 
     pub(super) const fn merge(self, other: Self) -> Self {
-        Self(self.0 | other.0)
+        Self {
+            flags: self.flags | other.flags,
+            foreground_rgb: match other.foreground_rgb {
+                Some(color) => Some(color),
+                None => self.foreground_rgb,
+            },
+        }
     }
 
     pub(super) const fn contains(self, flag: u16) -> bool {
-        self.0 & flag != 0
+        self.flags & flag != 0
+    }
+
+    pub(super) const fn foreground_rgb(self) -> Option<(u8, u8, u8)> {
+        self.foreground_rgb
     }
 }
 
@@ -929,7 +961,22 @@ fn queue_styled_segments(
         .map_err(terminal_error)?;
     }
     if remaining > 0 {
-        queue!(stdout, Print(" ".repeat(remaining))).map_err(terminal_error)?;
+        if line
+            .segments
+            .iter()
+            .any(|segment| segment.style.contains(SegmentStyle::CODE_BG))
+        {
+            queue_segment_style(stdout, SegmentStyle::code_block_surface())?;
+            queue!(
+                stdout,
+                Print(" ".repeat(remaining)),
+                SetAttribute(Attribute::Reset),
+                ResetColor
+            )
+            .map_err(terminal_error)?;
+        } else {
+            queue!(stdout, Print(" ".repeat(remaining))).map_err(terminal_error)?;
+        }
     }
     Ok(())
 }
@@ -964,8 +1011,12 @@ fn queue_segment_style(stdout: &mut io::Stdout, style: SegmentStyle) -> CliResul
             SetBackgroundColor(Color::AnsiValue(44))
         )
         .map_err(terminal_error)?;
+    } else if style.contains(SegmentStyle::CODE_BG) {
+        queue!(stdout, SetBackgroundColor(Color::AnsiValue(236))).map_err(terminal_error)?;
     }
-    if style.contains(SegmentStyle::RED) {
+    if let Some((r, g, b)) = style.foreground_rgb() {
+        queue!(stdout, SetForegroundColor(Color::Rgb { r, g, b })).map_err(terminal_error)?;
+    } else if style.contains(SegmentStyle::RED) {
         queue!(stdout, SetForegroundColor(Color::Red)).map_err(terminal_error)?;
     } else if style.contains(SegmentStyle::YELLOW) {
         queue!(stdout, SetForegroundColor(Color::Yellow)).map_err(terminal_error)?;
