@@ -21,8 +21,8 @@ use serde::{Deserialize, Serialize};
 pub use agent_catalog::{RpcAgentCatalog, RpcProfileSummary};
 pub use auth::{RpcHttpAuthConfig, RpcHttpScope};
 pub use config::{
-    RpcConfig, RpcProfileConfig, RpcProviderConfig, RpcSessionSearchBackend,
-    RpcSessionSearchConfig, RpcSubagentConfig,
+    RpcClientCapabilitiesConfig, RpcConfig, RpcProfileConfig, RpcProviderConfig,
+    RpcSessionSearchBackend, RpcSessionSearchConfig, RpcSubagentConfig,
 };
 pub use coordinator::{RpcRunRequest, RpcRunStatus, RpcRuntimeCoordinator, RpcStartedRun};
 pub use error::{RpcHostError, RpcHostResult};

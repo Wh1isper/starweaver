@@ -411,7 +411,7 @@ impl LocalStore {
             if existing_returns.contains(&approval.action_id) {
                 continue;
             }
-            if let Some(tool_return) = approval_tool_return(&approval) {
+            if let Some(tool_return) = approval_tool_return(&approval)? {
                 existing_returns.insert(approval.action_id.clone());
                 resolved.push((
                     approval.action_id.clone(),

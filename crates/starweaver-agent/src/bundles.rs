@@ -8,6 +8,7 @@ mod runtime_context;
 mod session_management;
 mod skills;
 mod task;
+mod user_input;
 mod web_media;
 
 use std::sync::Arc;
@@ -40,6 +41,12 @@ pub use skills::{
 };
 pub use starweaver_tools::{ToolProxyNamePrefixError, ToolProxyToolset, dynamic_tool_proxy};
 pub use task::task_tools;
+pub use user_input::{
+    ASK_USER_QUESTION_TOOL_NAME, AskUserQuestionArgs, AskUserQuestionResult,
+    CLARIFYING_ANSWERS_METADATA_KEY, CLARIFYING_QUESTIONS_REQUEST_KIND, ClarifyingQuestion,
+    ClarifyingQuestionAnswers, ClarifyingQuestionOption, normalize_clarifying_question_answers,
+    resolve_clarifying_question_answers, user_input_tools,
+};
 pub use web_media::{
     HostMediaCapabilities, HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle,
     MediaUnderstandingRequest, MediaUnderstandingResponse, host_io_tools,

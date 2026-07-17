@@ -31,9 +31,9 @@ pub use prefixed::{PrefixedTool, PrefixedToolset};
 pub use registry::{ToolAvailabilityReport, ToolRegistry};
 pub use tool::{
     DynTool, EmptyToolArgs, FunctionTool, TOOL_METADATA_CONTEXT_MANAGEMENT_KEY,
-    TOOL_METADATA_HIDDEN_BY_TAGS_KEY, TOOL_METADATA_KIND_KEY, TOOL_METADATA_TAGS_KEY, Tool,
-    ToolKind, ToolResult, ToolUserInputPreprocessResult, TypedFunctionTool,
-    extend_tool_metadata_hidden_by_tags, extend_tool_metadata_tags, json_tool,
+    TOOL_METADATA_HIDDEN_BY_TAGS_KEY, TOOL_METADATA_KIND_KEY, TOOL_METADATA_SELF_MANAGED_HITL_KEY,
+    TOOL_METADATA_TAGS_KEY, Tool, ToolKind, ToolResult, ToolUserInputPreprocessResult,
+    TypedFunctionTool, extend_tool_metadata_hidden_by_tags, extend_tool_metadata_tags, json_tool,
     set_tool_metadata_kind, tool_metadata_hidden_by_tags, tool_metadata_kind, tool_metadata_tags,
     typed_json_tool,
 };

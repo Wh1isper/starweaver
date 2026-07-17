@@ -32,10 +32,11 @@ use super::{
     },
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TuiApprovalDecision {
     Approve,
     Reject,
+    Answer(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -519,8 +520,18 @@ pub(super) fn handle_key_event(
         state.request_cancel();
         return Some(InteractiveTuiEvent::Cancel);
     }
+    if key.code == KeyCode::Enter
+        && state.enter_sends()
+        && state.clarifying_answer_ready()
+        && let Some(answer) = state.clarifying_answer()
+    {
+        return Some(InteractiveTuiEvent::ApprovalDecision(
+            TuiApprovalDecision::Answer(answer),
+        ));
+    }
     if (state.pending_hitl().is_some() || state.hitl_reload_session_id().is_some())
         && !state.running
+        && !state.clarifying_answer_ready()
     {
         match key.code {
             KeyCode::Char('a' | 'y') if key.modifiers.is_empty() && state.hitl_decision_ready() => {
@@ -691,6 +702,13 @@ pub(super) fn handle_key_event(
         }
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.next_history();
+        }
+        KeyCode::Esc if state.clarifying_answer_ready() => {
+            let session_id = state
+                .hitl_reload_session_id()
+                .map(ToString::to_string)
+                .or_else(|| state.session_id.clone());
+            return session_id.map(|session_id| InteractiveTuiEvent::Session(Some(session_id)));
         }
         KeyCode::Esc => {
             state.open_selection_mode();

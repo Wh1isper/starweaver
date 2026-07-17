@@ -15,7 +15,7 @@ use starweaver_agent::{
     ShellReviewConfig, ShellReviewHandle, ShellReviewRiskLevel, SkillPackage, SkillRegistry,
     StaticToolset, SubagentConfig, SubagentDelegationMode, SubagentToolInheritancePolicy,
     agent_session_query_tools, attach_agent_session_query, core_toolsets, load_subagents_from_dir,
-    parse_skill_markdown,
+    parse_skill_markdown, user_input_tools,
 };
 use starweaver_model::{
     HttpModelConfig, ModelAdapter, ModelProfile, ModelSettings, OpenAiResponsesSettings,
@@ -145,6 +145,21 @@ impl ResolvedProfile {
     /// Apply profile-owned runtime context defaults to a session context.
     pub fn configure_context(&self, context: &mut AgentContext) {
         self.skills.register_relaxed_view_patterns(context);
+        context.metadata.insert(
+            "starweaver.skills.available".to_string(),
+            json!(
+                self.skills
+                    .packages()
+                    .into_iter()
+                    .map(|package| json!({
+                        "name": package.name,
+                        "description": package.description,
+                        "path": package.path,
+                        "metadata": package.metadata,
+                    }))
+                    .collect::<Vec<_>>()
+            ),
+        );
         attach_agent_session_query(context, self.session_query.clone());
     }
 }
@@ -411,6 +426,7 @@ fn default_toolsets(config: &CliConfig) -> Vec<DynToolset> {
     let mut toolsets = vec![
         Arc::new(control_flow_toolset()) as DynToolset,
         agent_session_query_tools(),
+        policy_toolset(user_input_tools(), &approval),
     ];
     for toolset in core_toolsets() {
         let selected_approval = if toolset.name() == "shell" {

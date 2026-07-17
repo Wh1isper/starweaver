@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use starweaver_model::{ModelMessage, ModelRequestPart, ModelResponsePart, ToolReturnPart};
 use starweaver_session::{ApprovalRecord, ApprovalStatus, DeferredToolRecord, ExecutionStatus};
 
-use crate::CliError;
+use crate::{CliError, CliResult};
 
 pub(super) fn existing_resume_tool_return_ids(history: &[ModelMessage]) -> BTreeSet<String> {
     let Some(last_tool_response_index) = history.iter().rposition(|message| match message {
@@ -82,7 +82,7 @@ pub(super) fn pending_hitl_resume_error(
     ))
 }
 
-pub(super) fn approval_tool_return(record: &ApprovalRecord) -> Option<ToolReturnPart> {
+pub(super) fn approval_tool_return(record: &ApprovalRecord) -> CliResult<Option<ToolReturnPart>> {
     let decision = record.decision.as_ref();
     let mut metadata = serde_json::Map::new();
     metadata.insert(
@@ -100,15 +100,32 @@ pub(super) fn approval_tool_return(record: &ApprovalRecord) -> Option<ToolReturn
     if let Some(decision) = decision {
         metadata.insert("decision".to_string(), serde_json::json!(decision));
     }
-    match record.status {
+    Ok(match record.status {
         ApprovalStatus::Approved => {
-            let mut content = serde_json::json!({
-                "approved": true,
-                "approval_id": record.approval_id,
-                "tool_name": record.action_name,
-                "request": record.request,
-            });
-            if let Some(reason) = decision.and_then(|decision| decision.reason.as_ref()) {
+            let reason = decision.and_then(|decision| decision.reason.as_ref());
+            let is_clarifying = record.action_name == starweaver_agent::ASK_USER_QUESTION_TOOL_NAME
+                && record
+                    .request
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(starweaver_agent::CLARIFYING_QUESTIONS_REQUEST_KIND);
+            let mut content = if is_clarifying {
+                let questions = record.request.get("questions").cloned().unwrap_or_default();
+                let result = starweaver_agent::resolve_clarifying_question_answers(
+                    questions,
+                    serde_json::Value::String(reason.cloned().unwrap_or_default()),
+                )
+                .map_err(|error| CliError::Run(error.to_string()))?;
+                serde_json::to_value(result).map_err(|error| CliError::Run(error.to_string()))?
+            } else {
+                serde_json::json!({
+                    "approved": true,
+                    "approval_id": record.approval_id,
+                    "tool_name": record.action_name,
+                    "request": record.request,
+                })
+            };
+            if !is_clarifying && let Some(reason) = reason {
                 content["reason"] = serde_json::json!(reason);
             }
             Some(
@@ -140,7 +157,7 @@ pub(super) fn approval_tool_return(record: &ApprovalRecord) -> Option<ToolReturn
             )
         }
         ApprovalStatus::Pending => None,
-    }
+    })
 }
 
 pub(super) fn deferred_tool_return(record: &DeferredToolRecord) -> Option<ToolReturnPart> {
@@ -201,5 +218,57 @@ const fn deferred_status_name(status: ExecutionStatus) -> &'static str {
         ExecutionStatus::Completed => "completed",
         ExecutionStatus::Failed => "failed",
         ExecutionStatus::Cancelled => "cancelled",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use starweaver_core::{RunId, SessionId};
+    use starweaver_session::{ApprovalDecision, ApprovalRecord, ApprovalStatus};
+
+    use super::approval_tool_return;
+
+    #[test]
+    fn clarifying_approval_returns_questions_and_free_form_response() {
+        let mut record = ApprovalRecord::new(
+            "approval_question",
+            SessionId::from_string("session_question"),
+            RunId::from_string("run_question"),
+            "call_question",
+            starweaver_agent::ASK_USER_QUESTION_TOOL_NAME,
+        );
+        record.request = serde_json::json!({
+            "kind": starweaver_agent::CLARIFYING_QUESTIONS_REQUEST_KIND,
+            "questions": [{
+                "question": "Which database?",
+                "header": "Database",
+                "options": [
+                    {"label": "PostgreSQL", "description": "Use PostgreSQL"},
+                    {"label": "SQLite", "description": "Use SQLite"}
+                ],
+                "multiSelect": false
+            }]
+        });
+        record.status = ApprovalStatus::Approved;
+        record.decision = Some(ApprovalDecision {
+            status: ApprovalStatus::Approved,
+            decided_by: Some("starweaver-cli".to_string()),
+            decided_at: Utc::now(),
+            reason: Some("PostgreSQL".to_string()),
+            metadata: serde_json::Map::default(),
+        });
+
+        let Ok(Some(tool_return)) = approval_tool_return(&record) else {
+            panic!("approved clarifying request must produce a tool return");
+        };
+
+        assert!(!tool_return.is_error);
+        assert_eq!(tool_return.content["response"], "PostgreSQL");
+        assert_eq!(
+            tool_return.content["questions"][0]["question"],
+            "Which database?"
+        );
+        assert!(tool_return.content.get("approved").is_none());
     }
 }

@@ -124,17 +124,6 @@ impl InteractiveTuiState {
             self.pending_submission_display_prompt = Some(expanded.prompt);
             return LocalCommandOutcome::Submit(input);
         }
-        if input.starts_with('/') {
-            self.clear_composer_input();
-            self.pending_attachments.clear();
-            self.footer_mode = FooterMode::Context;
-            self.push_transcript_notice(format!(
-                "[SYS] Unknown command: {input}. Available commands: {}",
-                self.available_command_summary()
-            ));
-            self.input_status = Some("unknown command".to_string());
-            return LocalCommandOutcome::Consumed;
-        }
         LocalCommandOutcome::None
     }
 
@@ -151,6 +140,9 @@ impl InteractiveTuiState {
             "  /session [id]     Open session selector or reload a session".to_string(),
             "  /goal <task>      Run toward a verified goal".to_string(),
             "  /paste-image      Attach image from system clipboard".to_string(),
+            "  /<skill> [task]   Explicitly activate a loaded skill; chain multiple skills"
+                .to_string(),
+            "  @<skill> [task]   Alias for explicit skill activation".to_string(),
             "  !<command>        Run a shell command inline".to_string(),
         ];
         let custom_commands = self.custom_command_definitions();
@@ -202,28 +194,9 @@ impl InteractiveTuiState {
             "  Ctrl+C            Interrupt, clear draft, or exit".to_string(),
             "  Ctrl+D            Exit only from an empty idle composer".to_string(),
             "  A/Y or R/N        Approve or reject a pending HITL action".to_string(),
+            "  Type + Enter      Answer a pending clarifying question".to_string(),
         ]);
         self.push_transcript_lines(lines);
-    }
-
-    fn available_command_summary(&self) -> String {
-        let mut commands = vec![
-            "/help".to_string(),
-            "/clear".to_string(),
-            "/cost".to_string(),
-            "/display".to_string(),
-            "/model".to_string(),
-            "/session".to_string(),
-            "/goal".to_string(),
-            "/paste-image".to_string(),
-            "!<command>".to_string(),
-        ];
-        commands.extend(
-            self.custom_command_definitions()
-                .into_iter()
-                .map(|command| format!("/{}", command.name)),
-        );
-        commands.join(", ")
     }
 
     fn custom_command_definitions(&self) -> Vec<SlashCommandDefinition> {

@@ -267,6 +267,39 @@ fn guidance_files_append_project_guidance_and_user_rules_as_transient_guidance()
 }
 
 #[test]
+fn explicit_skills_append_ordered_full_bodies_as_guidance() {
+    let skill = |name: &str, body: &str| starweaver_agent::SkillPackage {
+        name: name.to_string(),
+        description: format!("Use {name}"),
+        path: format!("/skills/{name}/SKILL.md"),
+        body: Some(body.to_string()),
+        metadata: serde_json::Map::default(),
+    };
+    let expanded = crate::slash_commands::ExpandedExplicitSkills {
+        prompt: "build it".to_string(),
+        skills: vec![
+            crate::slash_commands::ExplicitSkillSelection {
+                invoked_name: "primary".to_string(),
+                package: skill("primary", "Primary workflow"),
+            },
+            crate::slash_commands::ExplicitSkillSelection {
+                invoked_name: "supporting".to_string(),
+                package: skill("supporting", "Supporting workflow"),
+            },
+        ],
+    };
+    let mut input = PromptInput::text("build it");
+
+    append_explicit_skill_guidance(&mut input, Some(&expanded));
+
+    assert_eq!(input.guidance_text_parts.len(), 3);
+    assert!(input.guidance_text_parts[0].contains("primary, supporting"));
+    assert!(input.guidance_text_parts[1].contains("Primary workflow"));
+    assert!(input.guidance_text_parts[2].contains("Supporting workflow"));
+    assert!(input.extra_text_parts.is_empty());
+}
+
+#[test]
 fn guidance_files_skip_missing_or_blank_files() {
     let temp = tempfile::tempdir().unwrap();
     let global = temp.path().join("global");

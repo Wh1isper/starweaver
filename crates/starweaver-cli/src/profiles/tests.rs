@@ -322,6 +322,10 @@ fn cli_model_catalog_exposes_query_only_session_tools() {
     ] {
         assert!(names.contains(name), "missing CLI query tool {name}");
     }
+    assert!(
+        names.contains(starweaver_agent::ASK_USER_QUESTION_TOOL_NAME),
+        "CLI must explicitly expose the clarifying-question tool"
+    );
     for name in [
         "create_session",
         "update_session",

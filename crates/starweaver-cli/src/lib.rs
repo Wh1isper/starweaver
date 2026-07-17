@@ -704,6 +704,73 @@ prompt = "Review carefully."
     }
 
     #[test]
+    fn headless_run_explicitly_activates_multiple_skills() {
+        let temp = tempfile::tempdir().unwrap();
+        let global = temp.path().join("global");
+        std::fs::create_dir_all(global.join("skills/lark-cli")).unwrap();
+        std::fs::create_dir_all(global.join("skills/building-agent")).unwrap();
+        std::fs::write(
+            global.join("config.toml"),
+            "[general]\nmodel = \"local_echo\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            global.join("skills/lark-cli/SKILL.md"),
+            "---\nname: lark-cli\ndescription: Use Lark CLI\n---\n# Lark workflow\n",
+        )
+        .unwrap();
+        std::fs::write(
+            global.join("skills/building-agent/SKILL.md"),
+            "---\nname: building-agent\ndescription: Build agents\n---\n# Agent workflow\n",
+        )
+        .unwrap();
+
+        let output_text = output(
+            temp.path(),
+            &[
+                "-p",
+                "/lark-cli /building-agent build it",
+                "--profile",
+                "default_model",
+                "--output",
+                "text",
+            ],
+        )
+        .unwrap();
+        assert!(output_text.contains("local echo: build it"));
+
+        let sessions = output(temp.path(), &["session", "list"]).unwrap();
+        let session: serde_json::Value =
+            serde_json::from_str(sessions.lines().next().unwrap()).unwrap();
+        let cli = args::parse([
+            "starweaver-cli".to_string(),
+            "session".to_string(),
+            "list".to_string(),
+        ])
+        .unwrap();
+        let config = ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+        let store = LocalStore::open(&config).unwrap();
+        let run = store
+            .load_run(
+                session["session_id"].as_str().unwrap(),
+                session["head_run_id"].as_str().unwrap(),
+            )
+            .unwrap();
+        let run = serde_json::to_value(run).unwrap();
+        assert_eq!(run["input"][0]["text"], "build it");
+        assert_eq!(
+            run["metadata"]["cli.skills.activated"][0]["name"],
+            "lark-cli"
+        );
+        assert_eq!(
+            run["metadata"]["cli.skills.activated"][1]["name"],
+            "building-agent"
+        );
+    }
+
+    #[test]
     fn headless_run_creates_session_and_run() {
         let temp = tempfile::tempdir().unwrap();
         let first = output(temp.path(), &["-p", "hello", "--output", "display-jsonl"]).unwrap();

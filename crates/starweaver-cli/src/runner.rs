@@ -438,6 +438,14 @@ fn sync_run_request_metadata(session: &mut AgentSession, run: &RunRecord) {
     session.set_metadata("starweaver.durable_run_id", json!(run.run_id.as_str()));
     session.set_metadata("cli.session_id", json!(run.session_id.as_str()));
     session.set_metadata("cli.run_id", json!(run.run_id.as_str()));
+    if let Some(skills) = run.metadata.get("cli.skills.activated") {
+        session.set_metadata("starweaver.skills.activated", skills.clone());
+    } else {
+        session
+            .context_mut()
+            .metadata
+            .remove("starweaver.skills.activated");
+    }
 }
 
 fn sync_run_session_affinity(session: &mut AgentSession, run: &RunRecord) {

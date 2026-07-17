@@ -196,6 +196,7 @@ pub(super) struct HitlPanelState {
     pub(super) tool_call_id: String,
     pub(super) tool_name: String,
     pub(super) request_preview: Option<String>,
+    pub(super) clarifying_questions: Vec<Value>,
     pub(super) command: Option<String>,
     pub(super) risk_level: Option<String>,
     pub(super) reason: Option<String>,
@@ -904,6 +905,26 @@ impl InteractiveTuiState {
             .is_some_and(|hitl| hitl.approval_id.is_some())
     }
 
+    pub(super) fn clarifying_answer_ready(&self) -> bool {
+        self.pending_hitl
+            .as_ref()
+            .is_some_and(|hitl| hitl.approval_id.is_some() && !hitl.clarifying_questions.is_empty())
+    }
+
+    pub(super) fn clarifying_answer(&self) -> Option<String> {
+        if !self.clarifying_answer_ready() {
+            return None;
+        }
+        let answer = self.input.trim().to_string();
+        (!answer.is_empty()).then_some(answer)
+    }
+
+    pub(crate) fn commit_clarifying_answer(&mut self) {
+        self.clear_composer_input();
+        self.reset_composer_scroll();
+        self.input_status = Some("answer submitted".to_string());
+    }
+
     pub(crate) fn hitl_reload_session_id(&self) -> Option<&str> {
         self.hitl_reload_session_id.as_deref()
     }
@@ -929,11 +950,26 @@ impl InteractiveTuiState {
                 .and_then(Value::as_str)
                 .map(ToString::to_string)
         };
+        let clarifying_questions = if approval.action_name
+            == starweaver_agent::ASK_USER_QUESTION_TOOL_NAME
+            && approval.request.get("kind").and_then(Value::as_str)
+                == Some(starweaver_agent::CLARIFYING_QUESTIONS_REQUEST_KIND)
+        {
+            approval
+                .request
+                .get("questions")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         self.pending_hitl = Some(HitlPanelState {
             approval_id: Some(approval.approval_id.clone()),
             tool_call_id: approval.action_id.clone(),
             tool_name: approval.action_name.clone(),
             request_preview: Some(approval_request_preview(&approval.request)),
+            clarifying_questions,
             command: request_string("command")
                 .or_else(|| request_string("script"))
                 .or_else(|| existing.as_ref().and_then(|hitl| hitl.command.clone())),
@@ -943,8 +979,13 @@ impl InteractiveTuiState {
                 .or_else(|| existing.as_ref().and_then(|hitl| hitl.reason.clone())),
         });
         self.status = "WAITING".to_string();
-        self.phase = "hitl approval".to_string();
-        self.input_status = Some("approval: [a/y] approve, [r/n] reject".to_string());
+        if self.clarifying_answer_ready() {
+            self.phase = "clarifying question".to_string();
+            self.input_status = Some("type an answer and press Enter".to_string());
+        } else {
+            self.phase = "hitl approval".to_string();
+            self.input_status = Some("approval: [a/y] approve, [r/n] reject".to_string());
+        }
     }
 
     pub(crate) fn clear_pending_hitl(&mut self) {

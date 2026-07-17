@@ -101,6 +101,29 @@ impl Default for RpcProviderConfig {
     }
 }
 
+/// RPC client interaction capabilities that permit host-side model tools.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RpcClientCapabilitiesConfig {
+    /// The connected client can enumerate and resolve durable HITL requests.
+    #[serde(default)]
+    pub hitl: bool,
+    /// The client has dedicated rendering and answer input for clarifying questions.
+    #[serde(default)]
+    pub clarifying_questions: bool,
+}
+
+impl RpcClientCapabilitiesConfig {
+    fn validate(&self) -> RpcHostResult<()> {
+        if self.clarifying_questions && !self.hitl {
+            return Err(RpcHostError::Invalid(
+                "client_capabilities.clarifying_questions requires client_capabilities.hitl"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Session-search backend selected by RPC-owned configuration.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -177,6 +200,8 @@ pub struct RpcConfig {
     pub providers: BTreeMap<String, RpcProviderConfig>,
     /// RPC-owned named subagent declarations.
     pub subagents: BTreeMap<String, RpcSubagentConfig>,
+    /// Client interaction capabilities explicitly supported by the RPC frontend.
+    pub client_capabilities: RpcClientCapabilitiesConfig,
     /// HTTP transport authentication and request-origin policy.
     pub http_auth: RpcHttpAuthConfig,
     /// Optional RPC-owned session-search provider configuration.
@@ -189,6 +214,7 @@ struct FileConfig {
     profiles: Option<BTreeMap<String, RpcProfileConfig>>,
     providers: Option<BTreeMap<String, RpcProviderConfig>>,
     subagents: Option<BTreeMap<String, RpcSubagentConfig>>,
+    client_capabilities: Option<RpcClientCapabilitiesConfig>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -289,6 +315,8 @@ impl RpcConfig {
             providers.extend(configured);
         }
         let subagents = file.subagents.unwrap_or_default();
+        let client_capabilities = file.client_capabilities.unwrap_or_default();
+        client_capabilities.validate()?;
         Ok(Self {
             config_path,
             database_path,
@@ -298,6 +326,7 @@ impl RpcConfig {
             profiles,
             providers,
             subagents,
+            client_capabilities,
             http_auth,
             session_search,
         })
@@ -321,6 +350,7 @@ impl RpcConfig {
             profiles: BTreeMap::from([(DEFAULT_PROFILE_NAME.to_string(), profile)]),
             providers: default_provider_configs(),
             subagents: BTreeMap::new(),
+            client_capabilities: RpcClientCapabilitiesConfig::default(),
             http_auth: RpcHttpAuthConfig::default(),
             session_search: RpcSessionSearchConfig::default(),
         }
@@ -463,6 +493,10 @@ default_profile = "gateway"
 database_path = "state/rpc.sqlite3"
 workspace_root = "workspace"
 
+[client_capabilities]
+hitl = true
+clarifying_questions = true
+
 [server.http_auth]
 token_env = "RPC_TEST_TOKEN"
 token_file = "secrets/http-token"
@@ -481,6 +515,13 @@ base_url = "https://models.example.test/v1"
         )
         .unwrap();
         let file = read_file_config(&config_path).unwrap();
+        assert_eq!(
+            file.client_capabilities,
+            Some(RpcClientCapabilitiesConfig {
+                hitl: true,
+                clarifying_questions: true,
+            })
+        );
         let server = file.server.unwrap();
         assert_eq!(server.default_profile.as_deref(), Some("gateway"));
         let http_auth = server.http_auth.unwrap();
@@ -500,6 +541,21 @@ base_url = "https://models.example.test/v1"
         assert_eq!(
             file.providers.unwrap()["homelab"].api_key_env.as_deref(),
             Some("HOMELAB_API_KEY")
+        );
+    }
+
+    #[test]
+    fn clarifying_questions_require_general_hitl_support() {
+        let error = RpcClientCapabilitiesConfig {
+            hitl: false,
+            clarifying_questions: true,
+        }
+        .validate()
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requires client_capabilities.hitl")
         );
     }
 }

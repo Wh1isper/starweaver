@@ -125,6 +125,14 @@ Tools:
 
 Backed by `AgentContext` task state or an SDK host task service. Notes and arbitrary state stay on `AgentContext` as SDK data accessed through typed dependencies by custom tools.
 
+### User Input Bundle
+
+The provider-neutral user-input bundle exposes `ask_user_question` with typed `questions`, question headers, two to four options, optional previews, and `multiSelect`. The tool always emits the existing approval-required control flow with `request.kind = "clarifying_questions"`; this is semantic waiting for user input rather than a configurable security approval.
+
+Hosts resolve the request through the standard HITL APIs. `Tool::preprocess_user_input` normalizes a free-form response or an `answers` map into approval metadata, approved execution preserves the original questions, and the tool result returns `questions`, `answers`, and optional `response`. String-valued answers remain the canonical wire form; a host combines multiple selected labels into one string for `multiSelect` questions. Durable products reuse the SDK normalization/result helpers when projecting the request through `ApprovalRecord`, without introducing another run-state or storage protocol variant. Models should call the tool separately from side-effecting tools when clarification is required.
+
+The bundle is opt-in and is not part of `core_toolsets()`. CLI explicitly installs it. RPC installs it only when RPC-owned client capability configuration declares both durable HITL support and dedicated clarifying-question interaction support; otherwise `user_input` is unavailable during profile validation and materialization.
+
 ### Session Query Bundle
 
 The session query bundle exposes bounded, prompt-safe views of durable sessions through a narrow host-provided `AgentSessionQuery` capability. It never gives tools direct access to `SessionStore`, `StreamArchive`, storage adapters, product handlers, or coordinators.
@@ -177,6 +185,8 @@ Discovery paths are derived from configured provider roots and preserve Starweav
 4. tool-specific project skills: `skills/`
 
 Project scopes override user scopes, and tool-specific scopes override shared scopes within the same root. Each skill directory can include `SKILL.md`, `references/`, `scripts/`, and `assets/`. The active environment should expose the same files to filesystem and shell bundles so skill instructions can reference provider-visible resources.
+
+CLI products may offer explicit activation prefixes such as `/skill-name` and `@skill-name`. Prefix parsing remains a product concern, not a runtime or generic context protocol. Consecutive resolved prefixes preserve user order, complete skill bodies are injected as run guidance, and durable metadata records only skill summaries and paths rather than bodies. Built-in and configured slash commands take precedence over same-named skills. Available skill summaries may be exposed through `AgentContext.metadata`; activated summaries are recorded separately for the current run.
 
 Skill config should support:
 
