@@ -78,6 +78,38 @@ struct ActiveRunControl {
     cancel_sender: mpsc::Sender<()>,
 }
 
+fn reap_finished_worker_handles(
+    worker_handles: &Mutex<Vec<BackgroundWorkerHandle>>,
+) -> Result<(), String> {
+    let handles = worker_handles.lock().map_or_else(
+        |error| std::mem::take(&mut *error.into_inner()),
+        |mut handles| std::mem::take(&mut *handles),
+    );
+    let mut pending = Vec::new();
+    let mut worker_error = None;
+    for handle in handles {
+        let BackgroundWorkerHandle { join, completed } = handle;
+        match completed.try_recv() {
+            Ok(()) | Err(mpsc::TryRecvError::Disconnected) => {
+                if join.join().is_err() {
+                    worker_error
+                        .get_or_insert_with(|| "CLI background worker panicked".to_string());
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                pending.push(BackgroundWorkerHandle { join, completed });
+            }
+        }
+    }
+    if !pending.is_empty() {
+        match worker_handles.lock() {
+            Ok(mut handles) => handles.extend(pending),
+            Err(error) => error.into_inner().extend(pending),
+        }
+    }
+    worker_error.map_or(Ok(()), Err)
+}
+
 fn drain_worker_handles_until(
     worker_handles: &Mutex<Vec<BackgroundWorkerHandle>>,
     deadline: std::time::Instant,
@@ -402,6 +434,7 @@ impl CliRuntimeCoordinator {
         prompt_input: Option<PromptInput>,
         background_attempt_id: Option<String>,
     ) -> CliResult<StartedRun> {
+        reap_finished_worker_handles(&self.worker_handles).map_err(CliError::Run)?;
         if self.closing.load(Ordering::Acquire) {
             return Err(CliError::Run(
                 "interactive runtime coordinator is shutting down".to_string(),
@@ -531,6 +564,47 @@ fn remove_active_run(active_runs: &Arc<Mutex<HashMap<String, ActiveRunControl>>>
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_worker_handles_are_reaped_without_waiting_for_shutdown() {
+        let handles = Mutex::new(Vec::new());
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let join = thread::spawn(move || {
+            completed_tx.send(()).expect("completion receiver");
+        });
+        handles.lock().unwrap().push(BackgroundWorkerHandle {
+            join,
+            completed: completed_rx,
+        });
+
+        for _ in 0..20 {
+            reap_finished_worker_handles(&handles).unwrap();
+            if handles.lock().unwrap().is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(handles.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn active_worker_handle_is_retained_by_non_blocking_reap() {
+        let handles = Mutex::new(Vec::new());
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let join = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            completed_tx.send(()).expect("completion receiver");
+        });
+        handles.lock().unwrap().push(BackgroundWorkerHandle {
+            join,
+            completed: completed_rx,
+        });
+
+        reap_finished_worker_handles(&handles).unwrap();
+        assert_eq!(handles.lock().unwrap().len(), 1);
+        drain_worker_handles_until(&handles, std::time::Instant::now() + Duration::from_secs(1))
+            .unwrap();
+    }
 
     #[test]
     fn timed_out_worker_handle_is_retained_for_a_later_shutdown() {
