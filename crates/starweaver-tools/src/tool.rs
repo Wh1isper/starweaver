@@ -206,6 +206,9 @@ where
     extend_tool_metadata_string_list(metadata, TOOL_METADATA_HIDDEN_BY_TAGS_KEY, tags);
 }
 
+/// Metadata key for tools that own their HITL control flow and must not receive an outer approval gate.
+pub const TOOL_METADATA_SELF_MANAGED_HITL_KEY: &str = "starweaver_self_managed_hitl";
+
 /// Provider-neutral function tool trait.
 #[async_trait]
 pub trait Tool: Send + Sync {

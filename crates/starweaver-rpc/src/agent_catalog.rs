@@ -6,7 +6,7 @@ use serde::Serialize;
 use starweaver_agent::{
     AgentRuntimeBuilder, AgentSpec, AgentSpecRegistry, ModelPreset, SubagentConfig,
     SubagentToolInheritancePolicy, agent_session_control_tools, agent_session_query_tools,
-    core_toolsets,
+    core_toolsets, user_input_tools,
 };
 use starweaver_model::{
     HttpModelConfig, ModelAdapter, ModelProfile, ProtocolFamily, ProtocolModelClient,
@@ -98,8 +98,8 @@ impl RpcAgentCatalog {
     pub fn runtime_builder(&self, name: &str) -> RpcHostResult<AgentRuntimeBuilder> {
         let profile = self.profile(name)?;
         let model = self.materialize_model(profile)?;
-        let spec = agent_spec(name, profile);
-        let mut registry = Self::registry_with_model(profile, model);
+        let spec = agent_spec(name, profile, self.clarifying_questions_enabled());
+        let mut registry = self.registry_with_model(profile, model);
         for subagent_name in &profile.subagents {
             let declaration = self.config.subagents.get(subagent_name).ok_or_else(|| {
                 RpcHostError::Invalid(format!(
@@ -108,8 +108,12 @@ impl RpcAgentCatalog {
             })?;
             let child_profile = self.profile(&declaration.profile)?;
             let child_model = self.materialize_model(child_profile)?;
-            let child_registry = Self::registry_with_model(child_profile, child_model);
-            let mut child_spec = agent_spec(&declaration.profile, child_profile);
+            let child_registry = self.registry_with_model(child_profile, child_model);
+            let mut child_spec = agent_spec(
+                &declaration.profile,
+                child_profile,
+                self.clarifying_questions_enabled(),
+            );
             child_spec.subagents.clear();
             child_spec.all_subagents = false;
             let child = child_spec
@@ -131,17 +135,26 @@ impl RpcAgentCatalog {
     }
 
     fn registry_with_model(
+        &self,
         profile: &RpcProfileConfig,
         model: Arc<dyn ModelAdapter>,
     ) -> AgentSpecRegistry {
         let mut registry = AgentSpecRegistry::new().with_model(&profile.model_id, model);
-        for toolset in core_toolsets()
+        let mut toolsets = core_toolsets()
             .into_iter()
             .chain([agent_session_query_tools(), agent_session_control_tools()])
-        {
+            .collect::<Vec<_>>();
+        if self.clarifying_questions_enabled() {
+            toolsets.push(user_input_tools());
+        }
+        for toolset in toolsets {
             registry = registry.with_toolset(toolset);
         }
         registry
+    }
+
+    const fn clarifying_questions_enabled(&self) -> bool {
+        self.config.client_capabilities.hitl && self.config.client_capabilities.clarifying_questions
     }
 
     /// Return whether a profile explicitly grants one toolset.
@@ -167,6 +180,7 @@ impl RpcAgentCatalog {
         let available_toolsets = core_toolsets()
             .into_iter()
             .chain([agent_session_query_tools(), agent_session_control_tools()])
+            .chain(self.clarifying_questions_enabled().then(user_input_tools))
             .flat_map(|toolset| {
                 let mut keys = vec![toolset.name().to_string()];
                 if let Some(id) = toolset.id() {
@@ -305,7 +319,15 @@ impl RpcAgentCatalog {
     }
 }
 
-fn agent_spec(name: &str, profile: &RpcProfileConfig) -> AgentSpec {
+fn agent_spec(
+    name: &str,
+    profile: &RpcProfileConfig,
+    enable_clarifying_questions: bool,
+) -> AgentSpec {
+    let mut toolsets = profile.toolsets.clone();
+    if enable_clarifying_questions && !toolsets.iter().any(|name| name == "user_input") {
+        toolsets.push("user_input".to_string());
+    }
     AgentSpec {
         name: name.to_string(),
         description: profile.label.clone(),
@@ -316,7 +338,7 @@ fn agent_spec(name: &str, profile: &RpcProfileConfig) -> AgentSpec {
             config_preset: profile.model_config.clone(),
             settings: None,
         }),
-        toolsets: profile.toolsets.clone(),
+        toolsets,
         subagents: profile.subagents.clone(),
         ..AgentSpec::default()
     }
@@ -431,6 +453,40 @@ mod tests {
         let catalog = RpcAgentCatalog::new(config).unwrap();
         assert_eq!(catalog.profiles()[0].source, "rpc_test");
         assert!(catalog.runtime_builder("default").is_ok());
+    }
+
+    #[test]
+    fn clarifying_question_tool_requires_explicit_rpc_client_capabilities() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        let disabled = RpcAgentCatalog::new(config.clone())
+            .unwrap()
+            .runtime_builder("default")
+            .unwrap()
+            .build();
+        assert!(
+            !disabled
+                .app()
+                .agent()
+                .tools()
+                .contains(starweaver_agent::ASK_USER_QUESTION_TOOL_NAME)
+        );
+
+        let mut enabled_config = config;
+        enabled_config.client_capabilities.hitl = true;
+        enabled_config.client_capabilities.clarifying_questions = true;
+        let enabled = RpcAgentCatalog::new(enabled_config)
+            .unwrap()
+            .runtime_builder("default")
+            .unwrap()
+            .build();
+        assert!(
+            enabled
+                .app()
+                .agent()
+                .tools()
+                .contains(starweaver_agent::ASK_USER_QUESTION_TOOL_NAME)
+        );
     }
 
     #[test]

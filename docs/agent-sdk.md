@@ -89,6 +89,7 @@ on product-specific implementations:
 - `filesystem_tools()` for list, view, glob, grep, and file mutation helpers.
 - `shell_tools()` for provider-scoped shell execution and background process handles.
 - `task_tools()` for model-visible task tracking.
+- `user_input_tools()` for `ask_user_question`, a structured clarifying-question tool that waits for host/user input through the standard HITL flow.
 - `context_tools()` for context handoff, notes, and explicit thinking tools.
 - `host_io_tools()` for host-backed search, fetch, scrape, download, and remote media reading.
 - `skill_tools(...)` for discovered skill packages.

@@ -31,19 +31,29 @@ pub(super) fn render_selection_panel(state: &InteractiveTuiState, width: usize) 
     )]
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn render_hitl_panel(hitl: &HitlPanelState, width: usize) -> Vec<StyledLine> {
     if width < 4 {
         return Vec::new();
     }
     let inner_width = width.saturating_sub(4);
+    let is_clarifying = !hitl.clarifying_questions.is_empty();
     let mut rows = Vec::<Vec<StyledSegment>>::new();
     rows.push(vec![
         StyledSegment {
-            text: "Tool Approval Required".to_string(),
+            text: if is_clarifying {
+                "Clarification Requested".to_string()
+            } else {
+                "Tool Approval Required".to_string()
+            },
             style: SegmentStyle::warning().merge(SegmentStyle::bold()),
         },
         StyledSegment {
-            text: "  Review the pending shell/tool action before continuing".to_string(),
+            text: if is_clarifying {
+                "  Answer in the composer below to continue".to_string()
+            } else {
+                "  Review the pending shell/tool action before continuing".to_string()
+            },
             style: SegmentStyle::dim(),
         },
     ]);
@@ -70,6 +80,40 @@ pub(super) fn render_hitl_panel(hitl: &HitlPanelState, width: usize) -> Vec<Styl
         inner_width,
         SegmentStyle::dim(),
     );
+    if is_clarifying {
+        for (index, question) in hitl.clarifying_questions.iter().enumerate() {
+            let text = question
+                .get("question")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Clarifying question");
+            push_detail_row(
+                &mut rows,
+                &format!("question {}:", index.saturating_add(1)),
+                text,
+                inner_width,
+                SegmentStyle::default(),
+            );
+            if let Some(options) = question
+                .get("options")
+                .and_then(serde_json::Value::as_array)
+            {
+                let labels = options
+                    .iter()
+                    .filter_map(|option| option.get("label").and_then(serde_json::Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                if !labels.is_empty() {
+                    push_detail_row(
+                        &mut rows,
+                        "options:",
+                        &labels,
+                        inner_width,
+                        SegmentStyle::dim(),
+                    );
+                }
+            }
+        }
+    }
     if let Some(command) = hitl.command.as_deref() {
         push_detail_row(
             &mut rows,
@@ -102,7 +146,9 @@ pub(super) fn render_hitl_panel(hitl: &HitlPanelState, width: usize) -> Vec<Styl
     }
     rows.push(Vec::new());
     rows.push(vec![StyledSegment {
-        text: if hitl.approval_id.is_some() {
+        text: if is_clarifying {
+            "Type an answer below and press Enter    [Esc] Refresh".to_string()
+        } else if hitl.approval_id.is_some() {
             "[a/y] Approve    [r/n] Reject    [Esc] Refresh".to_string()
         } else {
             "Persisting approval request…    [Esc] Refresh".to_string()
@@ -458,6 +504,18 @@ fn pick_status_candidate(width: usize, candidates: &[String]) -> String {
 #[allow(clippy::too_many_lines)]
 fn secondary_status_text(state: &InteractiveTuiState, width: usize) -> String {
     if state.pending_hitl().is_some() {
+        if state.clarifying_answer_ready() {
+            return pick_status_candidate(
+                width,
+                &[
+                    "Clarification required | Type an answer and press Enter | Esc: Refresh"
+                        .to_string(),
+                    "Answer in composer | Enter: Submit | Esc: Refresh".to_string(),
+                    "Type answer | Enter".to_string(),
+                    "Answer required".to_string(),
+                ],
+            );
+        }
         let candidates = if state.hitl_decision_ready() {
             [
                 "Approval required | A/Y approve | R/N reject | PageUp/PageDown/Mouse: Scroll"

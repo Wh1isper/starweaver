@@ -7,13 +7,15 @@ use std::{
 
 use async_trait::async_trait;
 use starweaver_agent::{
-    AgentCapability, AgentContext, AgentRuntimeBuilder, AgentSession, EnvironmentContextCapability,
-    HostMediaCapabilities, HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle,
-    HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
-    MediaUnderstandingRequest, MediaUnderstandingResponse, ScrapeRequest, ScrapeResponse,
-    SearchRequest, SearchResponse, SearchResultItem, ToolContext, ToolRegistry, ToolResult,
-    attach_environment, context_tools, dynamic_tool_proxy, filesystem_tools, host_io_tools,
-    json_tool, namespaced_toolset, shell_tools, task_tools,
+    ASK_USER_QUESTION_TOOL_NAME, AgentCapability, AgentContext, AgentRuntimeBuilder, AgentSession,
+    ApprovalRequiredToolset, CLARIFYING_ANSWERS_METADATA_KEY, CLARIFYING_QUESTIONS_REQUEST_KIND,
+    DynToolset, EnvironmentContextCapability, HostMediaCapabilities, HostMediaUnderstandingClient,
+    HostMediaUnderstandingClientHandle, HostScrapeClient, HostScrapeClientHandle, HostSearchClient,
+    HostSearchClientHandle, MediaUnderstandingRequest, MediaUnderstandingResponse, ScrapeRequest,
+    ScrapeResponse, SearchRequest, SearchResponse, SearchResultItem, ToolApprovalState,
+    ToolContext, ToolRegistry, ToolResult, attach_environment, context_tools, core_toolsets,
+    dynamic_tool_proxy, filesystem_tools, host_io_tools, json_tool, namespaced_toolset,
+    shell_tools, task_tools, user_input_tools,
 };
 use starweaver_context::{ContextHandoffHandle, DependencyStore, ToolConfig};
 use starweaver_core::{CancellationToken, ConversationId, Metadata, RunId};
@@ -263,6 +265,129 @@ async fn execute_tool_call(
             },
         )
         .await
+}
+
+#[tokio::test]
+async fn ask_user_question_waits_for_and_returns_clarifying_answers() {
+    let mut registry = ToolRegistry::new();
+    let wrapped: DynToolset = Arc::new(ApprovalRequiredToolset::new(user_input_tools(), ["*"]));
+    registry.insert_toolset(&wrapped);
+    let arguments = serde_json::json!({
+        "questions": [{
+            "question": "Which database?",
+            "header": "Database",
+            "options": [
+                {"label": "PostgreSQL", "description": "Use PostgreSQL"},
+                {"label": "SQLite", "description": "Use SQLite"}
+            ],
+            "multiSelect": false
+        }]
+    });
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0);
+
+    let pending = execute_tool_call(
+        &registry,
+        context.clone(),
+        "ask-1",
+        ASK_USER_QUESTION_TOOL_NAME,
+        arguments.clone(),
+    )
+    .await;
+
+    assert!(pending.is_error);
+    assert_eq!(pending.metadata["control_flow"], "approval_required");
+    assert_eq!(
+        pending.metadata["approval"]["kind"],
+        CLARIFYING_QUESTIONS_REQUEST_KIND
+    );
+    assert_eq!(
+        pending.metadata["approval"]["questions"][0]["question"],
+        "Which database?"
+    );
+
+    let tool = registry.get(ASK_USER_QUESTION_TOOL_NAME).unwrap();
+    let preprocessed = tool
+        .preprocess_user_input(
+            context.clone(),
+            serde_json::json!({
+                "answers": {"Which database?": "PostgreSQL"}
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        preprocessed.metadata[CLARIFYING_ANSWERS_METADATA_KEY]["answers"]["Which database?"],
+        "PostgreSQL"
+    );
+
+    let approved = context.with_approval(ToolApprovalState::Approved {
+        override_arguments: None,
+        metadata: preprocessed.metadata,
+    });
+    let answered = execute_tool_call(
+        &registry,
+        approved,
+        "ask-1",
+        ASK_USER_QUESTION_TOOL_NAME,
+        arguments,
+    )
+    .await;
+
+    assert!(!answered.is_error);
+    assert_eq!(answered.content["questions"][0]["header"], "Database");
+    assert_eq!(answered.content["answers"]["Which database?"], "PostgreSQL");
+}
+
+#[test]
+fn user_input_bundle_is_opt_in_and_declares_question_bounds() {
+    assert!(
+        core_toolsets()
+            .iter()
+            .all(|toolset| toolset.name() != "user_input")
+    );
+    let tool = user_input_tools()
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == ASK_USER_QUESTION_TOOL_NAME)
+        .unwrap();
+    let schema = tool.parameters_schema();
+    assert_eq!(
+        schema.pointer("/properties/questions/minItems"),
+        Some(&serde_json::json!(1))
+    );
+    assert_eq!(
+        schema.pointer("/properties/questions/maxItems"),
+        Some(&serde_json::json!(4))
+    );
+    assert_eq!(
+        schema.pointer("/$defs/ClarifyingQuestion/properties/header/maxLength"),
+        Some(&serde_json::json!(12))
+    );
+    assert_eq!(
+        schema.pointer("/$defs/ClarifyingQuestion/properties/options/minItems"),
+        Some(&serde_json::json!(2))
+    );
+    assert_eq!(
+        schema.pointer("/$defs/ClarifyingQuestion/properties/options/maxItems"),
+        Some(&serde_json::json!(4))
+    );
+}
+
+#[tokio::test]
+async fn ask_user_question_rejects_empty_user_input() {
+    let tool = user_input_tools()
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == ASK_USER_QUESTION_TOOL_NAME)
+        .unwrap();
+    let error = tool
+        .preprocess_user_input(
+            ToolContext::new(RunId::default(), ConversationId::default(), 0),
+            serde_json::json!("   "),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("provide at least one answer"));
 }
 
 fn filesystem_shell_test_provider() -> Arc<VirtualEnvironmentProvider> {

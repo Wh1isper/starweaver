@@ -228,6 +228,14 @@ assert_eq!(result.output, "done");
 # }
 ```
 
+## Clarifying user input
+
+The first-party `user_input_tools()` bundle exposes `ask_user_question`. It accepts one to four structured questions, each with a short header, two to four suggested options, and a `multiSelect` flag. The tool always enters the existing approval-based HITL waiting flow instead of returning immediately, so hosts can present the questions without treating them as another conversation turn.
+
+Resolve the pending call with `AgentHitlUserInteraction::approved(tool_call_id).with_user_input(...)`. User input may be a free-form JSON string or an object containing `answers` keyed by exact question text and an optional global `response`. A `multiSelect` question remains wire-compatible with string-valued answers: clients combine selected labels into one string. The tool preprocessor stores normalized answers in approval metadata, preserves the original questions, and returns both to the model after `resume_after_hitl`. Durable hosts can reuse `normalize_clarifying_question_answers` and `resolve_clarifying_question_answers` to apply the same validation. Approval records identify these requests with both the `ask_user_question` tool identity and `request.kind = "clarifying_questions"`.
+
+The SDK does not include this capability in `core_toolsets()`. Hosts must opt in with `user_input_tools()` only when they can resolve HITL requests. Starweaver CLI installs it explicitly; standalone RPC installs it only when `rpc.toml` declares both general HITL support and clarifying-question UI support. Models should call it by itself before issuing side-effecting tools when missing information would materially change the result.
+
 ## First-party environment bundles
 
 First-party filesystem and shell bundles resolve the active environment from `AgentContext`, so the same toolset can run against virtual, local, or sandbox providers.

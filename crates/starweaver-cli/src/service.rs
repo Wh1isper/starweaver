@@ -41,7 +41,7 @@ use crate::{
         CliAgentExecutionHost, CliRunPolicy, CliSteeringMessage, execute_agent_session_with_host,
         failed_display_message,
     },
-    slash_commands::expand_slash_command,
+    slash_commands::{ExpandedExplicitSkills, expand_explicit_skills, expand_slash_command},
 };
 
 mod auth;
@@ -166,6 +166,43 @@ fn append_guidance_files(input: &mut PromptInput, config: &CliConfig) {
     if let Some(user_rules) = load_user_rules(&config.global_dir) {
         input.push_guidance_text_part(user_rules);
     }
+}
+
+fn append_explicit_skill_guidance(
+    input: &mut PromptInput,
+    explicit_skills: Option<&ExpandedExplicitSkills>,
+) {
+    let Some(explicit_skills) = explicit_skills else {
+        return;
+    };
+    let names = explicit_skills
+        .skills
+        .iter()
+        .map(|skill| skill.package.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    input.push_guidance_text_part(format!(
+        "<explicit-skill-composition>\nThe user explicitly activated these skills in priority order: {names}. Apply all compatible instructions. Treat the first skill as the primary workflow and later skills as supporting workflows. The current user request overrides skill defaults. If selected skills conflict irreconcilably, ask the user for clarification.\n</explicit-skill-composition>"
+    ));
+    for skill in &explicit_skills.skills {
+        let package = &skill.package;
+        let Some(body) = package.body.as_deref() else {
+            continue;
+        };
+        input.push_guidance_text_part(format!(
+            "<explicitly-activated-skill>\n<name>{}</name>\n<path>{}</path>\n<instructions>\n{}\n</instructions>\n</explicitly-activated-skill>",
+            escape_xml_text(&package.name),
+            escape_xml_text(&package.path),
+            body
+        ));
+    }
+}
+
+fn escape_xml_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn load_project_guidance(workspace_root: &Path) -> Option<String> {
@@ -396,28 +433,38 @@ impl CliService {
         let input =
             prompt_input.map_or_else(|| command.prompt_text().map(PromptInput::text), Ok)?;
         let raw_prompt = input.text.clone();
-        let slash_expansion = expand_slash_command(&self.config.slash_commands, &raw_prompt);
-        let prompt = slash_expansion
-            .as_ref()
-            .map_or(raw_prompt, |expanded| expanded.prompt.clone());
-        let mut run_input = PromptInput {
-            text: prompt.clone(),
-            attachments: input.attachments,
-            extra_text_parts: input.extra_text_parts,
-            guidance_text_parts: input.guidance_text_parts,
-        };
         let worktree = self.resolve_worktree(command)?;
         let selected_profile = command
             .profile
             .as_deref()
             .unwrap_or(&self.config.default_profile);
         let resolved_profile = resolve_profile(&self.config, Some(selected_profile))?;
+        let slash_expansion = expand_slash_command(&self.config.slash_commands, &raw_prompt);
+        let explicit_skills = slash_expansion
+            .is_none()
+            .then(|| expand_explicit_skills(&resolved_profile.skills, &raw_prompt))
+            .flatten();
+        let prompt = slash_expansion.as_ref().map_or_else(
+            || {
+                explicit_skills
+                    .as_ref()
+                    .map_or_else(|| raw_prompt.clone(), |expanded| expanded.prompt.clone())
+            },
+            |expanded| expanded.prompt.clone(),
+        );
+        let mut run_input = PromptInput {
+            text: prompt.clone(),
+            attachments: input.attachments,
+            extra_text_parts: input.extra_text_parts,
+            guidance_text_parts: input.guidance_text_parts,
+        };
         let mut run_config = self.config.clone();
         if let Some(worktree) = worktree.as_ref() {
             run_config.workspace_root.clone_from(&worktree.path);
         }
         validate_environment_config(&run_config)?;
         append_guidance_files(&mut run_input, &run_config);
+        append_explicit_skill_guidance(&mut run_input, explicit_skills.as_ref());
         let (session_id, created) = self.resolve_session(command, &resolved_profile.name)?;
         if command.run.is_some() || command.branch_from.is_some() {
             self.reject_ordinary_admission_during_waiting_continuation(
@@ -547,6 +594,24 @@ impl CliService {
             worktree.as_ref(),
             slash_expansion.as_ref(),
         );
+        if let Some(explicit_skills) = explicit_skills.as_ref() {
+            run.metadata.insert(
+                "cli.skills.activated".to_string(),
+                json!(
+                    explicit_skills
+                        .skills
+                        .iter()
+                        .map(|skill| json!({
+                            "name": skill.package.name,
+                            "invoked": skill.invoked_name,
+                            "description": skill.package.description,
+                            "path": skill.package.path,
+                            "metadata": skill.package.metadata,
+                        }))
+                        .collect::<Vec<_>>()
+                ),
+            );
+        }
         if let Some(session_affinity_id) = command.session_affinity_id.as_deref() {
             run.metadata.insert(
                 "starweaver.session_affinity_id".to_string(),

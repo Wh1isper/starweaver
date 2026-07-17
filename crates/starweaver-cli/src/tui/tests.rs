@@ -308,14 +308,11 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
 
     state.set_custom_commands(BTreeMap::new());
     state.input = "/COMMIT staged files".to_string();
-    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
-    assert!(state.input.is_empty());
-    assert!(
-        state
-            .body
-            .iter()
-            .any(|line| line.contains("Unknown command: /COMMIT staged files"))
+    assert_eq!(
+        submit_text(handle_key_event(&mut state, key_code(KeyCode::Enter))),
+        Some("/COMMIT staged files".to_string())
     );
+    assert!(state.input.is_empty());
 
     let mut custom_commands = BTreeMap::new();
     let command = SlashCommandDefinition {
@@ -1892,6 +1889,49 @@ fn hitl_panel_binds_durable_approval_and_accepts_inline_decision() {
         Some("session_waiting"),
         "dispatching refresh must retain retry identity until reload succeeds"
     );
+}
+
+#[test]
+fn clarifying_question_accepts_composer_answer() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut approval = ApprovalRecord::new(
+        "approval_question",
+        SessionId::from_string("session_question"),
+        RunId::from_string("run_question"),
+        "question_call",
+        starweaver_agent::ASK_USER_QUESTION_TOOL_NAME,
+    );
+    approval.request = json!({
+        "kind": starweaver_agent::CLARIFYING_QUESTIONS_REQUEST_KIND,
+        "questions": [{
+            "question": "Which database should I use?",
+            "header": "Database",
+            "options": [
+                {"label": "PostgreSQL", "description": "Use PostgreSQL"},
+                {"label": "SQLite", "description": "Use SQLite"}
+            ],
+            "multiSelect": false
+        }]
+    });
+    state.bind_pending_approval(&approval);
+
+    let footer = line_texts(&render_footer_lines(&state, 140)).join("\n");
+    assert!(footer.contains("Clarification Requested"));
+    assert!(footer.contains("Which database should I use?"));
+    assert!(footer.contains("PostgreSQL | SQLite"));
+
+    for ch in "PostgreSQL".chars() {
+        assert_eq!(handle_key_event(&mut state, key_char(ch)), None);
+    }
+    assert_eq!(
+        handle_key_event(&mut state, key_code(KeyCode::Enter)),
+        Some(InteractiveTuiEvent::ApprovalDecision(
+            super::terminal::TuiApprovalDecision::Answer("PostgreSQL".to_string())
+        ))
+    );
+    assert_eq!(state.input, "PostgreSQL");
+    state.commit_clarifying_answer();
+    assert!(state.input.is_empty());
 }
 
 #[test]

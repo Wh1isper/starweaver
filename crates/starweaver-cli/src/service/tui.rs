@@ -871,15 +871,27 @@ impl CliService {
                         dirty = true;
                         continue;
                     };
-                    let status = match decision {
-                        crate::tui::TuiApprovalDecision::Approve => ApprovalStatus::Approved,
-                        crate::tui::TuiApprovalDecision::Reject => ApprovalStatus::Denied,
+                    let answer_draft = match &decision {
+                        crate::tui::TuiApprovalDecision::Answer(answer) => Some(answer.clone()),
+                        _ => None,
+                    };
+                    let (status, reason) = match decision {
+                        crate::tui::TuiApprovalDecision::Approve => {
+                            (ApprovalStatus::Approved, None)
+                        }
+                        crate::tui::TuiApprovalDecision::Reject => (ApprovalStatus::Denied, None),
+                        crate::tui::TuiApprovalDecision::Answer(answer) => {
+                            (ApprovalStatus::Approved, Some(answer))
+                        }
                     };
                     let decided = self
                         .store()
-                        .and_then(|store| store.decide_approval(&approval_id, status, None));
+                        .and_then(|store| store.decide_approval(&approval_id, status, reason));
                     match decided {
                         Ok(record) => {
+                            if answer_draft.is_some() {
+                                state.commit_clarifying_answer();
+                            }
                             state.push_transcript_notice(format!(
                                 "[SYS] Approval {} resolved as {:?}.",
                                 record.approval_id, record.status

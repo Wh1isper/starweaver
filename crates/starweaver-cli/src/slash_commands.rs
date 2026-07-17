@@ -1,8 +1,9 @@
 //! Config-backed slash command expansion.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use starweaver_agent::{SkillPackage, SkillRegistry};
 
 /// Config-defined slash command prompt.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -32,6 +33,89 @@ pub struct ExpandedSlashCommand {
     pub args: String,
     /// Human-readable description.
     pub description: Option<String>,
+}
+
+/// One skill explicitly selected through a leading `/skill` or `@skill` token.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExplicitSkillSelection {
+    /// Name typed by the user without the leading marker.
+    pub invoked_name: String,
+    /// Resolved skill package.
+    pub package: SkillPackage,
+}
+
+/// Prompt and ordered skill packages produced by explicit skill prefixes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpandedExplicitSkills {
+    /// User request after removing all recognized leading skill tokens.
+    pub prompt: String,
+    /// Selected skills in first-seen order, deduplicated by canonical name.
+    pub skills: Vec<ExplicitSkillSelection>,
+}
+
+/// Parse consecutive leading `/skill` or `@skill` tokens from `input`.
+///
+/// Every consecutive marker token must resolve to a loaded skill. Unknown tokens leave the input
+/// untouched by returning `None`, preserving ordinary slash-prefixed prompts and configured slash
+/// command precedence.
+#[must_use]
+pub fn expand_explicit_skills(
+    registry: &SkillRegistry,
+    input: &str,
+) -> Option<ExpandedExplicitSkills> {
+    let packages = registry.packages();
+    let mut rest = input.trim();
+    let mut skills = Vec::new();
+    let mut selected = BTreeSet::new();
+
+    while let Some(marker) = rest.chars().next().filter(|ch| matches!(ch, '/' | '@')) {
+        let token_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let token = &rest[marker.len_utf8()..token_end];
+        if !valid_command_name(token) || (marker == '/' && reserved_explicit_slash_name(token)) {
+            return None;
+        }
+        let package = packages
+            .iter()
+            .find(|package| package.name == token)
+            .or_else(|| {
+                packages
+                    .iter()
+                    .find(|package| package.name.eq_ignore_ascii_case(token))
+            })?
+            .clone();
+        if selected.insert(package.name.clone()) {
+            skills.push(ExplicitSkillSelection {
+                invoked_name: token.to_string(),
+                package,
+            });
+        }
+        rest = rest[token_end..].trim_start();
+    }
+
+    (!skills.is_empty()).then(|| ExpandedExplicitSkills {
+        prompt: rest.trim_end().to_string(),
+        skills,
+    })
+}
+
+fn reserved_explicit_slash_name(name: &str) -> bool {
+    matches!(
+        normalize_command_name(name).as_str(),
+        "help"
+            | "config"
+            | "loop"
+            | "tasks"
+            | "session"
+            | "dump"
+            | "load"
+            | "clear"
+            | "cost"
+            | "exit"
+            | "model"
+            | "paste-image"
+            | "goal"
+            | "display"
+    )
 }
 
 /// Expand `input` when it invokes a configured slash command.
@@ -170,5 +254,71 @@ mod tests {
         let commands = BTreeMap::new();
         assert!(expand_slash_command(&commands, "hello").is_none());
         assert!(expand_slash_command(&commands, "/missing args").is_none());
+    }
+
+    fn skill(name: &str) -> SkillPackage {
+        SkillPackage {
+            name: name.to_string(),
+            description: format!("Use {name}"),
+            path: format!("/skills/{name}/SKILL.md"),
+            body: Some(format!("# {name}")),
+            metadata: serde_json::Map::default(),
+        }
+    }
+
+    #[test]
+    fn expands_multiple_explicit_skills_in_user_order() {
+        let mut registry = SkillRegistry::new();
+        registry.insert(skill("lark-cli"));
+        registry.insert(skill("building-agent"));
+
+        let expanded =
+            expand_explicit_skills(&registry, "/lark-cli @building-agent create an agent").unwrap();
+
+        assert_eq!(expanded.prompt, "create an agent");
+        assert_eq!(
+            expanded
+                .skills
+                .iter()
+                .map(|skill| skill.package.name.as_str())
+                .collect::<Vec<_>>(),
+            ["lark-cli", "building-agent"]
+        );
+    }
+
+    #[test]
+    fn explicit_skills_are_case_insensitive_and_deduplicated() {
+        let mut registry = SkillRegistry::new();
+        registry.insert(skill("lark-cli"));
+
+        let expanded =
+            expand_explicit_skills(&registry, "/LARK-CLI @lark-cli send a message").unwrap();
+
+        assert_eq!(expanded.prompt, "send a message");
+        assert_eq!(expanded.skills.len(), 1);
+        assert_eq!(expanded.skills[0].invoked_name, "LARK-CLI");
+    }
+
+    #[test]
+    fn unknown_consecutive_skill_token_leaves_input_untouched() {
+        let mut registry = SkillRegistry::new();
+        registry.insert(skill("lark-cli"));
+
+        assert!(expand_explicit_skills(&registry, "/lark-cli /missing send a message").is_none());
+        assert!(expand_explicit_skills(&registry, "/missing send a message").is_none());
+    }
+
+    #[test]
+    fn reserved_slash_names_win_but_at_alias_can_activate_same_named_skill() {
+        let mut registry = SkillRegistry::new();
+        registry.insert(skill("help"));
+
+        assert!(expand_explicit_skills(&registry, "/help explain").is_none());
+        assert_eq!(
+            expand_explicit_skills(&registry, "@help explain")
+                .unwrap()
+                .prompt,
+            "explain"
+        );
     }
 }

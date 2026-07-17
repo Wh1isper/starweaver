@@ -291,7 +291,7 @@ starweaver-cli auth logout codex
 
 ## Tools, MCP, skills, and subagents
 
-Built-in and config-backed profiles attach the default first-party CLI tool catalog: filesystem, shell, context management, host I/O, task operations, skills, and CLI control-flow probes. CLI tools execute without approval by default; add explicit tool names, toolset ids such as `context` or `host_io`, or `"*"` to opt back into approval gating:
+Built-in and config-backed profiles attach the default first-party CLI tool catalog: filesystem, shell, context management, host I/O, task operations, clarifying user input, skills, and CLI control-flow probes. CLI tools execute without approval by default; add explicit tool names, toolset ids such as `context` or `host_io`, or `"*"` to opt back into approval gating. `ask_user_question` is an exception: it always waits for user input because waiting is the tool's purpose, not an optional security policy.
 
 ```toml
 [tools]
@@ -338,6 +338,13 @@ starweaver-cli mcp doctor
 ```
 
 Skills are loaded from `SKILL.md` packages in configured directories and exposed through the `skills` toolset. By default, the CLI checks `~/.starweaver/skills`, shared Agent Skills packages in `~/.agents/skills`, and project `.starweaver/skills`. These directories are also added to the local environment's allowed paths so model-facing skill paths can be opened with filesystem tools. Subagent markdown files are loaded from configured directories and registered in the CLI AgentSpec registry.
+
+Explicitly activate loaded skills by placing consecutive `/skill-name` or `@skill-name` tokens at the start of a prompt. Multiple skills preserve user order; the first is treated as the primary workflow and later skills as supporting workflows. Their complete `SKILL.md` bodies are injected as system guidance for that run, while the user request stored in durable input excludes the prefixes. Built-in and configured slash commands take precedence over a same-named skill. An unknown marker token leaves the prompt unchanged.
+
+```bash
+starweaver-cli -p "/lark-cli /building-agent create an agent"
+starweaver-cli -p "@lark-cli @building-agent create an agent"
+```
 
 ```toml
 [skills]
@@ -457,6 +464,8 @@ Interactive slash commands:
 | `/session <id>`    | Reload an exact session id or unique id prefix      |
 | `/goal <task>`     | Run toward a verified goal                          |
 | `/paste-image`     | Attach image data from the system clipboard         |
+| `/<skill> [task]`  | Explicitly activate a loaded skill; prefixes chain  |
+| `@<skill> [task]`  | Alias for explicit skill activation                 |
 | `!<command>`       | Run a shell command and show output inline          |
 
 `/clear` succeeds only after the current-session pointer is cleared. It then removes the transcript, prompt recall, attachments, task/subagent panels, HITL state, goal state, and other conversation-scoped UI state. It preserves the selected profile, display policy, process-level provider affinity, and cumulative TUI usage shown by `/cost`. Background subagents remain owned by the detached durable session's supervisor scope, so their completions cannot wake the fresh context; reloading that session can resume its pending delivery.
@@ -485,7 +494,7 @@ The `/model` selector is embedded in the TUI. Use `Up` / `Down` to move, `Enter`
 
 The `/session` selector uses the same embedded picker style. Use `/session` to view recent local sessions, move with `Up` / `Down`, press `Enter` to reload the highlighted session, or `Esc` to cancel. Use `/session <id>` to reload directly; exact ids and unique id prefixes are supported. Reloading replaces the TUI transcript with persisted display replay, updates the current session pointer, restores the session profile when available, and the next message continues from the loaded history. Session selection is only allowed while no run is active.
 
-Config-backed slash commands are declared in global or project `config.toml` under `[commands.<name>]`. They work in the TUI, headless `run`/`-p`, and JSON-RPC prompt runs. Invoking `/name optional instruction` expands the configured prompt before submission. In the TUI, the transcript shows the expanded prompt directly as the user message, matching the actual prompt sent to the agent. If instruction text is provided and the prompt has no `{instruction}`, `{{instruction}}`, `{args}`, or `{{args}}` placeholder, Starweaver appends `User instruction: <instruction>`. Built-in slash commands such as `/help`, `/model`, `/session`, `/goal`, `/paste-image`, `/clear`, and `/cost` remain reserved and cannot be overridden.
+Config-backed slash commands are declared in global or project `config.toml` under `[commands.<name>]`. They work in the TUI, headless `run`/`-p`, and JSON-RPC prompt runs. Invoking `/name optional instruction` expands the configured prompt before submission. In the TUI, the transcript shows the expanded prompt directly as the user message, matching the actual prompt sent to the agent. If instruction text is provided and the prompt has no `{instruction}`, `{{instruction}}`, `{args}`, or `{{args}}` placeholder, Starweaver appends `User instruction: <instruction>`. Built-in slash commands such as `/help`, `/model`, `/session`, `/goal`, `/paste-image`, `/clear`, and `/cost` remain reserved and cannot be overridden. Config-backed commands are resolved before explicit skill prefixes, so a command and skill sharing a name invoke the command.
 
 ```toml
 [commands.review]
@@ -523,11 +532,12 @@ Interactive keys:
 | `Esc`                    | Enter selection mode, or refresh pending HITL state   |
 | `A` / `Y`                | Approve the displayed durable approval                |
 | `R` / `N`                | Reject the displayed durable approval                 |
+| Type an answer + `Enter` | Answer the displayed clarifying-question request      |
 | `Ctrl-C`                 | Interrupt activity, clear a draft, or exit when empty |
 | `Ctrl-D`                 | Exit only while idle with an empty composer           |
 | `Ctrl-U`                 | Clear the composer                                    |
 
-When a run waits for approval, the TUI binds the panel to the persisted `ApprovalRecord`, displays the approval id, tool identity, structured fields, and a bounded JSON request preview, then accepts only unmodified `A`/`Y` or `R`/`N`. `Esc` reloads the session and reconciles durable state; its refresh target remains available after a transient load failure, including deferred-only waits without an approval panel. The service always verifies the durable session's active run and restore lineage before accepting a prompt. An unresolved `Waiting` source or an active continuation from that source blocks ordinary admission. A prompt submitted during a state-change race remains queued: it starts after external reconciliation, or retries after a pre-start continuation failure. Resolving the final record acquires an exclusive preflight `HitlResumeClaim` before allocating the continuation run, marks it started before model or tool execution, and atomically consumes the waiting source run with continuation evidence before any retained prompt starts. This prevents another TUI or headless client from publishing or executing a competing continuation. Deferred-only waits remain visible until their durable results are completed.
+When a run waits for approval, the TUI binds the panel to the persisted `ApprovalRecord` and displays the approval id, tool identity, structured fields, and a bounded JSON request preview. Ordinary approvals accept only unmodified `A`/`Y` or `R`/`N`. An `ask_user_question` request with `request.kind = "clarifying_questions"` instead renders the question text and suggested option labels; type a free-form answer in the composer and press Enter. The answer is persisted as the approval decision note and the durable continuation returns the original `questions` plus `response` to the model. `Esc` reloads the session and reconciles durable state; its refresh target remains available after a transient load failure, including deferred-only waits without an approval panel. The service always verifies the durable session's active run and restore lineage before accepting a prompt. An unresolved `Waiting` source or an active continuation from that source blocks ordinary admission. A prompt submitted during a state-change race remains queued: it starts after external reconciliation, or retries after a pre-start continuation failure. Resolving the final record acquires an exclusive preflight `HitlResumeClaim` before allocating the continuation run, marks it started before model or tool execution, and atomically consumes the waiting source run with continuation evidence before any retained prompt starts. This prevents another TUI or headless client from publishing or executing a competing continuation. Deferred-only waits remain visible until their durable results are completed.
 
 The retained snapshot renderer remains available for scripts, tests, and display-message replay. It uses the same replay source as headless JSONL and session replay. Interactive render-mode projection applies to live TUI sessions; snapshot output replays stored display messages directly.
 
@@ -576,6 +586,16 @@ starweaver-cli resume --session <session-id> --prompt "continue after review"
 starweaver-rpc stdio
 starweaver-rpc http --host 127.0.0.1 --port 8765
 ```
+
+RPC disables `ask_user_question` by default. Enable it only for a frontend that supports both durable HITL handling and dedicated clarifying-question rendering/input:
+
+```toml
+[client_capabilities]
+hitl = true
+clarifying_questions = true
+```
+
+`clarifying_questions = true` without `hitl = true` is rejected. When both are true, RPC adds the opt-in `user_input` toolset to every materialized profile; this declaration is a host/client compatibility promise, not a model permission shortcut.
 
 The default `stdio` transport is newline-delimited JSON-RPC over stdin/stdout. It supports responses and live notifications on stdout, with diagnostics on stderr. JSON-RPC frame parsing, standard request validation, error envelopes, replay cursor parsing, and stream payload projection live in `starweaver-rpc-core` so the standalone RPC process and CLI adapter share the same protocol edge.
 

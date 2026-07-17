@@ -7,9 +7,9 @@ use starweaver_core::Metadata;
 use starweaver_model::ToolDefinition;
 
 use crate::{
-    DynTool, DynToolset, Tool, ToolApprovalState, ToolContext, ToolError, ToolInstruction,
-    ToolResult, ToolUserInputPreprocessResult, Toolset, ToolsetLifecycleError,
-    ToolsetLifecyclePolicy, ToolsetLifecycleReport, ToolsetPreparation,
+    DynTool, DynToolset, TOOL_METADATA_SELF_MANAGED_HITL_KEY, Tool, ToolApprovalState, ToolContext,
+    ToolError, ToolInstruction, ToolResult, ToolUserInputPreprocessResult, Toolset,
+    ToolsetLifecycleError, ToolsetLifecyclePolicy, ToolsetLifecycleReport, ToolsetPreparation,
 };
 
 /// Toolset wrapper that marks and gates tools through approval control flow.
@@ -172,6 +172,13 @@ struct ApprovalRequiredTool {
 impl ApprovalRequiredTool {
     fn requires_approval(&self) -> bool {
         let metadata = self.inner.metadata();
+        if metadata
+            .get(TOOL_METADATA_SELF_MANAGED_HITL_KEY)
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
+            return false;
+        }
         self.approval.contains("*")
             || self.approval.contains(self.inner.name())
             || self.approval.contains(&self.toolset_key)
