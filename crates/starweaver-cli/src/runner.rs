@@ -17,7 +17,9 @@ use starweaver_agent::{
 };
 use starweaver_context::{AgentContext, BusMessage};
 use starweaver_core::{CancellationToken, SessionId};
-use starweaver_environment::{DynEnvironmentProvider, DynProcessShellProvider};
+use starweaver_environment::{
+    DynEnvironmentProvider, DynProcessShellProvider, EnvironmentError, EnvironmentState,
+};
 use starweaver_model::{
     ContentPart, FinishReason, INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_METADATA,
     ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart, ModelSettings,
@@ -292,9 +294,7 @@ pub fn execute_agent_session_with_host(
         supervisor.end_parent_run(&run.run_id);
     }
     let run_outcome = run_outcome?;
-    let environment_state = runtime
-        .block_on(environment.export_state())
-        .map_err(|error| CliError::Run(error.to_string()))?;
+    let environment_state = runtime.block_on(environment.export_state());
     let (output, raw_records, projection, saved_interrupted_partial, failure_error) =
         match run_outcome {
             SessionRunOutcome::Completed(stream) => {
@@ -346,6 +346,7 @@ pub fn execute_agent_session_with_host(
             }
         };
     let mut state = session.export_full_state();
+    let environment_state = preserve_environment_export_evidence(&mut state, environment_state);
     state
         .metadata
         .insert("cli.run_id".to_string(), json!(run.run_id.as_str()));
@@ -377,7 +378,7 @@ pub fn execute_agent_session_with_host(
     }
     let artifacts = RunArtifacts {
         state,
-        environment_state: Some(environment_state),
+        environment_state,
         raw_records,
         display_messages: projection.messages,
         display_snapshot: projection.snapshot,
@@ -386,6 +387,25 @@ pub fn execute_agent_session_with_host(
         status: projection.status,
     };
     Ok(CliRunExecution { output, artifacts })
+}
+
+fn preserve_environment_export_evidence(
+    state: &mut ResumableState,
+    environment_state: Result<EnvironmentState, EnvironmentError>,
+) -> Option<EnvironmentState> {
+    match environment_state {
+        Ok(environment_state) => Some(environment_state),
+        Err(error) => {
+            state
+                .metadata
+                .insert("cli.environment_export_failed".to_string(), json!(true));
+            state.metadata.insert(
+                "cli.environment_export_error".to_string(),
+                json!(error.to_string()),
+            );
+            None
+        }
+    }
 }
 
 enum SessionRunOutcome {
@@ -830,7 +850,9 @@ mod tests {
         time::Duration,
     };
 
-    use starweaver_agent::{AgentBuilder, AgentSession, FunctionModel, FunctionModelInfo};
+    use starweaver_agent::{
+        AgentBuilder, AgentSession, FunctionModel, FunctionModelInfo, ResumableState,
+    };
     use starweaver_context::AgentContext;
     use starweaver_core::{CancellationToken, ConversationId, RunId, SessionId};
     use starweaver_model::{
@@ -849,10 +871,36 @@ mod tests {
         CLI_GUIDANCE_KEY_METADATA, CLI_GUIDANCE_ORIGIN, CliGuidanceAdapter,
         CliPromptContentAdapter, CliRunPolicy, CliSteeringMessage, SessionRunOutcome,
         cancelled_display_projection, cli_guidance_key, interrupted_partial_response,
-        run_session_stream, start_steering_collector, sync_run_execution_identity,
-        sync_run_request_metadata, sync_run_session_affinity,
+        preserve_environment_export_evidence, run_session_stream, start_steering_collector,
+        sync_run_execution_identity, sync_run_request_metadata, sync_run_session_affinity,
     };
     use crate::{args::HitlPolicy, prompt_input::PromptAttachment};
+
+    #[test]
+    fn environment_export_failure_is_recorded_without_discarding_session_state() {
+        let mut state = ResumableState::default();
+        state
+            .message_history
+            .push(ModelMessage::Request(ModelRequest::user_text(
+                "retained prompt",
+            )));
+
+        let environment_state = preserve_environment_export_evidence(
+            &mut state,
+            Err(starweaver_environment::EnvironmentError::Provider(
+                "snapshot unavailable".to_string(),
+            )),
+        );
+
+        assert!(environment_state.is_none());
+        assert_eq!(state.message_history.len(), 1);
+        assert_eq!(state.metadata["cli.environment_export_failed"], true);
+        assert!(
+            state.metadata["cli.environment_export_error"]
+                .as_str()
+                .is_some_and(|error| error.contains("snapshot unavailable"))
+        );
+    }
 
     #[test]
     fn sync_run_execution_identity_adopts_durable_conversation() {

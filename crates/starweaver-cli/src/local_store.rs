@@ -281,14 +281,16 @@ impl LocalStore {
             .commit_run_evidence(commit)
             .map_err(storage_error)?;
 
-        // Compatibility mirrors are written only after the canonical SQLite evidence commit.
-        // No durable record points at these mutable files, so a mirror failure cannot expose a
-        // partially committed run or invalidate the previous database revision.
-        self.write_run_blob(run, "raw.stream.json", &artifacts.raw_records)?;
-        self.write_run_blob(run, "display.compact.json", &display_snapshot)?;
-        self.write_run_blob(run, "context.state.json", &artifacts.state)?;
+        // Compatibility mirrors are best-effort and are written only after the canonical SQLite
+        // evidence commit. A mirror failure must not turn a durably completed run into a reported
+        // failure: no canonical record points at these mutable files, and search already treats
+        // them as optional compatibility evidence.
+        let _ = self.write_run_blob(run, "raw.stream.json", &artifacts.raw_records);
+        let _ = self.write_run_blob(run, "display.compact.json", &display_snapshot);
+        let _ = self.write_run_blob(run, "context.state.json", &artifacts.state);
         if let Some(environment_state) = artifacts.environment_state.as_ref() {
-            self.write_run_blob(run, "environment.state.json", &environment_state.to_json())?;
+            let _ =
+                self.write_run_blob(run, "environment.state.json", &environment_state.to_json());
         }
         Ok(artifacts.display_messages)
     }
@@ -511,6 +513,13 @@ impl LocalStore {
         runtime
             .block_on(provider.search(&self.search_scope, query))
             .map_err(search_error)
+    }
+
+    /// List canonical run records in session sequence order.
+    pub fn list_run_records(&self, session_id: &str) -> CliResult<Vec<RunRecord>> {
+        self.storage
+            .list_runs(&SessionId::from_string(session_id))
+            .map_err(storage_error)
     }
 
     /// List run summaries in sequence order, retaining the newest `limit` runs.

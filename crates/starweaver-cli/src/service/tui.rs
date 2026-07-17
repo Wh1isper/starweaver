@@ -23,10 +23,11 @@ use crate::{
     profiles::{ProfileSummary, list_config_model_profiles, list_profiles},
     prompt_input::PromptInput,
     runner::CliSteeringMessage,
-    runtime_coordinator::{CliRuntimeCoordinator, RunStreamEvent},
+    runtime_coordinator::{CliRuntimeCoordinator, RunStatusItem, RunStreamEvent},
 };
 
-struct CompletedPromptRun {
+#[derive(Clone, Debug)]
+struct PromptRunOutcome {
     session_id: String,
     run_id: String,
     status: String,
@@ -65,7 +66,8 @@ impl Drop for TuiRuntimeShutdownGuard {
 
 enum TuiRunMessage {
     Stream(Box<AgentStreamRecord>),
-    Completed(CompletedPromptRun),
+    Completed(PromptRunOutcome),
+    Waiting(PromptRunOutcome),
     Failed(String),
 }
 
@@ -121,14 +123,40 @@ impl CliService {
         run_id: Option<&str>,
         after: Option<usize>,
     ) -> CliResult<crate::tui::TuiSnapshot> {
-        let messages = self.store()?.replay_display(session_id, run_id, after)?;
+        let run_parts = {
+            let store = self.store()?;
+            if let Some(run_id) = run_id {
+                let run = store.load_run(session_id, run_id)?;
+                let messages = store.replay_display(session_id, Some(run_id), after)?;
+                vec![(run_prompt_text(&run), messages)]
+            } else {
+                let runs = store.list_run_records(session_id)?;
+                let mut global_sequence = 0_usize;
+                let mut parts = Vec::with_capacity(runs.len());
+                for run in runs {
+                    let messages = store
+                        .replay_display(session_id, Some(run.run_id.as_str()), None)?
+                        .into_iter()
+                        .filter(|_| {
+                            let include = after.is_none_or(|after| global_sequence > after);
+                            global_sequence = global_sequence.saturating_add(1);
+                            include
+                        })
+                        .collect::<Vec<_>>();
+                    if after.is_none() || !messages.is_empty() {
+                        parts.push((run_prompt_text(&run), messages));
+                    }
+                }
+                parts
+            }
+        };
         let approvals = self.store()?.list_approvals(Some(session_id), run_id)?;
         let deferred = self
             .store()?
             .list_deferred_tools(Some(session_id), run_id)?;
-        Ok(crate::tui::TuiSnapshot::from_parts(
+        Ok(crate::tui::TuiSnapshot::from_run_parts(
             session_id.to_string(),
-            messages,
+            run_parts,
             &approvals,
             &deferred,
         ))
@@ -139,16 +167,29 @@ impl CliService {
         state: &mut crate::tui::InteractiveTuiState,
         session_id_or_prefix: &str,
     ) -> CliResult<()> {
+        self.restore_tui_session(state, session_id_or_prefix, None, None, true)
+    }
+
+    pub(super) fn restore_tui_session(
+        &mut self,
+        state: &mut crate::tui::InteractiveTuiState,
+        session_id_or_prefix: &str,
+        run_id: Option<&str>,
+        after: Option<usize>,
+        announce: bool,
+    ) -> CliResult<()> {
         let session_id = self.store()?.resolve_session_prefix(session_id_or_prefix)?;
         let session = self.store()?.load_session(&session_id)?;
-        let snapshot = self.tui_snapshot_for_session(&session_id, None, None)?;
+        let snapshot = self.tui_snapshot_for_session(&session_id, run_id, after)?;
         state.set_snapshot(&snapshot);
         apply_tui_session_profile(&self.config, state, session.profile.as_deref());
         write_current_session(&self.config, &session_id)?;
         state.set_session_choices(self.tui_session_choices(50)?);
-        state.push_transcript_notice(format!(
-            "[SYS] Loaded session {session_id}. Next message will continue from loaded history."
-        ));
+        if announce {
+            state.push_transcript_notice(format!(
+                "[SYS] Loaded session {session_id}. Next message will continue from loaded history."
+            ));
+        }
         Ok(())
     }
 
@@ -202,10 +243,14 @@ impl CliService {
             selected_choice.map_or_else(|| selected_profile.clone(), model_choice_label),
         );
         state.set_context_window(selected_choice.and_then(|choice| choice.context_window));
-        if command.session.is_some()
-            && let Some(snapshot) = self.tui_snapshot_state(command)?
-        {
-            state.set_snapshot(&snapshot);
+        if let Some(session_id_or_prefix) = command.session.as_deref() {
+            self.restore_tui_session(
+                &mut state,
+                session_id_or_prefix,
+                command.run.as_deref(),
+                command.after,
+                false,
+            )?;
         }
         let mut tui = crate::tui::InteractiveTui::enter()?;
         let mut coordinator_config = self.config.clone();
@@ -239,6 +284,29 @@ impl CliService {
                     Ok(TuiRunMessage::Stream(record)) => {
                         state.apply_stream_record(&record);
                         dirty = true;
+                    }
+                    Ok(TuiRunMessage::Waiting(waiting)) => {
+                        state.wait_run(Some(waiting.session_id.clone()));
+                        let waiting_counts = self
+                            .tui_snapshot_for_session(
+                                &waiting.session_id,
+                                Some(&waiting.run_id),
+                                None,
+                            )
+                            .map(|snapshot| {
+                                format!(
+                                    " pending_approvals={} pending_deferred={}",
+                                    snapshot.pending_approvals, snapshot.pending_deferred
+                                )
+                            })
+                            .unwrap_or_default();
+                        state.push_run_status_line(format!(
+                            "Run waiting: {} status=waiting{}",
+                            waiting.run_id, waiting_counts
+                        ));
+                        active_run = None;
+                        dirty = true;
+                        break;
                     }
                     Ok(TuiRunMessage::Completed(completed)) => {
                         let was_cancelled = completed.status == "cancelled";
@@ -586,16 +654,12 @@ fn spawn_tui_run(
                         break;
                     }
                 }
-                RunStreamEvent::Status(status) if status_is_terminal(&status.status) => {
-                    let _ = ui_sender.send(TuiRunMessage::Completed(CompletedPromptRun {
-                        session_id: status.session_id,
-                        run_id: status.run_id,
-                        status: status.status,
-                        error: status.error,
-                    }));
-                    break;
+                RunStreamEvent::Status(status) => {
+                    if let Some(message) = tui_run_outcome_message(status) {
+                        let _ = ui_sender.send(message);
+                        break;
+                    }
                 }
-                RunStreamEvent::Status(_) => {}
                 RunStreamEvent::StartFailed(error) => {
                     let _ = ui_sender.send(TuiRunMessage::Failed(error));
                     break;
@@ -712,11 +776,21 @@ fn tui_envd_profile_auth_token(
     Ok(token)
 }
 
-fn status_is_terminal(status: &str) -> bool {
-    matches!(status, "completed" | "failed" | "cancelled")
+fn tui_run_outcome_message(status: RunStatusItem) -> Option<TuiRunMessage> {
+    let outcome = PromptRunOutcome {
+        session_id: status.session_id,
+        run_id: status.run_id,
+        status: status.status,
+        error: status.error,
+    };
+    match outcome.status.as_str() {
+        "waiting" => Some(TuiRunMessage::Waiting(outcome)),
+        "completed" | "failed" | "cancelled" => Some(TuiRunMessage::Completed(outcome)),
+        _ => None,
+    }
 }
 
-fn terminal_run_error_message(completed: &CompletedPromptRun) -> String {
+fn terminal_run_error_message(completed: &PromptRunOutcome) -> String {
     completed
         .error
         .as_deref()
@@ -726,7 +800,7 @@ fn terminal_run_error_message(completed: &CompletedPromptRun) -> String {
         .to_string()
 }
 
-fn terminal_run_status_line(completed: &CompletedPromptRun) -> String {
+fn terminal_run_status_line(completed: &PromptRunOutcome) -> String {
     match completed.status.as_str() {
         "failed" => format!(
             "Run failed: {} error={}",
@@ -758,6 +832,19 @@ fn model_choice_from_profile(profile: ProfileSummary) -> crate::tui::ModelChoice
         context_window: profile.context_window,
         source: profile.source,
     }
+}
+
+fn run_prompt_text(run: &starweaver_session::RunRecord) -> Option<String> {
+    let text = run
+        .input
+        .iter()
+        .filter_map(|part| match part {
+            starweaver_session::InputPart::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(text)
 }
 
 fn session_choices_from_summaries(sessions: Vec<SessionSummary>) -> Vec<crate::tui::SessionChoice> {
@@ -849,6 +936,8 @@ mod tests {
     use super::*;
     use crate::{ConfigResolver, args};
     use starweaver_rpc_core::EnvironmentAttachmentAccessMode;
+    use starweaver_session::RunStatus;
+    use starweaver_stream::{DisplayMessage, DisplayMessageKind, ReplaySnapshot};
 
     fn config_with_envd_profiles(content: &str) -> CliConfig {
         let temp = tempfile::tempdir().unwrap();
@@ -859,6 +948,87 @@ mod tests {
         ConfigResolver::for_tests(temp.path())
             .resolve(&cli)
             .unwrap()
+    }
+
+    #[test]
+    fn session_snapshot_keeps_run_order_and_merges_durable_prompts() {
+        let config = config_with_envd_profiles("");
+        let mut service = CliService::open(config).unwrap();
+        let session_id = {
+            let store = service.store().unwrap();
+            let session = store
+                .create_session("general", Some("Replay order".to_string()))
+                .unwrap();
+            let session_id = session.session_id.as_str().to_string();
+            for (prompt, deltas) in [
+                ("first prompt", ["first-0|", "first-1|"]),
+                ("second prompt", ["second-0", ""]),
+            ] {
+                let mut run = store
+                    .append_run(&session_id, prompt.to_string(), None, "general")
+                    .unwrap();
+                let messages = deltas
+                    .into_iter()
+                    .filter(|delta| !delta.is_empty())
+                    .enumerate()
+                    .map(|(sequence, delta)| {
+                        DisplayMessage::new(
+                            sequence,
+                            run.session_id.clone(),
+                            run.run_id.clone(),
+                            DisplayMessageKind::AssistantTextDelta,
+                        )
+                        .with_payload(serde_json::json!({"delta": delta}))
+                    })
+                    .collect::<Vec<_>>();
+                store
+                    .complete_run(
+                        &mut run,
+                        "done".to_string(),
+                        crate::local_store::RunArtifacts {
+                            state: starweaver_context::ResumableState::default(),
+                            environment_state: None,
+                            raw_records: Vec::new(),
+                            display_messages: messages,
+                            display_snapshot: ReplaySnapshot::default(),
+                            approvals: Vec::new(),
+                            deferred_tools: Vec::new(),
+                            status: RunStatus::Completed,
+                        },
+                    )
+                    .unwrap();
+            }
+            session_id
+        };
+
+        let snapshot = service
+            .tui_snapshot_for_session(&session_id, None, None)
+            .unwrap();
+
+        assert_eq!(snapshot.assistant_text, "first-0|first-1|second-0");
+        assert_eq!(snapshot.transcript_lines[0], "User: first prompt");
+        assert!(
+            snapshot
+                .transcript_lines
+                .iter()
+                .any(|line| line == "User: second prompt")
+        );
+        let first_answer = snapshot
+            .transcript_lines
+            .iter()
+            .position(|line| line.contains("first-0|first-1|"))
+            .unwrap();
+        let second_prompt = snapshot
+            .transcript_lines
+            .iter()
+            .position(|line| line == "User: second prompt")
+            .unwrap();
+        let second_answer = snapshot
+            .transcript_lines
+            .iter()
+            .position(|line| line.contains("second-0"))
+            .unwrap();
+        assert!(first_answer < second_prompt && second_prompt < second_answer);
     }
 
     #[test]
@@ -942,8 +1112,30 @@ mod tests {
     }
 
     #[test]
+    fn waiting_status_has_a_dedicated_tui_outcome() {
+        let message = tui_run_outcome_message(RunStatusItem {
+            session_id: "session_waiting".to_string(),
+            run_id: "run_waiting".to_string(),
+            status: "waiting".to_string(),
+            error: None,
+        });
+
+        assert!(matches!(
+            message,
+            Some(TuiRunMessage::Waiting(PromptRunOutcome {
+                session_id,
+                run_id,
+                status,
+                ..
+            })) if session_id == "session_waiting"
+                && run_id == "run_waiting"
+                && status == "waiting"
+        ));
+    }
+
+    #[test]
     fn terminal_run_status_line_includes_failed_error_detail() {
-        let completed = CompletedPromptRun {
+        let completed = PromptRunOutcome {
             session_id: "session_test".to_string(),
             run_id: "run_test".to_string(),
             status: "failed".to_string(),

@@ -370,6 +370,65 @@ fn failed_run_complete_persists_restore_state_for_continuation() {
 }
 
 #[test]
+fn compatibility_mirror_failure_does_not_reclassify_canonical_completion() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = test_config(temp.path());
+    config.file_store_path = temp.path().join("compatibility-mirror");
+    let mirror_root = config.file_store_path.clone();
+    let mut store = LocalStore::open(&config).unwrap();
+    let session = store
+        .create_session("general", Some("Mirror failure".to_string()))
+        .unwrap();
+    let session_id = session.session_id.as_str().to_string();
+    let mut run = store
+        .append_run(
+            &session_id,
+            "finish canonically".to_string(),
+            None,
+            "general",
+        )
+        .unwrap();
+    let run_id = run.run_id.clone();
+    let display = vec![DisplayMessage::new(
+        0,
+        run.session_id.clone(),
+        run_id.clone(),
+        DisplayMessageKind::RunCompleted,
+    )];
+
+    std::fs::remove_dir_all(&mirror_root).unwrap();
+    std::fs::write(&mirror_root, b"blocks compatibility mirror directories").unwrap();
+
+    let returned = store
+        .complete_run(
+            &mut run,
+            "done".to_string(),
+            crate::local_store::RunArtifacts {
+                state: starweaver_context::ResumableState::default(),
+                environment_state: None,
+                raw_records: Vec::new(),
+                display_messages: display,
+                display_snapshot: starweaver_stream::ReplaySnapshot::default(),
+                approvals: Vec::new(),
+                deferred_tools: Vec::new(),
+                status: RunStatus::Completed,
+            },
+        )
+        .expect("canonical completion must not fail with its optional mirror");
+
+    assert_eq!(returned.len(), 1);
+    let saved = store.load_run(&session_id, run_id.as_str()).unwrap();
+    assert_eq!(saved.status, RunStatus::Completed);
+    assert_eq!(
+        store
+            .replay_display(&session_id, Some(run_id.as_str()), None)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn complete_run_stores_source_attributed_display_messages_under_parent_run() {
     let temp = tempfile::tempdir().unwrap();
     let config = test_config(temp.path());
@@ -699,6 +758,7 @@ fn tui_model_choices_are_empty_without_configured_models() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn tui_session_reload_resolves_prefix_restores_snapshot_and_current_pointer() {
     let temp = tempfile::tempdir().unwrap();
     let cli = crate::args::parse(["starweaver-cli".to_string()]).unwrap();
@@ -776,10 +836,30 @@ fn tui_session_reload_resolves_prefix_restores_snapshot_and_current_pointer() {
             .any(|line| line.contains("hello from reload"))
     );
     assert!(
+        state.body.iter().any(|line| line == "User: remember this"),
+        "reloaded transcript should include durable run input"
+    );
+    assert!(
         state
             .body
             .iter()
             .any(|line| line.contains("Loaded session"))
+    );
+
+    let mut startup_state = crate::tui::InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    startup_state.set_profile("general", "General");
+    service
+        .restore_tui_session(&mut startup_state, &session_id[..16], None, None, false)
+        .unwrap();
+    assert_eq!(startup_state.profile, state.profile);
+    assert_eq!(startup_state.model, state.model);
+    assert_eq!(startup_state.session_id, state.session_id);
+    assert!(
+        !startup_state
+            .body
+            .iter()
+            .any(|line| line.contains("Loaded session")),
+        "startup restore should share profile semantics without adding reload-only notice"
     );
     assert_eq!(
         read_current_session(&config).unwrap().as_deref(),

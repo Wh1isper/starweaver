@@ -578,6 +578,25 @@ impl InteractiveTuiState {
         self.active_model_segment = None;
     }
 
+    /// Mark a run as durably waiting while retaining live HITL and deferred-tool context.
+    pub fn wait_run(&mut self, session_id: Option<String>) {
+        if let Some(session_id) = session_id {
+            self.session_id = Some(session_id);
+        }
+        self.running = false;
+        self.cancel_requested = false;
+        self.status = "WAITING".to_string();
+        self.phase = "waiting".to_string();
+        self.streaming_parts.clear();
+        self.streaming_tool_calls.clear();
+        self.pending_submission_display_prompt = None;
+        self.model_picker_open = false;
+        self.session_picker_open = false;
+        self.finish_current_model_item();
+        self.reproject_body();
+        self.finish_active_goal_without_runtime_event("waiting");
+    }
+
     /// Mark a run finished with durable ids.
     pub fn finish_run(&mut self, session_id: Option<String>) {
         if let Some(session_id) = session_id {

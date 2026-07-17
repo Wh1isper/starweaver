@@ -1767,6 +1767,14 @@ fn tool_duration_hitl_and_task_panels_render_runtime_metadata() {
     ));
     assert_eq!(state.status, "WAITING");
     assert!(state.pending_hitl().is_some());
+    state.wait_run(Some("session_waiting".to_string()));
+    assert_eq!(state.status, "WAITING");
+    assert_eq!(state.phase, "waiting");
+    assert_eq!(state.session_id.as_deref(), Some("session_waiting"));
+    assert!(
+        state.pending_hitl().is_some(),
+        "durable waiting must retain approval details"
+    );
     let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
     assert!(footer.contains("Tool Approval Required"));
     assert!(footer.contains("rm -rf target/tmp"));
@@ -4709,6 +4717,100 @@ fn fullscreen_composer_tracks_paste_images_and_steering_status() {
 }
 
 #[test]
+fn snapshot_preserves_canonical_order_across_run_local_sequences() {
+    let session_id = SessionId::from_string("session_multi_run");
+    let first_run = RunId::from_string("run_first");
+    let second_run = RunId::from_string("run_second");
+    let messages = vec![
+        DisplayMessage::new(
+            0,
+            session_id.clone(),
+            first_run.clone(),
+            DisplayMessageKind::AssistantTextDelta,
+        )
+        .with_payload(json!({"delta": "first-0|"})),
+        DisplayMessage::new(
+            1,
+            session_id.clone(),
+            first_run,
+            DisplayMessageKind::AssistantTextDelta,
+        )
+        .with_payload(json!({"delta": "first-1|"})),
+        DisplayMessage::new(
+            0,
+            session_id,
+            second_run,
+            DisplayMessageKind::AssistantTextDelta,
+        )
+        .with_payload(json!({"delta": "second-0"})),
+    ];
+
+    let snapshot = super::snapshot::TuiSnapshot::from_parts(
+        "session_multi_run".to_string(),
+        messages,
+        &[],
+        &[],
+    );
+
+    assert_eq!(snapshot.assistant_text, "first-0|first-1|second-0");
+    assert_eq!(
+        snapshot.transcript_lines,
+        [format!(
+            "{ASSISTANT_CONTENT_PREFIX}first-0|first-1|second-0"
+        )]
+    );
+}
+
+#[test]
+fn snapshot_run_parts_merge_historical_user_prompts() {
+    let session_id = SessionId::from_string("session_prompts");
+    let first_run = RunId::from_string("run_prompt_first");
+    let second_run = RunId::from_string("run_prompt_second");
+    let snapshot = super::snapshot::TuiSnapshot::from_run_parts(
+        "session_prompts".to_string(),
+        vec![
+            (
+                Some("first prompt".to_string()),
+                vec![
+                    DisplayMessage::new(
+                        0,
+                        session_id.clone(),
+                        first_run,
+                        DisplayMessageKind::AssistantTextDelta,
+                    )
+                    .with_payload(json!({"delta": "first answer"})),
+                ],
+            ),
+            (
+                Some("second\nprompt".to_string()),
+                vec![
+                    DisplayMessage::new(
+                        0,
+                        session_id,
+                        second_run,
+                        DisplayMessageKind::AssistantTextDelta,
+                    )
+                    .with_payload(json!({"delta": "second answer"})),
+                ],
+            ),
+        ],
+        &[],
+        &[],
+    );
+
+    assert_eq!(
+        snapshot.transcript_lines,
+        [
+            "User: first prompt".to_string(),
+            format!("{ASSISTANT_CONTENT_PREFIX}first answer"),
+            "User: second".to_string(),
+            "  prompt".to_string(),
+            format!("{ASSISTANT_CONTENT_PREFIX}second answer"),
+        ]
+    );
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn snapshot_from_parts_covers_status_and_pending_counts() {
     let session_id = SessionId::from_string("session_snapshot");
@@ -4748,7 +4850,7 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
     );
     waiting_deferred.status = ExecutionStatus::Waiting;
     let deferred = vec![completed_deferred, waiting_deferred];
-    let messages = vec![
+    let mut messages = vec![
         DisplayMessage::new(
             2,
             session_id.clone(),
@@ -4850,6 +4952,7 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
         ),
         DisplayMessage::new(13, session_id, run_id, DisplayMessageKind::RunCancelled),
     ];
+    messages.sort_by_key(|message| message.sequence);
     let snapshot = super::snapshot::TuiSnapshot::from_parts(
         "session_snapshot".to_string(),
         messages,
