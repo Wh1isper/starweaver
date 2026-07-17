@@ -255,6 +255,14 @@ fn render_status_bar_primary(state: &InteractiveTuiState, width: usize) -> Style
         format!(" {} ", state.input_mode_label()),
         SegmentStyle::mode_badge().merge(SegmentStyle::bold()),
     );
+    if let Some(notification) = state.input_notification() {
+        push_bounded_status_segment(
+            &mut line,
+            width,
+            format!("Notice: {notification}"),
+            SegmentStyle::status_warning().merge(SegmentStyle::bold()),
+        );
+    }
     push_bounded_status_segment(
         &mut line,
         width,
@@ -317,9 +325,10 @@ fn render_status_bar_secondary(state: &InteractiveTuiState, width: usize) -> Sty
         SegmentStyle::status_bar(),
     );
     if !state.is_at_bottom() {
-        push_status_segment(
+        push_bounded_status_segment(
             &mut line,
-            format!("Scrolled: {}", state.scroll_offset),
+            width,
+            format!("Paused at line {}", state.scroll_offset),
             SegmentStyle::status_warning(),
         );
     }
@@ -418,9 +427,14 @@ fn pick_status_candidate(width: usize, candidates: &[String]) -> String {
         .iter()
         .find(|candidate| visible_width(candidate) <= width)
         .cloned()
-        .unwrap_or_else(|| candidates.last().cloned().unwrap_or_default())
+        .unwrap_or_else(|| {
+            candidates
+                .last()
+                .map_or_else(String::new, |candidate| truncate_line(candidate, width))
+        })
 }
 
+#[allow(clippy::too_many_lines)]
 fn secondary_status_text(state: &InteractiveTuiState, width: usize) -> String {
     if state.pending_hitl().is_some() {
         return pick_status_candidate(
@@ -464,6 +478,19 @@ fn secondary_status_text(state: &InteractiveTuiState, width: usize) -> String {
                 "↑/↓ Select | Enter | Esc".to_string(),
             ],
         )
+    } else if !state.is_at_bottom() {
+        let unread = state.unread_output_lines;
+        pick_status_candidate(
+            width,
+            &[
+                format!(
+                    "Output paused | {unread} new line(s) | Ctrl+L: Follow latest | PageUp/PageDown/Mouse: Scroll"
+                ),
+                format!("Paused | {unread} new | Ctrl+L Follow | PgUp/PgDn Scroll"),
+                format!("Paused | {unread} new | Ctrl+L Follow"),
+                "Output paused | Ctrl+L Follow".to_string(),
+            ],
+        )
     } else if state.running {
         pick_status_candidate(
             width,
@@ -487,17 +514,21 @@ fn secondary_status_text(state: &InteractiveTuiState, width: usize) -> String {
             width,
             &[
                 format!(
-                    "{} | {} | Ctrl+V: Attach clipboard image | Up/Down: History | Alt+Up/Down: Input scroll | PageUp/PageDown/Mouse: Scroll | Esc: Select | Ctrl+C: Exit",
+                    "{} | {} | Ctrl+V: Attach clipboard image | Ctrl+P/N: History | Alt+Up/Down: Input scroll | PageUp/PageDown/Mouse: Scroll | Esc: Select | Ctrl+C: Exit",
                     state.enter_action_label(),
                     state.enter_toggle_label()
                 ),
                 format!(
-                    "{} | {} | Ctrl+V: Image | ↑/↓: History | PgUp/PgDn: Scroll | Esc: Select | Ctrl+C: Exit",
+                    "{} | {} | Ctrl+V: Image | Ctrl+P/N: History | PgUp/PgDn: Scroll | Esc: Select | Ctrl+C: Exit",
                     state.enter_action_label(),
                     state.enter_toggle_label()
                 ),
+                format!(
+                    "{} | Ctrl+V Image | Ctrl+P/N History | PgUp/PgDn Scroll | Esc Select | Ctrl+C Exit",
+                    state.enter_action_label()
+                ),
                 "Enter Send | PgUp/PgDn Scroll | Esc Select | Ctrl+C Exit".to_string(),
-                "Enter Send | Esc Select | Ctrl+C Exit".to_string(),
+                "Enter Send  Esc Select  Ctrl+C Exit".to_string(),
             ],
         )
     } else {
@@ -505,12 +536,12 @@ fn secondary_status_text(state: &InteractiveTuiState, width: usize) -> String {
             width,
             &[
                 format!(
-                    "{} | {} | Ctrl+V: Attach clipboard image | Up/Down: History | Alt+Up/Down: Input scroll | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
+                    "{} | {} | Ctrl+V: Attach clipboard image | Ctrl+P/N: History | Alt+Up/Down: Input scroll | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
                     state.enter_action_label(),
                     state.enter_toggle_label()
                 ),
                 format!(
-                    "{} | Ctrl+V: Image | ↑/↓: History | Alt+↑/↓: Input | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
+                    "{} | Ctrl+V: Image | Ctrl+P/N: History | Alt+↑/↓: Input | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
                     state.enter_action_label()
                 ),
                 "Enter Send | Ctrl+U: Clear | Esc Select | Ctrl+C Exit".to_string(),

@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use std::{collections::BTreeMap, path::Path};
+use std::{collections::BTreeMap, ffi::OsStr, path::Path};
 
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseEvent, MouseEventKind,
@@ -29,18 +29,19 @@ use super::{
         render_transcript_lines,
     },
     render::{
-        SegmentStyle, StyledLine, composer_cursor_column, composer_cursor_position_wrapped,
-        composer_input_width, input_tail_lines, input_viewport_lines, input_viewport_lines_wrapped,
-        input_visual_line_count, render_composer_lines, render_footer_lines,
-        render_live_history_lines, render_shortcut_overlay, visible_width,
+        SegmentStyle, StyledLine, color_output_enabled, composer_cursor_column,
+        composer_cursor_position_wrapped, composer_input_width, input_tail_lines,
+        input_viewport_lines, input_viewport_lines_wrapped, input_visual_line_count,
+        render_composer_lines, render_footer_lines, render_live_history_lines,
+        render_shortcut_overlay, truncate_line, visible_width,
     },
     state::{
-        FooterMode, InteractiveTuiState, ModelChoice, RunMode, SessionChoice,
+        FooterMode, InteractiveTuiState, ModelChoice, SessionChoice,
         display_lines_for_stream_record,
     },
     terminal::{
-        InteractiveTuiEvent, handle_key_event, handle_mouse_event, should_capture_mouse,
-        visible_body_bounds,
+        InteractiveTuiEvent, handle_key_event, handle_mouse_event, responsive_frame_budget,
+        should_capture_mouse, visible_body_bounds,
     },
 };
 
@@ -170,13 +171,13 @@ fn codex_style_opening_renders_header_composer_and_footer() {
     let footer_lines = render_footer_lines(&state, 120);
     let footer_text = line_texts(&footer_lines).join("\n");
     assert!(!footer_text.contains("Steering messages"));
-    assert!(footer_text.contains(" ACT  | State: IDLE"));
+    assert!(footer_text.contains(" READY  | State: IDLE"));
     assert!(footer_text.contains("Model: local_echo"));
     assert!(footer_text.contains("Context: 0%"));
     assert!(footer_text.contains("Enter: Send"));
     assert!(footer_text.contains("History"));
     assert!(footer_text.contains("Scroll"));
-    assert!(has_segment(&footer_lines, " ACT ", SegmentStyle::MODE_BG));
+    assert!(has_segment(&footer_lines, " READY ", SegmentStyle::MODE_BG));
     assert!(footer_lines.iter().any(|line| {
         line.segments
             .iter()
@@ -229,9 +230,15 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     );
     assert!(state.input.is_empty());
 
-    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Up)), None);
+    assert_eq!(
+        handle_key_event(&mut state, key_modified('p', KeyModifiers::CONTROL)),
+        None
+    );
     assert_eq!(state.input, "hi");
-    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Down)), None);
+    assert_eq!(
+        handle_key_event(&mut state, key_modified('n', KeyModifiers::CONTROL)),
+        None
+    );
     assert!(state.input.is_empty());
 
     assert_eq!(handle_key_event(&mut state, key_char('x')), None);
@@ -359,10 +366,16 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     );
     state.push_history("old prompt".to_string());
     state.input.clear();
-    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Up)), None);
+    assert_eq!(
+        handle_key_event(&mut state, key_modified('p', KeyModifiers::CONTROL)),
+        None
+    );
     assert_eq!(state.input, "old prompt");
     assert!(state.is_at_bottom());
-    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Down)), None);
+    assert_eq!(
+        handle_key_event(&mut state, key_modified('n', KeyModifiers::CONTROL)),
+        None
+    );
     assert!(state.input.is_empty());
     assert!(state.is_at_bottom());
     assert_eq!(
@@ -394,13 +407,6 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
         None
     );
     assert!(state.is_at_bottom());
-
-    assert_eq!(state.run_mode, RunMode::Act);
-    assert_eq!(
-        handle_key_event(&mut state, key_code(KeyCode::BackTab)),
-        None
-    );
-    assert_eq!(state.run_mode, RunMode::Plan);
 
     state.running = true;
     state.input = "steer now".to_string();
@@ -622,7 +628,12 @@ fn streaming_events_preserve_scroll_while_selection_mode_is_active() {
             event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, " next")),
         },
     ));
-    assert!(state.is_at_bottom());
+    assert_eq!(state.scroll_offset, 3);
+    assert!(!state.is_at_bottom());
+    assert!(state.unread_output_lines > 0);
+    let footer = line_texts(&render_footer_lines(&state, 100)).join("\n");
+    assert!(footer.contains("Output paused"));
+    assert!(footer.contains("new"));
 }
 
 #[test]
@@ -5145,16 +5156,6 @@ fn key_handler_covers_quit_and_history_edges() {
         None
     );
     assert_eq!(
-        handle_key_event(&mut state, key_code(KeyCode::BackTab)),
-        None
-    );
-    assert_eq!(state.run_mode, RunMode::Plan);
-    assert_eq!(
-        handle_key_event(&mut state, key_code(KeyCode::BackTab)),
-        None
-    );
-    assert_eq!(state.run_mode, RunMode::Act);
-    assert_eq!(
         handle_key_event(&mut state, key_modified('r', KeyModifiers::CONTROL)),
         None
     );
@@ -5225,13 +5226,12 @@ fn key_handler_covers_quit_and_history_edges() {
     assert!(!FooterMode::is_help());
 
     state.input.clear();
-    assert_eq!(
-        handle_key_event(&mut state, key_char('q')),
-        Some(InteractiveTuiEvent::Quit)
-    );
+    assert_eq!(handle_key_event(&mut state, key_char('q')), None);
+    assert_eq!(state.input, "q");
     state.running = true;
     assert_eq!(handle_key_event(&mut state, key_char('q')), None);
-    assert!(state.phase.contains("run active"));
+    assert_eq!(state.input, "qq");
+    state.input.clear();
     assert_eq!(
         handle_key_event(&mut state, key_modified('d', KeyModifiers::CONTROL)),
         None
@@ -5459,6 +5459,108 @@ fn terminal_width_helpers_handle_wide_characters() {
     let rendered = render_markdown_lines(&["中文中文 hello".to_string()], 8);
     assert!(rendered.len() > 1);
     assert!(rendered.iter().all(|line| line.visible_width() <= 8));
+}
+
+#[test]
+fn composer_edits_graphemes_and_moves_across_visual_lines() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.input = "a👨‍👩‍👧‍👦e\u{301}".to_string();
+
+    state.move_composer_cursor_left();
+    assert_eq!(state.composer_cursor_byte(), "a👨‍👩‍👧‍👦".len());
+    state.backspace_composer();
+    assert_eq!(state.input, "ae\u{301}");
+
+    state.input = "abcd\nx\nwxyz".to_string();
+    state.move_composer_cursor_to_line_start();
+    state.move_composer_cursor_right();
+    state.move_composer_cursor_right();
+    state.move_composer_cursor_right();
+    state.update_composer_content_width(4);
+    state.move_composer_cursor_vertical(-1);
+    assert_eq!(state.composer_cursor_byte(), "abcd\nx".len());
+    state.move_composer_cursor_vertical(-1);
+    assert_eq!(state.composer_cursor_byte(), 4);
+    state.move_composer_cursor_vertical(1);
+    state.move_composer_cursor_vertical(1);
+    assert_eq!(state.composer_cursor_byte(), "abcd\nx\nwxy".len());
+}
+
+#[test]
+fn attachment_placeholder_is_a_cursor_aware_atomic_span() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.input = "prefix ".to_string();
+    state.attach_image(PromptAttachment::image(1, vec![1, 2, 3], "image/png"));
+    let placeholder = state.pending_attachments[0].placeholder.clone();
+
+    state.move_composer_cursor_to_line_start();
+    state.move_composer_cursor_right();
+    state.move_composer_cursor_right();
+    state.backspace_composer();
+    assert_eq!(state.pasted_image_count(), 1);
+    assert!(state.input.contains(&placeholder));
+
+    state.move_composer_cursor_to_line_end();
+    state.move_composer_cursor_left();
+    assert_eq!(
+        state.composer_cursor_byte(),
+        state.input.find(&placeholder).unwrap()
+    );
+    state.move_composer_cursor_to_line_end();
+    state.backspace_composer();
+    assert_eq!(state.pasted_image_count(), 0);
+    assert!(!state.input.contains(&placeholder));
+}
+
+#[test]
+fn notifications_and_paused_output_are_visible_and_follow_can_resume() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.toggle_enter_mode();
+    let notification = line_texts(&render_footer_lines(&state, 100)).join("\n");
+    assert!(notification.contains("Notice: Enter inserts newline"));
+
+    state.scroll_offset = 2;
+    state.push_transcript_notice("new output while paused");
+    assert!(state.unread_output_lines > 0);
+    let paused = line_texts(&render_footer_lines(&state, 100)).join("\n");
+    assert!(paused.contains("Output paused"));
+    assert!(paused.contains("new"));
+
+    state.scroll_to_bottom();
+    assert!(state.is_at_bottom());
+    assert_eq!(state.unread_output_lines, 0);
+}
+
+#[test]
+fn responsive_budget_never_exceeds_real_terminal_height() {
+    for height in 1..=20 {
+        let budget = responsive_frame_budget(height, 6, 40);
+        assert_eq!(
+            budget.body + budget.panels + budget.status + budget.composer,
+            height
+        );
+        assert!(budget.composer >= 1);
+        if height >= 2 {
+            assert!(budget.status >= 1);
+        }
+        if height >= 3 {
+            assert!(budget.body >= 1);
+        }
+    }
+    assert_eq!(responsive_frame_budget(1, 6, 40).composer, 1);
+    assert_eq!(responsive_frame_budget(2, 6, 40).status, 1);
+}
+
+#[test]
+fn color_policy_and_truncation_degrade_explicitly() {
+    assert!(!color_output_enabled(Some(OsStr::new("")), None));
+    assert!(!color_output_enabled(None, Some(OsStr::new("dumb"))));
+    assert!(color_output_enabled(
+        None,
+        Some(OsStr::new("xterm-256color"))
+    ));
+    assert_eq!(truncate_line("averylongtoken", 6), "avery…");
+    assert_eq!(truncate_line("👨‍👩‍👧‍👦family", 3), "👨‍👩‍👧‍👦…");
 }
 
 fn submit_text(event: Option<InteractiveTuiEvent>) -> Option<String> {

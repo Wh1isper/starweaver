@@ -225,7 +225,9 @@ impl InteractiveTuiState {
 
     /// Apply a live runtime stream event to the view state.
     pub fn apply_stream_record(&mut self, record: &AgentStreamRecord) {
-        let should_auto_scroll = !self.selection_mode;
+        // Following is sticky: output only keeps the viewport pinned when the
+        // user was already at the bottom before this event arrived.
+        let should_auto_scroll = self.is_at_bottom();
         if self.apply_subagent_source_record(record) {
             if should_auto_scroll {
                 self.scroll_to_bottom();

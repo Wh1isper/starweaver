@@ -245,14 +245,6 @@ pub(super) fn string_field<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or_default()
 }
 
-pub(super) fn previous_char_boundary(text: &str, index: usize) -> usize {
-    let mut index = index.min(text.len());
-    while index > 0 && !text.is_char_boundary(index) {
-        index = index.saturating_sub(1);
-    }
-    index
-}
-
 fn preview_lines(content: &str, max_lines: usize) -> Vec<String> {
     let lines = content.lines().collect::<Vec<_>>();
     let mut preview = lines

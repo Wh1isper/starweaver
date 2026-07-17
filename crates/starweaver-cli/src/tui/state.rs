@@ -48,25 +48,10 @@ use formatting::{
     format_tool_return_lines, format_u64_with_commas, is_subagent_lifecycle_event_kind,
     is_subagent_start_event_kind, is_task_snapshot_event, is_task_tool_name, merge_stream_fragment,
     model_choice_config_suffix, model_choice_label, normalized_event_kind, pasted_image_paths,
-    previous_char_boundary, push_shell_output_lines, push_usage_entry_lines, streaming_part_kind,
+    push_shell_output_lines, push_usage_entry_lines, streaming_part_kind,
     streaming_tool_arguments_match, streaming_tool_state_is_available, subagent_display_id,
     task_panel_items_from_value, tool_call_visibility_key,
 };
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum RunMode {
-    Act,
-    Plan,
-}
-
-impl RunMode {
-    pub(super) const fn label(&self) -> &'static str {
-        match self {
-            Self::Act => "ACT",
-            Self::Plan => "PLAN",
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum EnterMode {
@@ -249,6 +234,10 @@ pub struct InteractiveTuiState {
     pub(super) input_cursor: usize,
     /// Input length last observed after an internal cursor-aware mutation.
     input_cursor_input_len: usize,
+    /// Last rendered composer content width, used for visual-line cursor movement.
+    pub(super) composer_content_width: usize,
+    /// Desired display column retained across consecutive vertical cursor moves.
+    pub(super) composer_preferred_column: Option<usize>,
     /// Active profile label.
     pub profile: String,
     /// Active model label.
@@ -267,13 +256,14 @@ pub struct InteractiveTuiState {
     pub(super) rendered_body_len: usize,
     /// Last rendered body viewport height, used to keep scroll handling cheap between frames.
     pub(super) body_viewport_height: usize,
+    /// Number of changed output lines received while transcript following is paused.
+    pub(super) unread_output_lines: usize,
     /// Multiline composer scrollback offset from the bottom of the draft.
     pub(super) input_scroll_offset: usize,
     /// Short-lived composer status for paste, media attach, and steering actions.
     pub(super) input_status: Option<String>,
     /// Image attachments queued into the fixed composer.
     pub(super) pending_attachments: Vec<PromptAttachment>,
-    pub(super) run_mode: RunMode,
     pub(super) history: Vec<String>,
     pub(super) history_index: Option<usize>,
     pub(super) history_draft: String,
@@ -336,6 +326,8 @@ impl InteractiveTuiState {
             input: String::new(),
             input_cursor: 0,
             input_cursor_input_len: 0,
+            composer_content_width: 78,
+            composer_preferred_column: None,
             profile: "general".to_string(),
             model: "local_echo".to_string(),
             phase: "ready".to_string(),
@@ -345,10 +337,10 @@ impl InteractiveTuiState {
             scroll_offset: usize::MAX,
             rendered_body_len: 0,
             body_viewport_height: 1,
+            unread_output_lines: 0,
             input_scroll_offset: 0,
             input_status: None,
             pending_attachments: Vec::new(),
-            run_mode: RunMode::Act,
             history: Vec::new(),
             history_index: None,
             history_draft: String::new(),
@@ -423,8 +415,14 @@ impl InteractiveTuiState {
     }
 
     fn reproject_body(&mut self) {
-        self.timeline_projection = project_timeline(&self.timeline, self.render_mode);
-        self.body = self.timeline_projection.lines.clone();
+        let projection = project_timeline(&self.timeline, self.render_mode);
+        let changed_while_paused = !self.is_at_bottom() && projection.lines != self.body;
+        if changed_while_paused {
+            let changed_lines = projection.lines.len().abs_diff(self.body.len()).max(1);
+            self.unread_output_lines = self.unread_output_lines.saturating_add(changed_lines);
+        }
+        self.body.clone_from(&projection.lines);
+        self.timeline_projection = projection;
         if self
             .selection_index
             .is_some_and(|index| index >= self.body.len())
@@ -573,7 +571,6 @@ impl InteractiveTuiState {
         self.current_run_id = None;
         self.current_run_usage = None;
         self.model_transport_status = None;
-        self.scroll_to_bottom();
         self.finish_current_model_item();
         self.active_model_segment = None;
     }
@@ -759,7 +756,7 @@ impl InteractiveTuiState {
         } else if self.running {
             "RUNNING"
         } else {
-            self.run_mode.label()
+            "READY"
         }
     }
 
@@ -841,6 +838,10 @@ impl InteractiveTuiState {
         self.input_status.as_deref().unwrap_or(&self.phase)
     }
 
+    pub(super) fn input_notification(&self) -> Option<&str> {
+        self.input_status.as_deref()
+    }
+
     pub(super) const fn help_panel_visible() -> bool {
         false
     }
@@ -868,6 +869,7 @@ impl InteractiveTuiState {
 
     pub(super) const fn scroll_to_bottom(&mut self) {
         self.scroll_offset = usize::MAX;
+        self.unread_output_lines = 0;
     }
 
     pub(super) const fn is_at_bottom(&self) -> bool {

@@ -30,7 +30,7 @@ use super::{
     },
     state::{
         BodyScrollDirection, COMPOSER_VISIBLE_LINES, InteractiveTuiState, PendingSessionCommand,
-        RunMode, SteeringSubmission,
+        SteeringSubmission,
     },
 };
 
@@ -112,6 +112,66 @@ struct BodyRenderSignature {
     body_hash: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ResponsiveFrameBudget {
+    pub(super) body: usize,
+    pub(super) panels: usize,
+    pub(super) status: usize,
+    pub(super) composer: usize,
+}
+
+pub(super) fn responsive_frame_budget(
+    height: usize,
+    desired_composer: usize,
+    available_panel_lines: usize,
+) -> ResponsiveFrameBudget {
+    let height = height.max(1);
+    let mut composer = 1usize;
+    let status = match height {
+        1 => 0,
+        2 | 3 => 1,
+        _ => 2,
+    };
+    let mut body = usize::from(height >= 3);
+    let mut remaining = height.saturating_sub(composer + status + body);
+
+    let composer_extra = desired_composer.max(1).saturating_sub(1).min(remaining);
+    composer = composer.saturating_add(composer_extra);
+    remaining = remaining.saturating_sub(composer_extra);
+
+    // Panels are useful, but they may not starve the transcript. Compact them
+    // to at most half of the remaining rows and give all other rows to output.
+    let panels = available_panel_lines.min(remaining / 2);
+    body = body.saturating_add(remaining.saturating_sub(panels));
+
+    ResponsiveFrameBudget {
+        body,
+        panels,
+        status,
+        composer,
+    }
+}
+
+fn compact_panel_lines(panel_lines: &[StyledLine], budget: usize, width: usize) -> Vec<StyledLine> {
+    if panel_lines.len() <= budget {
+        return panel_lines.to_vec();
+    }
+    if budget == 0 {
+        return Vec::new();
+    }
+    let hidden = panel_lines.len().saturating_sub(budget.saturating_sub(1));
+    let mut lines = panel_lines
+        .iter()
+        .take(budget.saturating_sub(1))
+        .cloned()
+        .collect::<Vec<_>>();
+    let notice = format!("… {hidden} panel line(s) hidden; enlarge terminal …");
+    lines.push(StyledLine::plain(super::render::truncate_line(
+        &notice, width,
+    )));
+    lines
+}
+
 impl InteractiveTui {
     /// Enter Codex-style inline interactive mode.
     pub fn enter() -> CliResult<Self> {
@@ -139,62 +199,96 @@ impl InteractiveTui {
     }
 
     /// Render the current state.
+    #[allow(clippy::too_many_lines)]
     pub fn render(&mut self, state: &mut InteractiveTuiState) -> CliResult<()> {
         self.sync_mouse_capture(should_capture_mouse(state))?;
         let (width, height) = terminal::size().unwrap_or((80, 24));
-        let width = if width == 0 { 80 } else { width };
-        let height = if height == 0 { 24 } else { height };
-        let terminal_width = usize::from(width);
+        let terminal_width = usize::from(width).max(1);
         // Leave the terminal's last column untouched while painting content.
         // Many terminals enable delayed auto-wrap when a printable cell reaches
         // the final column, which can make the right edge look clipped or can
         // spill into the next row before the cursor is moved for the next draw.
         let render_width = terminal_width.saturating_sub(1).max(1);
-        let height = usize::from(height).max(8);
+        let height = usize::from(height).max(1);
         let input_width = composer_input_width(render_width);
-        let composer_layout = composer_layout(
+        state.update_composer_content_width(input_width);
+
+        let preview_layout = composer_layout(
             &state.input,
             state.composer_cursor_byte(),
             COMPOSER_VISIBLE_LINES,
             state.composer_scroll_offset(),
             input_width,
         );
-        let composer_lines =
+        let all_footer_lines = render_footer_lines(state, render_width);
+        let status_index = all_footer_lines.len().saturating_sub(2);
+        let (panel_lines, all_status_lines) = all_footer_lines.split_at(status_index);
+        let desired_composer = preview_layout.visible_lines.len().saturating_add(1);
+        let budget = responsive_frame_budget(height, desired_composer, panel_lines.len());
+
+        let composer_visible_lines = if budget.composer > 1 {
+            budget.composer.saturating_sub(1)
+        } else {
+            1
+        };
+        let composer_layout = composer_layout(
+            &state.input,
+            state.composer_cursor_byte(),
+            composer_visible_lines,
+            state.composer_scroll_offset(),
+            input_width,
+        );
+        let mut composer_lines =
             render_composer_lines_from_layout(state, render_width, &composer_layout);
-        let status_lines = render_footer_lines(state, render_width);
-        let fixed_height = composer_lines.len().saturating_add(status_lines.len());
-        let body_height = height.saturating_sub(fixed_height).max(1);
+        let composer_has_spacer = budget.composer > 1;
+        if !composer_has_spacer && !composer_lines.is_empty() {
+            composer_lines.remove(0);
+        }
+        composer_lines.truncate(budget.composer);
+
+        let status_lines = if budget.status == 0 {
+            Vec::new()
+        } else {
+            all_status_lines
+                .iter()
+                .take(budget.status)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let panel_lines = compact_panel_lines(panel_lines, budget.panels, render_width);
         let visible_body = {
             let rendered_body = self.rendered_body_lines(state, render_width);
             let rendered_body_len = rendered_body.len();
-            state.update_render_metrics(rendered_body_len, body_height);
+            state.update_render_metrics(rendered_body_len, budget.body);
             let (visible_start, visible_end) =
-                visible_body_bounds(state, rendered_body_len, body_height);
+                visible_body_bounds(state, rendered_body_len, budget.body);
             rendered_body[visible_start..visible_end].to_vec()
         };
+
         let mut frame_lines = vec![StyledLine::plain(""); height];
-        for (row, slot) in frame_lines
-            .iter_mut()
-            .enumerate()
-            .take(body_height.min(height))
-        {
-            if let Some(line) = visible_body.get(row) {
+        for (row, line) in visible_body.iter().take(budget.body).enumerate() {
+            if let Some(slot) = frame_lines.get_mut(row) {
                 *slot = line.clone();
             }
         }
 
-        let status_start = height.saturating_sub(fixed_height);
+        let panel_start = budget.body;
+        for (offset, line) in panel_lines.iter().enumerate() {
+            if let Some(slot) = frame_lines.get_mut(panel_start.saturating_add(offset)) {
+                *slot = line.clone();
+            }
+        }
+
+        let status_start = panel_start.saturating_add(panel_lines.len());
         for (offset, line) in status_lines.iter().enumerate() {
-            let row = status_start.saturating_add(offset);
-            if let Some(slot) = frame_lines.get_mut(row) {
+            if let Some(slot) = frame_lines.get_mut(status_start.saturating_add(offset)) {
                 *slot = line.clone();
             }
         }
 
         let composer_start = status_start.saturating_add(status_lines.len());
         for (offset, line) in composer_lines.iter().enumerate() {
-            let row = composer_start.saturating_add(offset);
-            if let Some(slot) = frame_lines.get_mut(row) {
+            if let Some(slot) = frame_lines.get_mut(composer_start.saturating_add(offset)) {
                 *slot = line.clone();
             }
         }
@@ -218,12 +312,15 @@ impl InteractiveTui {
                 self.frame_cache.set_line(row, line.clone());
             }
         }
-        let cursor_row = composer_start.saturating_add(1).saturating_add(
-            composer_layout
-                .cursor_line
-                .saturating_sub(composer_layout.visible_start)
-                .min(composer_layout.visible_lines.len().saturating_sub(1)),
-        );
+        let cursor_row = composer_start
+            .saturating_add(usize::from(composer_has_spacer))
+            .saturating_add(
+                composer_layout
+                    .cursor_line
+                    .saturating_sub(composer_layout.visible_start)
+                    .min(composer_layout.visible_lines.len().saturating_sub(1)),
+            )
+            .min(height.saturating_sub(1));
         let cursor_col = 2usize.saturating_add(composer_layout.cursor_col);
         queue!(
             self.stdout,
@@ -516,7 +613,7 @@ pub(super) fn handle_key_event(
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.insert_composer_newline();
         }
-        KeyCode::Char('p' | 'r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.previous_history();
         }
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -524,19 +621,6 @@ pub(super) fn handle_key_event(
         }
         KeyCode::Esc => {
             state.open_selection_mode();
-        }
-        KeyCode::Char('q') if state.composer_is_empty() => {
-            if state.running {
-                state.show_run_active_hint();
-            } else {
-                return Some(InteractiveTuiEvent::Quit);
-            }
-        }
-        KeyCode::BackTab => {
-            state.run_mode = match state.run_mode {
-                RunMode::Act => RunMode::Plan,
-                RunMode::Plan => RunMode::Act,
-            };
         }
         KeyCode::Tab => {
             state.toggle_enter_mode();
@@ -610,8 +694,8 @@ pub(super) fn handle_key_event(
         KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
             scroll_viewport(state, 1, BodyScrollDirection::Down);
         }
-        KeyCode::Up => state.previous_history(),
-        KeyCode::Down => state.next_history(),
+        KeyCode::Up => state.move_composer_cursor_vertical(-1),
+        KeyCode::Down => state.move_composer_cursor_vertical(1),
         KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.push_composer_char(ch);
         }
