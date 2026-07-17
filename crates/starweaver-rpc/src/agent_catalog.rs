@@ -177,15 +177,10 @@ impl RpcAgentCatalog {
                 self.config.default_profile
             )));
         }
-        let mut available_toolsets = core_toolsets()
+        let available_toolsets = core_toolsets()
             .into_iter()
             .chain([agent_session_query_tools(), agent_session_control_tools()])
-            .collect::<Vec<_>>();
-        if self.clarifying_questions_enabled() {
-            available_toolsets.push(user_input_tools());
-        }
-        let available_toolsets = available_toolsets
-            .into_iter()
+            .chain(self.clarifying_questions_enabled().then(user_input_tools))
             .flat_map(|toolset| {
                 let mut keys = vec![toolset.name().to_string()];
                 if let Some(id) = toolset.id() {
