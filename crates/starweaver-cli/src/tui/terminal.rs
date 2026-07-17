@@ -32,6 +32,12 @@ use super::{
     },
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TuiApprovalDecision {
+    Approve,
+    Reject,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InteractiveTuiEvent {
     /// Redraw after a handled key changed or may have changed local UI state.
@@ -46,7 +52,11 @@ pub enum InteractiveTuiEvent {
     Clear,
     /// Attach an image from the system clipboard.
     PasteImage,
-    /// Interrupt the active run.
+    /// Start a local shell activity without blocking terminal input.
+    Shell(String),
+    /// Resolve the durable approval currently shown by the HITL panel.
+    ApprovalDecision(TuiApprovalDecision),
+    /// Interrupt the active activity.
     Cancel,
     /// Quit the TUI.
     Quit,
@@ -504,10 +514,44 @@ pub(super) fn handle_key_event(
 ) -> Option<InteractiveTuiEvent> {
     if key.code == KeyCode::Char('c')
         && key.modifiers.contains(KeyModifiers::CONTROL)
-        && state.running
+        && state.activity_running()
     {
         state.request_cancel();
         return Some(InteractiveTuiEvent::Cancel);
+    }
+    if (state.pending_hitl().is_some() || state.hitl_reload_session_id().is_some())
+        && !state.running
+    {
+        match key.code {
+            KeyCode::Char('a' | 'y') if key.modifiers.is_empty() && state.hitl_decision_ready() => {
+                return Some(InteractiveTuiEvent::ApprovalDecision(
+                    TuiApprovalDecision::Approve,
+                ));
+            }
+            KeyCode::Char('r' | 'n') if key.modifiers.is_empty() && state.hitl_decision_ready() => {
+                return Some(InteractiveTuiEvent::ApprovalDecision(
+                    TuiApprovalDecision::Reject,
+                ));
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Some(InteractiveTuiEvent::Quit);
+            }
+            KeyCode::Esc => {
+                let session_id = state
+                    .hitl_reload_session_id()
+                    .map(ToString::to_string)
+                    .or_else(|| state.session_id.clone());
+                return session_id.map(|session_id| InteractiveTuiEvent::Session(Some(session_id)));
+            }
+            KeyCode::PageUp => {
+                scroll_viewport(state, 10, BodyScrollDirection::Up);
+            }
+            KeyCode::PageDown => {
+                scroll_viewport(state, 10, BodyScrollDirection::Down);
+            }
+            _ => {}
+        }
+        return None;
     }
     if state.session_picker_visible() {
         match key.code {
@@ -598,10 +642,12 @@ pub(super) fn handle_key_event(
             state.clear_composer();
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if state.running {
+            if state.activity_running() {
                 state.show_run_active_hint();
-            } else {
+            } else if state.composer_is_empty() {
                 return Some(InteractiveTuiEvent::Quit);
+            } else {
+                state.show_draft_exit_hint();
             }
         }
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -655,6 +701,9 @@ pub(super) fn handle_key_event(
         KeyCode::Enter if !state.enter_sends() => {
             state.insert_composer_newline();
         }
+        KeyCode::Enter if state.shell_running() => {
+            state.show_shell_active_hint();
+        }
         KeyCode::Enter if state.running => {
             if state.take_paste_image_command() {
                 return Some(InteractiveTuiEvent::PasteImage);
@@ -662,6 +711,9 @@ pub(super) fn handle_key_event(
             if let Some(steering) = state.take_steering_prompt() {
                 state.push_history(steering.text.clone());
                 return Some(InteractiveTuiEvent::Steer(steering));
+            }
+            if let Some(command) = state.take_pending_shell_command() {
+                return Some(InteractiveTuiEvent::Shell(command));
             }
             if state.take_pending_clear_context() {
                 return Some(InteractiveTuiEvent::Clear);
@@ -674,6 +726,9 @@ pub(super) fn handle_key_event(
             if let Some(prompt) = state.take_submission_prompt() {
                 state.push_history(prompt.display_text());
                 return Some(InteractiveTuiEvent::Submit(prompt));
+            }
+            if let Some(command) = state.take_pending_shell_command() {
+                return Some(InteractiveTuiEvent::Shell(command));
             }
             if state.take_pending_clear_context() {
                 return Some(InteractiveTuiEvent::Clear);

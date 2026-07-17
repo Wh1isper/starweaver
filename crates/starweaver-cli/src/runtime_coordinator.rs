@@ -320,7 +320,7 @@ impl BackgroundRunWorker {
                 return;
             }
         };
-        let run_on_error = prepared.run.clone();
+        let mut run_on_error = prepared.run.clone();
         let session_id = prepared.session_id.clone();
         prepared.set_execution_host(self.interactive_host.execution_host(&session_id));
         let run_id = prepared.run_id.clone();
@@ -342,6 +342,15 @@ impl BackgroundRunWorker {
         } else {
             None
         };
+        if let Err(error) = service.start_prepared_hitl_resume(&mut prepared) {
+            let _ = service.fail_prepared_prompt_run(run_on_error, &error);
+            let _ = self
+                .event_sender
+                .send(RunStreamEvent::StartFailed(error.to_string()));
+            remove_active_run(&self.active_runs, &self.control_id);
+            return;
+        }
+        run_on_error = prepared.run.clone();
         let _ = self
             .event_sender
             .send(RunStreamEvent::Status(RunStatusItem {

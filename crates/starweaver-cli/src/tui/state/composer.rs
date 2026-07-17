@@ -171,6 +171,31 @@ impl InteractiveTuiState {
         self.pending_submission_display_prompt.take()
     }
 
+    pub(crate) fn restore_submission_prompt(
+        &mut self,
+        prompt: PromptInput,
+        goal: Option<crate::args::GoalCommandOptions>,
+    ) {
+        self.input = prompt.text;
+        self.pending_attachments = prompt.attachments;
+        self.restored_prompt_parts = Some((prompt.extra_text_parts, prompt.guidance_text_parts));
+        self.pending_submission_display_prompt = None;
+        self.history_index = None;
+        self.history_draft.clear();
+        self.footer_mode = FooterMode::Context;
+        self.input_cursor = self.input.len();
+        self.input_cursor_input_len = self.input.len();
+        self.composer_preferred_column = None;
+        self.reset_composer_scroll();
+        if let Some(goal) = goal {
+            self.goal_task = Some(goal.objective.clone());
+            self.goal_active = true;
+            self.goal_max_iterations = goal.max_iterations.max(1);
+            self.pending_goal_submission = Some(goal.objective);
+        }
+        self.input_status = Some("queued prompt restored after run failure".to_string());
+    }
+
     pub(in crate::tui) fn take_paste_image_command(&mut self) -> bool {
         if self.input.trim() != "/paste-image" {
             return false;
@@ -183,6 +208,7 @@ impl InteractiveTuiState {
 
     fn take_prompt(&mut self, kind: SubmissionKind) -> Option<PromptInput> {
         self.retain_visible_attachments();
+        let restored_prompt_parts = self.restored_prompt_parts.take();
         let command = self.take_local_command();
         if matches!(
             command,
@@ -203,6 +229,7 @@ impl InteractiveTuiState {
             return None;
         }
         let attachments = std::mem::take(&mut self.pending_attachments);
+        let (extra_text_parts, guidance_text_parts) = restored_prompt_parts.unwrap_or_default();
         self.clear_composer_input();
         self.reset_composer_scroll();
         match kind {
@@ -214,8 +241,8 @@ impl InteractiveTuiState {
         Some(PromptInput {
             text: prompt,
             attachments,
-            extra_text_parts: Vec::new(),
-            guidance_text_parts: Vec::new(),
+            extra_text_parts,
+            guidance_text_parts,
         })
     }
 
@@ -336,6 +363,7 @@ impl InteractiveTuiState {
         self.input_cursor = 0;
         self.input_cursor_input_len = 0;
         self.composer_preferred_column = None;
+        self.restored_prompt_parts = None;
     }
 
     pub(in crate::tui) fn composer_cursor_byte(&self) -> usize {

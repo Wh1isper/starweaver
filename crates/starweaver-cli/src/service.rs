@@ -3,14 +3,15 @@
 
 use std::{collections::BTreeSet, fs, path::Path, sync::mpsc, thread, time::Duration};
 
+use chrono::Utc;
 use serde_json::{Value, json};
 use starweaver_agent::ResumableState;
-use starweaver_core::sdk_name;
+use starweaver_core::{RunId, SessionId, sdk_name};
 use starweaver_oauth_provider::create_oauth_refresh_supervisor_for_models_with_options;
 use starweaver_runtime::AgentStreamRecord;
 use starweaver_session::{
-    ApprovalStatus, RunRecord, RunStatus, SessionSearchFilter, SessionSearchGranularity,
-    SessionSearchQuery, SessionSearchSource, SessionStatus,
+    ApprovalStatus, HitlResumeClaim, RunRecord, RunStatus, SessionSearchFilter,
+    SessionSearchGranularity, SessionSearchQuery, SessionSearchSource, SessionStatus, SessionStore,
 };
 use starweaver_stream::DisplayMessage;
 
@@ -30,7 +31,10 @@ use crate::{
         ResolvedEnvironment, resolve_environment_for_session_with_attachments,
         validate_environment_config,
     },
-    local_store::LocalStore,
+    local_store::{
+        HITL_RESUME_CLAIM_ID_METADATA_KEY, HITL_RESUME_PREFLIGHT_SOURCE_RUN_ID_METADATA_KEY,
+        HITL_RESUME_SOURCE_RUN_ID_METADATA_KEY, LocalSessionStore, LocalStore,
+    },
     profiles::{ResolvedProfile, list_profiles, resolve_profile},
     prompt_input::PromptInput,
     runner::{
@@ -78,6 +82,7 @@ pub(super) struct PreparedPromptRun {
     restore_state: Option<ResumableState>,
     policy: CliRunPolicy,
     execution_host: CliAgentExecutionHost,
+    hitl_resume_claim: Option<HitlResumeClaim>,
 }
 
 impl PreparedPromptRun {
@@ -92,8 +97,26 @@ pub(super) struct ExecutedPromptRun {
     execution: crate::runner::CliRunExecution,
 }
 
+enum HitlResumeClaimOperation {
+    Claim(HitlResumeClaim),
+    Start {
+        session_id: SessionId,
+        run_id: RunId,
+        claim_id: String,
+    },
+    Release {
+        session_id: SessionId,
+        run_id: RunId,
+        claim_id: String,
+    },
+}
+
 const PROJECT_GUIDANCE_TAG: &str = "project-guidance";
 const USER_RULES_TAG: &str = "user-rules";
+
+fn restore_requires_hitl_claim(status: RunStatus, hitl_resume: bool, branch_from: bool) -> bool {
+    status == RunStatus::Waiting && !hitl_resume && !branch_from
+}
 
 fn search_query(command: SessionSearchCommand) -> SessionSearchQuery {
     let session_statuses = command
@@ -236,6 +259,7 @@ impl CliService {
                 branch: cli.branch,
                 session_affinity_id: None,
                 environment_attachments: Vec::new(),
+                hitl_resume: false,
             };
             return self.run_prompt(&command);
         }
@@ -305,7 +329,12 @@ impl CliService {
         steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
         cancel_receiver: Option<mpsc::Receiver<()>>,
     ) -> CliResult<PromptRunExecution> {
-        let prepared = self.prepare_prompt_run(command, prompt_input)?;
+        let mut prepared = self.prepare_prompt_run(command, prompt_input)?;
+        let run_on_error = prepared.run.clone();
+        if let Err(error) = self.start_prepared_hitl_resume(&mut prepared) {
+            self.fail_prepared_prompt_run(run_on_error, &error)?;
+            return Err(error);
+        }
         let run_on_error = prepared.run.clone();
         let executed = match Self::run_prepared_prompt(
             prepared,
@@ -320,6 +349,42 @@ impl CliService {
             }
         };
         self.complete_prompt_run(executed)
+    }
+
+    fn reject_ordinary_admission_during_waiting_continuation(
+        &mut self,
+        session_id: &str,
+        hitl_resume: bool,
+    ) -> CliResult<()> {
+        if hitl_resume {
+            return Ok(());
+        }
+        let session = self.store()?.load_session(session_id)?;
+        let runs = self.store()?.list_run_records(session_id)?;
+        let active_run_id = session.active_run_id.as_ref();
+        for run in runs.iter().filter(|run| {
+            active_run_id == Some(&run.run_id)
+                || (run.status.is_active() && run.status != RunStatus::Waiting)
+        }) {
+            let waiting_source_run_id = if run.status == RunStatus::Waiting {
+                Some(&run.run_id)
+            } else {
+                run.restore_from_run_id.as_ref().filter(|source_run_id| {
+                    runs.iter().any(|source| {
+                        source.run_id.as_str() == source_run_id.as_str()
+                            && source.status == RunStatus::Waiting
+                    })
+                })
+            };
+            if let Some(waiting_source_run_id) = waiting_source_run_id {
+                return Err(CliError::Run(format!(
+                    "run {} is continuing waiting run {}; wait for it to finish before starting another prompt",
+                    run.run_id.as_str(),
+                    waiting_source_run_id.as_str()
+                )));
+            }
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -354,11 +419,29 @@ impl CliService {
         validate_environment_config(&run_config)?;
         append_guidance_files(&mut run_input, &run_config);
         let (session_id, created) = self.resolve_session(command, &resolved_profile.name)?;
+        if command.run.is_some() || command.branch_from.is_some() {
+            self.reject_ordinary_admission_during_waiting_continuation(
+                &session_id,
+                command.hitl_resume,
+            )?;
+        }
         let environment = resolve_environment_for_session_with_attachments(
             &run_config,
             &session_id,
             &command.environment_attachments,
         )?;
+        let hitl_resume_source_run_id = command
+            .hitl_resume
+            .then(|| {
+                command
+                    .run
+                    .as_deref()
+                    .ok_or_else(|| {
+                        CliError::Usage("HITL continuation requires a source run id".to_string())
+                    })
+                    .map(RunId::from_string)
+            })
+            .transpose()?;
         let mut restore_from = command.run.clone().or_else(|| command.branch_from.clone());
         if restore_from.is_none() && !created {
             restore_from = self
@@ -373,12 +456,91 @@ impl CliService {
                         .map(|run| run.as_str().to_string())
                 });
         }
+        let mut waiting_restore_without_claim = None;
+        if let Some(source_run_id) = restore_from.as_deref() {
+            let source = self.store()?.load_run(&session_id, source_run_id)?;
+            if restore_requires_hitl_claim(
+                source.status,
+                command.hitl_resume,
+                command.branch_from.is_some(),
+            ) {
+                waiting_restore_without_claim = Some(source_run_id.to_string());
+            }
+            if source.status.is_active()
+                && source.status != RunStatus::Waiting
+                && command.branch_from.is_none()
+                && let Some(waiting_source_run_id) = source.restore_from_run_id.as_ref()
+                && self
+                    .store()?
+                    .load_run(&session_id, waiting_source_run_id.as_str())?
+                    .status
+                    == RunStatus::Waiting
+            {
+                return Err(CliError::Run(format!(
+                    "run {source_run_id} is continuing waiting run {}; wait for it to finish before starting another prompt",
+                    waiting_source_run_id.as_str()
+                )));
+            }
+        }
         let restore_state = self
             .store()?
             .load_restore_state(&session_id, restore_from.as_deref())?;
-        let mut run =
-            self.store()?
-                .append_run(&session_id, prompt, restore_from, &resolved_profile.name)?;
+        if let Some(source_run_id) = waiting_restore_without_claim {
+            return Err(CliError::Run(format!(
+                "run {source_run_id} is waiting and requires an explicit HITL resume"
+            )));
+        }
+        write_current_session(&self.config, &session_id)?;
+        self.reject_ordinary_admission_during_waiting_continuation(
+            &session_id,
+            command.hitl_resume,
+        )?;
+        let hitl_resume_claim = hitl_resume_source_run_id.map(|source_run_id| {
+            HitlResumeClaim::new(
+                format!("cli-hitl-resume-{}", uuid::Uuid::new_v4()),
+                SessionId::from_string(&session_id),
+                source_run_id,
+                Utc::now(),
+            )
+        });
+        if let Some(claim) = hitl_resume_claim.clone() {
+            run_hitl_resume_claim_operation(
+                self.config.clone(),
+                HitlResumeClaimOperation::Claim(claim),
+            )?;
+        }
+        let mut run = match self.store()?.append_run(
+            &session_id,
+            prompt,
+            restore_from,
+            &resolved_profile.name,
+        ) {
+            Ok(run) => run,
+            Err(error) => {
+                if let Some(claim) = hitl_resume_claim.as_ref() {
+                    let release = run_hitl_resume_claim_operation(
+                        self.config.clone(),
+                        HitlResumeClaimOperation::Release {
+                            session_id: claim.session_id.clone(),
+                            run_id: claim.run_id.clone(),
+                            claim_id: claim.claim_id.clone(),
+                        },
+                    );
+                    if let Err(release_error) = release {
+                        return Err(CliError::Storage(format!(
+                            "{error}; failed to release preflight HITL claim: {release_error}"
+                        )));
+                    }
+                }
+                return Err(error);
+            }
+        };
+        if let Some(claim) = hitl_resume_claim.as_ref() {
+            run.metadata.insert(
+                HITL_RESUME_PREFLIGHT_SOURCE_RUN_ID_METADATA_KEY.to_string(),
+                json!(claim.run_id.as_str()),
+            );
+        }
         apply_starweaver_run_metadata(
             &mut run,
             command,
@@ -407,7 +569,6 @@ impl CliService {
                 ),
             );
         }
-        write_current_session(&self.config, &session_id)?;
         let hitl = command.hitl.unwrap_or(self.config.default_hitl);
         let goal = command
             .goal
@@ -432,7 +593,52 @@ impl CliService {
             } else {
                 CliAgentExecutionHost::blocking()
             },
+            hitl_resume_claim,
         })
+    }
+
+    pub(super) fn start_prepared_hitl_resume(
+        &self,
+        prepared: &mut PreparedPromptRun,
+    ) -> CliResult<()> {
+        let Some(claim) = prepared.hitl_resume_claim.take() else {
+            return Ok(());
+        };
+        let session_id = claim.session_id;
+        let source_run_id = claim.run_id;
+        let claim_id = claim.claim_id;
+        if let Err(error) = run_hitl_resume_claim_operation(
+            self.config.clone(),
+            HitlResumeClaimOperation::Start {
+                session_id: session_id.clone(),
+                run_id: source_run_id.clone(),
+                claim_id: claim_id.clone(),
+            },
+        ) {
+            let release = run_hitl_resume_claim_operation(
+                self.config.clone(),
+                HitlResumeClaimOperation::Release {
+                    session_id,
+                    run_id: source_run_id,
+                    claim_id,
+                },
+            );
+            return match release {
+                Ok(()) => Err(error),
+                Err(release_error) => Err(CliError::Storage(format!(
+                    "{error}; failed to release preflight HITL claim: {release_error}"
+                ))),
+            };
+        }
+        prepared.run.metadata.insert(
+            HITL_RESUME_CLAIM_ID_METADATA_KEY.to_string(),
+            json!(claim_id),
+        );
+        prepared.run.metadata.insert(
+            HITL_RESUME_SOURCE_RUN_ID_METADATA_KEY.to_string(),
+            json!(source_run_id.as_str()),
+        );
+        Ok(())
     }
 
     pub(super) fn run_prepared_prompt(
@@ -750,6 +956,7 @@ impl CliService {
     fn resume(&mut self, command: &ResumeCommand) -> CliResult<String> {
         let session_id = self.resolve_session_id(command.session.as_deref())?;
         let source_run = self.resolve_resume_run(&session_id, command.run.as_deref())?;
+        let hitl_resume = source_run.status == RunStatus::Waiting;
         let run_command = RunCommand {
             prompt: Some(format!(
                 "{}\n\nResuming from run {} with any persisted approval and deferred-tool decisions.",
@@ -773,6 +980,7 @@ impl CliService {
             branch: None,
             session_affinity_id: None,
             environment_attachments: Vec::new(),
+            hitl_resume,
         };
         self.run_prompt(&run_command)
     }
@@ -809,6 +1017,47 @@ impl CliService {
             .ok_or_else(|| CliError::NotFound("run".to_string()))?;
         self.store()?.load_run(session_id, run_id.as_str())
     }
+}
+
+fn run_hitl_resume_claim_operation(
+    config: CliConfig,
+    operation: HitlResumeClaimOperation,
+) -> CliResult<()> {
+    thread::spawn(move || {
+        let store =
+            LocalSessionStore::new(config).map_err(|error| CliError::Storage(error.to_string()))?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| CliError::Run(error.to_string()))?;
+        runtime
+            .block_on(async {
+                match operation {
+                    HitlResumeClaimOperation::Claim(claim) => store.claim_hitl_resume(claim).await,
+                    HitlResumeClaimOperation::Start {
+                        session_id,
+                        run_id,
+                        claim_id,
+                    } => {
+                        store
+                            .mark_hitl_resume_started(&session_id, &run_id, &claim_id)
+                            .await
+                    }
+                    HitlResumeClaimOperation::Release {
+                        session_id,
+                        run_id,
+                        claim_id,
+                    } => {
+                        store
+                            .release_hitl_resume_claim(&session_id, &run_id, &claim_id)
+                            .await
+                    }
+                }
+            })
+            .map_err(|error| CliError::Storage(error.to_string()))
+    })
+    .join()
+    .map_err(|_| CliError::Run("HITL resume claim worker panicked".to_string()))?
 }
 
 #[allow(dead_code)]

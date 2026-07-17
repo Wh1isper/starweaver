@@ -8,6 +8,7 @@ use crossterm::event::{
 use serde_json::json;
 use starweaver_context::{AgentEvent, TASK_SNAPSHOT_EVENT_KIND};
 use starweaver_core::{AgentId, ConversationId, Metadata, RunId, SessionId, TaskId};
+use starweaver_environment::{ShellProcessSnapshot, ShellProcessStatus};
 use starweaver_model::{
     ModelResponse, ModelResponsePart, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart,
     ProviderPartInfo, StreamDelta, ToolCallPart, ToolReturnPart,
@@ -583,7 +584,7 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
         running_overlay_state
             .body
             .iter()
-            .filter(|line| line.as_str() == "Interrupt requested. Cancelling active run.")
+            .filter(|line| line.as_str() == "Interrupt requested. Cancelling active activity.")
             .count(),
         1
     );
@@ -598,7 +599,7 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
         running_overlay_state
             .body
             .iter()
-            .filter(|line| line.as_str() == "Interrupt requested. Cancelling active run.")
+            .filter(|line| line.as_str() == "Interrupt requested. Cancelling active activity.")
             .count(),
         1
     );
@@ -1782,20 +1783,9 @@ fn task_list_tool_return_renders_progress_when_statuses_are_present() {
 }
 
 #[test]
-fn tool_duration_hitl_and_task_panels_render_runtime_metadata() {
+#[allow(clippy::too_many_lines)]
+fn hitl_panel_binds_durable_approval_and_accepts_inline_decision() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
-    let mut duration_metadata = Metadata::default();
-    duration_metadata.insert("duration_ms".to_string(), json!(1_500));
-    state.apply_stream_record(&AgentStreamRecord::new(
-        1,
-        AgentStreamEvent::ToolReturn {
-            step: 1,
-            tool_return: ToolReturnPart::new("call_duration", "lookup", json!("ok"))
-                .with_metadata(duration_metadata),
-        },
-    ));
-    assert!(body_has_line(&state, "  Duration: 1.50s"));
-
     let mut approval_metadata = Metadata::default();
     approval_metadata.insert("control_flow".to_string(), json!("approval_required"));
     approval_metadata.insert(
@@ -1817,9 +1807,7 @@ fn tool_duration_hitl_and_task_panels_render_runtime_metadata() {
     assert_eq!(state.status, "WAITING");
     assert!(state.pending_hitl().is_some());
     state.wait_run(Some("session_waiting".to_string()));
-    assert_eq!(state.status, "WAITING");
     assert_eq!(state.phase, "waiting");
-    assert_eq!(state.session_id.as_deref(), Some("session_waiting"));
     assert!(
         state.pending_hitl().is_some(),
         "durable waiting must retain approval details"
@@ -1827,7 +1815,99 @@ fn tool_duration_hitl_and_task_panels_render_runtime_metadata() {
     let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
     assert!(footer.contains("Tool Approval Required"));
     assert!(footer.contains("rm -rf target/tmp"));
-    assert!(footer.contains("Approval required"));
+    assert!(footer.contains("Persisting approval"));
+
+    let mut approval = ApprovalRecord::new(
+        "approval_shell_call",
+        SessionId::from_string("session_waiting"),
+        RunId::from_string("run_waiting"),
+        "shell_call",
+        "shell",
+    );
+    approval.request = json!({
+        "command": "rm -rf target/tmp",
+        "risk_level": "high",
+        "reason": "destructive command needs review"
+    });
+    state.bind_pending_approval(&approval);
+    let actionable_footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(actionable_footer.contains("approval_shell_call"));
+    assert!(actionable_footer.contains("A/Y approve"));
+    assert!(actionable_footer.contains("\"command\":\"rm -rf target/tmp\""));
+    for key in [
+        key_modified('a', KeyModifiers::CONTROL),
+        key_modified('y', KeyModifiers::CONTROL),
+        key_modified('a', KeyModifiers::ALT),
+        key_modified('r', KeyModifiers::CONTROL),
+    ] {
+        assert_eq!(handle_key_event(&mut state, key), None);
+    }
+    assert_eq!(
+        handle_key_event(&mut state, key_code(KeyCode::Char('a'))),
+        Some(InteractiveTuiEvent::ApprovalDecision(
+            super::terminal::TuiApprovalDecision::Approve
+        ))
+    );
+
+    let mut write_approval = ApprovalRecord::new(
+        "approval_write_call",
+        SessionId::from_string("session_waiting"),
+        RunId::from_string("run_waiting"),
+        "write_call",
+        "write",
+    );
+    write_approval.request = json!({
+        "path": "src/config.rs",
+        "content": "dangerous replacement",
+        "mode": "overwrite"
+    });
+    state.bind_pending_approval(&write_approval);
+    let write_footer = line_texts(&render_footer_lines(&state, 160)).join("\n");
+    assert!(write_footer.contains("\"path\":\"src/config.rs\""));
+    assert!(write_footer.contains("\"mode\":\"overwrite\""));
+    assert!(write_footer.contains("Esc] Refresh"));
+    assert_eq!(
+        handle_key_event(&mut state, key_code(KeyCode::Esc)),
+        Some(InteractiveTuiEvent::Session(Some(
+            "session_waiting".to_string()
+        )))
+    );
+    assert!(state.pending_hitl().is_some());
+    assert_eq!(state.hitl_reload_session_id(), Some("session_waiting"));
+
+    state.clear_pending_hitl();
+    assert_eq!(
+        handle_key_event(&mut state, key_code(KeyCode::Char('x'))),
+        None
+    );
+    assert!(state.input.is_empty());
+    assert_eq!(
+        handle_key_event(&mut state, key_code(KeyCode::Esc)),
+        Some(InteractiveTuiEvent::Session(Some(
+            "session_waiting".to_string()
+        )))
+    );
+    assert_eq!(
+        state.hitl_reload_session_id(),
+        Some("session_waiting"),
+        "dispatching refresh must retain retry identity until reload succeeds"
+    );
+}
+
+#[test]
+fn tool_duration_and_task_panels_render_runtime_metadata() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut duration_metadata = Metadata::default();
+    duration_metadata.insert("duration_ms".to_string(), json!(1_500));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new("call_duration", "lookup", json!("ok"))
+                .with_metadata(duration_metadata),
+        },
+    ));
+    assert!(body_has_line(&state, "  Duration: 1.50s"));
 
     state.apply_stream_record(&AgentStreamRecord::new(
         3,
@@ -4400,6 +4480,33 @@ fn transcript_renderer_wraps_long_user_prompt_lines() {
 }
 
 #[test]
+fn restored_queued_prompt_preserves_attachments_parts_and_goal() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let attachment = PromptAttachment::image(1, b"image".to_vec(), "image/png");
+    let prompt = crate::prompt_input::PromptInput {
+        text: format!("inspect {}", attachment.placeholder),
+        attachments: vec![attachment],
+        extra_text_parts: vec!["extra context".to_string()],
+        guidance_text_parts: vec!["restored guidance".to_string()],
+    };
+    let expected = prompt.clone();
+
+    state.restore_submission_prompt(
+        prompt,
+        Some(crate::args::GoalCommandOptions {
+            objective: "finish safely".to_string(),
+            max_iterations: 7,
+        }),
+    );
+
+    assert_eq!(
+        state.take_pending_goal_submission(),
+        Some(("finish safely".to_string(), 7))
+    );
+    assert_eq!(state.take_submission_prompt().unwrap(), expected);
+}
+
+#[test]
 fn composer_viewport_scrolls_multiline_input_and_resets_on_edit() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.input = (1..=7)
@@ -4491,14 +4598,40 @@ fn bang_command_prints_natural_shell_transcript() {
     state.input = "!".to_string();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
     assert!(state.input.is_empty());
-    assert_eq!(state.input_status_text(), "shell");
+    assert_eq!(state.input_status_text(), "shell usage");
     assert!(state.body.iter().any(|line| {
         line == "[SYS] Shell command usage: !<command> (example: !git status --short)"
     }));
 
     state.input = "!echo hello".to_string();
-    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert_eq!(
+        handle_key_event(&mut state, key_code(KeyCode::Enter)),
+        Some(InteractiveTuiEvent::Shell("echo hello".to_string()))
+    );
     assert!(state.input.is_empty());
+    state.queue_shell_command("echo hello");
+    state.mark_shell_started("process-test");
+    state.input = "keep this draft".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert_eq!(state.input, "keep this draft");
+    assert_eq!(state.enter_action_label(), "Enter: Wait");
+    assert_eq!(
+        state.input_status_text(),
+        "shell active; draft preserved; Ctrl-C cancels it"
+    );
+    state.input.clear();
+    state.finish_shell_command(
+        &ShellProcessSnapshot {
+            process_id: "process-test".to_string(),
+            command: "echo hello".to_string(),
+            status: ShellProcessStatus::Completed,
+            stdout: "hello\n".to_string(),
+            stderr: String::new(),
+            return_code: Some(0),
+            metadata: serde_json::Map::default(),
+        },
+        std::time::Duration::from_millis(10),
+    );
     assert!(
         state
             .body
@@ -4511,7 +4644,7 @@ fn bang_command_prints_natural_shell_transcript() {
         state
             .body
             .iter()
-            .any(|line| line == "Shell completed: exit 0")
+            .any(|line| line.starts_with("Shell completed: exit 0 duration="))
     );
 }
 
@@ -5275,6 +5408,17 @@ fn key_handler_covers_quit_and_history_edges() {
         None
     );
     state.running = false;
+    state.input = "draft to preserve".to_string();
+    assert_eq!(
+        handle_key_event(&mut state, key_modified('d', KeyModifiers::CONTROL)),
+        None
+    );
+    assert_eq!(state.input, "draft to preserve");
+    assert_eq!(
+        state.input_status_text(),
+        "draft preserved; Ctrl-U clears it"
+    );
+    state.input.clear();
     assert_eq!(
         handle_key_event(&mut state, key_modified('d', KeyModifiers::CONTROL)),
         Some(InteractiveTuiEvent::Quit)

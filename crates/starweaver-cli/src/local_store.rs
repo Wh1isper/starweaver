@@ -12,9 +12,9 @@ use starweaver_model::{ModelMessage, ModelRequest, ModelRequestPart, ToolReturnP
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
 use starweaver_session::{
     ApprovalRecord, ApprovalStatus, DeferredToolRecord, EnvironmentStateRef, ExecutionStatus,
-    InputPart, RunRecord, RunStatus, SessionRecord, SessionSearchError, SessionSearchPage,
-    SessionSearchProvider, SessionSearchQuery, SessionSearchScope, SessionStatus,
-    SessionStoreError, StreamCursorRef,
+    InputPart, RelatedRunUpdate, RunRecord, RunStatus, SessionRecord, SessionSearchError,
+    SessionSearchPage, SessionSearchProvider, SessionSearchQuery, SessionSearchScope,
+    SessionStatus, SessionStoreError, StreamCursorRef,
 };
 use starweaver_storage::{LocalSessionSearchProvider, RunEvidenceCommit, SqliteStorage};
 use starweaver_stream::{DisplayMessage, ReplayCursor, ReplayScope, ReplaySnapshot};
@@ -35,6 +35,11 @@ use hitl::{
 };
 pub use replay::DisplayReplayWindow;
 pub use session_store::LocalSessionStore;
+
+pub const HITL_RESUME_CLAIM_ID_METADATA_KEY: &str = "starweaver.cli.hitl_resume_claim_id";
+pub const HITL_RESUME_SOURCE_RUN_ID_METADATA_KEY: &str = "starweaver.cli.hitl_resume_source_run_id";
+pub const HITL_RESUME_PREFLIGHT_SOURCE_RUN_ID_METADATA_KEY: &str =
+    "starweaver.cli.hitl_resume_preflight_source_run_id";
 
 /// Local product facade backed by the workspace-wide canonical `SQLite` schema.
 pub struct LocalStore {
@@ -276,6 +281,12 @@ impl LocalStore {
             .display_messages
             .clone_from(&artifacts.display_messages);
         commit.display_snapshot = Some(display_snapshot.clone());
+        let source_status = if run.status.is_terminal() {
+            run.status
+        } else {
+            RunStatus::Completed
+        };
+        attach_hitl_resume_update(run, &mut commit, source_status)?;
         *run = self
             .storage
             .commit_run_evidence(commit)
@@ -311,8 +322,12 @@ impl LocalStore {
         run.status = RunStatus::Failed;
         run.output_preview = Some(message);
         run.updated_at = Utc::now();
-        let mut commit = RunEvidenceCommit::new(run.clone(), session.state);
+        let mut state = session.state;
+        state.run_id = Some(run.run_id.clone());
+        state.conversation_id = Some(run.conversation_id.clone());
+        let mut commit = RunEvidenceCommit::new(run.clone(), state);
         commit.display_messages = messages.to_vec();
+        attach_hitl_resume_update(run, &mut commit, RunStatus::Failed)?;
         *run = self
             .storage
             .commit_run_evidence(commit)
@@ -768,6 +783,37 @@ const fn session_status_name(status: SessionStatus) -> &'static str {
         SessionStatus::Archived => "archived",
         SessionStatus::Failed => "failed",
         SessionStatus::Deleted => "deleted",
+    }
+}
+
+fn attach_hitl_resume_update(
+    run: &RunRecord,
+    commit: &mut RunEvidenceCommit,
+    source_status: RunStatus,
+) -> CliResult<()> {
+    let claim_id = run
+        .metadata
+        .get(HITL_RESUME_CLAIM_ID_METADATA_KEY)
+        .and_then(Value::as_str);
+    let source_run_id = run
+        .metadata
+        .get(HITL_RESUME_SOURCE_RUN_ID_METADATA_KEY)
+        .and_then(Value::as_str);
+    match (claim_id, source_run_id) {
+        (None, None) => Ok(()),
+        (Some(claim_id), Some(source_run_id)) => {
+            let mut update = RelatedRunUpdate::new(
+                RunId::from_string(source_run_id),
+                RunStatus::Waiting,
+                source_status,
+            );
+            update.resume_claim_id = Some(claim_id.to_string());
+            commit.related_run_updates.push(update);
+            Ok(())
+        }
+        _ => Err(CliError::Storage(
+            "incomplete HITL resume claim metadata on continuation run".to_string(),
+        )),
     }
 }
 

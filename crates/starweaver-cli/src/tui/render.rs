@@ -314,10 +314,11 @@ pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
             "Run task toward a verified goal until complete",
         ),
         ("/paste-image", "Attach image from system clipboard"),
+        ("!<command>", "Run an asynchronous shell command inline"),
     ];
     let key_rows = [
-        ("Ctrl+C", "Interrupt active run or exit"),
-        ("Ctrl+D", "Exit"),
+        ("Ctrl+C", "Interrupt, clear a draft, or exit"),
+        ("Ctrl+D", "Exit only when idle with an empty composer"),
         ("Ctrl+V", "Attach image from system clipboard"),
         ("Tab", "Toggle Enter between send and newline"),
         ("Ctrl+O", "Insert newline"),
@@ -329,6 +330,9 @@ pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
         ("Alt+Up/Down", "Scroll multiline input"),
         ("PageUp/PageDown", "Scroll transcript"),
         ("Mouse wheel", "Scroll transcript"),
+        ("Ctrl+L", "Jump to live output"),
+        ("Esc", "Select transcript or refresh pending HITL state"),
+        ("A/Y or R/N", "Approve or reject a pending action"),
     ];
     let mut lines = Vec::new();
     lines.push(StyledLine::plain(""));

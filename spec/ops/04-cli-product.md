@@ -88,24 +88,24 @@ Current landed CLI foundations:
 - headless prompt runs, local SQLite sessions/runs, display JSONL replay, approval/deferred commands, resume, trim, current-session pointer, and retained TUI renderer
 - config parser for global/project roots, model profiles, selected environment values, tools/MCP metadata, skill/subagent directories, and unmapped metadata
 - global config bootstrap under `~/.starweaver`, including `skills`, `subagents`, and `tui` state directories
-- TUI state/render/terminal modules, active-run steering, `/help`, `/clear`, `/cost`, `/model`, `/goal`, shell passthrough, streamed tool-call rendering, process-level provider session affinity, and model choice persistence under `~/.starweaver/tui/state.json`
+- responsive TUI state/render/terminal modules, active-run steering, session restore, inline durable HITL decisions, `/help`, `/clear`, `/cost`, `/display`, `/model`, `/session`, `/goal`, asynchronous environment-backed bang-shell execution, streamed tool-call rendering, process-level provider session affinity, and model/display persistence under `~/.starweaver/tui/state.json`
 - partial worktree parsing and run metadata support
 
 Current implementation shape for headless execution:
 
 - one-shot `run_prompt` renders stored `DisplayMessage` records after run completion
-- CLI and TUI active runs use `CliRuntimeCoordinator`, which is private to the CLI product and owns active-run registration, live display projection, raw runtime forwarding for TUI, cancellation senders, and steering senders
+- CLI and TUI active runs use `CliRuntimeCoordinator`, which is private to the CLI product and owns active-run registration, bounded live display projection, bounded raw runtime forwarding for TUI, cancellation senders, steering senders, background-subagent completion wake-up, and bounded shutdown
+- TUI bang-shell execution uses the selected `ProcessShellProvider`, a service-owned worker, bounded event delivery and output capture, process-tree cancellation, and bounded worker cleanup; it never launches an untracked `std::process::Command` from UI state
+- CLI and TUI HITL continuation resolves the source from the durable session's active `Waiting` run or a failed pre-start continuation lineage, acquires the shared exclusive `HitlResumeClaim` before allocating a continuation run, marks it started before model/tool execution, and has `LocalStore` consume the claim and transition the waiting source through `RelatedRunUpdate` in the same atomic evidence commit as the continuation; unresolved records and active waiting-continuation lineages block ordinary prompt admission, terminal-head resume stays on the normal continuation path, queued TUI prompts have explicit retry/reconcile transitions, and TUI refresh identity survives transient reload failures
 - `LocalStore` persists sessions, runs, raw stream records, display messages, approvals, deferred calls, context state, environment state, checkpoints, replay snapshots, and current-session state; `LocalSessionStore` and `LocalStreamArchive` adapt that store to the shared `SessionStore` and `StreamArchive` contracts while exposing persisted display output as `ReplayScope` / `ReplayCursor` windows during storage convergence
 
 Primary postponed migration gaps:
 
 - normalized JSON output for CLI management subsets
 - live stdout streaming for one-shot headless output
-- deeper TUI session/task/HITL/media workflows, including the query-only agent session bundle
-- TUI-lifetime async subagent supervision, completion wake-up, cancellation, and shutdown drain
+- deeper TUI media workflows and grant-gated agent session mutation workflows
 - startup asset seeding and config import
-- envd environment attachments, active-run mount/unmount/list controls, and
-  lifecycle stream projection
+- active-run environment mount/unmount/list controls and lifecycle stream projection
 - shell environment isolation, shell review, media config, browser config, and OAuth refresh settings
 - worktree flag semantics and session-folder import/export
 

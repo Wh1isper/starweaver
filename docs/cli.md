@@ -436,7 +436,7 @@ Session search is read-only and does not select or resume a hit. Its query is ca
 
 ## TUI snapshot and human-in-the-loop policy
 
-The CLI TUI opens a Codex-style inline terminal viewport when stdin and stdout are TTYs. On a fresh machine, it renders a bordered session header card, implemented startup shortcuts, a no-border bottom composer with `› Ask Starweaver to do anything`, and a compact footer with `? for shortcuts` plus right-aligned context. Type a prompt and press Enter or Tab to start a background run; pressing Tab while a run is active queues the draft for the next run. Runtime stream records update the scrollback while the input area stays responsive. Assistant output follows Codex-style terminal Markdown rendering: raw assistant Markdown is parsed with `pulldown-cmark`, reflowed at the current viewport width, and styled for headings, lists, blockquotes, fenced code, inline code, emphasis, strong text, links, and horizontal rules.
+The CLI TUI opens a full-screen terminal viewport when stdin and stdout are TTYs. An explicit `--interactive` request fails with a product-level error when either stream is not a TTY. On a fresh machine, the TUI renders a bordered session header card, startup shortcuts, a no-border bottom composer with `› Ask Starweaver to do anything`, and a compact status footer. Type a prompt and press Enter to start a background run. Tab toggles whether Enter sends or inserts a newline; `Ctrl+O` always inserts a newline. While an agent run is active, Enter sends the draft as steering input. Runtime stream records update the scrollback while input stays responsive, and scrolling away from the bottom keeps the viewport stable until `Ctrl+L` restores live following. Assistant output uses terminal Markdown rendering: raw assistant Markdown is parsed with `pulldown-cmark`, reflowed at the current viewport width, and styled for headings, lists, blockquotes, fenced code, inline code, emphasis, strong text, links, and horizontal rules.
 
 ```bash
 sw tui
@@ -460,6 +460,8 @@ Interactive slash commands:
 | `!<command>`       | Run a shell command and show output inline          |
 
 `/clear` succeeds only after the current-session pointer is cleared. It then removes the transcript, prompt recall, attachments, task/subagent panels, HITL state, goal state, and other conversation-scoped UI state. It preserves the selected profile, display policy, process-level provider affinity, and cumulative TUI usage shown by `/cost`. Background subagents remain owned by the detached durable session's supervisor scope, so their completions cannot wake the fresh context; reloading that session can resume its pending delivery.
+
+`!<command>` starts a background process through the selected `EnvironmentProvider`; it does not invoke an untracked host process directly. The TUI stays responsive while the command runs, preserves composer drafts, bounds captured output through the provider, and shows the terminal process snapshot inline. Agent runs and bang-shell processes are mutually exclusive. Press `Ctrl+C` to request process-tree cleanup; a second `Ctrl+C` restores the terminal and waits for bounded cleanup before exit. Cleanup failures include the provider process id and explicitly warn when manual cleanup may be required.
 
 `/goal <task>` submits one runtime goal run. Goal progress is managed by runtime output validation: incomplete output emits `goal_iteration` and retries the model inside the same run, while verified completion or the iteration ceiling emits `goal_complete`. Configure the ceiling with `general.max_goal_iterations` in `config.toml`; the default is `10`.
 
@@ -505,23 +507,27 @@ starweaver-cli run "/rv src/service.rs"
 
 Interactive keys:
 
-| Key                     | Action                                             |
-| ----------------------- | -------------------------------------------------- |
-| `Enter`                 | Submit message                                     |
-| `Tab`                   | Submit message, or queue while running             |
-| `Ctrl-O`                | Insert a newline                                   |
-| `?`                     | Show or hide shortcut overlay from an empty prompt |
-| `Shift-Tab`             | Toggle ACT/PLAN mode                               |
-| `Ctrl-R`                | Recall the previous prompt                         |
-| `Up` / `Down`           | Browse prompt history                              |
-| `PageUp` / `PageDown`   | Scroll transcript                                  |
-| Mouse wheel             | Scroll transcript                                  |
-| `Ctrl-Up` / `Ctrl-Down` | Scroll transcript one line                         |
-| `Ctrl-L`                | Jump to the live bottom                            |
-| `Esc`                   | Enter transcript selection mode while idle         |
-| `Ctrl-C`                | Request interruption during a run; exit while idle |
-| `Ctrl-D`                | Exit                                               |
-| `q`                     | Exit from an empty idle prompt                     |
+| Key                      | Action                                                |
+| ------------------------ | ----------------------------------------------------- |
+| `Enter`                  | Send, steer an active run, or select a picker item    |
+| `Tab`                    | Toggle Enter between send and newline                 |
+| `Ctrl-O`                 | Insert a newline                                      |
+| `Ctrl-P` / `Ctrl-N`      | Browse prompt history                                 |
+| `Up` / `Down`            | Move across visual composer lines                     |
+| `Alt-Left` / `Alt-Right` | Move by word                                          |
+| `Ctrl-A` / `Ctrl-E`      | Move to visual line start/end                         |
+| `PageUp` / `PageDown`    | Scroll transcript                                     |
+| Mouse wheel              | Scroll transcript                                     |
+| `Ctrl-Up` / `Ctrl-Down`  | Scroll transcript one line                            |
+| `Ctrl-L`                 | Jump to the live bottom                               |
+| `Esc`                    | Enter selection mode, or refresh pending HITL state   |
+| `A` / `Y`                | Approve the displayed durable approval                |
+| `R` / `N`                | Reject the displayed durable approval                 |
+| `Ctrl-C`                 | Interrupt activity, clear a draft, or exit when empty |
+| `Ctrl-D`                 | Exit only while idle with an empty composer           |
+| `Ctrl-U`                 | Clear the composer                                    |
+
+When a run waits for approval, the TUI binds the panel to the persisted `ApprovalRecord`, displays the approval id, tool identity, structured fields, and a bounded JSON request preview, then accepts only unmodified `A`/`Y` or `R`/`N`. `Esc` reloads the session and reconciles durable state; its refresh target remains available after a transient load failure, including deferred-only waits without an approval panel. The service always verifies the durable session's active run and restore lineage before accepting a prompt. An unresolved `Waiting` source or an active continuation from that source blocks ordinary admission. A prompt submitted during a state-change race remains queued: it starts after external reconciliation, or retries after a pre-start continuation failure. Resolving the final record acquires an exclusive preflight `HitlResumeClaim` before allocating the continuation run, marks it started before model or tool execution, and atomically consumes the waiting source run with continuation evidence before any retained prompt starts. This prevents another TUI or headless client from publishing or executing a competing continuation. Deferred-only waits remain visible until their durable results are completed.
 
 The retained snapshot renderer remains available for scripts, tests, and display-message replay. It uses the same replay source as headless JSONL and session replay. Interactive render-mode projection applies to live TUI sessions; snapshot output replays stored display messages directly.
 
@@ -560,7 +566,7 @@ starweaver-cli deferred fail <deferred-id> --error "worker failed"
 starweaver-cli resume --session <session-id> --prompt "continue after review"
 ```
 
-`resume` appends a continuation run from the waiting or head run state. Service-managed same-run checkpoint reload, interruption APIs, service transports, workflows, and schedules belong to future service adapters.
+`resume` appends a continuation run from the waiting or head run state. A `Waiting` source uses the exclusive HITL claim path; a terminal head continues normally without creating a resume claim. Pending approval or deferred records still block the waiting path before a continuation run is allocated. Service-managed same-run checkpoint reload, interruption APIs, service transports, workflows, and schedules belong to future service adapters.
 
 ## JSON-RPC host service
 

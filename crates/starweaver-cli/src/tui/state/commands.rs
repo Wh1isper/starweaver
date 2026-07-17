@@ -1,4 +1,6 @@
-use std::{env, fmt::Write as _, path::Path, process::Command};
+use std::{fmt::Write as _, time::Duration};
+
+use starweaver_environment::{ShellProcessSnapshot, ShellProcessStatus};
 
 use super::{
     FooterMode, InteractiveTuiState, LocalCommandOutcome, ModelChoice, model_choice_config_suffix,
@@ -69,8 +71,17 @@ impl InteractiveTuiState {
             self.clear_composer_input();
             self.pending_attachments.clear();
             self.footer_mode = FooterMode::Context;
-            self.run_shell_command(command.trim());
-            self.input_status = Some("shell".to_string());
+            let command = command.trim();
+            if command.is_empty() {
+                self.push_transcript_notice(
+                    "[SYS] Shell command usage: !<command> (example: !git status --short)"
+                        .to_string(),
+                );
+                self.input_status = Some("shell usage".to_string());
+            } else {
+                self.pending_shell_command = Some(command.to_string());
+                self.input_status = Some("starting shell".to_string());
+            }
             return LocalCommandOutcome::Consumed;
         }
         if input == "/goal" || input.starts_with("/goal ") {
@@ -176,15 +187,21 @@ impl InteractiveTuiState {
         lines.extend([
             String::new(),
             "Shortcuts".to_string(),
-            "  Up/Down           Browse prompt history".to_string(),
+            "  Enter             Send, steer, or select model/session".to_string(),
+            "  Tab               Toggle Enter between send and newline".to_string(),
+            "  Ctrl+O            Insert a newline".to_string(),
+            "  Ctrl+P/N          Browse prompt history".to_string(),
+            "  Up/Down           Move across visual composer lines".to_string(),
             "  Ctrl+A/E          Move to line start/end".to_string(),
             "  Alt+Left/Right    Move by word".to_string(),
             "  Cmd+Left/Right    Move to line start/end".to_string(),
             "  PageUp/PageDown   Scroll transcript".to_string(),
             "  Mouse wheel       Scroll transcript".to_string(),
-            "  Enter             Send message or select model/session".to_string(),
-            "  Tab               Queue a draft while running".to_string(),
-            "  Ctrl+C            Interrupt or exit".to_string(),
+            "  Ctrl+L            Jump to live output".to_string(),
+            "  Esc               Select transcript; refresh HITL panel".to_string(),
+            "  Ctrl+C            Interrupt, clear draft, or exit".to_string(),
+            "  Ctrl+D            Exit only from an empty idle composer".to_string(),
+            "  A/Y or R/N        Approve or reject a pending HITL action".to_string(),
         ]);
         self.push_transcript_lines(lines);
     }
@@ -328,104 +345,70 @@ impl InteractiveTuiState {
         self.push_transcript_lines(self.format_cost_summary_lines());
     }
 
-    fn run_shell_command(&mut self, command: &str) {
-        if command.is_empty() {
-            self.push_transcript_notice(
-                "[SYS] Shell command usage: !<command> (example: !git status --short)".to_string(),
-            );
-            return;
+    pub(crate) const fn take_pending_shell_command(&mut self) -> Option<String> {
+        self.pending_shell_command.take()
+    }
+
+    pub(crate) fn queue_shell_command(&mut self, command: &str) {
+        self.shell_running = true;
+        self.cancel_requested = false;
+        self.status = "SHELL".to_string();
+        self.phase = "shell starting".to_string();
+        self.input_status = Some("shell starting".to_string());
+        self.push_transcript_lines(vec![
+            format!("Shell command: {command}"),
+            "Shell starting".to_string(),
+        ]);
+    }
+
+    pub(crate) fn mark_shell_started(&mut self, process_id: &str) {
+        self.phase = "shell running".to_string();
+        self.input_status = Some(format!("shell process {process_id}"));
+        self.push_transcript_lines(vec![format!("Shell started: {process_id}")]);
+    }
+
+    pub(crate) fn finish_shell_command(
+        &mut self,
+        snapshot: &ShellProcessSnapshot,
+        elapsed: Duration,
+    ) {
+        self.shell_running = false;
+        self.cancel_requested = false;
+        self.status = "IDLE".to_string();
+        self.phase = match snapshot.status {
+            ShellProcessStatus::Completed => "shell completed",
+            ShellProcessStatus::Failed => "shell failed",
+            ShellProcessStatus::Killed => "shell cancelled",
+            ShellProcessStatus::Running => "shell running",
         }
-        let mut lines = vec![format!("Shell command: {command}")];
-        match tui_shell_command(command).output() {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                push_shell_output_lines(&mut lines, "stdout", &stdout);
-                push_shell_output_lines(&mut lines, "stderr", &stderr);
-                let status = output
-                    .status
-                    .code()
-                    .map_or_else(|| "signal".to_string(), |code| code.to_string());
-                if output.status.success() {
-                    lines.push(format!("Shell completed: exit {status}"));
-                } else {
-                    lines.push(format!("Shell failed: exit {status}"));
-                }
+        .to_string();
+        let mut lines = Vec::new();
+        push_shell_output_lines(&mut lines, "stdout", &snapshot.stdout);
+        push_shell_output_lines(&mut lines, "stderr", &snapshot.stderr);
+        let exit = snapshot
+            .return_code
+            .map_or_else(|| "signal".to_string(), |code| code.to_string());
+        let elapsed = format!("{:.2}s", elapsed.as_secs_f64());
+        lines.push(match snapshot.status {
+            ShellProcessStatus::Completed => {
+                format!("Shell completed: exit {exit} duration={elapsed}")
             }
-            Err(error) => lines.push(format!("Shell error: {error}")),
-        }
+            ShellProcessStatus::Failed => {
+                format!("Shell failed: exit {exit} duration={elapsed}")
+            }
+            ShellProcessStatus::Killed => format!("Shell cancelled: duration={elapsed}"),
+            ShellProcessStatus::Running => format!("Shell still running: duration={elapsed}"),
+        });
+        self.input_status = Some(self.phase.clone());
         self.push_transcript_lines(lines);
     }
-}
 
-fn tui_shell_command(command: &str) -> Command {
-    let executable = tui_shell_executable();
-    let mut process = Command::new(&executable);
-    if uses_windows_cmd(&executable) {
-        process.arg("/C");
-    } else {
-        process.arg("-lc");
+    pub(crate) fn fail_shell_command(&mut self, error: &str) {
+        self.shell_running = false;
+        self.cancel_requested = false;
+        self.status = "IDLE".to_string();
+        self.phase = "shell error".to_string();
+        self.input_status = Some("shell error".to_string());
+        self.push_transcript_notice(format!("[SYS] Shell error: {error}"));
     }
-    process.arg(command);
-    process
-}
-
-fn tui_shell_executable() -> String {
-    #[cfg(windows)]
-    {
-        if let Some(shell) = env::var_os("SHELL").as_deref().and_then(valid_shell_value) {
-            return shell;
-        }
-        if let Some(shell) = find_executable_in_path(&["bash.exe", "bash", "sh.exe", "sh"]) {
-            return shell;
-        }
-        for candidate in [
-            r"C:\Program Files\Git\bin\bash.exe",
-            r"C:\Program Files\Git\usr\bin\sh.exe",
-        ] {
-            let path = std::path::PathBuf::from(candidate);
-            if path.is_file() {
-                return path.to_string_lossy().to_string();
-            }
-        }
-        env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
-    }
-
-    #[cfg(not(windows))]
-    {
-        env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
-    }
-}
-
-#[cfg(windows)]
-fn valid_shell_value(value: &std::ffi::OsStr) -> Option<String> {
-    if value.is_empty() {
-        return None;
-    }
-    let shell = Path::new(value);
-    if shell.components().count() > 1 && !shell.is_file() {
-        return None;
-    }
-    Some(value.to_string_lossy().to_string())
-}
-
-#[cfg(windows)]
-fn find_executable_in_path(names: &[&str]) -> Option<String> {
-    let path = env::var_os("PATH")?;
-    for directory in env::split_paths(&path) {
-        for name in names {
-            let candidate = directory.join(name);
-            if candidate.is_file() {
-                return Some(candidate.to_string_lossy().to_string());
-            }
-        }
-    }
-    None
-}
-
-fn uses_windows_cmd(executable: &str) -> bool {
-    Path::new(executable)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .is_some_and(|stem| stem.eq_ignore_ascii_case("cmd"))
 }

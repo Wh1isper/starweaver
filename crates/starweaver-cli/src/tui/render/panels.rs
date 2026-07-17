@@ -47,6 +47,15 @@ pub(super) fn render_hitl_panel(hitl: &HitlPanelState, width: usize) -> Vec<Styl
             style: SegmentStyle::dim(),
         },
     ]);
+    if let Some(approval_id) = hitl.approval_id.as_deref() {
+        push_detail_row(
+            &mut rows,
+            "approval:",
+            approval_id,
+            inner_width,
+            SegmentStyle::dim(),
+        );
+    }
     push_detail_row(
         &mut rows,
         "tool:",
@@ -70,6 +79,15 @@ pub(super) fn render_hitl_panel(hitl: &HitlPanelState, width: usize) -> Vec<Styl
             SegmentStyle::warning(),
         );
     }
+    if let Some(request) = hitl.request_preview.as_deref() {
+        push_detail_row(
+            &mut rows,
+            "request:",
+            request,
+            inner_width,
+            SegmentStyle::code(),
+        );
+    }
     if let Some(risk) = hitl.risk_level.as_deref() {
         push_detail_row(&mut rows, "risk:", risk, inner_width, hitl_risk_style(risk));
     }
@@ -84,8 +102,11 @@ pub(super) fn render_hitl_panel(hitl: &HitlPanelState, width: usize) -> Vec<Styl
     }
     rows.push(Vec::new());
     rows.push(vec![StyledSegment {
-        text: "Use `starweaver-cli approval list`, then approve or reject the pending approval id."
-            .to_string(),
+        text: if hitl.approval_id.is_some() {
+            "[a/y] Approve    [r/n] Reject    [Esc] Refresh".to_string()
+        } else {
+            "Persisting approval request…    [Esc] Refresh".to_string()
+        },
         style: SegmentStyle::dim(),
     }]);
     let mut lines = vec![StyledLine::plain("")];
@@ -437,15 +458,23 @@ fn pick_status_candidate(width: usize, candidates: &[String]) -> String {
 #[allow(clippy::too_many_lines)]
 fn secondary_status_text(state: &InteractiveTuiState, width: usize) -> String {
     if state.pending_hitl().is_some() {
-        return pick_status_candidate(
-            width,
-            &[
-                "Approval required: run `starweaver-cli approval list`, then approve or reject the pending approval | PageUp/PageDown/Mouse: Scroll".to_string(),
-                "Approval required | approve/reject pending approval | PgUp/PgDn: Scroll".to_string(),
-                "Approval required | PgUp/PgDn Scroll | Ctrl+C Interrupt".to_string(),
-                "Approval required | Ctrl+C interrupt".to_string(),
-            ],
-        );
+        let candidates = if state.hitl_decision_ready() {
+            [
+                "Approval required | A/Y approve | R/N reject | PageUp/PageDown/Mouse: Scroll"
+                    .to_string(),
+                "Approval | A/Y approve | R/N reject | PgUp/PgDn: Scroll".to_string(),
+                "Approval | A approve | R reject".to_string(),
+                "A approve | R reject".to_string(),
+            ]
+        } else {
+            [
+                "Approval request is being persisted | PageUp/PageDown/Mouse: Scroll".to_string(),
+                "Persisting approval | PgUp/PgDn: Scroll".to_string(),
+                "Persisting approval request".to_string(),
+                "Approval pending".to_string(),
+            ]
+        };
+        return pick_status_candidate(width, &candidates);
     }
     if state.selection_mode_visible() {
         return pick_status_candidate(
