@@ -84,6 +84,7 @@ The SDK provides:
 - bounded `wait_subagent`;
 - message-bus result delivery with a fallback pending queue;
 - child context merge, lifecycle events, stream forwarding, usage accounting, tracing, and inherited tools;
+- central main-agent-only tool filtering: `ask_user_question` and delegation-control tools never enter a child registry, including through inherit-all or explicit optional inheritance; a required declaration fails availability validation;
 - main-agent-only background delegation guardrails.
 
 The implemented normative profile also provides model-visible steering and cancellation, host-owned child task/control handles, injectable long-lived supervisors, completion callbacks, durable RPC execution and delivery records, fenced owner leases, bounded retention and quotas, deterministic shutdown, product-specific CLI/RPC topology, and causally linked result-triggered RPC continuations.

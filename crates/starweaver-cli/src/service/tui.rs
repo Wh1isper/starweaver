@@ -334,6 +334,7 @@ impl CliService {
             .unwrap_or(self.config.tui_render_mode);
         state.set_render_mode(initial_render_mode);
         state.set_custom_commands(self.config.slash_commands.clone());
+        state.set_skills(crate::profiles::list_skills(&self.config));
         state.set_model_choices(model_choices(&self.config));
         state.set_session_choices(self.tui_session_choices(50)?);
         let choices = state.model_choices().to_vec();
@@ -881,7 +882,17 @@ impl CliService {
                         }
                         crate::tui::TuiApprovalDecision::Reject => (ApprovalStatus::Denied, None),
                         crate::tui::TuiApprovalDecision::Answer(answer) => {
-                            (ApprovalStatus::Approved, Some(answer))
+                            let encoded = match serde_json::to_string(&answer) {
+                                Ok(encoded) => encoded,
+                                Err(error) => {
+                                    state.push_transcript_notice(format!(
+                                        "[SYS] Could not encode clarifying answers: {error}"
+                                    ));
+                                    dirty = true;
+                                    continue;
+                                }
+                            };
+                            (ApprovalStatus::Approved, Some(encoded))
                         }
                     };
                     let decided = self

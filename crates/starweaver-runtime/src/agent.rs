@@ -1,6 +1,6 @@
 //! Bare agent runtime.
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use starweaver_context::{AgentContext, AgentInfo, ModelConfig, ToolConfig};
 use starweaver_core::{AgentId, CancellationToken};
@@ -49,6 +49,7 @@ pub struct Agent {
     output_functions: Vec<DynOutputFunction>,
     usage_limits: Option<UsageLimits>,
     tools: ToolRegistry,
+    denied_tool_names: BTreeSet<String>,
     toolsets: Vec<DynToolset>,
     capabilities: Vec<Arc<dyn AgentCapability>>,
     stream_observers: Vec<Arc<dyn AgentCapability>>,
@@ -77,6 +78,7 @@ impl Agent {
             output_functions: Vec::new(),
             usage_limits: None,
             tools: ToolRegistry::new(),
+            denied_tool_names: BTreeSet::new(),
             toolsets: Vec::new(),
             capabilities: Vec::new(),
             stream_observers: Vec::new(),
@@ -200,12 +202,26 @@ impl Agent {
         self
     }
 
+    /// Deny tool names after all static, dynamic, and capability toolsets are prepared.
+    #[must_use]
+    pub fn with_denied_tool_names(
+        mut self,
+        names: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.denied_tool_names
+            .extend(names.into_iter().map(Into::into));
+        self
+    }
+
     /// Return a clone of the runtime tool registry.
     #[must_use]
     pub fn tools(&self) -> ToolRegistry {
         let mut tools = self.tools.clone();
         for toolset in &self.toolsets {
             tools.insert_toolset(toolset);
+        }
+        for name in &self.denied_tool_names {
+            tools.remove(name);
         }
         tools
     }

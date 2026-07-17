@@ -275,11 +275,11 @@ Runtime `SubagentConfig` keeps the executable agent handle in programmatic code.
 
 Use `project_subagent_spec` when a host wants to materialize markdown subagent files through the same `AgentSpec` registry path as regular agents. The projection returns a child `AgentSpec`, `SubagentToolInheritancePolicy`, and `SubagentCapabilityInheritancePolicy`; pass the agent spec and tool policy into `SubagentConfig::from_agent_spec` to build an executable child agent without manually constructing a nested `AgentBuilder`. The capability policy is also preserved in the projected agent metadata, so `SubagentConfig::from_agent_spec` applies it automatically. If the child spec resolves an environment provider through `AgentSpecRegistry`, the delegated child context uses that provider; otherwise it inherits the provider already attached to the parent context.
 
-If a markdown subagent omits `model` or sets `model: inherit`, the projection requires a concrete inherited model id from the host because executable Rust agents still resolve models through `AgentSpecRegistry`. `tools` and `optional_tools` become inherited parent-tool policy, not child-owned toolsets. With no explicit tool lists, the projected policy inherits all parent tools except denied tools and guarded delegation tools.
+If a markdown subagent omits `model` or sets `model: inherit`, the projection requires a concrete inherited model id from the host because executable Rust agents still resolve models through `AgentSpecRegistry`. `tools` and `optional_tools` become inherited parent-tool policy, not child-owned toolsets. With no explicit tool lists, the projected policy inherits all parent tools except denied and main-agent-only tools.
 
 ## Tool Inheritance
 
-`SubagentToolInheritancePolicy` controls which parent tools are appended to a child agent at delegation time. Required tools gate availability, optional tools attach when present, denied tools are removed, and tools with metadata `auto_inherit=true` are inherited by default.
+`SubagentToolInheritancePolicy` controls which parent tools are appended to a child agent at delegation time. Required tools gate availability, optional tools attach when present, denied tools are removed, and tools with metadata `auto_inherit=true` are inherited by default. Main-agent-only tools are filtered centrally regardless of policy. In particular, `ask_user_question` is never inherited through auto-inherit, inherit-all, or an optional list because a subagent has no direct HITL responder; declaring it as required makes the subagent unavailable with a denied-required-tool diagnostic.
 
 ```rust
 use std::sync::Arc;

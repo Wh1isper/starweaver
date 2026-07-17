@@ -41,14 +41,18 @@ use super::{
         display_lines_for_stream_record,
     },
     terminal::{
-        InteractiveTuiEvent, handle_key_event, handle_mouse_event, responsive_frame_budget,
-        should_capture_mouse, visible_body_bounds,
+        InteractiveTuiEvent, compose_frame, handle_key_event, handle_mouse_event,
+        responsive_frame_budget, should_capture_mouse, visible_body_bounds,
     },
 };
 
+fn test_tui_state() -> InteractiveTuiState {
+    InteractiveTuiState::welcome_ephemeral(Path::new("/tmp/config"))
+}
+
 #[test]
 fn interactive_state_applies_streaming_text() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("hello");
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
@@ -81,7 +85,7 @@ fn interactive_state_applies_streaming_text() {
 
 #[test]
 fn projection_batch_materializes_stream_changes_once_at_the_end() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("hello");
     state.begin_projection_batch();
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -119,7 +123,7 @@ fn projection_batch_materializes_stream_changes_once_at_the_end() {
 
 #[test]
 fn model_transport_selected_updates_status_bar_only() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("hello");
     let initial_body_len = state.body.len();
 
@@ -143,7 +147,7 @@ fn model_transport_selected_updates_status_bar_only() {
 
 #[test]
 fn model_transport_fallback_updates_status_bar_and_transcript() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("hello");
 
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -173,7 +177,7 @@ fn model_transport_fallback_updates_status_bar_and_transcript() {
 
 #[test]
 fn codex_style_opening_renders_header_composer_and_footer() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.workspace_dir = "/tmp/starweaver".to_string();
     let history = render_live_history_lines(&state, 80);
     assert!(
@@ -210,12 +214,13 @@ fn codex_style_opening_renders_header_composer_and_footer() {
     let footer_lines = render_footer_lines(&state, 120);
     let footer_text = line_texts(&footer_lines).join("\n");
     assert!(!footer_text.contains("Steering messages"));
-    assert!(footer_text.contains(" READY  | State: IDLE"));
-    assert!(footer_text.contains("Model: local_echo"));
-    assert!(footer_text.contains("Context: 0%"));
-    assert!(footer_text.contains("Enter: Send"));
-    assert!(footer_text.contains("History"));
-    assert!(footer_text.contains("Scroll"));
+    assert!(footer_text.contains("READY"));
+    assert!(!footer_text.contains("State: IDLE"));
+    assert!(!footer_text.contains("Model: local_echo"));
+    assert!(footer_text.contains("ctx 0%"));
+    assert!(footer_text.contains("Enter send"));
+    assert!(footer_text.contains("/ commands"));
+    assert!(footer_text.contains("? help"));
     assert!(has_segment(&footer_lines, " READY ", SegmentStyle::MODE_BG));
     assert!(footer_lines.iter().any(|line| {
         line.segments
@@ -230,13 +235,13 @@ fn codex_style_shortcut_overlay_matches_footer_model() {
     let text = line_texts(&overlay).join("\n");
     assert!(text.contains("Available Commands"));
     assert!(text.contains("/help"));
-    assert!(text.contains("Print this help in the transcript"));
+    assert!(text.contains("Print command and shortcut help in the transcript"));
     assert!(text.contains("/model [profile]"));
     assert!(text.contains("/session [id]"));
     assert!(text.contains("/goal <task>"));
-    assert!(text.contains("Run task toward a verified goal until complete"));
+    assert!(text.contains("Run toward a verified goal"));
     assert!(text.contains("/paste-image"));
-    assert!(text.contains("Attach image from system clipboard"));
+    assert!(text.contains("Attach an image from the system clipboard"));
     assert!(text.contains("Key Bindings"));
     assert!(text.contains("Ctrl+C"));
     assert!(text.contains("Alt+Left/Right"));
@@ -252,14 +257,14 @@ fn shortcut_overlay_wraps_narrow_command_rows_without_truncating_content() {
     assert!(texts.iter().all(|line| visible_width(line) <= 18));
 
     let compact_text = texts.join("").replace(' ', "");
-    assert!(compact_text.contains("/model[profile]Openselectororselectmodelprofile"));
-    assert!(compact_text.contains("Ctrl+VAttachimagefromsystemclipboard"));
+    assert!(compact_text.contains("/model[profile]Openorselectamodelprofile[built-in]"));
+    assert!(compact_text.contains("Ctrl+VAttachanimagefromthesystemclipboard"));
 }
 
 #[test]
 #[allow(clippy::too_many_lines)]
 fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     assert_eq!(handle_key_event(&mut state, key_char('h')), None);
     assert_eq!(handle_key_event(&mut state, key_char('i')), None);
     assert_eq!(state.input, "hi");
@@ -294,8 +299,15 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
 
     assert!(!FooterMode::is_help());
     assert_eq!(handle_key_event(&mut state, key_char('?')), None);
-    assert_eq!(state.input, "?");
-    state.input.clear();
+    assert!(state.help_panel_visible());
+    assert!(state.input.is_empty());
+    assert!(
+        line_texts(&render_footer_lines(&state, 80))
+            .join("\n")
+            .contains("Available Commands")
+    );
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Esc)), None);
+    assert!(!state.help_panel_visible());
 
     state.input = "/goal".to_string();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
@@ -346,7 +358,7 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
         state
             .body
             .iter()
-            .any(|line| line.contains("Custom commands"))
+            .any(|line| line.contains("/commit") && line.contains("[custom]"))
     );
     assert!(state.body.iter().any(|line| {
         line.contains("/commit [instruction]") && line.contains("Create a commit")
@@ -385,11 +397,11 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
             .any(|line| line.contains("[Goal] Starting goal mode"))
     );
     let goal_footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
-    assert!(goal_footer.contains("Goal: 0/10"));
+    assert!(goal_footer.contains("goal 0/10"));
     state.context_tokens = Some(10_000);
     state.context_window = Some(200_000);
     let context_footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
-    assert!(context_footer.contains("Context: 5%"));
+    assert!(context_footer.contains("ctx 5%"));
 
     state
         .body
@@ -468,14 +480,13 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     );
 
     state.input = "queued".to_string();
-    assert!(state.enter_sends());
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Tab)), None);
-    assert!(!state.enter_sends());
     assert_eq!(state.input, "queued");
-    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert_eq!(
+        handle_key_event(&mut state, key_modified('o', KeyModifiers::CONTROL)),
+        None
+    );
     assert_eq!(state.input, "queued\n");
-    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Tab)), None);
-    assert!(state.enter_sends());
     state.input.clear();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Esc)), None);
     assert!(state.selection_mode_visible());
@@ -489,7 +500,7 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     assert_eq!(state.status, "INTERRUPT");
     assert!(state.cancel_requested);
 
-    let mut cursor_state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut cursor_state = test_tui_state();
     cursor_state.input = "alpha beta\ngamma_delta".to_string();
     assert_eq!(
         handle_key_event(
@@ -563,7 +574,7 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     );
     assert_eq!(cursor_state.composer_cursor_byte(), "alpha beta".len());
 
-    let mut running_overlay_state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut running_overlay_state = test_tui_state();
     running_overlay_state.begin_run("long running prompt");
     running_overlay_state.open_selection_mode();
     assert!(running_overlay_state.selection_mode_visible());
@@ -604,7 +615,7 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
 
 #[test]
 fn scroll_bounds_move_visible_viewport_and_preserve_bottom_sentinel() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state
         .body
         .extend((0..50).map(|line| format!("line {line}")));
@@ -626,7 +637,7 @@ fn scroll_bounds_move_visible_viewport_and_preserve_bottom_sentinel() {
 
 #[test]
 fn streaming_events_preserve_scroll_while_selection_mode_is_active() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("stream while selecting");
     state
         .body
@@ -668,13 +679,14 @@ fn streaming_events_preserve_scroll_while_selection_mode_is_active() {
     assert!(!state.is_at_bottom());
     assert!(state.unread_output_lines > 0);
     let footer = line_texts(&render_footer_lines(&state, 100)).join("\n");
-    assert!(footer.contains("Output paused"));
+    assert!(footer.contains("PAUSED"));
+    assert!(footer.contains("Ctrl+L"));
     assert!(footer.contains("new"));
 }
 
 #[test]
 fn checkpoint_events_update_phase_without_output_noise() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let initial_lines = state.body.len();
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
@@ -690,7 +702,7 @@ fn checkpoint_events_update_phase_without_output_noise() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn interactive_state_covers_runtime_event_branches() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("inspect tools");
 
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -849,7 +861,7 @@ fn interactive_state_covers_runtime_event_branches() {
 
 #[test]
 fn edit_tool_return_renders_structured_diff() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let edit_call = ToolCallPart {
         id: "edit_1".to_string(),
         name: "edit".to_string(),
@@ -889,7 +901,7 @@ fn edit_tool_return_renders_structured_diff() {
 
 #[test]
 fn edit_tool_diff_focuses_changed_hunk_and_preserves_eof_newline() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let old_lines = (0..30)
         .map(|index| format!("line {index}"))
         .chain(["old".to_string(), "tail".to_string()])
@@ -933,7 +945,7 @@ fn edit_tool_diff_focuses_changed_hunk_and_preserves_eof_newline() {
     assert!(body_has_line(&state, "    +new"));
     assert!(!body_has_line(&state, "     line 0"));
 
-    let mut newline_state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut newline_state = test_tui_state();
     let newline_call = ToolCallPart {
         id: "edit_newline".to_string(),
         name: "edit".to_string(),
@@ -964,7 +976,7 @@ fn edit_tool_diff_focuses_changed_hunk_and_preserves_eof_newline() {
 
 #[test]
 fn edit_tool_return_falls_back_to_result_metadata_without_cached_arguments() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.apply_stream_record(&AgentStreamRecord::new(
         1,
         AgentStreamEvent::ToolReturn {
@@ -984,7 +996,7 @@ fn edit_tool_return_falls_back_to_result_metadata_without_cached_arguments() {
 
 #[test]
 fn multi_edit_summary_counts_only_first_empty_old_string_as_new_file() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let call = ToolCallPart {
         id: "multi_edit_1".to_string(),
         name: "multi_edit".to_string(),
@@ -1022,7 +1034,7 @@ fn multi_edit_summary_counts_only_first_empty_old_string_as_new_file() {
 
 #[test]
 fn summarize_tool_return_renders_summary_handoff() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.apply_stream_record(&AgentStreamRecord::new(
         1,
         AgentStreamEvent::ToolReturn {
@@ -1070,7 +1082,7 @@ fn summarize_tool_return_renders_summary_handoff() {
 
 #[test]
 fn compact_custom_events_render_status_lines() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.apply_stream_record(&AgentStreamRecord::new(
         1,
         AgentStreamEvent::Custom {
@@ -1125,7 +1137,7 @@ fn compact_custom_events_render_status_lines() {
 
 #[test]
 fn compact_custom_events_render_full_summary_content_without_truncation() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_render_mode(TuiRenderMode::Concise);
     let long_line = format!("{}END_MARKER", "compact-summary-".repeat(24));
     let lines = (1..=14)
@@ -1167,7 +1179,7 @@ fn compact_custom_events_render_full_summary_content_without_truncation() {
 
 #[test]
 fn handoff_custom_events_render_summary_lines() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.apply_stream_record(&AgentStreamRecord::new(
         1,
         AgentStreamEvent::Custom {
@@ -1198,7 +1210,7 @@ fn handoff_custom_events_render_summary_lines() {
 
 #[test]
 fn summarize_tool_return_renders_full_content_without_truncation() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_render_mode(TuiRenderMode::Concise);
     let long_line = format!("{}END_MARKER", "summary-content-".repeat(24));
     let lines = (1..=14)
@@ -1241,7 +1253,7 @@ fn summarize_tool_return_renders_full_content_without_truncation() {
 
 #[test]
 fn shell_tool_return_renders_full_command_card_and_output_preview() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let command_tail = "0123456789".repeat(32);
     let long_command = format!(
         "printf 'alpha\\nbeta' && cargo test -p starweaver-cli tui::tests:: -- --nocapture && echo {command_tail}"
@@ -1313,7 +1325,7 @@ fn shell_tool_return_renders_full_command_card_and_output_preview() {
 
 #[test]
 fn shell_tool_return_truncates_long_stdout_and_stderr_previews() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let stdout = (0..10)
         .map(|index| format!("stdout {index}"))
         .collect::<Vec<_>>()
@@ -1355,7 +1367,7 @@ fn shell_tool_return_truncates_long_stdout_and_stderr_previews() {
 
 #[test]
 fn shell_tool_call_and_error_render_background_args_duration_and_context_errors() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let call = ToolCallPart {
         id: "shell_bg".to_string(),
         name: "shell_exec".to_string(),
@@ -1410,7 +1422,7 @@ fn shell_tool_call_and_error_render_background_args_duration_and_context_errors(
 
 #[test]
 fn tool_result_previews_escape_control_characters() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.apply_stream_record(&AgentStreamRecord::new(
         1,
         AgentStreamEvent::ToolReturn {
@@ -1436,7 +1448,7 @@ fn tool_result_previews_escape_control_characters() {
 
 #[test]
 fn generic_tool_return_uses_multiline_content_preview() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.apply_stream_record(&AgentStreamRecord::new(
         1,
         AgentStreamEvent::ToolReturn {
@@ -1462,7 +1474,7 @@ fn generic_tool_return_uses_multiline_content_preview() {
 
 #[test]
 fn view_tool_return_renders_file_preview() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.apply_stream_record(&AgentStreamRecord::new(
         1,
         AgentStreamEvent::ToolReturn {
@@ -1554,7 +1566,7 @@ fn view_tool_return_renders_file_preview() {
 
 #[test]
 fn write_tool_return_renders_preview_and_styles() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let call = ToolCallPart {
         id: "write_1".to_string(),
         name: "write".to_string(),
@@ -1599,7 +1611,7 @@ fn write_tool_return_renders_preview_and_styles() {
 
 #[test]
 fn special_tool_rendering_truncates_lines_and_releases_arguments() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let long_line = "a".repeat(400);
     let edit_call = ToolCallPart {
         id: "edit_long".to_string(),
@@ -1661,7 +1673,7 @@ fn special_tool_rendering_truncates_lines_and_releases_arguments() {
 
 #[test]
 fn task_create_tool_renders_dedicated_full_output_without_generic_noise() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let call = ToolCallPart {
         id: "task_create_1".to_string(),
         name: "task_create".to_string(),
@@ -1734,7 +1746,7 @@ fn task_create_tool_renders_dedicated_full_output_without_generic_noise() {
 
 #[test]
 fn task_list_tool_return_renders_progress_when_statuses_are_present() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.apply_stream_record(&AgentStreamRecord::new(
         1,
         AgentStreamEvent::ToolReturn {
@@ -1782,7 +1794,7 @@ fn task_list_tool_return_renders_progress_when_statuses_are_present() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn hitl_panel_binds_durable_approval_and_accepts_inline_decision() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let mut approval_metadata = Metadata::default();
     approval_metadata.insert("control_flow".to_string(), json!("approval_required"));
     approval_metadata.insert(
@@ -1829,7 +1841,7 @@ fn hitl_panel_binds_durable_approval_and_accepts_inline_decision() {
     state.bind_pending_approval(&approval);
     let actionable_footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
     assert!(actionable_footer.contains("approval_shell_call"));
-    assert!(actionable_footer.contains("A/Y approve"));
+    assert!(actionable_footer.contains("A approve"));
     assert!(actionable_footer.contains("\"command\":\"rm -rf target/tmp\""));
     for key in [
         key_modified('a', KeyModifiers::CONTROL),
@@ -1893,7 +1905,7 @@ fn hitl_panel_binds_durable_approval_and_accepts_inline_decision() {
 
 #[test]
 fn clarifying_question_accepts_composer_answer() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let mut approval = ApprovalRecord::new(
         "approval_question",
         SessionId::from_string("session_question"),
@@ -1916,27 +1928,116 @@ fn clarifying_question_accepts_composer_answer() {
     state.bind_pending_approval(&approval);
 
     let footer = line_texts(&render_footer_lines(&state, 140)).join("\n");
-    assert!(footer.contains("Clarification Requested"));
+    assert!(footer.contains("Question 1/1 · Database"));
     assert!(footer.contains("Which database should I use?"));
-    assert!(footer.contains("PostgreSQL | SQLite"));
+    assert!(footer.contains("PostgreSQL"));
+    assert!(footer.contains("Use PostgreSQL"));
+    assert!(footer.contains("SQLite"));
 
-    for ch in "PostgreSQL".chars() {
-        assert_eq!(handle_key_event(&mut state, key_char(ch)), None);
-    }
+    let mut expected = BTreeMap::new();
+    expected.insert(
+        "Which database should I use?".to_string(),
+        "PostgreSQL".to_string(),
+    );
     assert_eq!(
         handle_key_event(&mut state, key_code(KeyCode::Enter)),
         Some(InteractiveTuiEvent::ApprovalDecision(
-            super::terminal::TuiApprovalDecision::Answer("PostgreSQL".to_string())
+            super::terminal::TuiApprovalDecision::Answer(
+                starweaver_agent::ClarifyingQuestionAnswers {
+                    answers: expected,
+                    response: None,
+                }
+            )
         ))
     );
-    assert_eq!(state.input, "PostgreSQL");
+    assert!(state.input.is_empty());
     state.commit_clarifying_answer();
     assert!(state.input.is_empty());
 }
 
 #[test]
+fn clarifying_question_supports_multiple_multi_select_and_free_form_answers() {
+    let mut state = test_tui_state();
+    let mut approval = ApprovalRecord::new(
+        "approval_multi_question",
+        SessionId::from_string("session_multi_question"),
+        RunId::from_string("run_multi_question"),
+        "multi_question_call",
+        starweaver_agent::ASK_USER_QUESTION_TOOL_NAME,
+    );
+    approval.request = json!({
+        "kind": starweaver_agent::CLARIFYING_QUESTIONS_REQUEST_KIND,
+        "questions": [
+            {
+                "question": "Which features should be enabled?",
+                "header": "Features",
+                "options": [
+                    {"label": "Search", "description": "Enable search", "preview": "Search preview"},
+                    {"label": "Media", "description": "Enable media"}
+                ],
+                "multiSelect": true
+            },
+            {
+                "question": "What deployment note should be recorded?",
+                "header": "Deployment",
+                "options": [{"label": "None", "description": "No note"}],
+                "multiSelect": false
+            }
+        ]
+    });
+    state.bind_pending_approval(&approval);
+
+    assert_eq!(handle_key_event(&mut state, key_char(' ')), None);
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Down)), None);
+    assert_eq!(handle_key_event(&mut state, key_char(' ')), None);
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert!(
+        line_texts(&render_footer_lines(&state, 100))
+            .join("\n")
+            .contains("Question 2/2 · Deployment")
+    );
+
+    assert_eq!(handle_key_event(&mut state, key_char('e')), None);
+    assert!(state.clarifying_free_form_active());
+    for ch in "Deploy after review".chars() {
+        assert_eq!(handle_key_event(&mut state, key_char(ch)), None);
+    }
+    let event = handle_key_event(&mut state, key_code(KeyCode::Enter));
+    let Some(InteractiveTuiEvent::ApprovalDecision(super::terminal::TuiApprovalDecision::Answer(
+        answers,
+    ))) = event
+    else {
+        panic!("expected structured clarifying answers");
+    };
+    assert_eq!(
+        answers.answers,
+        BTreeMap::from([
+            (
+                "Which features should be enabled?".to_string(),
+                "Search, Media".to_string(),
+            ),
+            (
+                "What deployment note should be recorded?".to_string(),
+                "Deploy after review".to_string(),
+            ),
+        ])
+    );
+
+    assert!(state.clarifying_answer_ready());
+    assert_eq!(
+        state
+            .clarifying_question()
+            .and_then(|question| question.free_form_answers.get(&1))
+            .map(String::as_str),
+        Some("Deploy after review"),
+        "the modal must retain its answer draft until durable persistence succeeds"
+    );
+    state.commit_clarifying_answer();
+}
+
+#[test]
 fn tool_duration_and_task_panels_render_runtime_metadata() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let mut duration_metadata = Metadata::default();
     duration_metadata.insert("duration_ms".to_string(), json!(1_500));
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -1964,10 +2065,15 @@ fn tool_duration_and_task_panels_render_runtime_metadata() {
         },
     ));
     let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
-    assert!(footer.contains("Tasks"));
-    assert!(footer.contains("Progress: 1/2 (1 in progress)"));
-    assert!(footer.contains("Done"));
-    assert!(footer.contains("Work"));
+    assert!(footer.contains("Tasks 1/2"));
+    assert!(footer.contains("Current: #2 Working"));
+    assert!(!footer.contains("Done"));
+
+    state.open_task_panel();
+    let expanded = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(expanded.contains("1/2 complete"));
+    assert!(expanded.contains("Done"));
+    assert!(expanded.contains("Working"));
 
     state.apply_stream_record(&AgentStreamRecord::new(
         5,
@@ -1989,13 +2095,13 @@ fn tool_duration_and_task_panels_render_runtime_metadata() {
         },
     ));
     let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
-    assert!(footer.contains("Progress: 1/1"));
-    assert!(footer.contains("Tool-return task"));
+    assert!(footer.contains("tasks completed 1/1"));
+    assert!(!footer.contains("Tool-return task"));
 }
 
 #[test]
 fn begin_run_preserves_task_panel_items_for_next_prompt() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
         AgentStreamEvent::Custom {
@@ -2013,14 +2119,13 @@ fn begin_run_preserves_task_panel_items_for_next_prompt() {
     state.begin_run("next prompt");
 
     let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
-    assert!(footer.contains("Tasks"));
-    assert!(footer.contains("Existing task"));
-    assert!(footer.contains("Progress: 0/1 (1 in progress)"));
+    assert!(footer.contains("Tasks 0/1"));
+    assert!(footer.contains("Current: #1 Working"));
 }
 
 #[test]
 fn clear_command_defers_context_reset_until_the_service_accepts_it() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.session_id = Some("session_clear".to_string());
     state.context_tokens = Some(42);
     state.body.push("old transcript".to_string());
@@ -2038,7 +2143,7 @@ fn clear_command_defers_context_reset_until_the_service_accepts_it() {
 
 #[test]
 fn clear_during_a_run_emits_a_rejectable_event_without_leaving_stale_pending_state() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.session_id = Some("session_running".to_string());
     state.begin_run("active prompt");
     state.input = "/clear".to_string();
@@ -2055,7 +2160,7 @@ fn clear_during_a_run_emits_a_rejectable_event_without_leaving_stale_pending_sta
 
 #[test]
 fn accepted_clear_resets_conversation_state_and_preserves_process_state() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.session_id = Some("session_clear".to_string());
     let session_affinity_id = state.session_affinity_id.clone();
     state.context_tokens = Some(42);
@@ -2127,7 +2232,7 @@ fn accepted_clear_resets_conversation_state_and_preserves_process_state() {
 
 #[test]
 fn thinking_stream_delta_does_not_suppress_final_text() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("respond");
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
@@ -2162,7 +2267,7 @@ fn thinking_stream_delta_does_not_suppress_final_text() {
 
 #[test]
 fn interleaved_thinking_part_does_not_mark_text_seen() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("respond");
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
@@ -2212,7 +2317,7 @@ fn interleaved_thinking_part_does_not_mark_text_seen() {
 
 #[test]
 fn text_delta_after_unfinished_thinking_starts_visible_line() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("respond");
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
@@ -2266,7 +2371,7 @@ fn text_delta_after_unfinished_thinking_starts_visible_line() {
 
 #[test]
 fn background_continuation_does_not_render_an_empty_user_prompt() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_background_continuation();
 
     assert!(state.running);
@@ -2279,7 +2384,7 @@ fn background_continuation_does_not_render_an_empty_user_prompt() {
 
 #[test]
 fn begin_run_does_not_precreate_empty_assistant_transcript_item() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("respond");
 
     assert!(body_has_line(&state, "User: respond"));
@@ -2289,7 +2394,7 @@ fn begin_run_does_not_precreate_empty_assistant_transcript_item() {
 
 #[test]
 fn text_after_thinking_preserves_event_order_in_normal_mode() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("respond");
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
@@ -2312,7 +2417,7 @@ fn text_after_thinking_preserves_event_order_in_normal_mode() {
 
 #[test]
 fn text_after_thinking_preserves_event_order_in_concise_mode() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_render_mode(TuiRenderMode::Concise);
     state.begin_run("respond");
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -2356,7 +2461,7 @@ fn text_after_thinking_preserves_event_order_in_concise_mode() {
 
 #[test]
 fn text_tool_text_preserves_event_order_without_merging_across_tool() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_render_mode(TuiRenderMode::Concise);
     state.begin_run("respond");
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -2406,7 +2511,7 @@ fn text_tool_text_preserves_event_order_without_merging_across_tool() {
 
 #[test]
 fn thinking_tool_thinking_preserves_event_order_without_merging_across_tool() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_render_mode(TuiRenderMode::Concise);
     state.begin_run("respond");
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -2456,7 +2561,7 @@ fn thinking_tool_thinking_preserves_event_order_without_merging_across_tool() {
 
 #[test]
 fn text_context_text_preserves_event_order_without_merging_across_context_event() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("respond");
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
@@ -2486,7 +2591,7 @@ fn text_context_text_preserves_event_order_without_merging_across_context_event(
 
 #[test]
 fn final_result_appends_mixed_parts_in_response_order() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("respond");
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
@@ -2528,7 +2633,7 @@ fn final_result_appends_mixed_parts_in_response_order() {
 
 #[test]
 fn part_start_only_does_not_create_transcript_content() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("respond");
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
@@ -2558,7 +2663,7 @@ fn part_start_only_does_not_create_transcript_content() {
 
 #[test]
 fn concise_exploration_groups_do_not_cross_thinking_segments() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_render_mode(TuiRenderMode::Concise);
     let view_call = ToolCallPart {
         id: "view_before_thinking".to_string(),
@@ -2616,7 +2721,7 @@ fn rendered_text_after_thinking_is_not_blockquoted() {
 
 #[test]
 fn render_modes_reproject_tool_visibility_and_active_tool_status() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("use tool");
     let call = ToolCallPart {
         id: "call_concise".to_string(),
@@ -2685,7 +2790,7 @@ fn render_modes_reproject_tool_visibility_and_active_tool_status() {
 
 #[test]
 fn concise_keeps_context_events_and_summarizes_approval_required_tools() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_render_mode(TuiRenderMode::Concise);
 
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -2747,7 +2852,7 @@ fn concise_keeps_context_events_and_summarizes_approval_required_tools() {
 
 #[test]
 fn concise_mode_summarizes_deferred_tools_without_full_payload() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_render_mode(TuiRenderMode::Concise);
 
     let mut metadata = Metadata::default();
@@ -2787,7 +2892,7 @@ fn concise_mode_summarizes_deferred_tools_without_full_payload() {
 
 #[test]
 fn display_command_switches_mode_and_reprojects_existing_timeline() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("use display command");
     let call = ToolCallPart {
         id: "call_display".to_string(),
@@ -2827,7 +2932,7 @@ fn display_command_switches_mode_and_reprojects_existing_timeline() {
 
 #[test]
 fn concise_mode_streams_thinking_as_blockquote() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_render_mode(TuiRenderMode::Concise);
 
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -2866,7 +2971,7 @@ fn concise_mode_streams_thinking_as_blockquote() {
 
 #[test]
 fn concise_mode_updates_thinking_during_streaming() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_render_mode(TuiRenderMode::Concise);
     state.begin_run("respond");
 
@@ -2915,7 +3020,7 @@ fn concise_mode_updates_thinking_during_streaming() {
 
 #[test]
 fn concise_mode_keeps_assistant_text_streaming_normally() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_render_mode(TuiRenderMode::Concise);
     state.begin_run("respond");
 
@@ -2956,7 +3061,7 @@ fn concise_mode_keeps_assistant_text_streaming_normally() {
 
 #[test]
 fn concise_mode_summarizes_shell_failure_with_bounded_output() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_render_mode(TuiRenderMode::Concise);
     let shell_call = ToolCallPart {
         id: "shell_fail".to_string(),
@@ -3002,7 +3107,7 @@ fn concise_mode_summarizes_shell_failure_with_bounded_output() {
 
 #[test]
 fn concise_mode_summarizes_mutations_and_task_tools() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_render_mode(TuiRenderMode::Concise);
     let edit_call = ToolCallPart {
         id: "edit_concise".to_string(),
@@ -3064,7 +3169,7 @@ fn concise_mode_summarizes_mutations_and_task_tools() {
 
 #[test]
 fn concise_mode_groups_adjacent_exploration_summaries() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_render_mode(TuiRenderMode::Concise);
 
     let view_call = ToolCallPart {
@@ -3133,7 +3238,7 @@ fn concise_mode_groups_adjacent_exploration_summaries() {
 
 #[test]
 fn subagent_output_is_full_markdown_in_normal_and_concise() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let source = AgentStreamSource::subagent(
         AgentId::from_string("writer-1"),
         "writer",
@@ -3173,7 +3278,7 @@ fn subagent_output_is_full_markdown_in_normal_and_concise() {
 
 #[test]
 fn tool_call_from_model_response_and_tool_event_renders_once() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("use tool");
     let call = ToolCallPart {
         id: "call_once".to_string(),
@@ -3214,7 +3319,7 @@ fn tool_call_from_model_response_and_tool_event_renders_once() {
 
 #[test]
 fn streaming_tool_call_delta_is_visible_and_deduped_by_final_call() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("use tool");
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
@@ -3313,7 +3418,7 @@ fn streaming_tool_call_delta_is_visible_and_deduped_by_final_call() {
 
 #[test]
 fn consecutive_streamed_tool_calls_with_same_name_do_not_reuse_first_line() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("use tools");
     for (sequence, index, query) in [(0, 2, "first"), (3, 3, "second")] {
         state.apply_stream_record(&AgentStreamRecord::new(
@@ -3418,7 +3523,7 @@ fn consecutive_streamed_tool_calls_with_same_name_do_not_reuse_first_line() {
 
 #[test]
 fn streamed_text_after_tool_return_starts_new_assistant_line() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("use tool");
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
@@ -3470,7 +3575,7 @@ fn streamed_text_after_tool_return_starts_new_assistant_line() {
 
 #[test]
 fn model_command_opens_picker_selects_directly_and_blocks_while_running() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_model_choices(vec![
         ModelChoice {
             profile: "general".to_string(),
@@ -3567,7 +3672,7 @@ fn model_command_opens_picker_selects_directly_and_blocks_while_running() {
 
 #[test]
 fn session_command_opens_picker_selects_directly_and_blocks_while_running() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_session_choices(vec![
         SessionChoice {
             session_id: "session_alpha".to_string(),
@@ -3648,7 +3753,7 @@ fn session_command_opens_picker_selects_directly_and_blocks_while_running() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn footer_context_uses_latest_usage_snapshot_not_model_response_or_high_water() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.context_window = Some(10_000);
 
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -3790,7 +3895,7 @@ fn footer_context_uses_latest_usage_snapshot_not_model_response_or_high_water() 
 #[test]
 #[allow(clippy::too_many_lines)]
 fn cost_command_shows_accumulated_usage_snapshots() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
         AgentStreamEvent::Custom {
@@ -3937,7 +4042,7 @@ fn cost_command_shows_accumulated_usage_snapshots() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn interactive_state_covers_model_response_finish_and_failure() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("respond");
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
@@ -4078,7 +4183,7 @@ fn interactive_state_covers_model_response_finish_and_failure() {
 
 #[test]
 fn subagent_lifecycle_events_render_as_folded_status_lines() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let started = AgentStreamRecord::new(
         0,
         AgentStreamEvent::Custom {
@@ -4144,7 +4249,7 @@ fn subagent_lifecycle_events_render_as_folded_status_lines() {
 
 #[test]
 fn source_attributed_subagent_records_update_one_collapsed_line() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("delegate research");
     let source = AgentStreamSource::subagent(
         AgentId::from_string("researcher-1"),
@@ -4219,7 +4324,7 @@ fn source_attributed_subagent_records_update_one_collapsed_line() {
 
 #[test]
 fn subagent_lifecycle_start_reuses_source_attributed_collapsed_line() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let source = AgentStreamSource::subagent(
         AgentId::from_string("explorer-1"),
         "explorer",
@@ -4521,7 +4626,7 @@ fn transcript_renderer_wraps_long_user_prompt_lines() {
 
 #[test]
 fn restored_queued_prompt_preserves_attachments_parts_and_goal() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let attachment = PromptAttachment::image(1, b"image".to_vec(), "image/png");
     let prompt = crate::prompt_input::PromptInput {
         text: format!("inspect {}", attachment.placeholder),
@@ -4548,7 +4653,7 @@ fn restored_queued_prompt_preserves_attachments_parts_and_goal() {
 
 #[test]
 fn composer_viewport_scrolls_multiline_input_and_resets_on_edit() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.input = (1..=7)
         .map(|index| format!("line {index}"))
         .collect::<Vec<_>>()
@@ -4589,13 +4694,13 @@ fn input_tail_preserves_trailing_empty_line() {
 
 #[test]
 fn help_command_prints_help_to_body_without_submitting() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     assert_eq!(handle_key_event(&mut state, key_char('/')), None);
     assert_eq!(handle_key_event(&mut state, key_char('h')), None);
     assert_eq!(handle_key_event(&mut state, key_char('e')), None);
     assert_eq!(handle_key_event(&mut state, key_char('l')), None);
     assert_eq!(handle_key_event(&mut state, key_char('p')), None);
-    assert!(!InteractiveTuiState::help_panel_visible());
+    assert!(!state.help_panel_visible());
     let footer_text = line_texts(&render_footer_lines(&state, 100)).join("\n");
     assert!(!footer_text.contains("Available Commands"));
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
@@ -4608,19 +4713,19 @@ fn help_command_prints_help_to_body_without_submitting() {
         state
             .body
             .iter()
-            .any(|line| line == "  /help             Show this help")
+            .any(|line| line.contains("/help") && line.contains("Print command"))
     );
     assert!(
         state
             .body
             .iter()
-            .any(|line| line == "  !<command>        Run a shell command inline")
+            .any(|line| line.contains("!<command>") && line.contains("Run a shell command"))
     );
     assert!(
         state
             .body
             .iter()
-            .any(|line| { line == "  /paste-image      Attach image from system clipboard" })
+            .any(|line| line.contains("/paste-image") && line.contains("Attach an image"))
     );
     assert!(state.body.iter().any(|line| line == "Shortcuts"));
     assert!(
@@ -4633,7 +4738,7 @@ fn help_command_prints_help_to_body_without_submitting() {
 
 #[test]
 fn bang_command_prints_natural_shell_transcript() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
 
     state.input = "!".to_string();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
@@ -4654,7 +4759,9 @@ fn bang_command_prints_natural_shell_transcript() {
     state.input = "keep this draft".to_string();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
     assert_eq!(state.input, "keep this draft");
-    assert_eq!(state.enter_action_label(), "Enter: Wait");
+    let shell_footer = line_texts(&render_footer_lines(&state, 100)).join("\n");
+    assert!(shell_footer.contains("RUNNING"));
+    assert!(shell_footer.contains("Ctrl+C"));
     assert_eq!(
         state.input_status_text(),
         "shell active; draft preserved; Ctrl-C cancels it"
@@ -4690,7 +4797,7 @@ fn bang_command_prints_natural_shell_transcript() {
 
 #[test]
 fn goal_mode_reports_total_tokens_on_goal_complete() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.input = "/goal migrate tui".to_string();
     assert_eq!(
         submit_text(handle_key_event(&mut state, key_code(KeyCode::Enter))),
@@ -4771,7 +4878,7 @@ fn goal_mode_reports_total_tokens_on_goal_complete() {
 
 #[test]
 fn goal_mode_reports_total_tokens_at_max_iterations() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.input = "/goal hard task".to_string();
     assert_eq!(
         submit_text(handle_key_event(&mut state, key_code(KeyCode::Enter))),
@@ -4823,7 +4930,7 @@ fn goal_mode_reports_total_tokens_at_max_iterations() {
 
 #[test]
 fn goal_mode_reports_total_tokens_when_run_finishes_without_goal_event() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.input = "/goal interrupted task".to_string();
     assert_eq!(
         submit_text(handle_key_event(&mut state, key_code(KeyCode::Enter))),
@@ -4869,7 +4976,7 @@ fn goal_mode_reports_total_tokens_when_run_finishes_without_goal_event() {
 
 #[test]
 fn fullscreen_composer_tracks_paste_images_and_steering_status() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.attach_image(PromptAttachment::image(
         1,
         b"image-bytes".to_vec(),
@@ -4881,8 +4988,8 @@ fn fullscreen_composer_tracks_paste_images_and_steering_status() {
     assert!(composer_text.contains("Attached image 1"));
     assert!(composer_text.contains("image/png"));
     let footer_text = line_texts(&render_footer_lines(&state, 120)).join("\n");
-    assert!(footer_text.contains("images:1"));
-    assert!(footer_text.contains("Ctrl+U: Clear"));
+    assert!(footer_text.contains("images 1"));
+    assert!(footer_text.contains("Ctrl+U clear"));
 
     let submitted = state.take_submission_prompt().unwrap();
     assert!(submitted.text.contains("Attached image 1"));
@@ -4905,7 +5012,8 @@ fn fullscreen_composer_tracks_paste_images_and_steering_status() {
     state.apply_paste("tighten this section");
     assert_eq!(state.input_mode_label(), "STEER");
     let steer_footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
-    assert!(steer_footer.contains("STEER"));
+    assert!(steer_footer.contains("RUNNING"));
+    assert!(steer_footer.contains("Enter steer"));
     assert!(!steer_footer.contains("Steering messages"));
     let steering = state.take_steering_prompt().unwrap();
     assert_eq!(steering.id, "steer_0");
@@ -5225,7 +5333,7 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
     assert!(text.contains("Steering"));
     assert!(text.contains("- submitted:try another path"));
 
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let session_affinity_id = state.session_affinity_id.clone();
     state.set_snapshot(&snapshot);
     assert_eq!(state.session_affinity_id, session_affinity_id);
@@ -5282,21 +5390,23 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
     );
     let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
     assert!(footer.contains("Tasks"));
-    assert!(footer.contains("Replay task"));
-    assert!(footer.contains("blocked by #2"));
+    assert!(footer.contains("Restoring task"));
+    assert!(footer.contains("1 blocked"));
+    state.open_task_panel();
+    state.toggle_task_panel_detail();
+    let expanded = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(expanded.contains("Replay task"));
+    assert!(expanded.contains("blocked by"));
 }
 
 #[test]
 fn render_helpers_cover_footer_and_truncation_branches() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.set_profile("coding", "gpt-test");
     state.workspace_dir = "/a/very/long/path/with/中文/segments/and/file".to_string();
     let tiny_history = render_live_history_lines(&state, 3);
-    assert!(
-        line_texts(&tiny_history)
-            .iter()
-            .any(|line| line.contains("To get started"))
-    );
+    let tiny_text = line_texts(&tiny_history).join("").replace(' ', "");
+    assert!(tiny_text.contains("Togetstarted"));
 
     let normal_history = render_live_history_lines(&state, 44);
     let normal_text = line_texts(&normal_history).join("\n");
@@ -5307,14 +5417,14 @@ fn render_helpers_cover_footer_and_truncation_branches() {
     running.running = true;
     running.phase = "streaming".to_string();
     let running_footer = line_texts(&render_footer_lines(&running, 90)).join("\n");
-    assert!(running_footer.contains("Ctrl+C: Interrupt"));
+    assert!(running_footer.contains("Ctrl+C interrupt"));
     assert!(running_footer.contains("RUNNING"));
-    assert!(running_footer.contains("Running..."));
+    assert!(running_footer.contains("streaming"));
 
     let mut drafting = state.clone();
     drafting.input = "draft".to_string();
     let drafting_footer = line_texts(&render_footer_lines(&drafting, 90)).join("\n");
-    assert!(drafting_footer.contains("Ctrl+U: Clear"));
+    assert!(drafting_footer.contains("Ctrl+U clear"));
 
     let composer = render_composer_lines(&drafting, 6);
     let composer_text = line_texts(&composer).join(
@@ -5347,17 +5457,18 @@ fn render_helpers_cover_footer_and_truncation_branches() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn key_handler_covers_quit_and_history_edges() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state
         .body
         .extend((0..5).map(|index| format!("line {index}")));
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Tab)), None);
-    assert!(!state.enter_sends());
-    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert!(state.input.is_empty());
+    assert_eq!(
+        handle_key_event(&mut state, key_modified('o', KeyModifiers::CONTROL)),
+        None
+    );
     assert_eq!(state.input, "\n");
     state.input.clear();
-    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Tab)), None);
-    assert!(state.enter_sends());
     assert_eq!(
         handle_key_event(&mut state, key_modified('p', KeyModifiers::CONTROL)),
         None
@@ -5412,7 +5523,7 @@ fn key_handler_covers_quit_and_history_edges() {
         Some(InteractiveTuiEvent::Quit)
     );
 
-    state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state = test_tui_state();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Up)), None);
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Down)), None);
 
@@ -5464,7 +5575,7 @@ fn key_handler_covers_quit_and_history_edges() {
         Some(InteractiveTuiEvent::Quit)
     );
 
-    let mut escape_state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut escape_state = test_tui_state();
     escape_state
         .body
         .extend(["first".to_string(), "second".to_string()]);
@@ -5480,7 +5591,7 @@ fn key_handler_covers_quit_and_history_edges() {
     );
     let select_footer = line_texts(&render_footer_lines(&escape_state, 120)).join("\n");
     assert!(select_footer.contains("SELECT"));
-    assert!(select_footer.contains("Enter/Esc: Close selection"));
+    assert!(select_footer.contains("Enter/Esc close"));
     assert!(!should_capture_mouse(&escape_state));
     assert_eq!(
         handle_key_event(&mut escape_state, key_code(KeyCode::Up)),
@@ -5496,7 +5607,7 @@ fn key_handler_covers_quit_and_history_edges() {
     );
     assert!(!escape_state.selection_mode_visible());
     assert!(should_capture_mouse(&escape_state));
-    let mut ctrl_c_state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut ctrl_c_state = test_tui_state();
     ctrl_c_state.input = "clear me".to_string();
     assert_eq!(
         handle_key_event(&mut ctrl_c_state, key_modified('c', KeyModifiers::CONTROL)),
@@ -5511,7 +5622,7 @@ fn key_handler_covers_quit_and_history_edges() {
 
 #[test]
 fn composer_soft_wraps_long_input_and_tracks_visual_cursor() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.input = "abcdefghij".to_string();
 
     let rendered = render_composer_lines(&state, 6);
@@ -5540,7 +5651,7 @@ fn composer_soft_wraps_long_input_and_tracks_visual_cursor() {
 
 #[test]
 fn composer_adds_cursor_row_when_input_ends_on_wrap_boundary() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.input = "abcdefgh".to_string();
 
     let width = 6;
@@ -5564,7 +5675,7 @@ fn composer_adds_cursor_row_when_input_ends_on_wrap_boundary() {
 
 #[test]
 fn composer_soft_wraps_wide_characters_by_display_width() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.input = "中文abc".to_string();
 
     let rendered = render_composer_lines(&state, 6);
@@ -5580,7 +5691,7 @@ fn composer_soft_wraps_wide_characters_by_display_width() {
 
 #[test]
 fn composer_paste_normalizes_terminal_control_sequences_and_preserves_multiline_text() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.apply_paste("first\r\nsecond\tthird\x1b[31m!\x1b[0m\x07");
 
     assert_eq!(state.input, "first\nsecond    third!");
@@ -5594,7 +5705,7 @@ fn composer_paste_normalizes_terminal_control_sequences_and_preserves_multiline_
 
 #[test]
 fn composer_paste_keeps_mixed_text_with_image_paths_as_text() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     let pasted = "Please inspect\n/tmp/screenshot.png\nthen summarize";
     state.apply_paste(pasted);
 
@@ -5604,7 +5715,7 @@ fn composer_paste_keeps_mixed_text_with_image_paths_as_text() {
 
 #[test]
 fn composer_paste_keeps_image_only_path_paste_behavior() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.apply_paste("'/tmp/screenshot.png' /tmp/second.webp");
 
     assert_eq!(state.input, "/tmp/screenshot.png /tmp/second.webp");
@@ -5613,31 +5724,30 @@ fn composer_paste_keeps_image_only_path_paste_behavior() {
 
 #[test]
 fn status_bar_secondary_uses_compact_text_on_narrow_widths() {
-    let state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let state = test_tui_state();
     let text = line_texts(&render_footer_lines(&state, 36)).join(
         "
 ",
     );
-    assert!(text.contains("Enter Send"));
-    assert!(text.contains("Esc Select"));
-    assert!(text.contains("Ctrl+C Exit"));
+    assert!(text.contains("Enter send"));
+    assert!(text.contains("/ commands"));
     assert!(!text.contains("Attach clipboard image"));
 }
 
 #[test]
 fn status_bar_secondary_keeps_pgup_pgdn_hint_untruncated_when_it_fits() {
-    let state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let state = test_tui_state();
     let width = 60;
     let lines = render_footer_lines(&state, width);
     assert!(lines.iter().all(|line| line.visible_width() <= width));
     let text = line_texts(&lines).join("\n");
-    assert!(text.contains("PgUp/PgDn Scroll"));
-    assert!(!text.contains("PgUp/PgDo"));
+    assert!(text.contains("/ commands"));
+    assert!(text.contains("? help"));
 }
 
 #[test]
 fn status_bar_keeps_context_visible_with_long_labels_on_narrow_widths() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.model = "openai-responses:gpt-5-with-a-very-long-routing-profile-name".to_string();
     state.profile = "coding-profile-with-a-very-long-name".to_string();
     state.session_id =
@@ -5645,7 +5755,7 @@ fn status_bar_keeps_context_visible_with_long_labels_on_narrow_widths() {
     state.context_tokens = Some(90_000);
     state.context_window = Some(200_000);
 
-    let width = 48;
+    let width = 80;
     let lines = render_footer_lines(&state, width);
     assert!(
         lines.iter().all(|line| line.visible_width() <= width),
@@ -5656,9 +5766,8 @@ fn status_bar_keeps_context_visible_with_long_labels_on_narrow_widths() {
             .collect::<Vec<_>>()
     );
     let text = line_texts(&lines).join("\n");
-    assert!(text.contains("Context: 45%"));
-    assert!(text.contains("Enter Send"));
-    assert!(text.contains("Ctrl+C Exit"));
+    assert!(text.contains("ctx 45%"));
+    assert!(text.contains("Enter send"));
     assert!(!text.contains("very-long-routing-profile-name"));
 }
 
@@ -5667,7 +5776,7 @@ fn terminal_width_helpers_handle_wide_characters() {
     assert_eq!(visible_width("中文a"), 5);
     assert_eq!(composer_cursor_column(&["中文a".to_string()]), 7);
 
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.workspace_dir = "/workspace/项目/很长很长很长很长".to_string();
     let history = render_live_history_lines(&state, 32);
     assert!(line_texts(&history).iter().any(|line| line.contains("…")));
@@ -5685,7 +5794,7 @@ fn terminal_width_helpers_handle_wide_characters() {
 
 #[test]
 fn composer_edits_graphemes_and_moves_across_visual_lines() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.input = "a👨‍👩‍👧‍👦e\u{301}".to_string();
 
     state.move_composer_cursor_left();
@@ -5710,7 +5819,7 @@ fn composer_edits_graphemes_and_moves_across_visual_lines() {
 
 #[test]
 fn attachment_placeholder_is_a_cursor_aware_atomic_span() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.input = "prefix ".to_string();
     state.attach_image(PromptAttachment::image(1, vec![1, 2, 3], "image/png"));
     let placeholder = state.pending_attachments[0].placeholder.clone();
@@ -5736,16 +5845,16 @@ fn attachment_placeholder_is_a_cursor_aware_atomic_span() {
 
 #[test]
 fn notifications_and_paused_output_are_visible_and_follow_can_resume() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
-    state.toggle_enter_mode();
+    let mut state = test_tui_state();
+    state.input_status = Some("message sent".to_string());
     let notification = line_texts(&render_footer_lines(&state, 100)).join("\n");
-    assert!(notification.contains("Notice: Enter inserts newline"));
+    assert!(notification.contains("message sent"));
 
     state.scroll_offset = 2;
     state.push_transcript_notice("new output while paused");
     assert!(state.unread_output_lines > 0);
     let paused = line_texts(&render_footer_lines(&state, 100)).join("\n");
-    assert!(paused.contains("Output paused"));
+    assert!(paused.contains("PAUSED"));
     assert!(paused.contains("new"));
 
     state.scroll_to_bottom();
@@ -5897,7 +6006,7 @@ fn mouse_event(kind: MouseEventKind) -> MouseEvent {
 
 #[test]
 fn steering_guard_displays_as_steering_not_retry() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("respond");
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
@@ -5919,7 +6028,7 @@ fn steering_guard_displays_as_steering_not_retry() {
 
 #[test]
 fn model_response_thinking_and_tool_call_are_visible() {
-    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut state = test_tui_state();
     state.begin_run("respond");
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
@@ -5965,4 +6074,277 @@ fn model_response_thinking_and_tool_call_are_visible() {
             .any(|line| line == "Tool call: lookup {\"query\":\"starweaver\"}")
     );
     assert!(body_has_line(&state, "done"));
+}
+
+#[test]
+fn command_palette_completes_commands_aliases_skills_and_arguments() {
+    let mut state = test_tui_state();
+    let custom = SlashCommandDefinition {
+        name: "review".to_string(),
+        prompt: "Review the changes".to_string(),
+        description: Some("Review changes".to_string()),
+        aliases: vec!["rv".to_string()],
+    };
+    state.set_custom_commands(BTreeMap::from([
+        ("review".to_string(), custom.clone()),
+        ("rv".to_string(), custom),
+    ]));
+    state.set_skills(vec![crate::profiles::SkillSummary {
+        name: "research".to_string(),
+        description: "Research a topic".to_string(),
+        path: "/skills/research/SKILL.md".to_string(),
+    }]);
+    state.set_model_choices(vec![
+        ModelChoice {
+            profile: "general".to_string(),
+            model_id: "model-a".to_string(),
+            ..ModelChoice::default()
+        },
+        ModelChoice {
+            profile: "coding".to_string(),
+            model_id: "model-b".to_string(),
+            ..ModelChoice::default()
+        },
+    ]);
+    state.set_session_choices(vec![SessionChoice {
+        session_id: "session_123".to_string(),
+        title: Some("Recent work".to_string()),
+        status: "completed".to_string(),
+        ..SessionChoice::default()
+    }]);
+
+    for ch in "/mo".chars() {
+        assert_eq!(handle_key_event(&mut state, key_char(ch)), None);
+    }
+    let command_text = line_texts(&render_footer_lines(&state, 80)).join("\n");
+    assert!(command_text.contains("/model"));
+    assert!(state.command_palette_visible());
+
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Tab)), None);
+    assert_eq!(state.input, "/model ");
+    let argument_text = line_texts(&render_footer_lines(&state, 80)).join("\n");
+    assert!(argument_text.contains("general"));
+    assert!(argument_text.contains("coding"));
+
+    state.clear_composer();
+    for ch in "/rv".chars() {
+        handle_key_event(&mut state, key_char(ch));
+    }
+    let alias_text = line_texts(&render_footer_lines(&state, 100)).join("\n");
+    assert!(alias_text.contains("alias for /review"));
+
+    state.clear_composer();
+    for ch in "/rese".chars() {
+        handle_key_event(&mut state, key_char(ch));
+    }
+    let skill_text = line_texts(&render_footer_lines(&state, 100)).join("\n");
+    assert!(skill_text.contains("/research"));
+    assert!(skill_text.contains("[skill]"));
+
+    state.clear_composer();
+    for ch in "/display ".chars() {
+        handle_key_event(&mut state, key_char(ch));
+    }
+    let display_text = line_texts(&render_footer_lines(&state, 80)).join("\n");
+    assert!(display_text.contains("normal"));
+    assert!(display_text.contains("concise"));
+    assert!(display_text.contains("debug"));
+}
+
+#[test]
+fn command_palette_owns_navigation_and_escape_without_changing_enter_behavior() {
+    let mut state = test_tui_state();
+    handle_key_event(&mut state, key_char('/'));
+    assert!(state.command_palette_visible());
+    let original = state.input.clone();
+
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Down)), None);
+    assert_eq!(state.input, original);
+    assert_eq!(
+        handle_key_event(&mut state, key_code(KeyCode::BackTab)),
+        None
+    );
+    assert_eq!(state.input, original);
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Esc)), None);
+    assert!(!state.command_palette_visible());
+    assert!(!state.selection_mode_visible());
+    assert_eq!(state.input, original);
+
+    handle_key_event(&mut state, key_char('m'));
+    assert!(state.command_palette_visible());
+}
+
+#[test]
+fn near_miss_builtin_shows_hint_but_exact_skill_remains_a_prompt() {
+    let mut state = test_tui_state();
+    state.input = "/modle".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line.contains("Did you mean /model?"))
+    );
+
+    state.set_skills(vec![crate::profiles::SkillSummary {
+        name: "modle".to_string(),
+        description: "A deliberately named skill".to_string(),
+        path: "/skills/modle/SKILL.md".to_string(),
+    }]);
+    state.input = "/modle do work".to_string();
+    let event = handle_key_event(&mut state, key_code(KeyCode::Enter));
+    assert!(matches!(event, Some(InteractiveTuiEvent::Submit(_))));
+}
+
+#[test]
+fn composed_frame_size_matrix_never_overflows_terminal_geometry() {
+    let mut states = Vec::new();
+
+    let mut idle = test_tui_state();
+    idle.body.extend([
+        "A long transcript line with CJK 内容 and wide glyphs 界界界".to_string(),
+        "second line".to_string(),
+    ]);
+    states.push(idle);
+
+    let mut running = test_tui_state();
+    running.begin_run("inspect the workspace");
+    running.input = "steer with multiple lines\n第二行\nthird line".to_string();
+    states.push(running);
+
+    let mut completion = test_tui_state();
+    completion.input = "/mo".to_string();
+    completion.move_composer_cursor_to_end();
+    completion.refresh_command_palette();
+    states.push(completion);
+
+    let mut help = test_tui_state();
+    help.open_help_panel();
+    states.push(help);
+
+    for mut state in states {
+        for width in [120, 80, 40, 20] {
+            for height in [24, 8, 4] {
+                let frame = compose_frame(&mut state, width, height);
+                assert_eq!(frame.lines.len(), height);
+                assert!(frame.cursor_row < height);
+                assert!(frame.cursor_col < frame.render_width.max(1));
+                assert!(
+                    frame
+                        .lines
+                        .iter()
+                        .all(|line| line.visible_width() <= frame.render_width),
+                    "frame overflow at {width}x{height}: {:?}",
+                    line_texts(&frame.lines)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn compact_question_frame_preserves_action_and_hides_task_panel() {
+    let mut state = test_tui_state();
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                TASK_SNAPSHOT_EVENT_KIND,
+                json!({
+                    "tasks": [{
+                        "id": "1",
+                        "subject": "Background task",
+                        "description": "Must not cover the question",
+                        "status": "in_progress",
+                        "active_form": "Working"
+                    }]
+                }),
+            ),
+        },
+    ));
+    let mut approval = ApprovalRecord::new(
+        "approval_question_frame",
+        SessionId::from_string("session_question_frame"),
+        RunId::from_string("run_question_frame"),
+        "question_frame_call",
+        starweaver_agent::ASK_USER_QUESTION_TOOL_NAME,
+    );
+    approval.request = json!({
+        "kind": starweaver_agent::CLARIFYING_QUESTIONS_REQUEST_KIND,
+        "questions": [{
+            "question": "Choose features",
+            "header": "Features",
+            "options": [
+                {"label": "Search", "description": "Enable search", "preview": "Search preview"},
+                {"label": "Media", "description": "Enable media"}
+            ],
+            "multiSelect": true
+        }]
+    });
+    state.bind_pending_approval(&approval);
+
+    for (width, height) in [(80, 24), (40, 8), (20, 4)] {
+        let frame = compose_frame(&mut state, width, height);
+        let text = line_texts(&frame.lines).join("\n");
+        assert!(
+            text.contains("Enter"),
+            "missing action at {width}x{height}: {text}"
+        );
+        assert!(!text.contains("Background task"));
+        assert!(!text.contains("Must not cover"));
+    }
+}
+
+#[test]
+fn help_history_search_and_empty_composer_history_navigation_are_modal() {
+    let mut state = test_tui_state();
+    state.push_history("first prompt".to_string());
+    state.push_history("second matching prompt".to_string());
+    state.push_history("third matching prompt".to_string());
+
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::F(1))), None);
+    assert!(state.help_panel_visible());
+    let help = line_texts(&compose_frame(&mut state, 80, 24).lines).join("\n");
+    assert!(help.contains("Available Commands"));
+    assert!(help.contains("Esc close"));
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Esc)), None);
+
+    state.input = "matching".to_string();
+    state.move_composer_cursor_to_end();
+    assert_eq!(
+        handle_key_event(&mut state, key_modified('r', KeyModifiers::CONTROL)),
+        None
+    );
+    assert!(state.history_search_visible());
+    let search = line_texts(&compose_frame(&mut state, 60, 12).lines).join("\n");
+    assert!(search.contains("HISTORY SEARCH"));
+    assert!(search.contains("third matching prompt"));
+    assert_eq!(
+        handle_key_event(&mut state, key_modified('r', KeyModifiers::CONTROL)),
+        None
+    );
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert_eq!(state.input, "second matching prompt");
+
+    state.clear_composer();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Up)), None);
+    assert_eq!(state.input, "third matching prompt");
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Down)), None);
+    assert!(state.input.is_empty());
+}
+
+#[test]
+fn composer_overflow_markers_show_hidden_draft_directions() {
+    let mut state = test_tui_state();
+    state.input = (1..=8)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    state.move_composer_cursor_to_end();
+    let bottom = line_texts(&render_composer_lines(&state, 40)).join("\n");
+    assert!(bottom.contains('↑'));
+
+    state.scroll_composer_up(3);
+    let middle = line_texts(&render_composer_lines(&state, 40)).join("\n");
+    assert!(middle.contains('↓'));
 }

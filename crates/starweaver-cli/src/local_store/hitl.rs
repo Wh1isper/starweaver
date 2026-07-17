@@ -111,11 +111,16 @@ pub(super) fn approval_tool_return(record: &ApprovalRecord) -> CliResult<Option<
                     == Some(starweaver_agent::CLARIFYING_QUESTIONS_REQUEST_KIND);
             let mut content = if is_clarifying {
                 let questions = record.request.get("questions").cloned().unwrap_or_default();
-                let result = starweaver_agent::resolve_clarifying_question_answers(
-                    questions,
-                    serde_json::Value::String(reason.cloned().unwrap_or_default()),
-                )
-                .map_err(|error| CliError::Run(error.to_string()))?;
+                let user_input = reason.map_or_else(
+                    || serde_json::Value::String(String::new()),
+                    |reason| {
+                        serde_json::from_str(reason)
+                            .unwrap_or_else(|_| serde_json::Value::String(reason.clone()))
+                    },
+                );
+                let result =
+                    starweaver_agent::resolve_clarifying_question_answers(questions, user_input)
+                        .map_err(|error| CliError::Run(error.to_string()))?;
                 serde_json::to_value(result).map_err(|error| CliError::Run(error.to_string()))?
             } else {
                 serde_json::json!({

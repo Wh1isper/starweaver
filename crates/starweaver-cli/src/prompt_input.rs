@@ -121,7 +121,7 @@ impl PromptInput {
         parts
     }
 
-    /// Return text suitable for transcript display and prompt history.
+    /// Return text suitable for transcript display.
     #[must_use]
     pub fn display_text(&self) -> String {
         if !self.text.trim().is_empty() {
@@ -132,6 +132,19 @@ impl PromptInput {
             .map(|attachment| attachment.placeholder.clone())
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    /// Return stable prompt recall text without generated attachment placeholders.
+    #[must_use]
+    pub fn history_text(&self) -> Option<String> {
+        let mut text = self.text.clone();
+        for attachment in &self.attachments {
+            if !attachment.placeholder.is_empty() {
+                text = text.replace(&attachment.placeholder, "");
+            }
+        }
+        let text = text.trim().to_string();
+        (!text.is_empty()).then_some(text)
     }
 }
 
@@ -210,6 +223,27 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn history_text_excludes_generated_attachment_placeholders() {
+        let attachment = PromptAttachment::image(1, vec![1, 2, 3], "image/png");
+        let placeholder = attachment.placeholder.clone();
+        let with_text = PromptInput {
+            text: format!("inspect {placeholder}"),
+            attachments: vec![attachment.clone()],
+            extra_text_parts: Vec::new(),
+            guidance_text_parts: Vec::new(),
+        };
+        assert_eq!(with_text.history_text().as_deref(), Some("inspect"));
+
+        let attachment_only = PromptInput {
+            text: placeholder,
+            attachments: vec![attachment],
+            extra_text_parts: Vec::new(),
+            guidance_text_parts: Vec::new(),
+        };
+        assert_eq!(attachment_only.history_text(), None);
     }
 
     #[test]

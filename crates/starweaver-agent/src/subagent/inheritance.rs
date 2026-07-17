@@ -100,7 +100,7 @@ impl SubagentToolInheritancePolicy {
             }
         }
         for name in &self.required_tools {
-            if self.denied_tools.contains(name) {
+            if self.denied_tools.contains(name) || is_main_agent_only_tool(name) {
                 return Err(SubagentToolInheritanceError::DeniedRequiredTool(
                     name.clone(),
                 ));
@@ -113,12 +113,26 @@ impl SubagentToolInheritancePolicy {
         for name in &self.denied_tools {
             inherited.remove(name);
         }
-        remove_delegation_tools(&mut inherited);
+        remove_main_agent_only_tools(&mut inherited);
         Ok(inherited)
     }
 }
 
-fn remove_delegation_tools(registry: &mut ToolRegistry) {
+fn is_main_agent_only_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "delegate"
+            | "subagent_info"
+            | "spawn_delegate"
+            | "steer_subagent"
+            | "cancel_subagent"
+            | "wait_subagent"
+            | "__delegate_backend"
+            | crate::bundles::ASK_USER_QUESTION_TOOL_NAME
+    )
+}
+
+fn remove_main_agent_only_tools(registry: &mut ToolRegistry) {
     for name in [
         "delegate",
         "subagent_info",
@@ -127,6 +141,7 @@ fn remove_delegation_tools(registry: &mut ToolRegistry) {
         "cancel_subagent",
         "wait_subagent",
         "__delegate_backend",
+        crate::bundles::ASK_USER_QUESTION_TOOL_NAME,
     ] {
         registry.remove(name);
     }
@@ -138,7 +153,7 @@ pub enum SubagentToolInheritanceError {
     /// Required tool was not present in the parent registry.
     #[error("required inherited tool is missing: {0}")]
     MissingRequiredTool(String),
-    /// Required tool was also listed as denied.
+    /// Required tool was denied, including tools restricted to the main agent.
     #[error("required inherited tool is denied: {0}")]
     DeniedRequiredTool(String),
 }
