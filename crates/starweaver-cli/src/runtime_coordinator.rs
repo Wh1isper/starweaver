@@ -40,10 +40,11 @@ pub(super) struct RunStatusItem {
 pub(super) enum RunStreamEvent {
     Status(RunStatusItem),
     Raw(Box<AgentStreamRecord>),
+    StartFailed(String),
 }
 
 pub(super) struct StartedRun {
-    pub(super) run_id: String,
+    pub(super) control_id: String,
     pub(super) events: mpsc::Receiver<RunStreamEvent>,
 }
 
@@ -76,6 +77,38 @@ struct BackgroundWorkerHandle {
 struct ActiveRunControl {
     steering_sender: mpsc::Sender<CliSteeringMessage>,
     cancel_sender: mpsc::Sender<()>,
+}
+
+fn reap_finished_worker_handles(
+    worker_handles: &Mutex<Vec<BackgroundWorkerHandle>>,
+) -> Result<(), String> {
+    let handles = worker_handles.lock().map_or_else(
+        |error| std::mem::take(&mut *error.into_inner()),
+        |mut handles| std::mem::take(&mut *handles),
+    );
+    let mut pending = Vec::new();
+    let mut worker_error = None;
+    for handle in handles {
+        let BackgroundWorkerHandle { join, completed } = handle;
+        match completed.try_recv() {
+            Ok(()) | Err(mpsc::TryRecvError::Disconnected) => {
+                if join.join().is_err() {
+                    worker_error
+                        .get_or_insert_with(|| "CLI background worker panicked".to_string());
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                pending.push(BackgroundWorkerHandle { join, completed });
+            }
+        }
+    }
+    if !pending.is_empty() {
+        match worker_handles.lock() {
+            Ok(mut handles) => handles.extend(pending),
+            Err(error) => error.into_inner().extend(pending),
+        }
+    }
+    worker_error.map_or(Ok(()), Err)
 }
 
 fn drain_worker_handles_until(
@@ -257,11 +290,9 @@ struct BackgroundRunWorker {
     interactive_host: Arc<CliInteractiveExecutionHost>,
     command: RunCommand,
     prompt_input: Option<PromptInput>,
-    started_sender: mpsc::Sender<CliResult<(String, String)>>,
-    event_sender: mpsc::Sender<RunStreamEvent>,
-    steering_sender: mpsc::Sender<CliSteeringMessage>,
+    control_id: String,
+    event_sender: mpsc::SyncSender<RunStreamEvent>,
     steering_receiver: mpsc::Receiver<CliSteeringMessage>,
-    cancel_sender: mpsc::Sender<()>,
     cancel_receiver: mpsc::Receiver<()>,
     background_attempt_id: Option<String>,
 }
@@ -272,18 +303,24 @@ impl BackgroundRunWorker {
         let mut service = match CliService::open(self.config) {
             Ok(service) => service,
             Err(error) => {
-                let _ = self.started_sender.send(Err(error));
+                let _ = self
+                    .event_sender
+                    .send(RunStreamEvent::StartFailed(error.to_string()));
+                remove_active_run(&self.active_runs, &self.control_id);
                 return;
             }
         };
         let mut prepared = match service.prepare_prompt_run(&self.command, self.prompt_input) {
             Ok(prepared) => prepared,
             Err(error) => {
-                let _ = self.started_sender.send(Err(error));
+                let _ = self
+                    .event_sender
+                    .send(RunStreamEvent::StartFailed(error.to_string()));
+                remove_active_run(&self.active_runs, &self.control_id);
                 return;
             }
         };
-        let run_on_error = prepared.run.clone();
+        let mut run_on_error = prepared.run.clone();
         let session_id = prepared.session_id.clone();
         prepared.set_execution_host(self.interactive_host.execution_host(&session_id));
         let run_id = prepared.run_id.clone();
@@ -295,22 +332,25 @@ impl BackgroundRunWorker {
                 Ok(claim_id) => Some((attempt_id.to_string(), claim_id)),
                 Err(error) => {
                     let _ = service.fail_prepared_prompt_run(run_on_error, &error);
-                    let _ = self.started_sender.send(Err(error));
+                    let _ = self
+                        .event_sender
+                        .send(RunStreamEvent::StartFailed(error.to_string()));
+                    remove_active_run(&self.active_runs, &self.control_id);
                     return;
                 }
             }
         } else {
             None
         };
-        if let Ok(mut runs) = self.active_runs.lock() {
-            runs.insert(
-                run_id.clone(),
-                ActiveRunControl {
-                    steering_sender: self.steering_sender,
-                    cancel_sender: self.cancel_sender,
-                },
-            );
+        if let Err(error) = service.start_prepared_hitl_resume(&mut prepared) {
+            let _ = service.fail_prepared_prompt_run(run_on_error, &error);
+            let _ = self
+                .event_sender
+                .send(RunStreamEvent::StartFailed(error.to_string()));
+            remove_active_run(&self.active_runs, &self.control_id);
+            return;
         }
+        run_on_error = prepared.run.clone();
         let _ = self
             .event_sender
             .send(RunStreamEvent::Status(RunStatusItem {
@@ -319,20 +359,7 @@ impl BackgroundRunWorker {
                 status: "running".to_string(),
                 error: None,
             }));
-        if self
-            .started_sender
-            .send(Ok((session_id.clone(), run_id.clone())))
-            .is_err()
-        {
-            if let Some((attempt_id, claim_id)) = delivery_claim.as_ref() {
-                self.interactive_host
-                    .release_continuation(&session_id, attempt_id, claim_id);
-            }
-            remove_active_run(&self.active_runs, &run_id);
-            return;
-        }
-
-        let (stream_sender, stream_receiver) = mpsc::channel::<AgentStreamRecord>();
+        let (stream_sender, stream_receiver) = mpsc::sync_channel::<AgentStreamRecord>(256);
         let stream_event_sender = self.event_sender.clone();
         let stream_handle = thread::spawn(move || {
             for record in stream_receiver {
@@ -361,7 +388,7 @@ impl BackgroundRunWorker {
                 },
                 Err(error) => RunStatusItem {
                     session_id: session_id.clone(),
-                    run_id: run_id.clone(),
+                    run_id,
                     status: "failed".to_string(),
                     error: Some(error.to_string()),
                 },
@@ -370,7 +397,7 @@ impl BackgroundRunWorker {
                 let _ = service.fail_prepared_prompt_run(run_on_error, &error);
                 RunStatusItem {
                     session_id: session_id.clone(),
-                    run_id: run_id.clone(),
+                    run_id,
                     status: "failed".to_string(),
                     error: Some(error.to_string()),
                 }
@@ -381,7 +408,7 @@ impl BackgroundRunWorker {
                 .release_continuation(&session_id, &attempt_id, &claim_id);
         }
         let _ = self.event_sender.send(RunStreamEvent::Status(status));
-        remove_active_run(&self.active_runs, &run_id);
+        remove_active_run(&self.active_runs, &self.control_id);
     }
 }
 
@@ -402,26 +429,35 @@ impl CliRuntimeCoordinator {
         prompt_input: Option<PromptInput>,
         background_attempt_id: Option<String>,
     ) -> CliResult<StartedRun> {
+        reap_finished_worker_handles(&self.worker_handles).map_err(CliError::Run)?;
         if self.closing.load(Ordering::Acquire) {
             return Err(CliError::Run(
                 "interactive runtime coordinator is shutting down".to_string(),
             ));
         }
-        let (started_sender, started_receiver) = mpsc::channel::<CliResult<(String, String)>>();
-        let (event_sender, event_receiver) = mpsc::channel::<RunStreamEvent>();
+        let (event_sender, event_receiver) = mpsc::sync_channel::<RunStreamEvent>(256);
         let (steering_sender, steering_receiver) = mpsc::channel::<CliSteeringMessage>();
         let (cancel_sender, cancel_receiver) = mpsc::channel::<()>();
+        let control_id = RunId::new().as_str().to_string();
+        self.active_runs
+            .lock()
+            .map_err(|error| CliError::Run(error.to_string()))?
+            .insert(
+                control_id.clone(),
+                ActiveRunControl {
+                    steering_sender,
+                    cancel_sender,
+                },
+            );
         let worker = BackgroundRunWorker {
             config: self.config.clone(),
             active_runs: Arc::clone(&self.active_runs),
             interactive_host: Arc::clone(&self.interactive_host),
             command,
             prompt_input,
-            started_sender,
+            control_id: control_id.clone(),
             event_sender,
-            steering_sender,
             steering_receiver,
-            cancel_sender,
             cancel_receiver,
             background_attempt_id,
         };
@@ -437,11 +473,8 @@ impl CliRuntimeCoordinator {
                 join: handle,
                 completed: completed_receiver,
             });
-        let (_session_id, run_id) = started_receiver
-            .recv()
-            .map_err(|error| CliError::Run(error.to_string()))??;
         Ok(StartedRun {
-            run_id,
+            control_id,
             events: event_receiver,
         })
     }
@@ -531,6 +564,47 @@ fn remove_active_run(active_runs: &Arc<Mutex<HashMap<String, ActiveRunControl>>>
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_worker_handles_are_reaped_without_waiting_for_shutdown() {
+        let handles = Mutex::new(Vec::new());
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let join = thread::spawn(move || {
+            completed_tx.send(()).expect("completion receiver");
+        });
+        handles.lock().unwrap().push(BackgroundWorkerHandle {
+            join,
+            completed: completed_rx,
+        });
+
+        for _ in 0..20 {
+            reap_finished_worker_handles(&handles).unwrap();
+            if handles.lock().unwrap().is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(handles.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn active_worker_handle_is_retained_by_non_blocking_reap() {
+        let handles = Mutex::new(Vec::new());
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let join = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            completed_tx.send(()).expect("completion receiver");
+        });
+        handles.lock().unwrap().push(BackgroundWorkerHandle {
+            join,
+            completed: completed_rx,
+        });
+
+        reap_finished_worker_handles(&handles).unwrap();
+        assert_eq!(handles.lock().unwrap().len(), 1);
+        drain_worker_handles_until(&handles, std::time::Instant::now() + Duration::from_secs(1))
+            .unwrap();
+    }
 
     #[test]
     fn timed_out_worker_handle_is_retained_for_a_later_shutdown() {

@@ -48,25 +48,10 @@ use formatting::{
     format_tool_return_lines, format_u64_with_commas, is_subagent_lifecycle_event_kind,
     is_subagent_start_event_kind, is_task_snapshot_event, is_task_tool_name, merge_stream_fragment,
     model_choice_config_suffix, model_choice_label, normalized_event_kind, pasted_image_paths,
-    previous_char_boundary, push_shell_output_lines, push_usage_entry_lines, streaming_part_kind,
+    push_shell_output_lines, push_usage_entry_lines, streaming_part_kind,
     streaming_tool_arguments_match, streaming_tool_state_is_available, subagent_display_id,
     task_panel_items_from_value, tool_call_visibility_key,
 };
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum RunMode {
-    Act,
-    Plan,
-}
-
-impl RunMode {
-    pub(super) const fn label(&self) -> &'static str {
-        match self {
-            Self::Act => "ACT",
-            Self::Plan => "PLAN",
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum EnterMode {
@@ -207,8 +192,10 @@ pub(super) struct SubagentDisplayState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct HitlPanelState {
+    pub(super) approval_id: Option<String>,
     pub(super) tool_call_id: String,
     pub(super) tool_name: String,
+    pub(super) request_preview: Option<String>,
     pub(super) command: Option<String>,
     pub(super) risk_level: Option<String>,
     pub(super) reason: Option<String>,
@@ -249,6 +236,10 @@ pub struct InteractiveTuiState {
     pub(super) input_cursor: usize,
     /// Input length last observed after an internal cursor-aware mutation.
     input_cursor_input_len: usize,
+    /// Last rendered composer content width, used for visual-line cursor movement.
+    pub(super) composer_content_width: usize,
+    /// Desired display column retained across consecutive vertical cursor moves.
+    pub(super) composer_preferred_column: Option<usize>,
     /// Active profile label.
     pub profile: String,
     /// Active model label.
@@ -267,13 +258,15 @@ pub struct InteractiveTuiState {
     pub(super) rendered_body_len: usize,
     /// Last rendered body viewport height, used to keep scroll handling cheap between frames.
     pub(super) body_viewport_height: usize,
+    /// Number of changed output lines received while transcript following is paused.
+    pub(super) unread_output_lines: usize,
     /// Multiline composer scrollback offset from the bottom of the draft.
     pub(super) input_scroll_offset: usize,
     /// Short-lived composer status for paste, media attach, and steering actions.
     pub(super) input_status: Option<String>,
     /// Image attachments queued into the fixed composer.
     pub(super) pending_attachments: Vec<PromptAttachment>,
-    pub(super) run_mode: RunMode,
+    restored_prompt_parts: Option<(Vec<String>, Vec<String>)>,
     pub(super) history: Vec<String>,
     pub(super) history_index: Option<usize>,
     pub(super) history_draft: String,
@@ -281,6 +274,8 @@ pub struct InteractiveTuiState {
     active_model_segment: Option<ActiveModelSegment>,
     timeline: TuiTimeline,
     timeline_projection: TuiProjection,
+    projection_batch_depth: usize,
+    projection_dirty: bool,
     render_mode: TuiRenderMode,
     streaming_text_seen: bool,
     streaming_reasoning_seen: bool,
@@ -292,6 +287,7 @@ pub struct InteractiveTuiState {
     tool_call_arguments: HashMap<String, Value>,
     pub(super) subagent_states: HashMap<String, SubagentDisplayState>,
     pending_hitl: Option<HitlPanelState>,
+    hitl_reload_session_id: Option<String>,
     task_panel_items: Vec<TaskPanelItem>,
     pending_clear_context: bool,
     selection_mode: bool,
@@ -305,6 +301,8 @@ pub struct InteractiveTuiState {
     session_picker_open: bool,
     session_picker_index: usize,
     pending_session_command: Option<String>,
+    pending_shell_command: Option<String>,
+    pub(super) shell_running: bool,
     pub(super) cancel_requested: bool,
     pub(super) footer_mode: FooterMode,
     pub(super) goal_task: Option<String>,
@@ -336,6 +334,8 @@ impl InteractiveTuiState {
             input: String::new(),
             input_cursor: 0,
             input_cursor_input_len: 0,
+            composer_content_width: 78,
+            composer_preferred_column: None,
             profile: "general".to_string(),
             model: "local_echo".to_string(),
             phase: "ready".to_string(),
@@ -345,10 +345,11 @@ impl InteractiveTuiState {
             scroll_offset: usize::MAX,
             rendered_body_len: 0,
             body_viewport_height: 1,
+            unread_output_lines: 0,
             input_scroll_offset: 0,
             input_status: None,
             pending_attachments: Vec::new(),
-            run_mode: RunMode::Act,
+            restored_prompt_parts: None,
             history: Vec::new(),
             history_index: None,
             history_draft: String::new(),
@@ -356,6 +357,8 @@ impl InteractiveTuiState {
             active_model_segment: None,
             timeline: TuiTimeline::default(),
             timeline_projection: TuiProjection::default(),
+            projection_batch_depth: 0,
+            projection_dirty: false,
             render_mode: TuiRenderMode::Normal,
             streaming_text_seen: false,
             streaming_reasoning_seen: false,
@@ -367,6 +370,7 @@ impl InteractiveTuiState {
             tool_call_arguments: HashMap::new(),
             subagent_states: HashMap::new(),
             pending_hitl: None,
+            hitl_reload_session_id: None,
             task_panel_items: Vec::new(),
             pending_clear_context: false,
             selection_mode: false,
@@ -380,6 +384,8 @@ impl InteractiveTuiState {
             session_picker_open: false,
             session_picker_index: 0,
             pending_session_command: None,
+            pending_shell_command: None,
+            shell_running: false,
             cancel_requested: false,
             footer_mode: FooterMode::Context,
             goal_task: None,
@@ -422,9 +428,31 @@ impl InteractiveTuiState {
         self.timeline_projection.active_tool_label()
     }
 
+    pub(crate) const fn begin_projection_batch(&mut self) {
+        self.projection_batch_depth = self.projection_batch_depth.saturating_add(1);
+    }
+
+    pub(crate) fn end_projection_batch(&mut self) {
+        self.projection_batch_depth = self.projection_batch_depth.saturating_sub(1);
+        if self.projection_batch_depth == 0 && self.projection_dirty {
+            self.reproject_body();
+        }
+    }
+
     fn reproject_body(&mut self) {
-        self.timeline_projection = project_timeline(&self.timeline, self.render_mode);
-        self.body = self.timeline_projection.lines.clone();
+        if self.projection_batch_depth > 0 {
+            self.projection_dirty = true;
+            return;
+        }
+        self.projection_dirty = false;
+        let projection = project_timeline(&self.timeline, self.render_mode);
+        let changed_while_paused = !self.is_at_bottom() && projection.lines != self.body;
+        if changed_while_paused {
+            let changed_lines = projection.lines.len().abs_diff(self.body.len()).max(1);
+            self.unread_output_lines = self.unread_output_lines.saturating_add(changed_lines);
+        }
+        self.body.clone_from(&projection.lines);
+        self.timeline_projection = projection;
         if self
             .selection_index
             .is_some_and(|index| index >= self.body.len())
@@ -513,6 +541,7 @@ impl InteractiveTuiState {
         self.footer_mode = FooterMode::Context;
         self.input_status = None;
         self.pending_attachments.clear();
+        self.restored_prompt_parts = None;
         self.reset_composer_scroll();
         self.status = snapshot
             .terminal_status
@@ -524,6 +553,8 @@ impl InteractiveTuiState {
         self.selection_mode = false;
         self.selection_index = None;
         self.pending_submission_display_prompt = None;
+        self.pending_hitl = None;
+        self.hitl_reload_session_id = None;
         self.task_panel_items.clone_from(&snapshot.tasks);
         self.sync_session_picker_index_to_current();
         self.phase = "replay".to_string();
@@ -562,6 +593,7 @@ impl InteractiveTuiState {
         self.tool_call_arguments.clear();
         self.subagent_states.clear();
         self.pending_hitl = None;
+        self.hitl_reload_session_id = None;
         self.selection_mode = false;
         self.selection_index = None;
         self.pending_submission_display_prompt = None;
@@ -573,9 +605,27 @@ impl InteractiveTuiState {
         self.current_run_id = None;
         self.current_run_usage = None;
         self.model_transport_status = None;
-        self.scroll_to_bottom();
         self.finish_current_model_item();
         self.active_model_segment = None;
+    }
+
+    /// Mark a run as durably waiting while retaining live HITL and deferred-tool context.
+    pub fn wait_run(&mut self, session_id: Option<String>) {
+        if let Some(session_id) = session_id {
+            self.session_id = Some(session_id);
+        }
+        self.running = false;
+        self.cancel_requested = false;
+        self.status = "WAITING".to_string();
+        self.phase = "waiting".to_string();
+        self.streaming_parts.clear();
+        self.streaming_tool_calls.clear();
+        self.pending_submission_display_prompt = None;
+        self.model_picker_open = false;
+        self.session_picker_open = false;
+        self.finish_current_model_item();
+        self.reproject_body();
+        self.finish_active_goal_without_runtime_event("waiting");
     }
 
     /// Mark a run finished with durable ids.
@@ -595,6 +645,7 @@ impl InteractiveTuiState {
         self.tool_call_arguments.clear();
         self.subagent_states.clear();
         self.pending_hitl = None;
+        self.hitl_reload_session_id = None;
         self.pending_submission_display_prompt = None;
         self.model_picker_open = false;
         self.session_picker_open = false;
@@ -617,6 +668,7 @@ impl InteractiveTuiState {
         self.tool_call_arguments.clear();
         self.subagent_states.clear();
         self.pending_hitl = None;
+        self.hitl_reload_session_id = None;
         self.pending_submission_display_prompt = None;
         self.model_picker_open = false;
         self.session_picker_open = false;
@@ -638,6 +690,7 @@ impl InteractiveTuiState {
         self.tool_call_arguments.clear();
         self.subagent_states.clear();
         self.pending_hitl = None;
+        self.hitl_reload_session_id = None;
         self.pending_submission_display_prompt = None;
         self.model_picker_open = false;
         self.session_picker_open = false;
@@ -679,6 +732,7 @@ impl InteractiveTuiState {
         self.tool_call_arguments.clear();
         self.subagent_states.clear();
         self.pending_hitl = None;
+        self.hitl_reload_session_id = None;
         self.task_panel_items.clear();
         self.pending_clear_context = false;
         self.selection_mode = false;
@@ -687,7 +741,9 @@ impl InteractiveTuiState {
         self.model_picker_open = false;
         self.session_picker_open = false;
         self.pending_session_command = None;
+        self.pending_shell_command = None;
         self.running = false;
+        self.shell_running = false;
         self.cancel_requested = false;
         self.goal_task = None;
         self.goal_active = false;
@@ -713,18 +769,20 @@ impl InteractiveTuiState {
     }
 
     pub(super) const fn enter_action_label(&self) -> &'static str {
-        match (self.running, self.enter_mode) {
-            (true, EnterMode::Send) => "Enter: Steer",
-            (false, EnterMode::Send) => "Enter: Send",
-            (_, EnterMode::Newline) => "Enter: Newline",
+        match (self.running, self.shell_running, self.enter_mode) {
+            (_, true, EnterMode::Send) => "Enter: Wait",
+            (true, false, EnterMode::Send) => "Enter: Steer",
+            (false, false, EnterMode::Send) => "Enter: Send",
+            (_, _, EnterMode::Newline) => "Enter: Newline",
         }
     }
 
     pub(super) const fn enter_toggle_label(&self) -> &'static str {
-        match (self.running, self.enter_mode) {
-            (_, EnterMode::Send) => "Tab: Enter inserts newline",
-            (true, EnterMode::Newline) => "Tab: Enter steers",
-            (false, EnterMode::Newline) => "Tab: Enter sends",
+        match (self.running, self.shell_running, self.enter_mode) {
+            (_, _, EnterMode::Send) => "Tab: Enter inserts newline",
+            (_, true, EnterMode::Newline) => "Tab: Enter waits",
+            (true, false, EnterMode::Newline) => "Tab: Enter steers",
+            (false, false, EnterMode::Newline) => "Tab: Enter sends",
         }
     }
 
@@ -740,7 +798,7 @@ impl InteractiveTuiState {
         } else if self.running {
             "RUNNING"
         } else {
-            self.run_mode.label()
+            "READY"
         }
     }
 
@@ -822,6 +880,10 @@ impl InteractiveTuiState {
         self.input_status.as_deref().unwrap_or(&self.phase)
     }
 
+    pub(super) fn input_notification(&self) -> Option<&str> {
+        self.input_status.as_deref()
+    }
+
     pub(super) const fn help_panel_visible() -> bool {
         false
     }
@@ -834,6 +896,59 @@ impl InteractiveTuiState {
 
     pub(super) const fn pending_hitl(&self) -> Option<&HitlPanelState> {
         self.pending_hitl.as_ref()
+    }
+
+    pub(super) fn hitl_decision_ready(&self) -> bool {
+        self.pending_hitl
+            .as_ref()
+            .is_some_and(|hitl| hitl.approval_id.is_some())
+    }
+
+    pub(crate) fn hitl_reload_session_id(&self) -> Option<&str> {
+        self.hitl_reload_session_id.as_deref()
+    }
+
+    pub(crate) fn require_hitl_reload(&mut self, session_id: impl Into<String>) {
+        self.hitl_reload_session_id = Some(session_id.into());
+        self.status = "WAITING".to_string();
+        self.phase = "hitl refresh".to_string();
+        self.input_status = Some("HITL: [Esc] refresh".to_string());
+    }
+
+    pub(crate) fn clear_hitl_reload_required(&mut self) {
+        self.hitl_reload_session_id = None;
+    }
+
+    pub(crate) fn bind_pending_approval(&mut self, approval: &starweaver_session::ApprovalRecord) {
+        let existing = self.pending_hitl.take();
+        self.hitl_reload_session_id = Some(approval.session_id.as_str().to_string());
+        let request_string = |key: &str| {
+            approval
+                .request
+                .get(key)
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        };
+        self.pending_hitl = Some(HitlPanelState {
+            approval_id: Some(approval.approval_id.clone()),
+            tool_call_id: approval.action_id.clone(),
+            tool_name: approval.action_name.clone(),
+            request_preview: Some(approval_request_preview(&approval.request)),
+            command: request_string("command")
+                .or_else(|| request_string("script"))
+                .or_else(|| existing.as_ref().and_then(|hitl| hitl.command.clone())),
+            risk_level: request_string("risk_level")
+                .or_else(|| existing.as_ref().and_then(|hitl| hitl.risk_level.clone())),
+            reason: request_string("reason")
+                .or_else(|| existing.as_ref().and_then(|hitl| hitl.reason.clone())),
+        });
+        self.status = "WAITING".to_string();
+        self.phase = "hitl approval".to_string();
+        self.input_status = Some("approval: [a/y] approve, [r/n] reject".to_string());
+    }
+
+    pub(crate) fn clear_pending_hitl(&mut self) {
+        self.pending_hitl = None;
     }
 
     pub(super) fn task_panel_items(&self) -> &[TaskPanelItem] {
@@ -849,6 +964,7 @@ impl InteractiveTuiState {
 
     pub(super) const fn scroll_to_bottom(&mut self) {
         self.scroll_offset = usize::MAX;
+        self.unread_output_lines = 0;
     }
 
     pub(super) const fn is_at_bottom(&self) -> bool {
@@ -885,6 +1001,14 @@ impl InteractiveTuiState {
         self.scroll_offset != previous
     }
 
+    pub(super) const fn activity_running(&self) -> bool {
+        self.running || self.shell_running
+    }
+
+    pub(super) const fn shell_running(&self) -> bool {
+        self.shell_running
+    }
+
     pub(super) fn request_cancel(&mut self) {
         let already_requested = self.cancel_requested;
         self.cancel_requested = true;
@@ -893,7 +1017,7 @@ impl InteractiveTuiState {
         if !already_requested {
             self.push_system_notice(
                 NoticeLevel::Warning,
-                "Interrupt requested. Cancelling active run.".to_string(),
+                "Interrupt requested. Cancelling active activity.".to_string(),
             );
         }
     }
@@ -901,6 +1025,14 @@ impl InteractiveTuiState {
     pub(super) fn show_run_active_hint(&mut self) {
         self.status = "RUNNING".to_string();
         self.phase = "run active; press Ctrl-C to interrupt".to_string();
+    }
+
+    pub(super) fn show_draft_exit_hint(&mut self) {
+        self.input_status = Some("draft preserved; Ctrl-U clears it".to_string());
+    }
+
+    pub(super) fn show_shell_active_hint(&mut self) {
+        self.input_status = Some("shell active; draft preserved; Ctrl-C cancels it".to_string());
     }
 
     pub(crate) fn take_pending_goal_submission(&mut self) -> Option<(String, usize)> {
@@ -962,6 +1094,18 @@ impl InteractiveTuiState {
         }
         self.pending_goal_submission = None;
     }
+}
+
+pub(super) fn approval_request_preview(request: &Value) -> String {
+    const MAX_PREVIEW_CHARS: usize = 2_000;
+
+    let serialized = serde_json::to_string(request).unwrap_or_else(|_| request.to_string());
+    let mut chars = serialized.chars();
+    let mut preview = chars.by_ref().take(MAX_PREVIEW_CHARS).collect::<String>();
+    if chars.next().is_some() {
+        preview.push('…');
+    }
+    preview
 }
 
 const fn render_mode_label(render_mode: TuiRenderMode) -> &'static str {

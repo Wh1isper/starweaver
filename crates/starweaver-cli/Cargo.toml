@@ -60,6 +60,7 @@ uuid.workspace = true
 reqwest.workspace = true
 semver.workspace = true
 unicode-width.workspace = true
+unicode-segmentation.workspace = true
 
 [dev-dependencies]
 starweaver-context.workspace = true

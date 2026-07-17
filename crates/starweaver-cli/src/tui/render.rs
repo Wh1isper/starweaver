@@ -1,4 +1,4 @@
-use std::{env, io};
+use std::{env, ffi::OsStr, io};
 
 use crossterm::{
     cursor::MoveTo,
@@ -9,7 +9,8 @@ use crossterm::{
     terminal::{Clear, ClearType},
 };
 use serde_json::Value;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::{CliError, CliResult};
 
@@ -313,20 +314,25 @@ pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
             "Run task toward a verified goal until complete",
         ),
         ("/paste-image", "Attach image from system clipboard"),
+        ("!<command>", "Run an asynchronous shell command inline"),
     ];
     let key_rows = [
-        ("Ctrl+C", "Interrupt active run or exit"),
-        ("Ctrl+D", "Exit"),
+        ("Ctrl+C", "Interrupt, clear a draft, or exit"),
+        ("Ctrl+D", "Exit only when idle with an empty composer"),
         ("Ctrl+V", "Attach image from system clipboard"),
         ("Tab", "Toggle Enter between send and newline"),
         ("Ctrl+O", "Insert newline"),
-        ("Up/Down, Ctrl+P/N", "Browse prompt history"),
+        ("Ctrl+P/N", "Browse prompt history"),
+        ("Up/Down", "Move across visual composer lines"),
         ("Ctrl+A/E", "Move to line start/end"),
         ("Alt+Left/Right", "Move by word"),
         ("Command+Left/Right", "Move to line start/end"),
         ("Alt+Up/Down", "Scroll multiline input"),
         ("PageUp/PageDown", "Scroll transcript"),
         ("Mouse wheel", "Scroll transcript"),
+        ("Ctrl+L", "Jump to live output"),
+        ("Esc", "Select transcript or refresh pending HITL state"),
+        ("A/Y or R/N", "Approve or reject a pending action"),
     ];
     let mut lines = Vec::new();
     lines.push(StyledLine::plain(""));
@@ -486,29 +492,29 @@ pub(super) fn visible_width(text: &str) -> usize {
 pub(super) fn take_prefix_width(text: &str, width: usize) -> String {
     let mut output = String::new();
     let mut used = 0usize;
-    for ch in text.chars() {
-        let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used.saturating_add(char_width) > width {
+    for grapheme in text.graphemes(true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if used.saturating_add(grapheme_width) > width {
             break;
         }
-        output.push(ch);
-        used = used.saturating_add(char_width);
+        output.push_str(grapheme);
+        used = used.saturating_add(grapheme_width);
     }
     output
 }
 
 fn take_suffix_width(text: &str, width: usize) -> String {
-    let mut chars = Vec::new();
+    let mut graphemes = Vec::new();
     let mut used = 0usize;
-    for ch in text.chars().rev() {
-        let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used.saturating_add(char_width) > width {
+    for grapheme in text.graphemes(true).rev() {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if used.saturating_add(grapheme_width) > width {
             break;
         }
-        chars.push(ch);
-        used = used.saturating_add(char_width);
+        graphemes.push(grapheme);
+        used = used.saturating_add(grapheme_width);
     }
-    chars.into_iter().rev().collect()
+    graphemes.into_iter().rev().collect()
 }
 
 pub(super) fn wrap_text_width(text: &str, width: usize) -> Vec<String> {
@@ -694,15 +700,15 @@ fn wrap_input_line(line: &str, width: usize) -> Vec<String> {
     let mut current = String::new();
     let mut current_width = 0usize;
     let mut ended_at_wrap_boundary = false;
-    for ch in line.chars() {
-        let char_width = ch.width().unwrap_or(0);
-        if current_width > 0 && current_width.saturating_add(char_width) > width {
+    for grapheme in line.graphemes(true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if current_width > 0 && current_width.saturating_add(grapheme_width) > width {
             lines.push(current);
             current = String::new();
             current_width = 0;
         }
-        current.push(ch);
-        current_width = current_width.saturating_add(char_width);
+        current.push_str(grapheme);
+        current_width = current_width.saturating_add(grapheme_width);
         if current_width >= width {
             lines.push(current);
             current = String::new();
@@ -728,18 +734,18 @@ fn wrapped_cursor_position(input_before_cursor: &str, content_width: usize) -> (
     let mut row = 0usize;
     let mut col = 0usize;
 
-    for ch in input_before_cursor.chars() {
-        if ch == '\n' {
+    for grapheme in input_before_cursor.graphemes(true) {
+        if grapheme == "\n" {
             row = row.saturating_add(1);
             col = 0;
             continue;
         }
-        let char_width = ch.width().unwrap_or(0);
-        if col > 0 && col.saturating_add(char_width) > width {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if col > 0 && col.saturating_add(grapheme_width) > width {
             row = row.saturating_add(1);
             col = 0;
         }
-        col = col.saturating_add(char_width);
+        col = col.saturating_add(grapheme_width);
         if col >= width {
             row = row.saturating_add(1);
             col = 0;
@@ -750,11 +756,16 @@ fn wrapped_cursor_position(input_before_cursor: &str, content_width: usize) -> (
 }
 
 fn clamp_char_boundary(input: &str, cursor_byte: usize) -> usize {
-    let mut cursor_byte = cursor_byte.min(input.len());
-    while cursor_byte > 0 && !input.is_char_boundary(cursor_byte) {
-        cursor_byte -= 1;
+    let requested = cursor_byte.min(input.len());
+    if requested == input.len() {
+        return requested;
     }
-    cursor_byte
+    input
+        .grapheme_indices(true)
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= requested)
+        .last()
+        .unwrap_or(0)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -952,13 +963,10 @@ fn queue_styled_segments(
         let text = truncate_line(&segment.text, remaining);
         remaining = remaining.saturating_sub(visible_width(&text));
         queue_segment_style(stdout, segment.style)?;
-        queue!(
-            stdout,
-            Print(text),
-            SetAttribute(Attribute::Reset),
-            ResetColor
-        )
-        .map_err(terminal_error)?;
+        queue!(stdout, Print(text), SetAttribute(Attribute::Reset)).map_err(terminal_error)?;
+        if colors_enabled() {
+            queue!(stdout, ResetColor).map_err(terminal_error)?;
+        }
     }
     if remaining > 0 {
         if line
@@ -970,10 +978,12 @@ fn queue_styled_segments(
             queue!(
                 stdout,
                 Print(" ".repeat(remaining)),
-                SetAttribute(Attribute::Reset),
-                ResetColor
+                SetAttribute(Attribute::Reset)
             )
             .map_err(terminal_error)?;
+            if colors_enabled() {
+                queue!(stdout, ResetColor).map_err(terminal_error)?;
+            }
         } else {
             queue!(stdout, Print(" ".repeat(remaining))).map_err(terminal_error)?;
         }
@@ -996,6 +1006,9 @@ fn queue_segment_style(stdout: &mut io::Stdout, style: SegmentStyle) -> CliResul
     }
     if style.contains(SegmentStyle::REVERSED) {
         queue!(stdout, SetAttribute(Attribute::Reverse)).map_err(terminal_error)?;
+    }
+    if !colors_enabled() {
+        return Ok(());
     }
     if style.contains(SegmentStyle::MODE_BG) {
         queue!(
@@ -1042,7 +1055,16 @@ pub(super) fn value_preview(value: &Value) -> String {
 }
 
 pub(super) fn truncate_line(line: &str, width: usize) -> String {
-    take_prefix_width(line, width)
+    if width == 0 {
+        return String::new();
+    }
+    if visible_width(line) <= width {
+        return line.to_string();
+    }
+    if width == 1 {
+        return "…".to_string();
+    }
+    format!("{}…", take_prefix_width(line, width.saturating_sub(1)))
 }
 
 pub(super) fn truncate_line_center(line: &str, width: usize) -> String {
@@ -1061,6 +1083,18 @@ pub(super) fn truncate_line_center(line: &str, width: usize) -> String {
     let left = take_prefix_width(line, left_width);
     let right = take_suffix_width(line, right_width);
     format!("{left}…{right}")
+}
+
+pub(super) fn color_output_enabled(no_color: Option<&OsStr>, term: Option<&OsStr>) -> bool {
+    no_color.is_none()
+        && term.is_none_or(|value| !value.to_string_lossy().eq_ignore_ascii_case("dumb"))
+}
+
+fn colors_enabled() -> bool {
+    color_output_enabled(
+        env::var_os("NO_COLOR").as_deref(),
+        env::var_os("TERM").as_deref(),
+    )
 }
 
 pub(super) fn terminal_error(error: impl std::fmt::Display) -> CliError {

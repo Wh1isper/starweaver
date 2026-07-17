@@ -294,6 +294,331 @@ fn test_config(root: &Path) -> CliConfig {
         .unwrap()
 }
 
+fn test_run_command(
+    session_id: &str,
+    source_run_id: Option<&str>,
+    hitl_resume: bool,
+) -> RunCommand {
+    RunCommand {
+        prompt: Some("continue".to_string()),
+        prompt_parts: Vec::new(),
+        session: Some(session_id.to_string()),
+        continue_session: false,
+        new_session: false,
+        run: source_run_id.map(ToString::to_string),
+        branch_from: None,
+        profile: Some("general".to_string()),
+        output: Some(OutputMode::Silent),
+        hitl: None,
+        goal: None,
+        worker: None,
+        worker_label: None,
+        worktree: None,
+        worktree_name: None,
+        branch: None,
+        session_affinity_id: None,
+        environment_attachments: Vec::new(),
+        hitl_resume,
+    }
+}
+
+#[test]
+fn ordinary_active_run_without_waiting_lineage_allows_concurrent_admission() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = test_config(temp.path());
+    let session_id = {
+        let mut store = LocalStore::open(&config).unwrap();
+        let session = store
+            .create_session("general", Some("Concurrent admission".to_string()))
+            .unwrap();
+        store
+            .append_run(
+                session.session_id.as_str(),
+                "ordinary active run".to_string(),
+                None,
+                "general",
+            )
+            .unwrap();
+        session.session_id.as_str().to_string()
+    };
+
+    let mut service = CliService::open(config).unwrap();
+    service
+        .reject_ordinary_admission_during_waiting_continuation(&session_id, false)
+        .unwrap();
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn hitl_resume_preflight_claim_precedes_run_allocation_and_blocks_ordinary_admission() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = test_config(temp.path());
+    let (session_id, source_run_id, terminal_run_id) = {
+        let mut store = LocalStore::open(&config).unwrap();
+        let session = store
+            .create_session("general", Some("HITL admission".to_string()))
+            .unwrap();
+        let session_id = session.session_id.as_str().to_string();
+        let mut terminal = store
+            .append_run(&session_id, "terminal".to_string(), None, "general")
+            .unwrap();
+        let terminal_run_id = terminal.run_id.as_str().to_string();
+        store
+            .complete_run(
+                &mut terminal,
+                "done".to_string(),
+                crate::local_store::RunArtifacts {
+                    state: starweaver_context::ResumableState::default(),
+                    environment_state: None,
+                    raw_records: Vec::new(),
+                    display_messages: Vec::new(),
+                    display_snapshot: starweaver_stream::ReplaySnapshot::default(),
+                    approvals: Vec::new(),
+                    deferred_tools: Vec::new(),
+                    status: RunStatus::Completed,
+                },
+            )
+            .unwrap();
+        let mut source = store
+            .append_run(&session_id, "waiting source".to_string(), None, "general")
+            .unwrap();
+        let source_run_id = source.run_id.as_str().to_string();
+        store
+            .complete_run(
+                &mut source,
+                "waiting".to_string(),
+                crate::local_store::RunArtifacts {
+                    state: starweaver_context::ResumableState::default(),
+                    environment_state: None,
+                    raw_records: Vec::new(),
+                    display_messages: Vec::new(),
+                    display_snapshot: starweaver_stream::ReplaySnapshot::default(),
+                    approvals: Vec::new(),
+                    deferred_tools: Vec::new(),
+                    status: RunStatus::Waiting,
+                },
+            )
+            .unwrap();
+        (session_id, source_run_id, terminal_run_id)
+    };
+
+    let mut winner = CliService::open(config.clone()).unwrap();
+    let _prepared = winner
+        .prepare_prompt_run(
+            &test_run_command(&session_id, Some(&source_run_id), true),
+            None,
+        )
+        .unwrap();
+
+    let mut ordinary = CliService::open(config.clone()).unwrap();
+    let ordinary_error = ordinary
+        .prepare_prompt_run(&test_run_command(&session_id, None, false), None)
+        .err()
+        .expect("ordinary admission must be rejected");
+    assert!(
+        ordinary_error
+            .to_string()
+            .contains("continuing waiting run")
+    );
+
+    let mut explicit = CliService::open(config.clone()).unwrap();
+    let explicit_error = explicit
+        .prepare_prompt_run(
+            &test_run_command(&session_id, Some(&terminal_run_id), false),
+            None,
+        )
+        .err()
+        .expect("explicit terminal restore must not bypass active HITL continuation");
+    assert!(
+        explicit_error
+            .to_string()
+            .contains("continuing waiting run")
+    );
+
+    let mut duplicate = CliService::open(config.clone()).unwrap();
+    let duplicate_error = duplicate
+        .prepare_prompt_run(
+            &test_run_command(&session_id, Some(&source_run_id), true),
+            None,
+        )
+        .err()
+        .expect("duplicate HITL admission must be rejected");
+    assert!(duplicate_error.to_string().contains("active resume claim"));
+
+    assert_eq!(
+        LocalStore::open(&config)
+            .unwrap()
+            .list_run_records(&session_id)
+            .unwrap()
+            .len(),
+        3,
+        "rejected admissions must not allocate orphan runs"
+    );
+}
+
+#[test]
+fn resume_terminal_head_continues_without_hitl_claim_or_orphan_run() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = test_config(temp.path());
+    let session_id = {
+        let mut store = LocalStore::open(&config).unwrap();
+        let session = store
+            .create_session("general", Some("Terminal resume".to_string()))
+            .unwrap();
+        let session_id = session.session_id.as_str().to_string();
+        let mut source = store
+            .append_run(&session_id, "completed source".to_string(), None, "general")
+            .unwrap();
+        store
+            .complete_run(
+                &mut source,
+                "completed".to_string(),
+                crate::local_store::RunArtifacts {
+                    state: starweaver_context::ResumableState::default(),
+                    environment_state: None,
+                    raw_records: Vec::new(),
+                    display_messages: Vec::new(),
+                    display_snapshot: starweaver_stream::ReplaySnapshot::default(),
+                    approvals: Vec::new(),
+                    deferred_tools: Vec::new(),
+                    status: RunStatus::Completed,
+                },
+            )
+            .unwrap();
+        session_id
+    };
+
+    let mut service = CliService::open(config.clone()).unwrap();
+    service
+        .resume(&ResumeCommand {
+            session: Some(session_id.clone()),
+            run: None,
+            prompt: "continue terminal head".to_string(),
+            output: Some(OutputMode::Silent),
+            hitl: None,
+        })
+        .unwrap();
+
+    let store = LocalStore::open(&config).unwrap();
+    let runs = store.list_run_records(&session_id).unwrap();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[1].status, RunStatus::Completed);
+    assert!(
+        store
+            .load_session(&session_id)
+            .unwrap()
+            .active_run_id
+            .is_none()
+    );
+}
+
+#[test]
+fn hitl_resume_claim_allows_only_one_continuation_and_consumes_source_atomically() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = test_config(temp.path());
+    let mut store = LocalStore::open(&config).unwrap();
+    let session = store
+        .create_session("general", Some("HITL resume".to_string()))
+        .unwrap();
+    let session_id = session.session_id;
+    let mut source = store
+        .append_run(
+            session_id.as_str(),
+            "waiting source".to_string(),
+            None,
+            "general",
+        )
+        .unwrap();
+    store
+        .complete_run(
+            &mut source,
+            "waiting".to_string(),
+            crate::local_store::RunArtifacts {
+                state: starweaver_context::ResumableState::default(),
+                environment_state: None,
+                raw_records: Vec::new(),
+                display_messages: Vec::new(),
+                display_snapshot: starweaver_stream::ReplaySnapshot::default(),
+                approvals: Vec::new(),
+                deferred_tools: Vec::new(),
+                status: RunStatus::Waiting,
+            },
+        )
+        .unwrap();
+
+    let claim_id = "claim-winner".to_string();
+    run_hitl_resume_claim_operation(
+        config.clone(),
+        HitlResumeClaimOperation::Claim(HitlResumeClaim::new(
+            claim_id.clone(),
+            session_id.clone(),
+            source.run_id.clone(),
+            Utc::now(),
+        )),
+    )
+    .unwrap();
+    let duplicate = run_hitl_resume_claim_operation(
+        config.clone(),
+        HitlResumeClaimOperation::Claim(HitlResumeClaim::new(
+            "claim-loser".to_string(),
+            session_id.clone(),
+            source.run_id.clone(),
+            Utc::now(),
+        )),
+    );
+    assert!(duplicate.is_err());
+    run_hitl_resume_claim_operation(
+        config,
+        HitlResumeClaimOperation::Start {
+            session_id: session_id.clone(),
+            run_id: source.run_id.clone(),
+            claim_id: claim_id.clone(),
+        },
+    )
+    .unwrap();
+
+    let mut continuation = store
+        .append_run(
+            session_id.as_str(),
+            "continue".to_string(),
+            Some(source.run_id.as_str().to_string()),
+            "general",
+        )
+        .unwrap();
+    continuation.metadata.insert(
+        HITL_RESUME_CLAIM_ID_METADATA_KEY.to_string(),
+        json!(claim_id),
+    );
+    continuation.metadata.insert(
+        HITL_RESUME_SOURCE_RUN_ID_METADATA_KEY.to_string(),
+        json!(source.run_id.as_str()),
+    );
+    store
+        .complete_run(
+            &mut continuation,
+            "continued".to_string(),
+            crate::local_store::RunArtifacts {
+                state: starweaver_context::ResumableState::default(),
+                environment_state: None,
+                raw_records: Vec::new(),
+                display_messages: Vec::new(),
+                display_snapshot: starweaver_stream::ReplaySnapshot::default(),
+                approvals: Vec::new(),
+                deferred_tools: Vec::new(),
+                status: RunStatus::Completed,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .load_run(session_id.as_str(), source.run_id.as_str())
+            .unwrap()
+            .status,
+        RunStatus::Completed
+    );
+}
+
 #[test]
 fn failed_run_complete_persists_restore_state_for_continuation() {
     let temp = tempfile::tempdir().unwrap();
@@ -367,6 +692,65 @@ fn failed_run_complete_persists_restore_state_for_continuation() {
         .unwrap()
         .unwrap();
     assert_eq!(restored.message_history.len(), 1);
+}
+
+#[test]
+fn compatibility_mirror_failure_does_not_reclassify_canonical_completion() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = test_config(temp.path());
+    config.file_store_path = temp.path().join("compatibility-mirror");
+    let mirror_root = config.file_store_path.clone();
+    let mut store = LocalStore::open(&config).unwrap();
+    let session = store
+        .create_session("general", Some("Mirror failure".to_string()))
+        .unwrap();
+    let session_id = session.session_id.as_str().to_string();
+    let mut run = store
+        .append_run(
+            &session_id,
+            "finish canonically".to_string(),
+            None,
+            "general",
+        )
+        .unwrap();
+    let run_id = run.run_id.clone();
+    let display = vec![DisplayMessage::new(
+        0,
+        run.session_id.clone(),
+        run_id.clone(),
+        DisplayMessageKind::RunCompleted,
+    )];
+
+    std::fs::remove_dir_all(&mirror_root).unwrap();
+    std::fs::write(&mirror_root, b"blocks compatibility mirror directories").unwrap();
+
+    let returned = store
+        .complete_run(
+            &mut run,
+            "done".to_string(),
+            crate::local_store::RunArtifacts {
+                state: starweaver_context::ResumableState::default(),
+                environment_state: None,
+                raw_records: Vec::new(),
+                display_messages: display,
+                display_snapshot: starweaver_stream::ReplaySnapshot::default(),
+                approvals: Vec::new(),
+                deferred_tools: Vec::new(),
+                status: RunStatus::Completed,
+            },
+        )
+        .expect("canonical completion must not fail with its optional mirror");
+
+    assert_eq!(returned.len(), 1);
+    let saved = store.load_run(&session_id, run_id.as_str()).unwrap();
+    assert_eq!(saved.status, RunStatus::Completed);
+    assert_eq!(
+        store
+            .replay_display(&session_id, Some(run_id.as_str()), None)
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -699,6 +1083,7 @@ fn tui_model_choices_are_empty_without_configured_models() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn tui_session_reload_resolves_prefix_restores_snapshot_and_current_pointer() {
     let temp = tempfile::tempdir().unwrap();
     let cli = crate::args::parse(["starweaver-cli".to_string()]).unwrap();
@@ -776,10 +1161,30 @@ fn tui_session_reload_resolves_prefix_restores_snapshot_and_current_pointer() {
             .any(|line| line.contains("hello from reload"))
     );
     assert!(
+        state.body.iter().any(|line| line == "User: remember this"),
+        "reloaded transcript should include durable run input"
+    );
+    assert!(
         state
             .body
             .iter()
             .any(|line| line.contains("Loaded session"))
+    );
+
+    let mut startup_state = crate::tui::InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    startup_state.set_profile("general", "General");
+    service
+        .restore_tui_session(&mut startup_state, &session_id[..16], None, None, false)
+        .unwrap();
+    assert_eq!(startup_state.profile, state.profile);
+    assert_eq!(startup_state.model, state.model);
+    assert_eq!(startup_state.session_id, state.session_id);
+    assert!(
+        !startup_state
+            .body
+            .iter()
+            .any(|line| line.contains("Loaded session")),
+        "startup restore should share profile semantics without adding reload-only notice"
     );
     assert_eq!(
         read_current_session(&config).unwrap().as_deref(),

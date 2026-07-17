@@ -10,12 +10,12 @@ use super::{
     ContextEventCategory, HitlPanelState, InteractiveTuiState, ModelResponseStreamEvent,
     NoticeLevel, PartDelta, StreamDelta, StreamingPartKind, StreamingToolCallState, SubagentStatus,
     SubagentTimelineItem, SubagentUpdate, ToolActivityStatus, ToolTimelineItem, ToolVisibility,
-    Value, compact_status_text, format_custom_context_event_lines, format_streaming_tool_call_line,
-    format_tool_call_line, format_tool_return_lines, is_subagent_lifecycle_event_kind,
-    is_subagent_start_event_kind, is_task_snapshot_event, is_task_tool_name, merge_stream_fragment,
-    normalized_event_kind, streaming_part_kind, streaming_tool_arguments_match,
-    streaming_tool_state_is_available, subagent_display_id, task_panel_items_from_value,
-    tool_call_visibility_key, value_args_preview,
+    Value, approval_request_preview, compact_status_text, format_custom_context_event_lines,
+    format_streaming_tool_call_line, format_tool_call_line, format_tool_return_lines,
+    is_subagent_lifecycle_event_kind, is_subagent_start_event_kind, is_task_snapshot_event,
+    is_task_tool_name, merge_stream_fragment, normalized_event_kind, streaming_part_kind,
+    streaming_tool_arguments_match, streaming_tool_state_is_available, subagent_display_id,
+    task_panel_items_from_value, tool_call_visibility_key, value_args_preview,
 };
 
 impl InteractiveTuiState {
@@ -225,7 +225,9 @@ impl InteractiveTuiState {
 
     /// Apply a live runtime stream event to the view state.
     pub fn apply_stream_record(&mut self, record: &AgentStreamRecord) {
-        let should_auto_scroll = !self.selection_mode;
+        // Following is sticky: output only keeps the viewport pinned when the
+        // user was already at the bottom before this event arrived.
+        let should_auto_scroll = self.is_at_bottom();
         if self.apply_subagent_source_record(record) {
             if should_auto_scroll {
                 self.scroll_to_bottom();
@@ -785,8 +787,10 @@ impl InteractiveTuiState {
         self.status = "WAITING".to_string();
         self.phase = "hitl approval".to_string();
         self.pending_hitl = Some(HitlPanelState {
+            approval_id: None,
             tool_call_id: tool_return.tool_call_id.clone(),
             tool_name: tool_return.name.clone(),
+            request_preview: approval.map(approval_request_preview),
             command: approval
                 .and_then(|value| value.get("command"))
                 .and_then(Value::as_str)

@@ -45,15 +45,32 @@ pub struct TuiSnapshot {
 impl TuiSnapshot {
     /// Build a snapshot from persisted display messages and control-flow records.
     #[must_use]
+    #[allow(dead_code)]
     pub fn from_parts(
         session_id: String,
         messages: Vec<DisplayMessage>,
         approvals: &[ApprovalRecord],
         deferred: &[DeferredToolRecord],
     ) -> Self {
+        Self::from_run_parts(session_id, vec![(None, messages)], approvals, deferred)
+    }
+
+    /// Build a snapshot from canonical run-ordered replay batches.
+    ///
+    /// Display-message sequence numbers are local to a run. Callers must provide batches in
+    /// canonical replay order; sorting a flattened session by `DisplayMessage::sequence` would
+    /// incorrectly interleave messages from different runs.
+    #[must_use]
+    pub fn from_run_parts(
+        session_id: String,
+        runs: Vec<(Option<String>, Vec<DisplayMessage>)>,
+        approvals: &[ApprovalRecord],
+        deferred: &[DeferredToolRecord],
+    ) -> Self {
+        let message_count = runs.iter().map(|(_, messages)| messages.len()).sum();
         let mut snapshot = Self {
             session_id,
-            messages: messages.len(),
+            messages: message_count,
             pending_approvals: approvals
                 .iter()
                 .filter(|approval| approval.status == starweaver_session::ApprovalStatus::Pending)
@@ -70,15 +87,23 @@ impl TuiSnapshot {
                 .count(),
             ..Self::default()
         };
-        let mut ordered_messages = messages;
-        ordered_messages.sort_by_key(|message| message.sequence);
         let mut next_sequence = 0;
-        for message in ordered_messages {
-            if let Some(record) = display_message_to_stream_record(&message, next_sequence) {
-                append_replayed_stream_record_lines(&mut snapshot.transcript_lines, &record);
-                next_sequence = next_sequence.saturating_add(1);
+        for (prompt, messages) in runs {
+            if let Some(prompt) = prompt {
+                append_replayed_user_prompt(&mut snapshot.transcript_lines, &prompt);
             }
-            snapshot.apply_message(&message);
+            for message in messages {
+                if let Some(record) = display_message_to_stream_record(&message, next_sequence) {
+                    append_replayed_stream_record_lines(&mut snapshot.transcript_lines, &record);
+                    next_sequence = next_sequence.saturating_add(1);
+                }
+                snapshot.apply_message(&message);
+            }
+        }
+        if snapshot.terminal_status.is_none()
+            && (snapshot.pending_approvals > 0 || snapshot.pending_deferred > 0)
+        {
+            snapshot.terminal_status = Some("waiting".to_string());
         }
         snapshot
     }
@@ -252,6 +277,16 @@ impl TuiSnapshot {
             }
         }
         output
+    }
+}
+
+fn append_replayed_user_prompt(lines: &mut Vec<String>, prompt: &str) {
+    let mut prompt_lines = prompt.lines();
+    if let Some(first) = prompt_lines.next() {
+        lines.push(format!("User: {first}"));
+        lines.extend(prompt_lines.map(|line| format!("  {line}")));
+    } else {
+        lines.push("User:".to_string());
     }
 }
 

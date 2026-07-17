@@ -251,7 +251,7 @@ Target direction:
 - select one canonical input AST, or define a deliberately separate versioned durable wire AST;
 - implement explicit, exhaustive, lossless conversions;
 - remove undeclared secondary protocols hidden in generic `mode/config` fields;
-- keep CLI commands and planning modes at the product edge rather than in the neutral session foundation.
+- keep CLI commands and other product-local interaction policy at the product edge rather than in the neutral session foundation.
 
 ### H4. `AgentContext` is a cross-layer state container
 

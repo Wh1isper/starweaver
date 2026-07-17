@@ -218,6 +218,9 @@ pub struct RunCommand {
     /// Internal host RPC environment attachments.
     #[arg(skip)]
     pub environment_attachments: Vec<starweaver_rpc_core::EnvironmentAttachmentRef>,
+    /// Internal marker requiring an exclusive durable HITL continuation claim.
+    #[arg(skip)]
+    pub hitl_resume: bool,
 }
 
 /// Internal goal-mode options attached by product surfaces such as the TUI.

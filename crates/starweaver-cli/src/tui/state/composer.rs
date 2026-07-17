@@ -1,7 +1,9 @@
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
+
 use super::{
     FooterMode, InteractiveTuiState, LocalCommandOutcome, PromptAttachment, PromptInput,
     SteeringSubmission, SubmissionKind, format_size_bytes, pasted_image_paths,
-    previous_char_boundary,
 };
 
 fn is_composer_word_char(ch: char) -> bool {
@@ -69,6 +71,33 @@ fn paste_contains_only_image_paths(text: &str, image_paths: &[String]) -> bool {
         .filter(|part| !part.is_empty())
         .count();
     token_count == image_paths.len()
+}
+
+fn visual_cursor_positions(input: &str, width: usize) -> Vec<(usize, usize, usize)> {
+    let width = width.max(1);
+    let mut positions = Vec::new();
+    let mut row = 0usize;
+    let mut col = 0usize;
+    for (byte, grapheme) in input.grapheme_indices(true) {
+        positions.push((byte, row, col));
+        if grapheme == "\n" {
+            row = row.saturating_add(1);
+            col = 0;
+            continue;
+        }
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if col > 0 && col.saturating_add(grapheme_width) > width {
+            row = row.saturating_add(1);
+            col = 0;
+        }
+        col = col.saturating_add(grapheme_width);
+        if col >= width {
+            row = row.saturating_add(1);
+            col = 0;
+        }
+    }
+    positions.push((input.len(), row, col));
+    positions
 }
 
 impl InteractiveTuiState {
@@ -142,6 +171,31 @@ impl InteractiveTuiState {
         self.pending_submission_display_prompt.take()
     }
 
+    pub(crate) fn restore_submission_prompt(
+        &mut self,
+        prompt: PromptInput,
+        goal: Option<crate::args::GoalCommandOptions>,
+    ) {
+        self.input = prompt.text;
+        self.pending_attachments = prompt.attachments;
+        self.restored_prompt_parts = Some((prompt.extra_text_parts, prompt.guidance_text_parts));
+        self.pending_submission_display_prompt = None;
+        self.history_index = None;
+        self.history_draft.clear();
+        self.footer_mode = FooterMode::Context;
+        self.input_cursor = self.input.len();
+        self.input_cursor_input_len = self.input.len();
+        self.composer_preferred_column = None;
+        self.reset_composer_scroll();
+        if let Some(goal) = goal {
+            self.goal_task = Some(goal.objective.clone());
+            self.goal_active = true;
+            self.goal_max_iterations = goal.max_iterations.max(1);
+            self.pending_goal_submission = Some(goal.objective);
+        }
+        self.input_status = Some("queued prompt restored after run failure".to_string());
+    }
+
     pub(in crate::tui) fn take_paste_image_command(&mut self) -> bool {
         if self.input.trim() != "/paste-image" {
             return false;
@@ -154,6 +208,7 @@ impl InteractiveTuiState {
 
     fn take_prompt(&mut self, kind: SubmissionKind) -> Option<PromptInput> {
         self.retain_visible_attachments();
+        let restored_prompt_parts = self.restored_prompt_parts.take();
         let command = self.take_local_command();
         if matches!(
             command,
@@ -174,6 +229,7 @@ impl InteractiveTuiState {
             return None;
         }
         let attachments = std::mem::take(&mut self.pending_attachments);
+        let (extra_text_parts, guidance_text_parts) = restored_prompt_parts.unwrap_or_default();
         self.clear_composer_input();
         self.reset_composer_scroll();
         match kind {
@@ -185,8 +241,8 @@ impl InteractiveTuiState {
         Some(PromptInput {
             text: prompt,
             attachments,
-            extra_text_parts: Vec::new(),
-            guidance_text_parts: Vec::new(),
+            extra_text_parts,
+            guidance_text_parts,
         })
     }
 
@@ -200,53 +256,82 @@ impl InteractiveTuiState {
     }
 
     pub(in crate::tui) fn backspace_composer(&mut self) {
-        if self.remove_trailing_attachment_placeholder() {
+        let cursor = self.composer_cursor_byte();
+        if let Some((start, end, attachment_index)) = self
+            .attachment_ranges()
+            .into_iter()
+            .find(|(start, end, _)| cursor > *start && cursor <= *end)
+        {
+            self.input.replace_range(start..end, "");
+            self.input_cursor = start;
+            self.input_cursor_input_len = self.input.len();
+            self.composer_preferred_column = None;
+            self.pending_attachments.remove(attachment_index);
+            self.update_attachment_status("image detached");
+            self.reset_composer_scroll();
             return;
         }
-        let cursor = self.composer_cursor_byte();
-        let Some(previous) = self.input[..cursor]
-            .char_indices()
-            .last()
-            .map(|(index, _)| index)
-        else {
-            self.remove_last_pasted_image();
+
+        let Some((previous, _)) = self.input[..cursor].grapheme_indices(true).next_back() else {
             return;
         };
         self.input.replace_range(previous..cursor, "");
         self.input_cursor = previous;
         self.input_cursor_input_len = self.input.len();
+        self.composer_preferred_column = None;
         self.reset_composer_scroll();
     }
 
     fn retain_visible_attachments(&mut self) {
-        self.pending_attachments
-            .retain(|attachment| self.input.contains(&attachment.placeholder));
+        let mut remaining = self.input.as_str();
+        self.pending_attachments.retain(|attachment| {
+            let Some(index) = remaining.find(&attachment.placeholder) else {
+                return false;
+            };
+            remaining = &remaining[index + attachment.placeholder.len()..];
+            true
+        });
     }
 
-    fn remove_trailing_attachment_placeholder(&mut self) -> bool {
-        let Some(attachment) = self.pending_attachments.last() else {
-            return false;
-        };
-        let trimmed_input = self.input.trim_end_matches([' ', '\n']);
-        let Some(prefix) = trimmed_input.strip_suffix(&attachment.placeholder) else {
-            return false;
-        };
-        self.input.truncate(prefix.len());
-        self.input_cursor = self.input.len();
-        self.input_cursor_input_len = self.input.len();
-        self.reset_composer_scroll();
-        self.remove_last_pasted_image();
-        true
-    }
-
-    fn remove_last_pasted_image(&mut self) {
-        if self.pending_attachments.pop().is_some() {
-            self.input_status = Some(if self.pending_attachments.is_empty() {
-                "image detached".to_string()
+    fn attachment_ranges(&self) -> Vec<(usize, usize, usize)> {
+        let mut ranges = Vec::new();
+        let mut search_start = 0usize;
+        for (attachment_index, attachment) in self.pending_attachments.iter().enumerate() {
+            let Some(relative_start) = self.input[search_start..].find(&attachment.placeholder)
+            else {
+                continue;
+            };
+            let start = search_start.saturating_add(relative_start);
+            let placeholder_end = start.saturating_add(attachment.placeholder.len());
+            // The separator inserted with an attachment belongs to the atomic
+            // span only while it is still directly adjacent to the placeholder.
+            let end = if self.input[placeholder_end..].starts_with(' ') {
+                placeholder_end.saturating_add(1)
             } else {
-                format!("images attached: {}", self.pending_attachments.len())
-            });
+                placeholder_end
+            };
+            ranges.push((start, end, attachment_index));
+            search_start = end;
         }
+        ranges
+    }
+
+    fn update_attachment_status(&mut self, detached: &str) {
+        self.input_status = Some(if self.pending_attachments.is_empty() {
+            detached.to_string()
+        } else {
+            format!("images attached: {}", self.pending_attachments.len())
+        });
+    }
+
+    fn atomic_cursor_target(&self, target: usize, toward_end: bool) -> usize {
+        self.attachment_ranges()
+            .into_iter()
+            .find(|(start, end, _)| target > *start && target < *end)
+            .map_or(
+                target,
+                |(start, end, _)| if toward_end { end } else { start },
+            )
     }
 
     pub(in crate::tui) const fn composer_is_empty(&self) -> bool {
@@ -277,25 +362,41 @@ impl InteractiveTuiState {
         self.input.clear();
         self.input_cursor = 0;
         self.input_cursor_input_len = 0;
+        self.composer_preferred_column = None;
+        self.restored_prompt_parts = None;
     }
 
     pub(in crate::tui) fn composer_cursor_byte(&self) -> usize {
         if self.input_cursor_input_len != self.input.len() {
             return self.input.len();
         }
-        previous_char_boundary(&self.input, self.input_cursor.min(self.input.len()))
+        let requested = self.input_cursor.min(self.input.len());
+        if requested == self.input.len() {
+            return requested;
+        }
+        self.input
+            .grapheme_indices(true)
+            .map(|(index, _)| index)
+            .take_while(|index| *index <= requested)
+            .last()
+            .unwrap_or(0)
     }
 
     pub(in crate::tui) fn move_composer_cursor_left(&mut self) {
         let cursor = self.composer_cursor_byte();
-        if let Some(previous) = self.input[..cursor]
-            .char_indices()
-            .last()
-            .map(|(index, _)| index)
-        {
-            self.input_cursor = previous;
-            self.input_cursor_input_len = self.input.len();
-            self.reset_composer_scroll();
+        let target = self
+            .attachment_ranges()
+            .into_iter()
+            .find(|(start, end, _)| cursor > *start && cursor <= *end)
+            .map(|(start, _, _)| start)
+            .or_else(|| {
+                self.input[..cursor]
+                    .grapheme_indices(true)
+                    .next_back()
+                    .map(|(index, _)| index)
+            });
+        if let Some(target) = target {
+            self.set_composer_cursor(target, false);
         }
     }
 
@@ -305,13 +406,20 @@ impl InteractiveTuiState {
             self.move_composer_cursor_to_end();
             return;
         }
-        let next = self.input[cursor..]
-            .chars()
-            .next()
-            .map_or(self.input.len(), |ch| cursor + ch.len_utf8());
-        self.input_cursor = next;
-        self.input_cursor_input_len = self.input.len();
-        self.reset_composer_scroll();
+        let target = self
+            .attachment_ranges()
+            .into_iter()
+            .find(|(start, end, _)| cursor >= *start && cursor < *end)
+            .map_or_else(
+                || {
+                    self.input[cursor..]
+                        .graphemes(true)
+                        .next()
+                        .map_or(self.input.len(), |grapheme| cursor + grapheme.len())
+                },
+                |(_, end, _)| end,
+            );
+        self.set_composer_cursor(target, false);
     }
 
     pub(in crate::tui) fn move_composer_cursor_word_left(&mut self) {
@@ -337,9 +445,8 @@ impl InteractiveTuiState {
             chars.next();
         }
 
-        self.input_cursor = target;
-        self.input_cursor_input_len = self.input.len();
-        self.reset_composer_scroll();
+        let target = self.atomic_cursor_target(target, false);
+        self.set_composer_cursor(target, false);
     }
 
     pub(in crate::tui) fn move_composer_cursor_word_right(&mut self) {
@@ -366,32 +473,76 @@ impl InteractiveTuiState {
             chars.next();
         }
 
-        self.input_cursor = target;
-        self.input_cursor_input_len = self.input.len();
-        self.reset_composer_scroll();
+        let target = self.atomic_cursor_target(target, true);
+        self.set_composer_cursor(target, false);
     }
 
     pub(in crate::tui) fn move_composer_cursor_to_line_start(&mut self) {
         let cursor = self.composer_cursor_byte();
-        self.input_cursor = self.input[..cursor]
+        let target = self.input[..cursor]
             .rfind('\n')
             .map_or(0, |index| index + 1);
-        self.input_cursor_input_len = self.input.len();
-        self.reset_composer_scroll();
+        self.set_composer_cursor(target, false);
     }
 
     pub(in crate::tui) fn move_composer_cursor_to_line_end(&mut self) {
         let cursor = self.composer_cursor_byte();
-        self.input_cursor = self.input[cursor..]
+        let target = self.input[cursor..]
             .find('\n')
             .map_or(self.input.len(), |offset| cursor + offset);
-        self.input_cursor_input_len = self.input.len();
-        self.reset_composer_scroll();
+        self.set_composer_cursor(target, false);
     }
 
     pub(in crate::tui::state) const fn move_composer_cursor_to_end(&mut self) {
         self.input_cursor = self.input.len();
         self.input_cursor_input_len = self.input.len();
+        self.composer_preferred_column = None;
+    }
+
+    fn set_composer_cursor(&mut self, cursor: usize, preserve_preferred_column: bool) {
+        self.input_cursor = cursor.min(self.input.len());
+        self.input_cursor_input_len = self.input.len();
+        if !preserve_preferred_column {
+            self.composer_preferred_column = None;
+        }
+        self.reset_composer_scroll();
+    }
+
+    pub(in crate::tui) fn update_composer_content_width(&mut self, width: usize) {
+        self.composer_content_width = width.max(1);
+    }
+
+    pub(in crate::tui) fn move_composer_cursor_vertical(&mut self, direction: isize) {
+        let cursor = self.composer_cursor_byte();
+        let attachment_ranges = self.attachment_ranges();
+        let positions = visual_cursor_positions(&self.input, self.composer_content_width.max(1))
+            .into_iter()
+            .filter(|(byte, _, _)| {
+                !attachment_ranges
+                    .iter()
+                    .any(|(start, end, _)| *byte > *start && *byte < *end)
+            })
+            .collect::<Vec<_>>();
+        let Some((_, current_row, current_col)) = positions
+            .iter()
+            .copied()
+            .find(|(byte, _, _)| *byte == cursor)
+        else {
+            return;
+        };
+        let Some(target_row) = current_row.checked_add_signed(direction) else {
+            return;
+        };
+        let desired_col = self.composer_preferred_column.unwrap_or(current_col);
+        let target = positions
+            .iter()
+            .copied()
+            .filter(|(_, row, _)| *row == target_row)
+            .min_by_key(|(_, _, col)| col.abs_diff(desired_col));
+        if let Some((target_byte, _, _)) = target {
+            self.composer_preferred_column = Some(desired_col);
+            self.set_composer_cursor(target_byte, true);
+        }
     }
 
     pub(in crate::tui::state) fn insert_composer_str(&mut self, text: &str) {
@@ -399,6 +550,7 @@ impl InteractiveTuiState {
         self.input.insert_str(cursor, text);
         self.input_cursor = cursor + text.len();
         self.input_cursor_input_len = self.input.len();
+        self.composer_preferred_column = None;
         self.reset_composer_scroll();
         self.history_index = None;
     }

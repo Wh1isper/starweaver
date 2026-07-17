@@ -1071,9 +1071,6 @@ fn reserved_slash_command(name: &str) -> bool {
         name,
         "help"
             | "config"
-            | "mode"
-            | "act"
-            | "plan"
             | "loop"
             | "tasks"
             | "session"

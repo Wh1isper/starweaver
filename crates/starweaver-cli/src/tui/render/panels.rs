@@ -47,6 +47,15 @@ pub(super) fn render_hitl_panel(hitl: &HitlPanelState, width: usize) -> Vec<Styl
             style: SegmentStyle::dim(),
         },
     ]);
+    if let Some(approval_id) = hitl.approval_id.as_deref() {
+        push_detail_row(
+            &mut rows,
+            "approval:",
+            approval_id,
+            inner_width,
+            SegmentStyle::dim(),
+        );
+    }
     push_detail_row(
         &mut rows,
         "tool:",
@@ -70,6 +79,15 @@ pub(super) fn render_hitl_panel(hitl: &HitlPanelState, width: usize) -> Vec<Styl
             SegmentStyle::warning(),
         );
     }
+    if let Some(request) = hitl.request_preview.as_deref() {
+        push_detail_row(
+            &mut rows,
+            "request:",
+            request,
+            inner_width,
+            SegmentStyle::code(),
+        );
+    }
     if let Some(risk) = hitl.risk_level.as_deref() {
         push_detail_row(&mut rows, "risk:", risk, inner_width, hitl_risk_style(risk));
     }
@@ -84,8 +102,11 @@ pub(super) fn render_hitl_panel(hitl: &HitlPanelState, width: usize) -> Vec<Styl
     }
     rows.push(Vec::new());
     rows.push(vec![StyledSegment {
-        text: "Use `starweaver-cli approval list`, then approve or reject the pending approval id."
-            .to_string(),
+        text: if hitl.approval_id.is_some() {
+            "[a/y] Approve    [r/n] Reject    [Esc] Refresh".to_string()
+        } else {
+            "Persisting approval request…    [Esc] Refresh".to_string()
+        },
         style: SegmentStyle::dim(),
     }]);
     let mut lines = vec![StyledLine::plain("")];
@@ -255,6 +276,14 @@ fn render_status_bar_primary(state: &InteractiveTuiState, width: usize) -> Style
         format!(" {} ", state.input_mode_label()),
         SegmentStyle::mode_badge().merge(SegmentStyle::bold()),
     );
+    if let Some(notification) = state.input_notification() {
+        push_bounded_status_segment(
+            &mut line,
+            width,
+            format!("Notice: {notification}"),
+            SegmentStyle::status_warning().merge(SegmentStyle::bold()),
+        );
+    }
     push_bounded_status_segment(
         &mut line,
         width,
@@ -317,9 +346,10 @@ fn render_status_bar_secondary(state: &InteractiveTuiState, width: usize) -> Sty
         SegmentStyle::status_bar(),
     );
     if !state.is_at_bottom() {
-        push_status_segment(
+        push_bounded_status_segment(
             &mut line,
-            format!("Scrolled: {}", state.scroll_offset),
+            width,
+            format!("Paused at line {}", state.scroll_offset),
             SegmentStyle::status_warning(),
         );
     }
@@ -418,20 +448,33 @@ fn pick_status_candidate(width: usize, candidates: &[String]) -> String {
         .iter()
         .find(|candidate| visible_width(candidate) <= width)
         .cloned()
-        .unwrap_or_else(|| candidates.last().cloned().unwrap_or_default())
+        .unwrap_or_else(|| {
+            candidates
+                .last()
+                .map_or_else(String::new, |candidate| truncate_line(candidate, width))
+        })
 }
 
+#[allow(clippy::too_many_lines)]
 fn secondary_status_text(state: &InteractiveTuiState, width: usize) -> String {
     if state.pending_hitl().is_some() {
-        return pick_status_candidate(
-            width,
-            &[
-                "Approval required: run `starweaver-cli approval list`, then approve or reject the pending approval | PageUp/PageDown/Mouse: Scroll".to_string(),
-                "Approval required | approve/reject pending approval | PgUp/PgDn: Scroll".to_string(),
-                "Approval required | PgUp/PgDn Scroll | Ctrl+C Interrupt".to_string(),
-                "Approval required | Ctrl+C interrupt".to_string(),
-            ],
-        );
+        let candidates = if state.hitl_decision_ready() {
+            [
+                "Approval required | A/Y approve | R/N reject | PageUp/PageDown/Mouse: Scroll"
+                    .to_string(),
+                "Approval | A/Y approve | R/N reject | PgUp/PgDn: Scroll".to_string(),
+                "Approval | A approve | R reject".to_string(),
+                "A approve | R reject".to_string(),
+            ]
+        } else {
+            [
+                "Approval request is being persisted | PageUp/PageDown/Mouse: Scroll".to_string(),
+                "Persisting approval | PgUp/PgDn: Scroll".to_string(),
+                "Persisting approval request".to_string(),
+                "Approval pending".to_string(),
+            ]
+        };
+        return pick_status_candidate(width, &candidates);
     }
     if state.selection_mode_visible() {
         return pick_status_candidate(
@@ -464,6 +507,19 @@ fn secondary_status_text(state: &InteractiveTuiState, width: usize) -> String {
                 "↑/↓ Select | Enter | Esc".to_string(),
             ],
         )
+    } else if !state.is_at_bottom() {
+        let unread = state.unread_output_lines;
+        pick_status_candidate(
+            width,
+            &[
+                format!(
+                    "Output paused | {unread} new line(s) | Ctrl+L: Follow latest | PageUp/PageDown/Mouse: Scroll"
+                ),
+                format!("Paused | {unread} new | Ctrl+L Follow | PgUp/PgDn Scroll"),
+                format!("Paused | {unread} new | Ctrl+L Follow"),
+                "Output paused | Ctrl+L Follow".to_string(),
+            ],
+        )
     } else if state.running {
         pick_status_candidate(
             width,
@@ -487,17 +543,21 @@ fn secondary_status_text(state: &InteractiveTuiState, width: usize) -> String {
             width,
             &[
                 format!(
-                    "{} | {} | Ctrl+V: Attach clipboard image | Up/Down: History | Alt+Up/Down: Input scroll | PageUp/PageDown/Mouse: Scroll | Esc: Select | Ctrl+C: Exit",
+                    "{} | {} | Ctrl+V: Attach clipboard image | Ctrl+P/N: History | Alt+Up/Down: Input scroll | PageUp/PageDown/Mouse: Scroll | Esc: Select | Ctrl+C: Exit",
                     state.enter_action_label(),
                     state.enter_toggle_label()
                 ),
                 format!(
-                    "{} | {} | Ctrl+V: Image | ↑/↓: History | PgUp/PgDn: Scroll | Esc: Select | Ctrl+C: Exit",
+                    "{} | {} | Ctrl+V: Image | Ctrl+P/N: History | PgUp/PgDn: Scroll | Esc: Select | Ctrl+C: Exit",
                     state.enter_action_label(),
                     state.enter_toggle_label()
                 ),
+                format!(
+                    "{} | Ctrl+V Image | Ctrl+P/N History | PgUp/PgDn Scroll | Esc Select | Ctrl+C Exit",
+                    state.enter_action_label()
+                ),
                 "Enter Send | PgUp/PgDn Scroll | Esc Select | Ctrl+C Exit".to_string(),
-                "Enter Send | Esc Select | Ctrl+C Exit".to_string(),
+                "Enter Send  Esc Select  Ctrl+C Exit".to_string(),
             ],
         )
     } else {
@@ -505,12 +565,12 @@ fn secondary_status_text(state: &InteractiveTuiState, width: usize) -> String {
             width,
             &[
                 format!(
-                    "{} | {} | Ctrl+V: Attach clipboard image | Up/Down: History | Alt+Up/Down: Input scroll | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
+                    "{} | {} | Ctrl+V: Attach clipboard image | Ctrl+P/N: History | Alt+Up/Down: Input scroll | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
                     state.enter_action_label(),
                     state.enter_toggle_label()
                 ),
                 format!(
-                    "{} | Ctrl+V: Image | ↑/↓: History | Alt+↑/↓: Input | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
+                    "{} | Ctrl+V: Image | Ctrl+P/N: History | Alt+↑/↓: Input | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
                     state.enter_action_label()
                 ),
                 "Enter Send | Ctrl+U: Clear | Esc Select | Ctrl+C Exit".to_string(),

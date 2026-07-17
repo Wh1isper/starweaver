@@ -710,7 +710,7 @@ Add:
 - heartbeat runs;
 - workflow definitions and DAG executor;
 - workflow toolset;
-- run/session planning modes.
+- run/session orchestration policy.
 
 Exit criteria: scheduled and workflow-triggered runs use the same run
 coordinator as interactive sessions.
@@ -724,8 +724,8 @@ tool calls inspect schedule fire, heartbeat fire, and workflow run records.
 It also provides a product `ProductDispatcher` with deterministic `run_once()`
 execution and a start/stop background loop; dispatcher ticks fire active
 schedules and heartbeat runs through the same coordinator path. Remaining Phase
-4 work is advanced scheduler policy, workflow planning modes, retries,
-branching, and larger DAG semantics.
+4 work is advanced scheduler policy, workflow orchestration, retries, branching,
+and larger DAG semantics.
 
 ### Phase 5: Memory, Agency, Bridge, Web
 

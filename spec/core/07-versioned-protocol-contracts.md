@@ -91,7 +91,7 @@ Conversion requirements:
 - Per-input durable metadata is not silently injected into provider-visible content metadata.
 - `mode: "content_part"` is a legacy read-only encoding. New writers never emit it.
 - Previous `url`, `file`, and binary-reference forms remain explicit legacy read variants and have documented conversion behavior.
-- Slash commands and planning modes are parsed and executed at CLI, TUI, RPC-client, or application edges. They are not new canonical session input variants. Existing v0 command/mode JSON remains readable as legacy evidence but is never used to smuggle canonical content.
+- Slash commands and other product-local controls are parsed and executed at CLI, TUI, RPC-client, or application edges. These controls are not new canonical session input variants. Existing v0 command/mode JSON remains readable only as legacy evidence and is never used to smuggle canonical content.
 
 ## Run Lifecycle
 

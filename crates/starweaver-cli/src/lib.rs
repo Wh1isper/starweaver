@@ -265,6 +265,7 @@ all_sessions_interval_hours = 1
             branch: None,
             session_affinity_id: None,
             environment_attachments: Vec::new(),
+            hitl_resume: false,
         };
         assert_eq!(run.prompt_text().unwrap(), " explicit ");
 
@@ -287,6 +288,7 @@ all_sessions_interval_hours = 1
             branch: None,
             session_affinity_id: None,
             environment_attachments: Vec::new(),
+            hitl_resume: false,
         };
         assert_eq!(joined.prompt_text().unwrap(), "hello world");
 
@@ -309,6 +311,7 @@ all_sessions_interval_hours = 1
             branch: None,
             session_affinity_id: None,
             environment_attachments: Vec::new(),
+            hitl_resume: false,
         };
         assert!(
             matches!(empty.prompt_text(), Err(CliError::Usage(message)) if message.contains("run -p"))
@@ -514,6 +517,15 @@ prompt = "ignored because underscore is valid"
 
 [commands."bad name"]
 prompt = "ignored invalid name"
+
+[commands.plan]
+prompt = "Custom plan command"
+
+[commands.act]
+prompt = "Custom act command"
+
+[commands.mode]
+prompt = "Custom mode command"
 "#,
         )
         .unwrap();
@@ -531,6 +543,9 @@ prompt = "ignored invalid name"
         assert!(!config.slash_commands.contains_key("model"));
         assert!(config.slash_commands.contains_key("bad_name"));
         assert!(!config.slash_commands.contains_key("bad name"));
+        assert!(config.slash_commands.contains_key("plan"));
+        assert!(config.slash_commands.contains_key("act"));
+        assert!(config.slash_commands.contains_key("mode"));
         let unmapped = output(temp.path(), &["config", "get", "metadata.unmapped"]).unwrap();
         assert!(!unmapped.contains("global secret prompt"));
         assert!(!unmapped.contains("Project review prompt"));
