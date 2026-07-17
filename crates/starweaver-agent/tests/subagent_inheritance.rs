@@ -1,21 +1,64 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use starweaver_agent::{
-    AgentBuilder, AgentCapability, AgentContext, AgentRunState, CapabilityResult, CapabilitySpec,
-    FunctionModel, FunctionTool, StaticCapabilityBundle, SubagentCapabilityInheritancePolicy,
-    SubagentConfig, SubagentParentTools, SubagentRegistry, SubagentToolInheritanceError,
-    SubagentToolInheritancePolicy, TestModel, ToolContext, ToolError, ToolRegistry, ToolResult,
+    ASK_USER_QUESTION_TOOL_NAME, AgentBuilder, AgentCapability, AgentContext, AgentRunState,
+    CapabilityResult, CapabilitySpec, FunctionModel, FunctionTool, StaticCapabilityBundle,
+    SubagentCapabilityInheritancePolicy, SubagentConfig, SubagentParentTools, SubagentRegistry,
+    SubagentToolInheritanceError, SubagentToolInheritancePolicy, TestModel, ToolContext, ToolError,
+    ToolRegistry, ToolResult,
 };
 use starweaver_core::Metadata;
 use starweaver_model::{
-    ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, tool_call_response,
+    ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequest, ModelRequestContext,
+    ModelRequestParameters, ModelRequestPart, ModelResponse, ModelSettings, ProtocolFamily,
+    tool_call_response,
 };
 
 type ReadyToolResult = std::future::Ready<Result<ToolResult, ToolError>>;
 type ReadyFunctionTool = FunctionTool<fn(ToolContext, serde_json::Value) -> ReadyToolResult>;
+
+#[derive(Clone)]
+struct ToolCaptureModel {
+    captured_tools: Arc<Mutex<Vec<Vec<String>>>>,
+}
+
+#[async_trait]
+impl ModelAdapter for ToolCaptureModel {
+    fn model_name(&self) -> &'static str {
+        "tool-capture"
+    }
+
+    fn provider_name(&self) -> Option<&'static str> {
+        Some("test")
+    }
+
+    fn profile(&self) -> &ModelProfile {
+        static PROFILE: LazyLock<ModelProfile> =
+            LazyLock::new(|| ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions));
+        &PROFILE
+    }
+
+    fn default_settings(&self) -> Option<&ModelSettings> {
+        None
+    }
+
+    async fn request(
+        &self,
+        _messages: Vec<ModelMessage>,
+        _settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        _context: ModelRequestContext,
+    ) -> Result<ModelResponse, ModelError> {
+        self.captured_tools
+            .lock()
+            .unwrap()
+            .push(params.tools.iter().map(|tool| tool.name.clone()).collect());
+        Ok(ModelResponse::text("child done"))
+    }
+}
 
 #[test]
 fn subagent_tool_inheritance_resolves_required_optional_denied_and_auto_tools() {
@@ -47,6 +90,75 @@ fn subagent_tool_inheritance_resolves_required_optional_denied_and_auto_tools() 
             .unwrap(),
         SubagentToolInheritanceError::DeniedRequiredTool(name) if name == "search"
     ));
+}
+
+#[test]
+fn subagents_never_inherit_main_agent_user_input_tool() {
+    let parent = ToolRegistry::new().with_tool(auto_tool(ASK_USER_QUESTION_TOOL_NAME));
+
+    let inherited_all = SubagentToolInheritancePolicy::default()
+        .with_inherit_all_when_empty(true)
+        .resolve(&parent)
+        .unwrap();
+    assert!(
+        !inherited_all
+            .names()
+            .iter()
+            .any(|name| name == ASK_USER_QUESTION_TOOL_NAME)
+    );
+
+    let optional = SubagentToolInheritancePolicy::new(
+        Vec::new(),
+        vec![ASK_USER_QUESTION_TOOL_NAME.to_string()],
+    )
+    .resolve(&parent)
+    .unwrap();
+    assert!(
+        !optional
+            .names()
+            .iter()
+            .any(|name| name == ASK_USER_QUESTION_TOOL_NAME)
+    );
+
+    assert!(matches!(
+        SubagentToolInheritancePolicy::new(
+            vec![ASK_USER_QUESTION_TOOL_NAME.to_string()],
+            Vec::new(),
+        )
+        .resolve(&parent),
+        Err(SubagentToolInheritanceError::DeniedRequiredTool(name))
+            if name == ASK_USER_QUESTION_TOOL_NAME
+    ));
+}
+
+#[tokio::test]
+async fn subagent_final_model_tools_exclude_child_owned_user_input_tool() {
+    let captured_tools = Arc::new(Mutex::new(Vec::new()));
+    let child = Arc::new(
+        AgentBuilder::new(Arc::new(ToolCaptureModel {
+            captured_tools: Arc::clone(&captured_tools),
+        }))
+        .tool(plain_tool(ASK_USER_QUESTION_TOOL_NAME))
+        .tool(plain_tool("child_tool"))
+        .build(),
+    );
+    let registry = SubagentRegistry::new().with_subagent(SubagentConfig::new("child", child));
+    let mut context = AgentContext::default();
+
+    let result = registry
+        .delegate("child", "work", &mut context)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "child done");
+    let requests = captured_tools.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].iter().any(|name| name == "child_tool"));
+    assert!(
+        !requests[0]
+            .iter()
+            .any(|name| name == ASK_USER_QUESTION_TOOL_NAME)
+    );
 }
 
 #[tokio::test]

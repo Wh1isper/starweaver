@@ -8,7 +8,8 @@ use super::{
 };
 use crate::{
     args::TuiRenderMode,
-    slash_commands::{SlashCommandDefinition, expand_slash_command},
+    command_catalog::{closest_builtin_name, key_binding_descriptors},
+    slash_commands::expand_slash_command,
 };
 
 impl InteractiveTuiState {
@@ -60,6 +61,13 @@ impl InteractiveTuiState {
             self.pending_attachments.clear();
             self.footer_mode = FooterMode::Context;
             self.handle_session_command(input.strip_prefix("/session").unwrap_or_default().trim());
+            return LocalCommandOutcome::Consumed;
+        }
+        if input == "/tasks" {
+            self.clear_composer_input();
+            self.pending_attachments.clear();
+            self.footer_mode = FooterMode::Context;
+            self.open_task_panel();
             return LocalCommandOutcome::Consumed;
         }
         if input == "/paste-image" {
@@ -124,6 +132,20 @@ impl InteractiveTuiState {
             self.pending_submission_display_prompt = Some(expanded.prompt);
             return LocalCommandOutcome::Submit(input);
         }
+        if let Some(invoked) = input
+            .strip_prefix('/')
+            .and_then(|rest| rest.split_whitespace().next())
+            .filter(|name| !name.is_empty() && !self.has_skill_named(name))
+            && let Some(suggestion) = closest_builtin_name(invoked)
+            && !suggestion.eq_ignore_ascii_case(invoked)
+        {
+            self.clear_composer_input();
+            self.push_transcript_notice(format!(
+                "[SYS] Unknown command /{invoked}. Did you mean /{suggestion}?"
+            ));
+            self.input_status = Some("command typo".to_string());
+            return LocalCommandOutcome::Consumed;
+        }
         LocalCommandOutcome::None
     }
 
@@ -132,82 +154,42 @@ impl InteractiveTuiState {
             "Starweaver TUI help".to_string(),
             String::new(),
             "Commands".to_string(),
-            "  /help             Show this help".to_string(),
-            "  /clear            Clear transcript and start a fresh context".to_string(),
-            "  /cost             Show usage and context".to_string(),
-            "  /display [mode]   Set display mode: normal, concise, or debug".to_string(),
-            "  /model [profile]  Open or select a model profile".to_string(),
-            "  /session [id]     Open session selector or reload a session".to_string(),
-            "  /goal <task>      Run toward a verified goal".to_string(),
-            "  /paste-image      Attach image from system clipboard".to_string(),
-            "  /<skill> [task]   Explicitly activate a loaded skill; chain multiple skills"
-                .to_string(),
-            "  @<skill> [task]   Alias for explicit skill activation".to_string(),
-            "  !<command>        Run a shell command inline".to_string(),
         ];
-        let custom_commands = self.custom_command_definitions();
-        if !custom_commands.is_empty() {
-            lines.push(String::new());
-            lines.push("Custom commands".to_string());
-            for command in custom_commands {
-                let description = command
-                    .description
-                    .as_deref()
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or("Run configured prompt");
-                let aliases = if command.aliases.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        " (aliases: {})",
-                        command
-                            .aliases
-                            .iter()
-                            .map(|alias| format!("/{alias}"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                };
-                lines.push(format!(
-                    "  /{:<16} {}{}",
-                    format!("{} [instruction]", command.name),
-                    description,
-                    aliases
-                ));
-            }
+        for command in self.command_descriptors() {
+            let aliases = if command.aliases.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " (aliases: {})",
+                    command
+                        .aliases
+                        .iter()
+                        .map(|alias| format!("/{alias}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            lines.push(format!(
+                "  {:<24} {}{} [{}]",
+                command.usage,
+                command.description,
+                aliases,
+                command.source.label()
+            ));
         }
         lines.extend([
+            "  @<skill> [task]        Activate a loaded skill without slash-name conflicts"
+                .to_string(),
+            "  !<command>             Run a shell command inline".to_string(),
             String::new(),
             "Shortcuts".to_string(),
-            "  Enter             Send, steer, or select model/session".to_string(),
-            "  Tab               Toggle Enter between send and newline".to_string(),
-            "  Ctrl+O            Insert a newline".to_string(),
-            "  Ctrl+P/N          Browse prompt history".to_string(),
-            "  Up/Down           Move across visual composer lines".to_string(),
-            "  Ctrl+A/E          Move to line start/end".to_string(),
-            "  Alt+Left/Right    Move by word".to_string(),
-            "  Cmd+Left/Right    Move to line start/end".to_string(),
-            "  PageUp/PageDown   Scroll transcript".to_string(),
-            "  Mouse wheel       Scroll transcript".to_string(),
-            "  Ctrl+L            Jump to live output".to_string(),
-            "  Esc               Select transcript; refresh HITL panel".to_string(),
-            "  Ctrl+C            Interrupt, clear draft, or exit".to_string(),
-            "  Ctrl+D            Exit only from an empty idle composer".to_string(),
-            "  A/Y or R/N        Approve or reject a pending HITL action".to_string(),
-            "  Type + Enter      Answer a pending clarifying question".to_string(),
         ]);
+        lines.extend(
+            key_binding_descriptors()
+                .iter()
+                .map(|binding| format!("  {:<18} {}", binding.keys, binding.description)),
+        );
         self.push_transcript_lines(lines);
-    }
-
-    fn custom_command_definitions(&self) -> Vec<SlashCommandDefinition> {
-        let mut definitions = self
-            .custom_commands
-            .values()
-            .cloned()
-            .collect::<Vec<SlashCommandDefinition>>();
-        definitions.sort_by(|left, right| left.name.cmp(&right.name));
-        definitions.dedup_by(|left, right| left.name == right.name);
-        definitions
     }
 
     fn handle_display_command(&mut self, requested: &str) {

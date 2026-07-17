@@ -1,6 +1,7 @@
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use super::history::{HISTORY_MAX_ENTRY_BYTES, bound_entries};
 use super::{
     FooterMode, InteractiveTuiState, LocalCommandOutcome, PromptAttachment, PromptInput,
     SteeringSubmission, SubmissionKind, format_size_bytes, pasted_image_paths,
@@ -269,6 +270,8 @@ impl InteractiveTuiState {
             self.pending_attachments.remove(attachment_index);
             self.update_attachment_status("image detached");
             self.reset_composer_scroll();
+            self.command_palette_dismissed_input = None;
+            self.refresh_command_palette();
             return;
         }
 
@@ -280,6 +283,8 @@ impl InteractiveTuiState {
         self.input_cursor_input_len = self.input.len();
         self.composer_preferred_column = None;
         self.reset_composer_scroll();
+        self.command_palette_dismissed_input = None;
+        self.refresh_command_palette();
     }
 
     fn retain_visible_attachments(&mut self) {
@@ -338,7 +343,7 @@ impl InteractiveTuiState {
         self.input.is_empty() && self.pending_attachments.is_empty()
     }
 
-    pub(super) fn composer_has_draft(&self) -> bool {
+    pub(in crate::tui) fn composer_has_draft(&self) -> bool {
         !self.input.trim().is_empty() || !self.pending_attachments.is_empty()
     }
 
@@ -364,6 +369,8 @@ impl InteractiveTuiState {
         self.input_cursor_input_len = 0;
         self.composer_preferred_column = None;
         self.restored_prompt_parts = None;
+        self.command_palette = None;
+        self.command_palette_dismissed_input = None;
     }
 
     pub(in crate::tui) fn composer_cursor_byte(&self) -> usize {
@@ -493,7 +500,7 @@ impl InteractiveTuiState {
         self.set_composer_cursor(target, false);
     }
 
-    pub(in crate::tui::state) const fn move_composer_cursor_to_end(&mut self) {
+    pub(in crate::tui) const fn move_composer_cursor_to_end(&mut self) {
         self.input_cursor = self.input.len();
         self.input_cursor_input_len = self.input.len();
         self.composer_preferred_column = None;
@@ -506,6 +513,7 @@ impl InteractiveTuiState {
             self.composer_preferred_column = None;
         }
         self.reset_composer_scroll();
+        self.refresh_command_palette();
     }
 
     pub(in crate::tui) fn update_composer_content_width(&mut self, width: usize) {
@@ -553,6 +561,8 @@ impl InteractiveTuiState {
         self.composer_preferred_column = None;
         self.reset_composer_scroll();
         self.history_index = None;
+        self.command_palette_dismissed_input = None;
+        self.refresh_command_palette();
     }
 
     pub(in crate::tui) fn push_composer_char(&mut self, ch: char) {
@@ -569,12 +579,26 @@ impl InteractiveTuiState {
         self.pending_attachments.len()
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(in crate::tui) fn push_history(&mut self, prompt: String) {
+        let prompt = prompt.trim().to_string();
+        if prompt.is_empty() || prompt.len() > HISTORY_MAX_ENTRY_BYTES {
+            if prompt.len() > HISTORY_MAX_ENTRY_BYTES {
+                self.input_status = Some("prompt too large for history".to_string());
+            }
+            return;
+        }
         if self.history.last() != Some(&prompt) {
             self.history.push(prompt);
+            self.history = bound_entries(std::mem::take(&mut self.history));
+            self.persist_history();
         }
         self.history_index = None;
         self.history_draft.clear();
+    }
+
+    pub(in crate::tui) const fn history_recall_active(&self) -> bool {
+        self.history_index.is_some()
     }
 
     pub(in crate::tui) fn previous_history(&mut self) {
@@ -591,6 +615,8 @@ impl InteractiveTuiState {
             self.input = self.history[index].clone();
             self.move_composer_cursor_to_end();
             self.reset_composer_scroll();
+            self.command_palette_dismissed_input = None;
+            self.refresh_command_palette();
         }
     }
 
@@ -609,5 +635,7 @@ impl InteractiveTuiState {
         }
         self.move_composer_cursor_to_end();
         self.reset_composer_scroll();
+        self.command_palette_dismissed_input = None;
+        self.refresh_command_palette();
     }
 }

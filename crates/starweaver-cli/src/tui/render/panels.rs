@@ -1,8 +1,93 @@
+use crate::tui::state::ClarifyingQuestionUiState;
+
 use super::{
     HitlPanelState, InteractiveTuiState, SegmentStyle, StyledLine, StyledSegment, TaskPanelItem,
     pad_styled_line_with_style, push_detail_row, take_prefix_width, truncate_line, visible_width,
     with_codex_border,
 };
+
+pub(super) fn render_command_palette(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
+    let Some(palette) = state.command_palette() else {
+        return Vec::new();
+    };
+    if width < 4 {
+        return Vec::new();
+    }
+    let inner_width = width.saturating_sub(4);
+    let visible_count = 8usize.min(palette.items.len());
+    let max_start = palette.items.len().saturating_sub(visible_count);
+    let start = palette
+        .selected
+        .saturating_sub(visible_count / 2)
+        .min(max_start);
+    let end = start.saturating_add(visible_count).min(palette.items.len());
+    let mut rows = vec![vec![
+        StyledSegment {
+            text: palette.title.to_ascii_uppercase(),
+            style: SegmentStyle::code().merge(SegmentStyle::bold()),
+        },
+        StyledSegment {
+            text: format!("  {} candidate(s)", palette.items.len()),
+            style: SegmentStyle::dim(),
+        },
+    ]];
+    if start > 0 {
+        rows.push(vec![StyledSegment {
+            text: format!("  … {start} earlier"),
+            style: SegmentStyle::dim(),
+        }]);
+    }
+    for (index, item) in palette.items[start..end].iter().enumerate() {
+        let absolute = start + index;
+        let selected = absolute == palette.selected;
+        rows.push(vec![
+            StyledSegment {
+                text: if selected { "> " } else { "  " }.to_string(),
+                style: if selected {
+                    SegmentStyle::warning().merge(SegmentStyle::bold())
+                } else {
+                    SegmentStyle::dim()
+                },
+            },
+            StyledSegment {
+                text: item.label.clone(),
+                style: if selected {
+                    SegmentStyle::bold()
+                } else {
+                    SegmentStyle::default()
+                },
+            },
+            StyledSegment {
+                text: format!("  [{}]", item.source.label()),
+                style: SegmentStyle::dim(),
+            },
+        ]);
+        if selected {
+            push_detail_row(
+                &mut rows,
+                "",
+                &item.detail,
+                inner_width,
+                SegmentStyle::dim(),
+            );
+        }
+    }
+    if end < palette.items.len() {
+        rows.push(vec![StyledSegment {
+            text: format!("  … {} more", palette.items.len() - end),
+            style: SegmentStyle::dim(),
+        }]);
+    }
+    rows.push(Vec::new());
+    rows.push(vec![StyledSegment {
+        text: "↑/↓: Move · Tab: Complete · Shift-Tab: Previous · Enter: Run · Esc: Close"
+            .to_string(),
+        style: SegmentStyle::dim(),
+    }]);
+    let mut lines = vec![StyledLine::plain("")];
+    lines.extend(with_codex_border(rows, inner_width));
+    lines
+}
 
 pub(super) fn render_selection_panel(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
     let style = SegmentStyle::status_warning().merge(SegmentStyle::bold());
@@ -31,29 +116,22 @@ pub(super) fn render_selection_panel(state: &InteractiveTuiState, width: usize) 
     )]
 }
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn render_hitl_panel(hitl: &HitlPanelState, width: usize) -> Vec<StyledLine> {
+    if let Some(clarifying) = hitl.clarifying.as_ref() {
+        return render_clarifying_question_panel(hitl, clarifying, width);
+    }
     if width < 4 {
         return Vec::new();
     }
     let inner_width = width.saturating_sub(4);
-    let is_clarifying = !hitl.clarifying_questions.is_empty();
     let mut rows = Vec::<Vec<StyledSegment>>::new();
     rows.push(vec![
         StyledSegment {
-            text: if is_clarifying {
-                "Clarification Requested".to_string()
-            } else {
-                "Tool Approval Required".to_string()
-            },
+            text: "Tool Approval Required".to_string(),
             style: SegmentStyle::warning().merge(SegmentStyle::bold()),
         },
         StyledSegment {
-            text: if is_clarifying {
-                "  Answer in the composer below to continue".to_string()
-            } else {
-                "  Review the pending shell/tool action before continuing".to_string()
-            },
+            text: "  Review the pending shell/tool action before continuing".to_string(),
             style: SegmentStyle::dim(),
         },
     ]);
@@ -80,40 +158,6 @@ pub(super) fn render_hitl_panel(hitl: &HitlPanelState, width: usize) -> Vec<Styl
         inner_width,
         SegmentStyle::dim(),
     );
-    if is_clarifying {
-        for (index, question) in hitl.clarifying_questions.iter().enumerate() {
-            let text = question
-                .get("question")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("Clarifying question");
-            push_detail_row(
-                &mut rows,
-                &format!("question {}:", index.saturating_add(1)),
-                text,
-                inner_width,
-                SegmentStyle::default(),
-            );
-            if let Some(options) = question
-                .get("options")
-                .and_then(serde_json::Value::as_array)
-            {
-                let labels = options
-                    .iter()
-                    .filter_map(|option| option.get("label").and_then(serde_json::Value::as_str))
-                    .collect::<Vec<_>>()
-                    .join(" | ");
-                if !labels.is_empty() {
-                    push_detail_row(
-                        &mut rows,
-                        "options:",
-                        &labels,
-                        inner_width,
-                        SegmentStyle::dim(),
-                    );
-                }
-            }
-        }
-    }
     if let Some(command) = hitl.command.as_deref() {
         push_detail_row(
             &mut rows,
@@ -146,12 +190,130 @@ pub(super) fn render_hitl_panel(hitl: &HitlPanelState, width: usize) -> Vec<Styl
     }
     rows.push(Vec::new());
     rows.push(vec![StyledSegment {
-        text: if is_clarifying {
-            "Type an answer below and press Enter    [Esc] Refresh".to_string()
-        } else if hitl.approval_id.is_some() {
+        text: if hitl.approval_id.is_some() {
             "[a/y] Approve    [r/n] Reject    [Esc] Refresh".to_string()
         } else {
             "Persisting approval request…    [Esc] Refresh".to_string()
+        },
+        style: SegmentStyle::dim(),
+    }]);
+    let mut lines = vec![StyledLine::plain("")];
+    lines.extend(with_codex_border(rows, inner_width));
+    lines
+}
+
+#[allow(clippy::too_many_lines)]
+fn render_clarifying_question_panel(
+    hitl: &HitlPanelState,
+    clarifying: &ClarifyingQuestionUiState,
+    width: usize,
+) -> Vec<StyledLine> {
+    if width < 4 {
+        return Vec::new();
+    }
+    let inner_width = width.saturating_sub(4);
+    let Some(question) = clarifying.current_question() else {
+        return Vec::new();
+    };
+    let mode = if question.multi_select {
+        "Multiple choice"
+    } else {
+        "Single choice"
+    };
+    let mut rows = vec![vec![
+        StyledSegment {
+            text: format!(
+                "Question {}/{} · {}",
+                clarifying.question_index + 1,
+                clarifying.questions.len(),
+                question.header
+            ),
+            style: SegmentStyle::warning().merge(SegmentStyle::bold()),
+        },
+        StyledSegment {
+            text: format!("  {mode}"),
+            style: SegmentStyle::dim(),
+        },
+    ]];
+    push_detail_row(
+        &mut rows,
+        "question:",
+        &question.question,
+        inner_width,
+        SegmentStyle::default().merge(SegmentStyle::bold()),
+    );
+    let selected = clarifying
+        .selections
+        .get(clarifying.question_index)
+        .cloned()
+        .unwrap_or_default();
+    for (index, option) in question.options.iter().enumerate() {
+        let focused = !clarifying.free_form_active && index == clarifying.option_index;
+        let checked = selected.contains(&index);
+        let marker = if question.multi_select {
+            if checked { "[x]" } else { "[ ]" }
+        } else if checked {
+            "(*)"
+        } else {
+            "( )"
+        };
+        rows.push(vec![
+            StyledSegment {
+                text: if focused { "> " } else { "  " }.to_string(),
+                style: if focused {
+                    SegmentStyle::warning().merge(SegmentStyle::bold())
+                } else {
+                    SegmentStyle::dim()
+                },
+            },
+            StyledSegment {
+                text: format!("{marker} {}", option.label),
+                style: if focused {
+                    SegmentStyle::bold()
+                } else {
+                    SegmentStyle::default()
+                },
+            },
+        ]);
+        if focused {
+            push_detail_row(
+                &mut rows,
+                "",
+                &option.description,
+                inner_width,
+                SegmentStyle::dim(),
+            );
+            if let Some(preview) = option.preview.as_deref() {
+                push_detail_row(
+                    &mut rows,
+                    "preview:",
+                    preview,
+                    inner_width,
+                    SegmentStyle::code(),
+                );
+            }
+        }
+    }
+    if let Some(answer) = clarifying.free_form_answers.get(&clarifying.question_index) {
+        push_detail_row(
+            &mut rows,
+            "custom:",
+            answer,
+            inner_width,
+            SegmentStyle::default(),
+        );
+    }
+    rows.push(Vec::new());
+    rows.push(vec![StyledSegment {
+        text: if hitl.approval_id.is_none() {
+            "Persisting question request…    Esc: Refresh".to_string()
+        } else if clarifying.free_form_active {
+            "Type a custom answer below · Enter: Confirm · Esc: Choices".to_string()
+        } else if question.multi_select {
+            "↑/↓: Move · Space: Toggle · Enter: Continue · E: Custom · Tab: Next question"
+                .to_string()
+        } else {
+            "↑/↓: Select · Enter: Continue · E: Custom · Tab: Next question".to_string()
         },
         style: SegmentStyle::dim(),
     }]);
@@ -168,8 +330,55 @@ fn hitl_risk_style(risk: &str) -> SegmentStyle {
     }
 }
 
-pub(super) fn render_task_panel(items: &[TaskPanelItem], width: usize) -> Vec<StyledLine> {
-    if width < 4 {
+pub(super) fn render_task_summary(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
+    let items = state.task_panel_items();
+    if items.is_empty() || width == 0 {
+        return Vec::new();
+    }
+    let completed = items
+        .iter()
+        .filter(|item| item.status == "completed")
+        .count();
+    let blocked = items
+        .iter()
+        .filter(|item| !item.blocked_by.is_empty() || item.status == "blocked")
+        .count();
+    let current = items
+        .iter()
+        .find(|item| item.status.starts_with("in_progress"))
+        .or_else(|| items.iter().find(|item| item.status != "completed"));
+    let mut text = format!("Tasks {completed}/{}", items.len());
+    if let Some(current) = current {
+        let active = current
+            .active_form
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(&current.subject);
+        text.push_str(" · Current: #");
+        text.push_str(&current.id);
+        text.push(' ');
+        text.push_str(active);
+    }
+    if blocked > 0 {
+        text.push_str(" · ");
+        text.push_str(&blocked.to_string());
+        text.push_str(" blocked");
+    }
+    text.push_str(" · /tasks details");
+    vec![pad_styled_line_with_style(
+        StyledLine::styled(
+            truncate_line(&text, width),
+            SegmentStyle::status_bar().merge(SegmentStyle::bold()),
+        ),
+        width,
+        SegmentStyle::status_bar(),
+    )]
+}
+
+#[allow(clippy::too_many_lines)]
+pub(super) fn render_task_panel(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
+    let items = state.task_panel_items();
+    if width < 4 || items.is_empty() {
         return Vec::new();
     }
     let inner_width = width.saturating_sub(4);
@@ -177,75 +386,149 @@ pub(super) fn render_task_panel(items: &[TaskPanelItem], width: usize) -> Vec<St
         .iter()
         .filter(|item| item.status == "completed")
         .count();
-    let in_progress = items
-        .iter()
-        .filter(|item| item.status.starts_with("in_progress"))
-        .count();
-    let mut rows = Vec::<Vec<StyledSegment>>::new();
-    rows.push(vec![
+    let mut rows = vec![vec![
         StyledSegment {
             text: "Tasks".to_string(),
             style: SegmentStyle::code().merge(SegmentStyle::bold()),
         },
         StyledSegment {
-            text: format!(
-                "  Progress: {completed}/{}{}",
-                items.len(),
-                if in_progress > 0 {
-                    format!(" ({in_progress} in progress)")
-                } else {
-                    String::new()
-                }
-            ),
+            text: format!("  {completed}/{} complete", items.len()),
             style: SegmentStyle::dim(),
         },
-    ]);
-    for item in items.iter().take(12) {
-        rows.push(render_task_row(item, inner_width));
-    }
-    if items.len() > 12 {
+    ]];
+    let selected = state.task_panel_index().min(items.len().saturating_sub(1));
+    let visible_count = 8usize.min(items.len());
+    let start = selected
+        .saturating_sub(visible_count / 2)
+        .min(items.len().saturating_sub(visible_count));
+    let end = start.saturating_add(visible_count).min(items.len());
+    if start > 0 {
         rows.push(vec![StyledSegment {
-            text: format!("  ... {} more task(s)", items.len() - 12),
+            text: format!("  … {start} earlier"),
             style: SegmentStyle::dim(),
         }]);
     }
+    for (offset, item) in items[start..end].iter().enumerate() {
+        rows.push(render_task_row(
+            item,
+            start + offset == selected,
+            inner_width,
+        ));
+    }
+    if end < items.len() {
+        rows.push(vec![StyledSegment {
+            text: format!("  … {} more", items.len() - end),
+            style: SegmentStyle::dim(),
+        }]);
+    }
+    if state.task_panel_detail_visible()
+        && let Some(item) = state.selected_task()
+    {
+        rows.push(Vec::new());
+        push_detail_row(
+            &mut rows,
+            "subject:",
+            &item.subject,
+            inner_width,
+            SegmentStyle::default().merge(SegmentStyle::bold()),
+        );
+        if !item.description.trim().is_empty() {
+            push_detail_row(
+                &mut rows,
+                "description:",
+                &item.description,
+                inner_width,
+                SegmentStyle::default(),
+            );
+        }
+        if let Some(active) = item.active_form.as_deref() {
+            push_detail_row(
+                &mut rows,
+                "progress:",
+                active,
+                inner_width,
+                SegmentStyle::code(),
+            );
+        }
+        if let Some(owner) = item.owner.as_deref() {
+            push_detail_row(
+                &mut rows,
+                "owner:",
+                owner,
+                inner_width,
+                SegmentStyle::default(),
+            );
+        }
+        if !item.blocked_by.is_empty() {
+            push_detail_row(
+                &mut rows,
+                "blocked by:",
+                &item.blocked_by.join(", "),
+                inner_width,
+                SegmentStyle::warning(),
+            );
+        }
+        if !item.blocks.is_empty() {
+            push_detail_row(
+                &mut rows,
+                "blocks:",
+                &item.blocks.join(", "),
+                inner_width,
+                SegmentStyle::dim(),
+            );
+        }
+    }
+    rows.push(Vec::new());
+    rows.push(vec![StyledSegment {
+        text: "↑/↓: Move · Enter: Details · Esc: Close".to_string(),
+        style: SegmentStyle::dim(),
+    }]);
     let mut lines = vec![StyledLine::plain("")];
     lines.extend(with_codex_border(rows, inner_width));
     lines
 }
 
-fn render_task_row(item: &TaskPanelItem, inner_width: usize) -> Vec<StyledSegment> {
-    let id_width = 8usize.min(inner_width.saturating_sub(18).max(4));
-    let status_label = truncate_line(&task_status_label(item), 11);
+fn render_task_row(item: &TaskPanelItem, selected: bool, inner_width: usize) -> Vec<StyledSegment> {
+    let marker = task_status_marker(item);
     let details = task_details_label(item);
+    let active = item
+        .active_form
+        .as_deref()
+        .filter(|value| item.status.starts_with("in_progress") && !value.trim().is_empty())
+        .unwrap_or(&item.subject);
+    let prefix_width = visible_width(&format!("  #{} {marker} ", item.id));
+    let details_width = visible_width(&details);
     let subject_width = inner_width
-        .saturating_sub(id_width)
-        .saturating_sub(visible_width(&status_label))
-        .saturating_sub(visible_width(&details))
-        .saturating_sub(8)
+        .saturating_sub(prefix_width)
+        .saturating_sub(details_width)
+        .saturating_sub(usize::from(!details.is_empty()))
         .max(1);
-    let status_style = task_status_style(&item.status);
-    let subject_style = if item.status == "completed" {
-        SegmentStyle::dim()
-    } else {
-        SegmentStyle::default()
-    };
     let mut row = vec![
         StyledSegment {
-            text: "  #".to_string(),
+            text: if selected { "> " } else { "  " }.to_string(),
+            style: if selected {
+                SegmentStyle::warning().merge(SegmentStyle::bold())
+            } else {
+                SegmentStyle::dim()
+            },
+        },
+        StyledSegment {
+            text: format!("#{} ", take_prefix_width(&item.id, 8)),
             style: SegmentStyle::dim(),
         },
         StyledSegment {
-            text: format!("{:<id_width$}", take_prefix_width(&item.id, id_width)),
-            style: SegmentStyle::dim(),
+            text: format!("{marker} "),
+            style: task_status_style(&item.status),
         },
         StyledSegment {
-            text: format!(" [{status_label:<11}] "),
-            style: status_style,
-        },
-        StyledSegment {
-            text: truncate_line(&item.subject, subject_width),
-            style: subject_style,
+            text: truncate_line(active, subject_width),
+            style: if selected {
+                SegmentStyle::bold()
+            } else if item.status == "completed" {
+                SegmentStyle::dim()
+            } else {
+                SegmentStyle::default()
+            },
         },
     ];
     if !details.is_empty() {
@@ -257,17 +540,15 @@ fn render_task_row(item: &TaskPanelItem, inner_width: usize) -> Vec<StyledSegmen
     row
 }
 
-fn task_status_label(item: &TaskPanelItem) -> String {
-    if item.status == "in_progress" {
-        item.active_form
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .map_or_else(
-                || item.status.clone(),
-                |active| format!("in_progress: {active}"),
-            )
+fn task_status_marker(item: &TaskPanelItem) -> &'static str {
+    if item.status == "completed" {
+        "[x]"
+    } else if item.status.starts_with("in_progress") {
+        "[>]"
+    } else if item.status == "blocked" || !item.blocked_by.is_empty() {
+        "[!]"
     } else {
-        item.status.clone()
+        "[ ]"
     }
 }
 
@@ -303,66 +584,30 @@ pub(super) fn render_status_bar_lines(
     state: &InteractiveTuiState,
     width: usize,
 ) -> Vec<StyledLine> {
-    vec![
-        pad_styled_line_with_style(
-            render_status_bar_primary(state, width),
-            width,
-            SegmentStyle::status_bar(),
-        ),
-        pad_styled_line_with_style(
-            render_status_bar_secondary(state, width),
-            width,
-            SegmentStyle::status_bar(),
-        ),
-    ]
+    if width == 0 {
+        return Vec::new();
+    }
+    vec![pad_styled_line_with_style(
+        render_semantic_status_bar(state, width),
+        width,
+        SegmentStyle::status_bar(),
+    )]
 }
 
-fn render_status_bar_primary(state: &InteractiveTuiState, width: usize) -> StyledLine {
+fn render_semantic_status_bar(state: &InteractiveTuiState, width: usize) -> StyledLine {
+    let (badge, badge_style) = status_badge(state);
     let mut line = StyledLine::styled(
-        format!(" {} ", state.input_mode_label()),
-        SegmentStyle::mode_badge().merge(SegmentStyle::bold()),
+        format!(" {badge} "),
+        SegmentStyle::mode_badge().merge(badge_style),
     );
-    if let Some(notification) = state.input_notification() {
-        push_bounded_status_segment(
-            &mut line,
-            width,
-            format!("Notice: {notification}"),
-            SegmentStyle::status_warning().merge(SegmentStyle::bold()),
-        );
+    let remaining = width.saturating_sub(line.visible_width());
+    let action =
+        pick_status_candidate(remaining.saturating_sub(3), status_action_candidates(state));
+    if !action.is_empty() {
+        push_bounded_status_segment(&mut line, width, action, badge_style);
     }
-    push_bounded_status_segment(
-        &mut line,
-        width,
-        primary_state_text(state),
-        status_style(state),
-    );
-    push_bounded_status_segment(
-        &mut line,
-        width,
-        format!("Context: {}", state.context_percent_label()),
-        SegmentStyle::status_bar(),
-    );
-    if let Some(transport) = state.model_transport_status.as_deref() {
-        push_bounded_status_segment(
-            &mut line,
-            width,
-            transport,
-            SegmentStyle::status_warning().merge(SegmentStyle::bold()),
-        );
-    }
-    if state.goal_active {
-        push_bounded_status_segment(
-            &mut line,
-            width,
-            format!(
-                "Goal: {}/{}",
-                state.goal_iteration, state.goal_max_iterations
-            ),
-            SegmentStyle::status_warning().merge(SegmentStyle::bold()),
-        );
-    }
-    if let Some(activity) = state.active_tool_label() {
-        push_bounded_status_segment(
+    if let Some(activity) = status_activity(state) {
+        push_optional_status_segment(
             &mut line,
             width,
             activity,
@@ -370,52 +615,219 @@ fn render_status_bar_primary(state: &InteractiveTuiState, width: usize) -> Style
         );
     }
     if state.pasted_image_count() > 0 {
-        push_bounded_status_segment(
+        push_optional_status_segment(
             &mut line,
             width,
-            format!("images:{}", state.pasted_image_count()),
+            format!("images {}", state.pasted_image_count()),
+            SegmentStyle::status_warning(),
+        );
+    }
+    if !state.is_at_bottom() {
+        push_optional_status_segment(
+            &mut line,
+            width,
+            format!("{} new", state.unread_output_lines),
             SegmentStyle::status_warning(),
         );
     }
     push_optional_status_segment(
         &mut line,
         width,
-        format!("Model: {}", state.model),
+        format!("ctx {}", state.context_percent_label()),
         SegmentStyle::status_bar(),
     );
-    line
-}
-
-fn render_status_bar_secondary(state: &InteractiveTuiState, width: usize) -> StyledLine {
-    let mut line = StyledLine::styled(
-        secondary_status_text(state, width),
-        SegmentStyle::status_bar(),
-    );
-    if !state.is_at_bottom() {
-        push_bounded_status_segment(
+    if let Some(notification) = state.input_notification() {
+        push_optional_status_segment(
             &mut line,
             width,
-            format!("Paused at line {}", state.scroll_offset),
+            notification,
             SegmentStyle::status_warning(),
         );
     }
-    if !state.profile.is_empty() {
-        push_optional_status_segment(
-            &mut line,
-            width,
-            format!("Profile: {}", state.profile),
-            SegmentStyle::status_bar(),
-        );
+    if width >= 100 && !state.profile.is_empty() {
+        push_optional_status_segment(&mut line, width, &state.profile, SegmentStyle::status_bar());
     }
-    if let Some(session) = state.session_id.as_deref() {
-        push_optional_status_segment(
-            &mut line,
-            width,
-            format!("Session: {session}"),
-            SegmentStyle::status_bar(),
-        );
+    if width >= 120 {
+        push_optional_status_segment(&mut line, width, &state.model, SegmentStyle::status_bar());
     }
     line
+}
+
+fn status_badge(state: &InteractiveTuiState) -> (&'static str, SegmentStyle) {
+    if state.clarifying_answer_ready() {
+        (
+            "QUESTION",
+            SegmentStyle::warning().merge(SegmentStyle::bold()),
+        )
+    } else if state.pending_hitl().is_some() || state.hitl_reload_session_id().is_some() {
+        (
+            "APPROVAL",
+            SegmentStyle::warning().merge(SegmentStyle::bold()),
+        )
+    } else if state.command_palette_visible() {
+        ("COMMAND", SegmentStyle::code().merge(SegmentStyle::bold()))
+    } else if state.history_search_visible() {
+        ("HISTORY", SegmentStyle::code().merge(SegmentStyle::bold()))
+    } else if state.help_panel_visible() {
+        ("HELP", SegmentStyle::code().merge(SegmentStyle::bold()))
+    } else if state.task_panel_expanded() {
+        ("TASKS", SegmentStyle::code().merge(SegmentStyle::bold()))
+    } else if state.session_picker_visible() {
+        ("SESSION", SegmentStyle::code().merge(SegmentStyle::bold()))
+    } else if state.model_picker_visible() {
+        ("MODEL", SegmentStyle::code().merge(SegmentStyle::bold()))
+    } else if state.selection_mode_visible() {
+        (
+            "SELECT",
+            SegmentStyle::warning().merge(SegmentStyle::bold()),
+        )
+    } else if state.status == "ERROR" {
+        ("ERROR", SegmentStyle::error().merge(SegmentStyle::bold()))
+    } else if state.status == "WAITING" {
+        (
+            "WAITING",
+            SegmentStyle::warning().merge(SegmentStyle::bold()),
+        )
+    } else if !state.is_at_bottom() {
+        (
+            "PAUSED",
+            SegmentStyle::warning().merge(SegmentStyle::bold()),
+        )
+    } else if state.running || state.shell_running() {
+        ("RUNNING", SegmentStyle::code().merge(SegmentStyle::bold()))
+    } else {
+        ("READY", SegmentStyle::bold())
+    }
+}
+
+fn status_action_candidates(state: &InteractiveTuiState) -> &'static [&'static str] {
+    if state.clarifying_answer_ready() {
+        if state.clarifying_free_form_active() {
+            &["Enter confirm · Esc choices", "Enter confirm", "Enter"]
+        } else if state
+            .clarifying_question()
+            .and_then(ClarifyingQuestionUiState::current_question)
+            .is_some_and(|question| question.multi_select)
+        {
+            &[
+                "↑/↓ move · Space toggle · Enter next",
+                "Space toggle · Enter next",
+                "Enter next",
+                "Enter",
+            ]
+        } else {
+            &[
+                "↑/↓ select · Enter next",
+                "Enter next · E custom",
+                "Enter next",
+                "Enter",
+            ]
+        }
+    } else if state.pending_hitl().is_some() || state.hitl_reload_session_id().is_some() {
+        if state.hitl_decision_ready() {
+            &["A approve · R reject", "A approve · R reject", "A/R"]
+        } else {
+            &["Esc refresh", "Esc"]
+        }
+    } else if state.command_palette_visible() {
+        &[
+            "↑/↓ move · Tab complete · Enter run",
+            "Tab complete · Enter run",
+            "Tab · Enter",
+            "Enter",
+        ]
+    } else if state.history_search_visible() {
+        &[
+            "Ctrl+R older · Enter use · Esc",
+            "Enter use · Esc",
+            "Enter · Esc",
+        ]
+    } else if state.help_panel_visible() {
+        &["Esc close", "Esc"]
+    } else if state.task_panel_expanded() {
+        &[
+            "↑/↓ move · Enter details · Esc close",
+            "Enter details · Esc",
+            "Enter · Esc",
+        ]
+    } else if state.session_picker_visible() {
+        &[
+            "↑/↓ select · Enter reload · Esc",
+            "Enter reload · Esc",
+            "Enter · Esc",
+        ]
+    } else if state.model_picker_visible() {
+        &[
+            "↑/↓ select · Enter use · Esc",
+            "Enter use · Esc",
+            "Enter · Esc",
+        ]
+    } else if state.selection_mode_visible() {
+        &["↑/↓ move · Enter/Esc close", "Enter/Esc close", "Esc"]
+    } else if !state.is_at_bottom() {
+        &[
+            "Ctrl+L follow · PgUp/PgDn scroll",
+            "Ctrl+L follow",
+            "Ctrl+L",
+        ]
+    } else if state.running || state.shell_running() {
+        &[
+            "Ctrl+C interrupt · Enter steer",
+            "Ctrl+C interrupt",
+            "Ctrl+C",
+        ]
+    } else if state.composer_has_draft() {
+        &[
+            "Enter send · Ctrl+O newline · Ctrl+U clear",
+            "Enter send · Ctrl+O newline",
+            "Enter send",
+        ]
+    } else {
+        &[
+            "Enter send · / commands · ? help",
+            "Enter send · / commands",
+            "Enter send",
+            "Enter",
+        ]
+    }
+}
+
+fn status_activity(state: &InteractiveTuiState) -> Option<String> {
+    if state.clarifying_answer_ready() {
+        return state.clarifying_question().map(|clarifying| {
+            format!(
+                "{}/{}",
+                clarifying.question_index + 1,
+                clarifying.questions.len()
+            )
+        });
+    }
+    if state.running {
+        if let Some(transport) = state.model_transport_status.as_ref() {
+            return Some(transport.clone());
+        }
+        if let Some(activity) = state.active_tool_label() {
+            return Some(activity);
+        }
+        let phase = state.phase.as_str();
+        return (!phase.is_empty()).then(|| phase.to_string());
+    }
+    if state.goal_active {
+        return Some(format!(
+            "goal {}/{}",
+            state.goal_iteration, state.goal_max_iterations
+        ));
+    }
+    state.model_transport_status.clone()
+}
+
+fn pick_status_candidate(width: usize, candidates: &[&str]) -> String {
+    candidates
+        .iter()
+        .find(|candidate| visible_width(candidate) <= width)
+        .copied()
+        .unwrap_or_else(|| candidates.last().copied().unwrap_or_default())
+        .to_string()
 }
 
 fn push_status_segment(line: &mut StyledLine, text: impl Into<String>, style: SegmentStyle) {
@@ -423,7 +835,7 @@ fn push_status_segment(line: &mut StyledLine, text: impl Into<String>, style: Se
     if text.is_empty() {
         return;
     }
-    line.push(" | ", SegmentStyle::status_bar());
+    line.push(" · ", SegmentStyle::status_bar());
     line.push(text, style.merge(SegmentStyle::status_bar()));
 }
 
@@ -433,15 +845,12 @@ fn push_bounded_status_segment(
     text: impl AsRef<str>,
     style: SegmentStyle,
 ) {
-    let separator_width = visible_width(" | ");
+    let separator_width = visible_width(" · ");
     let available = width.saturating_sub(line.visible_width());
     if available <= separator_width {
         return;
     }
     let content_width = available.saturating_sub(separator_width);
-    if content_width == 0 {
-        return;
-    }
     push_status_segment(line, truncate_line(text.as_ref(), content_width), style);
 }
 
@@ -451,189 +860,14 @@ fn push_optional_status_segment(
     text: impl AsRef<str>,
     style: SegmentStyle,
 ) {
-    let separator_width = visible_width(" | ");
-    let used = line.visible_width();
-    let available = width.saturating_sub(used);
+    let separator_width = visible_width(" · ");
+    let available = width.saturating_sub(line.visible_width());
     if available <= separator_width {
         return;
     }
     let content_width = available.saturating_sub(separator_width);
-    if content_width < 8 {
+    if visible_width(text.as_ref()) > content_width {
         return;
     }
-    push_status_segment(line, truncate_line(text.as_ref(), content_width), style);
-}
-
-fn primary_state_text(state: &InteractiveTuiState) -> String {
-    if state.running {
-        phase_display(state)
-    } else {
-        format!("State: {}", state.status)
-    }
-}
-
-fn phase_display(state: &InteractiveTuiState) -> String {
-    match state.phase.as_str() {
-        "thinking" => "Thinking...".to_string(),
-        "tools" => "Running tools...".to_string(),
-        "streaming" => "Running...".to_string(),
-        phase => phase.to_string(),
-    }
-}
-
-fn status_style(state: &InteractiveTuiState) -> SegmentStyle {
-    match state.status.as_str() {
-        "ERROR" => SegmentStyle::error().merge(SegmentStyle::bold()),
-        "WAITING" | "INTERRUPT" => SegmentStyle::warning().merge(SegmentStyle::bold()),
-        _ => SegmentStyle::status_bar(),
-    }
-}
-
-fn pick_status_candidate(width: usize, candidates: &[String]) -> String {
-    candidates
-        .iter()
-        .find(|candidate| visible_width(candidate) <= width)
-        .cloned()
-        .unwrap_or_else(|| {
-            candidates
-                .last()
-                .map_or_else(String::new, |candidate| truncate_line(candidate, width))
-        })
-}
-
-#[allow(clippy::too_many_lines)]
-fn secondary_status_text(state: &InteractiveTuiState, width: usize) -> String {
-    if state.pending_hitl().is_some() {
-        if state.clarifying_answer_ready() {
-            return pick_status_candidate(
-                width,
-                &[
-                    "Clarification required | Type an answer and press Enter | Esc: Refresh"
-                        .to_string(),
-                    "Answer in composer | Enter: Submit | Esc: Refresh".to_string(),
-                    "Type answer | Enter".to_string(),
-                    "Answer required".to_string(),
-                ],
-            );
-        }
-        let candidates = if state.hitl_decision_ready() {
-            [
-                "Approval required | A/Y approve | R/N reject | PageUp/PageDown/Mouse: Scroll"
-                    .to_string(),
-                "Approval | A/Y approve | R/N reject | PgUp/PgDn: Scroll".to_string(),
-                "Approval | A approve | R reject".to_string(),
-                "A approve | R reject".to_string(),
-            ]
-        } else {
-            [
-                "Approval request is being persisted | PageUp/PageDown/Mouse: Scroll".to_string(),
-                "Persisting approval | PgUp/PgDn: Scroll".to_string(),
-                "Persisting approval request".to_string(),
-                "Approval pending".to_string(),
-            ]
-        };
-        return pick_status_candidate(width, &candidates);
-    }
-    if state.selection_mode_visible() {
-        return pick_status_candidate(
-            width,
-            &[
-                "Mouse drag: Select terminal text to copy | Up/Down: Move marker | Enter/Esc: Close selection".to_string(),
-                "Select text | Up/Down: Move | Enter/Esc: Close".to_string(),
-                "Select | Enter/Esc Close".to_string(),
-            ],
-        );
-    }
-    if state.session_picker_visible() {
-        pick_status_candidate(
-            width,
-            &[
-                "Up/Down: Select session | Enter: Reload | Esc: Cancel | PageUp/PageDown/Mouse: Scroll".to_string(),
-                "Up/Down: Select | Enter: Reload | Esc: Cancel | PgUp/PgDn: Scroll".to_string(),
-                "↑/↓ Select | Enter | Esc | PgUp/PgDn Scroll".to_string(),
-                "↑/↓ Select | Enter | Esc".to_string(),
-            ],
-        )
-    } else if state.model_picker_visible() {
-        pick_status_candidate(
-            width,
-            &[
-                "Up/Down: Select model | Enter: Use | Esc: Cancel | PageUp/PageDown/Mouse: Scroll"
-                    .to_string(),
-                "Up/Down: Select | Enter: Use | Esc: Cancel | PgUp/PgDn: Scroll".to_string(),
-                "↑/↓ Select | Enter | Esc | PgUp/PgDn Scroll".to_string(),
-                "↑/↓ Select | Enter | Esc".to_string(),
-            ],
-        )
-    } else if !state.is_at_bottom() {
-        let unread = state.unread_output_lines;
-        pick_status_candidate(
-            width,
-            &[
-                format!(
-                    "Output paused | {unread} new line(s) | Ctrl+L: Follow latest | PageUp/PageDown/Mouse: Scroll"
-                ),
-                format!("Paused | {unread} new | Ctrl+L Follow | PgUp/PgDn Scroll"),
-                format!("Paused | {unread} new | Ctrl+L Follow"),
-                "Output paused | Ctrl+L Follow".to_string(),
-            ],
-        )
-    } else if state.running {
-        pick_status_candidate(
-            width,
-            &[
-                format!(
-                    "{} | {} | Ctrl+C: Interrupt | PageUp/PageDown/Mouse: Scroll",
-                    state.enter_action_label(),
-                    state.enter_toggle_label()
-                ),
-                format!(
-                    "{} | {} | Ctrl+C: Interrupt | PgUp/PgDn: Scroll",
-                    state.enter_action_label(),
-                    state.enter_toggle_label()
-                ),
-                "Ctrl+C Interrupt | PgUp/PgDn Scroll".to_string(),
-                "Ctrl+C Interrupt".to_string(),
-            ],
-        )
-    } else if state.input.trim().is_empty() && state.pasted_image_count() == 0 {
-        pick_status_candidate(
-            width,
-            &[
-                format!(
-                    "{} | {} | Ctrl+V: Attach clipboard image | Ctrl+P/N: History | Alt+Up/Down: Input scroll | PageUp/PageDown/Mouse: Scroll | Esc: Select | Ctrl+C: Exit",
-                    state.enter_action_label(),
-                    state.enter_toggle_label()
-                ),
-                format!(
-                    "{} | {} | Ctrl+V: Image | Ctrl+P/N: History | PgUp/PgDn: Scroll | Esc: Select | Ctrl+C: Exit",
-                    state.enter_action_label(),
-                    state.enter_toggle_label()
-                ),
-                format!(
-                    "{} | Ctrl+V Image | Ctrl+P/N History | PgUp/PgDn Scroll | Esc Select | Ctrl+C Exit",
-                    state.enter_action_label()
-                ),
-                "Enter Send | PgUp/PgDn Scroll | Esc Select | Ctrl+C Exit".to_string(),
-                "Enter Send  Esc Select  Ctrl+C Exit".to_string(),
-            ],
-        )
-    } else {
-        pick_status_candidate(
-            width,
-            &[
-                format!(
-                    "{} | {} | Ctrl+V: Attach clipboard image | Ctrl+P/N: History | Alt+Up/Down: Input scroll | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
-                    state.enter_action_label(),
-                    state.enter_toggle_label()
-                ),
-                format!(
-                    "{} | Ctrl+V: Image | Ctrl+P/N: History | Alt+↑/↓: Input | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
-                    state.enter_action_label()
-                ),
-                "Enter Send | Ctrl+U: Clear | Esc Select | Ctrl+C Exit".to_string(),
-                "Enter Send | Ctrl+U Clear | Ctrl+C Exit".to_string(),
-            ],
-        )
-    }
+    push_status_segment(line, text.as_ref(), style);
 }

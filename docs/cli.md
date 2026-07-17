@@ -443,7 +443,7 @@ Session search is read-only and does not select or resume a hit. Its query is ca
 
 ## TUI snapshot and human-in-the-loop policy
 
-The CLI TUI opens a full-screen terminal viewport when stdin and stdout are TTYs. An explicit `--interactive` request fails with a product-level error when either stream is not a TTY. On a fresh machine, the TUI renders a bordered session header card, startup shortcuts, a no-border bottom composer with `› Ask Starweaver to do anything`, and a compact status footer. Type a prompt and press Enter to start a background run. Tab toggles whether Enter sends or inserts a newline; `Ctrl+O` always inserts a newline. While an agent run is active, Enter sends the draft as steering input. Runtime stream records update the scrollback while input stays responsive, and scrolling away from the bottom keeps the viewport stable until `Ctrl+L` restores live following. Assistant output uses terminal Markdown rendering: raw assistant Markdown is parsed with `pulldown-cmark`, reflowed at the current viewport width, and styled for headings, lists, blockquotes, fenced code, inline code, emphasis, strong text, links, and horizontal rules.
+The CLI TUI opens a full-screen terminal viewport when stdin and stdout are TTYs. An explicit `--interactive` request fails with a product-level error when either stream is not a TTY. On a fresh machine, the TUI renders a bordered session header card, startup shortcuts, a no-border bottom composer with `> Ask Starweaver to do anything`, and one compact semantic status line. Type a prompt and press Enter to start a background run. Tab completes the selected slash-command candidate; it never changes Enter behavior. `Ctrl+O` inserts a newline. While an agent run is active, Enter sends the draft as steering input. Runtime stream records update the scrollback while input stays responsive, and scrolling away from the bottom keeps the viewport stable until `Ctrl+L` restores live following. Assistant output uses terminal Markdown rendering: raw assistant Markdown is parsed with `pulldown-cmark`, reflowed at the current viewport width, and styled for headings, lists, blockquotes, fenced code, inline code, emphasis, strong text, links, and horizontal rules.
 
 ```bash
 sw tui
@@ -462,13 +462,20 @@ Interactive slash commands:
 | `/model <profile>` | Select a model profile directly for future TUI runs |
 | `/session`         | Open the in-TUI session selector                    |
 | `/session <id>`    | Reload an exact session id or unique id prefix      |
+| `/tasks`           | Open the expandable task list                       |
 | `/goal <task>`     | Run toward a verified goal                          |
 | `/paste-image`     | Attach image data from the system clipboard         |
 | `/<skill> [task]`  | Explicitly activate a loaded skill; prefixes chain  |
 | `@<skill> [task]`  | Alias for explicit skill activation                 |
 | `!<command>`       | Run a shell command and show output inline          |
 
-`/clear` succeeds only after the current-session pointer is cleared. It then removes the transcript, prompt recall, attachments, task/subagent panels, HITL state, goal state, and other conversation-scoped UI state. It preserves the selected profile, display policy, process-level provider affinity, and cumulative TUI usage shown by `/cost`. Background subagents remain owned by the detached durable session's supervisor scope, so their completions cannot wake the fresh context; reloading that session can resume its pending delivery.
+`/clear` succeeds only after the current-session pointer is cleared. It then removes the transcript, workspace prompt recall, attachments, task/subagent panels, HITL state, goal state, and other conversation-scoped UI state. It preserves the selected profile, display policy, process-level provider affinity, and cumulative TUI usage shown by `/cost`. Background subagents remain owned by the detached durable session's supervisor scope, so their completions cannot wake the fresh context; reloading that session can resume its pending delivery.
+
+Typing a leading `/` opens bounded completion for built-ins, config-backed commands and aliases, and loaded skills. `Up`/`Down` or `Shift-Tab` moves the selection, Tab completes it, Enter executes it, and Esc dismisses it. `/display`, `/model`, and `/session` also complete known arguments. Near-miss reserved commands return a suggestion without consuming a valid skill name.
+
+The status area is one semantic line: question, approval, errors, waiting/running state, and the currently executable action outrank context and model metadata. Task activity defaults to a one-line summary; `/tasks` opens a selectable list and Enter toggles details. Question and approval modals hide passive task UI. Press `?` from an empty composer or F1 to open transient help without writing to the transcript; `/help` remains the persistent transcript form.
+
+Prompt recall is stored per workspace under `~/.starweaver/tui/prompt-history/`. Files are private, atomically replaced, and bounded to 100 prompts, 16 KiB per prompt, and 256 KiB total. Generated attachment placeholders and attachment-only submissions are not persisted. Use `Ctrl+P`/`Ctrl+N` or empty-composer `Up`/`Down` for sequential recall and `Ctrl+R` for incremental reverse search. Enter accepts a search result without submitting it; Esc preserves the original draft. `/clear` removes the current workspace's recall file as part of its documented context reset.
 
 `!<command>` starts a background process through the selected `EnvironmentProvider`; it does not invoke an untracked host process directly. The TUI stays responsive while the command runs, preserves composer drafts, bounds captured output through the provider, and shows the terminal process snapshot inline. Agent runs and bang-shell processes are mutually exclusive. Press `Ctrl+C` to request process-tree cleanup; a second `Ctrl+C` restores the terminal and waits for bounded cleanup before exit. Cleanup failures include the provider process id and explicitly warn when manual cleanup may be required.
 
@@ -516,28 +523,29 @@ starweaver-cli run "/rv src/service.rs"
 
 Interactive keys:
 
-| Key                      | Action                                                |
-| ------------------------ | ----------------------------------------------------- |
-| `Enter`                  | Send, steer an active run, or select a picker item    |
-| `Tab`                    | Toggle Enter between send and newline                 |
-| `Ctrl-O`                 | Insert a newline                                      |
-| `Ctrl-P` / `Ctrl-N`      | Browse prompt history                                 |
-| `Up` / `Down`            | Move across visual composer lines                     |
-| `Alt-Left` / `Alt-Right` | Move by word                                          |
-| `Ctrl-A` / `Ctrl-E`      | Move to visual line start/end                         |
-| `PageUp` / `PageDown`    | Scroll transcript                                     |
-| Mouse wheel              | Scroll transcript                                     |
-| `Ctrl-Up` / `Ctrl-Down`  | Scroll transcript one line                            |
-| `Ctrl-L`                 | Jump to the live bottom                               |
-| `Esc`                    | Enter selection mode, or refresh pending HITL state   |
-| `A` / `Y`                | Approve the displayed durable approval                |
-| `R` / `N`                | Reject the displayed durable approval                 |
-| Type an answer + `Enter` | Answer the displayed clarifying-question request      |
-| `Ctrl-C`                 | Interrupt activity, clear a draft, or exit when empty |
-| `Ctrl-D`                 | Exit only while idle with an empty composer           |
-| `Ctrl-U`                 | Clear the composer                                    |
+| Key                      | Action                                                        |
+| ------------------------ | ------------------------------------------------------------- |
+| `Enter`                  | Send, steer, or confirm the active modal                      |
+| `Tab` / `Shift-Tab`      | Complete or move through slash-command candidates             |
+| `Ctrl-O`                 | Insert a newline                                              |
+| `Ctrl-P` / `Ctrl-N`      | Browse prompt history                                         |
+| `Ctrl-R`                 | Search workspace prompt history                               |
+| `Up` / `Down`            | Move visually; recall history from an empty single-line draft |
+| `Alt-Up` / `Alt-Down`    | Scroll hidden composer lines                                  |
+| `Alt-Left` / `Alt-Right` | Move by word                                                  |
+| `Ctrl-A` / `Ctrl-E`      | Move to visual line start/end                                 |
+| `PageUp` / `PageDown`    | Scroll transcript                                             |
+| Mouse wheel              | Scroll transcript                                             |
+| `Ctrl-L`                 | Jump to the live bottom                                       |
+| `?` / `F1`               | Open transient contextual help                                |
+| `Esc`                    | Close the active modal or enter transcript selection          |
+| `A` / `Y`                | Approve the displayed durable approval                        |
+| `R` / `N`                | Reject the displayed durable approval                         |
+| `Ctrl-C`                 | Interrupt activity, clear a draft, or exit when empty         |
+| `Ctrl-D`                 | Exit only while idle with an empty composer                   |
+| `Ctrl-U`                 | Clear the composer                                            |
 
-When a run waits for approval, the TUI binds the panel to the persisted `ApprovalRecord` and displays the approval id, tool identity, structured fields, and a bounded JSON request preview. Ordinary approvals accept only unmodified `A`/`Y` or `R`/`N`. An `ask_user_question` request with `request.kind = "clarifying_questions"` instead renders the question text and suggested option labels; type a free-form answer in the composer and press Enter. The answer is persisted as the approval decision note and the durable continuation returns the original `questions` plus `response` to the model. `Esc` reloads the session and reconciles durable state; its refresh target remains available after a transient load failure, including deferred-only waits without an approval panel. The service always verifies the durable session's active run and restore lineage before accepting a prompt. An unresolved `Waiting` source or an active continuation from that source blocks ordinary admission. A prompt submitted during a state-change race remains queued: it starts after external reconciliation, or retries after a pre-start continuation failure. Resolving the final record acquires an exclusive preflight `HitlResumeClaim` before allocating the continuation run, marks it started before model or tool execution, and atomically consumes the waiting source run with continuation evidence before any retained prompt starts. This prevents another TUI or headless client from publishing or executing a competing continuation. Deferred-only waits remain visible until their durable results are completed.
+When a run waits for approval, the TUI binds the panel to the persisted `ApprovalRecord` and displays approval details while keeping raw durable identifiers in debug-oriented output. Ordinary approvals accept only unmodified `A`/`Y` or `R`/`N`. An `ask_user_question` request with `request.kind = "clarifying_questions"` opens a typed question modal for one to four questions. `Up`/`Down` moves choices, Space toggles multi-select choices, Enter confirms and advances, Tab/Shift-Tab moves between questions, and `E` opens free-form editing with `Ctrl+O` for newlines. The modal renders headers, descriptions, and the selected option preview, then persists canonical question-keyed `ClarifyingQuestionAnswers`. `Esc` reloads the session and reconciles durable state; its refresh target remains available after a transient load failure, including deferred-only waits without an approval panel. The service always verifies the durable session's active run and restore lineage before accepting a prompt. An unresolved `Waiting` source or an active continuation from that source blocks ordinary admission. A prompt submitted during a state-change race remains queued: it starts after external reconciliation, or retries after a pre-start continuation failure. Resolving the final record acquires an exclusive preflight `HitlResumeClaim` before allocating the continuation run, marks it started before model or tool execution, and atomically consumes the waiting source run with continuation evidence before any retained prompt starts. This prevents another TUI or headless client from publishing or executing a competing continuation. Deferred-only waits remain visible until their durable results are completed.
 
 The retained snapshot renderer remains available for scripts, tests, and display-message replay. It uses the same replay source as headless JSONL and session replay. Interactive render-mode projection applies to live TUI sessions; snapshot output replays stored display messages directly.
 

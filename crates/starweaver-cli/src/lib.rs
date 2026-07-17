@@ -4,6 +4,7 @@
 mod args;
 mod client_state;
 mod clipboard;
+mod command_catalog;
 mod config;
 mod display_preview;
 mod environment;

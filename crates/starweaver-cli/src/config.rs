@@ -1067,22 +1067,8 @@ fn upsert_slash_command(config: &mut CliConfig, mut definition: SlashCommandDefi
 }
 
 fn reserved_slash_command(name: &str) -> bool {
-    matches!(
-        name,
-        "help"
-            | "config"
-            | "loop"
-            | "tasks"
-            | "session"
-            | "dump"
-            | "load"
-            | "clear"
-            | "cost"
-            | "exit"
-            | "model"
-            | "paste-image"
-            | "goal"
-    )
+    crate::command_catalog::builtin_command_names().contains(name)
+        || matches!(name, "config" | "loop" | "dump" | "load" | "exit")
 }
 
 fn merge_unmapped_metadata(config: &mut CliConfig, raw: &Value) {

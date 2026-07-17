@@ -786,27 +786,17 @@ impl InteractiveTuiState {
         let approval = tool_return.metadata.get("approval");
         self.status = "WAITING".to_string();
         self.phase = "hitl approval".to_string();
-        let clarifying_questions = if tool_return.name
-            == starweaver_agent::ASK_USER_QUESTION_TOOL_NAME
-            && approval
-                .and_then(|value| value.get("kind"))
-                .and_then(Value::as_str)
-                == Some(starweaver_agent::CLARIFYING_QUESTIONS_REQUEST_KIND)
-        {
-            approval
-                .and_then(|value| value.get("questions"))
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
+        let clarifying = if tool_return.name == starweaver_agent::ASK_USER_QUESTION_TOOL_NAME {
+            approval.and_then(super::ClarifyingQuestionUiState::from_request)
         } else {
-            Vec::new()
+            None
         };
         self.pending_hitl = Some(HitlPanelState {
             approval_id: None,
             tool_call_id: tool_return.tool_call_id.clone(),
             tool_name: tool_return.name.clone(),
             request_preview: approval.map(approval_request_preview),
-            clarifying_questions,
+            clarifying,
             command: approval
                 .and_then(|value| value.get("command"))
                 .and_then(Value::as_str)
@@ -830,13 +820,13 @@ impl InteractiveTuiState {
             return;
         }
         if let Some(items) = task_panel_items_from_value(&tool_return.content) {
-            self.task_panel_items = items;
+            self.set_task_panel_items(items);
         }
     }
 
     fn apply_task_snapshot_payload(&mut self, payload: &Value) {
         if let Some(items) = task_panel_items_from_value(payload) {
-            self.task_panel_items = items;
+            self.set_task_panel_items(items);
         }
     }
 }

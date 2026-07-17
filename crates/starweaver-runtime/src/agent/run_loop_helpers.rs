@@ -38,6 +38,9 @@ impl Agent {
             };
             result.map_err(|error| AgentError::Capability(error.to_string()))?;
         }
+        for name in &self.denied_tool_names {
+            tools.remove(name);
+        }
         context.runtime.context_manage_tool_names = tools
             .tools()
             .into_iter()

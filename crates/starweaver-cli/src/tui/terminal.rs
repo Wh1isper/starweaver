@@ -19,6 +19,7 @@ use crossterm::event::{
 };
 
 use crate::{CliResult, prompt_input::PromptInput};
+use starweaver_agent::ClarifyingQuestionAnswers;
 
 use super::{
     render::{
@@ -27,8 +28,8 @@ use super::{
         terminal_error,
     },
     state::{
-        BodyScrollDirection, COMPOSER_VISIBLE_LINES, InteractiveTuiState, PendingSessionCommand,
-        SteeringSubmission,
+        BodyScrollDirection, COMPOSER_VISIBLE_LINES, CommandPaletteAccept, InteractiveTuiState,
+        PendingSessionCommand, SteeringSubmission,
     },
 };
 
@@ -36,7 +37,7 @@ use super::{
 pub enum TuiApprovalDecision {
     Approve,
     Reject,
-    Answer(String),
+    Answer(ClarifyingQuestionAnswers),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -134,11 +135,7 @@ pub(super) fn responsive_frame_budget(
 ) -> ResponsiveFrameBudget {
     let height = height.max(1);
     let mut composer = 1usize;
-    let status = match height {
-        1 => 0,
-        2 | 3 => 1,
-        _ => 2,
-    };
+    let status = usize::from(height >= 2);
     let mut body = usize::from(height >= 3);
     let mut remaining = height.saturating_sub(composer + status + body);
 
@@ -163,20 +160,144 @@ fn compact_panel_lines(panel_lines: &[StyledLine], budget: usize, width: usize) 
     if panel_lines.len() <= budget {
         return panel_lines.to_vec();
     }
-    if budget == 0 {
-        return Vec::new();
+    if budget == 1 {
+        return panel_lines.last().cloned().into_iter().collect();
+    }
+    if budget == 2 {
+        return vec![
+            panel_lines[0].clone(),
+            panel_lines[panel_lines.len().saturating_sub(1)].clone(),
+        ];
     }
     let hidden = panel_lines.len().saturating_sub(budget.saturating_sub(1));
     let mut lines = panel_lines
         .iter()
-        .take(budget.saturating_sub(1))
+        .take(budget.saturating_sub(2))
         .cloned()
         .collect::<Vec<_>>();
     let notice = format!("… {hidden} panel line(s) hidden; enlarge terminal …");
     lines.push(StyledLine::plain(super::render::truncate_line(
         &notice, width,
     )));
+    if let Some(action) = panel_lines.last() {
+        lines.push(action.clone());
+    }
     lines
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct RenderedFrame {
+    pub(super) lines: Vec<StyledLine>,
+    pub(super) cursor_row: usize,
+    pub(super) cursor_col: usize,
+    pub(super) render_width: usize,
+}
+
+#[cfg(test)]
+pub(super) fn compose_frame(
+    state: &mut InteractiveTuiState,
+    terminal_width: usize,
+    height: usize,
+) -> RenderedFrame {
+    let render_width = terminal_width.saturating_sub(1).max(1);
+    let rendered_body = render_live_history_lines(state, render_width);
+    compose_frame_from_body(state, render_width, height, &rendered_body)
+}
+
+fn compose_frame_from_body(
+    state: &mut InteractiveTuiState,
+    render_width: usize,
+    height: usize,
+    rendered_body: &[StyledLine],
+) -> RenderedFrame {
+    let height = height.max(1);
+    let input_width = composer_input_width(render_width);
+    state.update_composer_content_width(input_width);
+    let preview_layout = composer_layout(
+        &state.input,
+        state.composer_cursor_byte(),
+        COMPOSER_VISIBLE_LINES,
+        state.composer_scroll_offset(),
+        input_width,
+    );
+    let all_footer_lines = render_footer_lines(state, render_width);
+    let status_index = all_footer_lines.len().saturating_sub(1);
+    let (panel_lines, all_status_lines) = all_footer_lines.split_at(status_index);
+    let desired_composer = preview_layout.visible_lines.len().saturating_add(1);
+    let budget = responsive_frame_budget(height, desired_composer, panel_lines.len());
+    let composer_visible_lines = if budget.composer > 1 {
+        budget.composer.saturating_sub(1)
+    } else {
+        1
+    };
+    let composer_layout = composer_layout(
+        &state.input,
+        state.composer_cursor_byte(),
+        composer_visible_lines,
+        state.composer_scroll_offset(),
+        input_width,
+    );
+    let mut composer_lines =
+        render_composer_lines_from_layout(state, render_width, &composer_layout);
+    let composer_has_spacer = budget.composer > 1;
+    if !composer_has_spacer && !composer_lines.is_empty() {
+        composer_lines.remove(0);
+    }
+    composer_lines.truncate(budget.composer);
+    let status_lines = if budget.status == 0 {
+        Vec::new()
+    } else {
+        all_status_lines
+            .iter()
+            .take(budget.status)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let panel_lines = compact_panel_lines(panel_lines, budget.panels, render_width);
+    let rendered_body_len = rendered_body.len();
+    state.update_render_metrics(rendered_body_len, budget.body);
+    let (visible_start, visible_end) = visible_body_bounds(state, rendered_body_len, budget.body);
+    let visible_body = &rendered_body[visible_start..visible_end];
+    let mut lines = vec![StyledLine::plain(""); height];
+    for (row, line) in visible_body.iter().take(budget.body).enumerate() {
+        lines[row] = line.clone();
+    }
+    let panel_start = budget.body;
+    for (offset, line) in panel_lines.iter().enumerate() {
+        if let Some(slot) = lines.get_mut(panel_start.saturating_add(offset)) {
+            *slot = line.clone();
+        }
+    }
+    let status_start = panel_start.saturating_add(panel_lines.len());
+    for (offset, line) in status_lines.iter().enumerate() {
+        if let Some(slot) = lines.get_mut(status_start.saturating_add(offset)) {
+            *slot = line.clone();
+        }
+    }
+    let composer_start = status_start.saturating_add(status_lines.len());
+    for (offset, line) in composer_lines.iter().enumerate() {
+        if let Some(slot) = lines.get_mut(composer_start.saturating_add(offset)) {
+            *slot = line.clone();
+        }
+    }
+    let cursor_row = composer_start
+        .saturating_add(usize::from(composer_has_spacer))
+        .saturating_add(
+            composer_layout
+                .cursor_line
+                .saturating_sub(composer_layout.visible_start)
+                .min(composer_layout.visible_lines.len().saturating_sub(1)),
+        )
+        .min(height.saturating_sub(1));
+    let cursor_col = 2usize
+        .saturating_add(composer_layout.cursor_col)
+        .min(render_width.saturating_sub(1));
+    RenderedFrame {
+        lines,
+        cursor_row,
+        cursor_col,
+        render_width,
+    }
 }
 
 impl InteractiveTui {
@@ -248,98 +369,14 @@ impl InteractiveTui {
         self.sync_mouse_capture(should_capture_mouse(state))?;
         let (width, height) = terminal::size().unwrap_or((80, 24));
         let terminal_width = usize::from(width).max(1);
-        // Leave the terminal's last column untouched while painting content.
-        // Many terminals enable delayed auto-wrap when a printable cell reaches
-        // the final column, which can make the right edge look clipped or can
-        // spill into the next row before the cursor is moved for the next draw.
         let render_width = terminal_width.saturating_sub(1).max(1);
         let height = usize::from(height).max(1);
-        let input_width = composer_input_width(render_width);
-        state.update_composer_content_width(input_width);
-
-        let preview_layout = composer_layout(
-            &state.input,
-            state.composer_cursor_byte(),
-            COMPOSER_VISIBLE_LINES,
-            state.composer_scroll_offset(),
-            input_width,
-        );
-        let all_footer_lines = render_footer_lines(state, render_width);
-        let status_index = all_footer_lines.len().saturating_sub(2);
-        let (panel_lines, all_status_lines) = all_footer_lines.split_at(status_index);
-        let desired_composer = preview_layout.visible_lines.len().saturating_add(1);
-        let budget = responsive_frame_budget(height, desired_composer, panel_lines.len());
-
-        let composer_visible_lines = if budget.composer > 1 {
-            budget.composer.saturating_sub(1)
-        } else {
-            1
-        };
-        let composer_layout = composer_layout(
-            &state.input,
-            state.composer_cursor_byte(),
-            composer_visible_lines,
-            state.composer_scroll_offset(),
-            input_width,
-        );
-        let mut composer_lines =
-            render_composer_lines_from_layout(state, render_width, &composer_layout);
-        let composer_has_spacer = budget.composer > 1;
-        if !composer_has_spacer && !composer_lines.is_empty() {
-            composer_lines.remove(0);
-        }
-        composer_lines.truncate(budget.composer);
-
-        let status_lines = if budget.status == 0 {
-            Vec::new()
-        } else {
-            all_status_lines
-                .iter()
-                .take(budget.status)
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        let panel_lines = compact_panel_lines(panel_lines, budget.panels, render_width);
-        let visible_body = {
-            let rendered_body = self.rendered_body_lines(state, render_width);
-            let rendered_body_len = rendered_body.len();
-            state.update_render_metrics(rendered_body_len, budget.body);
-            let (visible_start, visible_end) =
-                visible_body_bounds(state, rendered_body_len, budget.body);
-            rendered_body[visible_start..visible_end].to_vec()
-        };
-
-        let mut frame_lines = vec![StyledLine::plain(""); height];
-        for (row, line) in visible_body.iter().take(budget.body).enumerate() {
-            if let Some(slot) = frame_lines.get_mut(row) {
-                *slot = line.clone();
-            }
-        }
-
-        let panel_start = budget.body;
-        for (offset, line) in panel_lines.iter().enumerate() {
-            if let Some(slot) = frame_lines.get_mut(panel_start.saturating_add(offset)) {
-                *slot = line.clone();
-            }
-        }
-
-        let status_start = panel_start.saturating_add(panel_lines.len());
-        for (offset, line) in status_lines.iter().enumerate() {
-            if let Some(slot) = frame_lines.get_mut(status_start.saturating_add(offset)) {
-                *slot = line.clone();
-            }
-        }
-
-        let composer_start = status_start.saturating_add(status_lines.len());
-        for (offset, line) in composer_lines.iter().enumerate() {
-            if let Some(slot) = frame_lines.get_mut(composer_start.saturating_add(offset)) {
-                *slot = line.clone();
-            }
-        }
-
+        let rendered_body = self.rendered_body_lines(state, render_width).to_vec();
+        let frame = compose_frame_from_body(state, render_width, height, &rendered_body);
         self.frame_cache
-            .reset_if_geometry_changed(render_width, height);
-        let changed_rows = frame_lines
+            .reset_if_geometry_changed(frame.render_width, height);
+        let changed_rows = frame
+            .lines
             .iter()
             .enumerate()
             .filter(|(row, line)| self.frame_cache.line_changed(*row, line))
@@ -351,26 +388,16 @@ impl InteractiveTui {
                     &mut self.stdout,
                     u16::try_from(row).unwrap_or(u16::MAX),
                     line,
-                    render_width,
+                    frame.render_width,
                 )?;
                 self.frame_cache.set_line(row, line.clone());
             }
         }
-        let cursor_row = composer_start
-            .saturating_add(usize::from(composer_has_spacer))
-            .saturating_add(
-                composer_layout
-                    .cursor_line
-                    .saturating_sub(composer_layout.visible_start)
-                    .min(composer_layout.visible_lines.len().saturating_sub(1)),
-            )
-            .min(height.saturating_sub(1));
-        let cursor_col = 2usize.saturating_add(composer_layout.cursor_col);
         queue!(
             self.stdout,
             MoveTo(
-                u16::try_from(cursor_col.min(render_width.saturating_sub(1))).unwrap_or(u16::MAX),
-                u16::try_from(cursor_row).unwrap_or(u16::MAX),
+                u16::try_from(frame.cursor_col).unwrap_or(u16::MAX),
+                u16::try_from(frame.cursor_row).unwrap_or(u16::MAX),
             ),
             Show
         )
@@ -520,14 +547,74 @@ pub(super) fn handle_key_event(
         state.request_cancel();
         return Some(InteractiveTuiEvent::Cancel);
     }
-    if key.code == KeyCode::Enter
-        && state.enter_sends()
-        && state.clarifying_answer_ready()
-        && let Some(answer) = state.clarifying_answer()
-    {
-        return Some(InteractiveTuiEvent::ApprovalDecision(
-            TuiApprovalDecision::Answer(answer),
-        ));
+    if state.clarifying_answer_ready() {
+        if state.clarifying_free_form_active() {
+            match key.code {
+                KeyCode::Enter => {
+                    return state.confirm_clarifying_answer().map(|answers| {
+                        InteractiveTuiEvent::ApprovalDecision(TuiApprovalDecision::Answer(answers))
+                    });
+                }
+                KeyCode::Esc => state.leave_clarifying_free_form(),
+                KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    state.insert_composer_newline();
+                }
+                KeyCode::PageUp => {
+                    scroll_viewport(state, 10, BodyScrollDirection::Up);
+                }
+                KeyCode::PageDown => {
+                    scroll_viewport(state, 10, BodyScrollDirection::Down);
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Some(InteractiveTuiEvent::Quit);
+                }
+                KeyCode::Backspace => state.backspace_composer(),
+                KeyCode::Left => state.move_composer_cursor_left(),
+                KeyCode::Right => state.move_composer_cursor_right(),
+                KeyCode::Home => state.move_composer_cursor_to_line_start(),
+                KeyCode::End => state.move_composer_cursor_to_line_end(),
+                KeyCode::Up => state.move_composer_cursor_vertical(-1),
+                KeyCode::Down => state.move_composer_cursor_vertical(1),
+                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    state.push_composer_char(ch);
+                }
+                _ => {}
+            }
+            return None;
+        }
+        match key.code {
+            KeyCode::Enter => {
+                return state.confirm_clarifying_answer().map(|answers| {
+                    InteractiveTuiEvent::ApprovalDecision(TuiApprovalDecision::Answer(answers))
+                });
+            }
+            KeyCode::Up => state.move_clarifying_option(-1),
+            KeyCode::Down => state.move_clarifying_option(1),
+            KeyCode::Char(' ') => state.toggle_clarifying_selection(),
+            KeyCode::Char('e') if key.modifiers.is_empty() => {
+                state.enter_clarifying_free_form();
+            }
+            KeyCode::Tab => state.move_clarifying_question(1),
+            KeyCode::BackTab => state.move_clarifying_question(-1),
+            KeyCode::Esc => {
+                let session_id = state
+                    .hitl_reload_session_id()
+                    .map(ToString::to_string)
+                    .or_else(|| state.session_id.clone());
+                return session_id.map(|session_id| InteractiveTuiEvent::Session(Some(session_id)));
+            }
+            KeyCode::PageUp => {
+                scroll_viewport(state, 10, BodyScrollDirection::Up);
+            }
+            KeyCode::PageDown => {
+                scroll_viewport(state, 10, BodyScrollDirection::Down);
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Some(InteractiveTuiEvent::Quit);
+            }
+            _ => {}
+        }
+        return None;
     }
     if (state.pending_hitl().is_some() || state.hitl_reload_session_id().is_some())
         && !state.running
@@ -563,6 +650,50 @@ pub(super) fn handle_key_event(
             _ => {}
         }
         return None;
+    }
+    if state.history_search_visible() {
+        match key.code {
+            KeyCode::Esc => state.close_history_search(),
+            KeyCode::Enter => state.accept_history_search(),
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.repeat_history_search();
+            }
+            KeyCode::Up => state.move_history_search(-1),
+            KeyCode::Down => state.move_history_search(1),
+            KeyCode::Backspace => state.backspace_history_search(),
+            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.push_history_search_char(ch);
+            }
+            _ => {}
+        }
+        return None;
+    }
+    if state.command_palette_visible() {
+        let continue_input_handling = match key.code {
+            KeyCode::Esc => {
+                state.close_command_palette();
+                return None;
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                state.move_command_palette_selection(-1);
+                return None;
+            }
+            KeyCode::Down => {
+                state.move_command_palette_selection(1);
+                return None;
+            }
+            KeyCode::Tab => {
+                state.accept_command_palette_selection(false);
+                return None;
+            }
+            KeyCode::Enter => {
+                state.accept_command_palette_selection(true) == Some(CommandPaletteAccept::Execute)
+            }
+            _ => true,
+        };
+        if !continue_input_handling {
+            return None;
+        }
     }
     if state.session_picker_visible() {
         match key.code {
@@ -615,6 +746,37 @@ pub(super) fn handle_key_event(
             }
             KeyCode::Up => state.move_model_picker_selection(-1),
             KeyCode::Down => state.move_model_picker_selection(1),
+            _ => {}
+        }
+        return None;
+    }
+    if state.help_panel_visible() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::F(1) => state.close_help_panel(),
+            KeyCode::PageUp => {
+                scroll_viewport(state, 10, BodyScrollDirection::Up);
+            }
+            KeyCode::PageDown => {
+                scroll_viewport(state, 10, BodyScrollDirection::Down);
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.close_help_panel();
+            }
+            _ => {}
+        }
+        return None;
+    }
+    if state.task_panel_expanded() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => state.close_task_panel(),
+            KeyCode::Enter => state.toggle_task_panel_detail(),
+            KeyCode::Up => state.move_task_panel_selection(-1),
+            KeyCode::Down => state.move_task_panel_selection(1),
+            KeyCode::PageUp => state.move_task_panel_selection(-8),
+            KeyCode::PageDown => state.move_task_panel_selection(8),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.close_task_panel();
+            }
             _ => {}
         }
         return None;
@@ -703,21 +865,20 @@ pub(super) fn handle_key_event(
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.next_history();
         }
-        KeyCode::Esc if state.clarifying_answer_ready() => {
-            let session_id = state
-                .hitl_reload_session_id()
-                .map(ToString::to_string)
-                .or_else(|| state.session_id.clone());
-            return session_id.map(|session_id| InteractiveTuiEvent::Session(Some(session_id)));
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.open_history_search();
+        }
+        KeyCode::F(1) => {
+            state.open_help_panel();
+        }
+        KeyCode::Char('?') if key.modifiers.is_empty() && state.composer_is_empty() => {
+            state.open_help_panel();
         }
         KeyCode::Esc => {
             state.open_selection_mode();
         }
         KeyCode::Tab => {
-            state.toggle_enter_mode();
-        }
-        KeyCode::Enter if !state.enter_sends() => {
-            state.insert_composer_newline();
+            state.refresh_command_palette();
         }
         KeyCode::Enter if state.shell_running() => {
             state.show_shell_active_hint();
@@ -742,7 +903,9 @@ pub(super) fn handle_key_event(
                 return Some(InteractiveTuiEvent::PasteImage);
             }
             if let Some(prompt) = state.take_submission_prompt() {
-                state.push_history(prompt.display_text());
+                if let Some(history) = prompt.history_text() {
+                    state.push_history(history);
+                }
                 return Some(InteractiveTuiEvent::Submit(prompt));
             }
             if let Some(command) = state.take_pending_shell_command() {
@@ -793,6 +956,15 @@ pub(super) fn handle_key_event(
         }
         KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
             scroll_viewport(state, 1, BodyScrollDirection::Down);
+        }
+        KeyCode::Up
+            if !state.input.contains('\n')
+                && (state.composer_is_empty() || state.history_recall_active()) =>
+        {
+            state.previous_history();
+        }
+        KeyCode::Down if !state.input.contains('\n') && state.history_recall_active() => {
+            state.next_history();
         }
         KeyCode::Up => state.move_composer_cursor_vertical(-1),
         KeyCode::Down => state.move_composer_cursor_vertical(1),

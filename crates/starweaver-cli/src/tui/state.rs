@@ -1,11 +1,14 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     env,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use starweaver_agent::{
+    CLARIFYING_QUESTIONS_REQUEST_KIND, ClarifyingQuestion, ClarifyingQuestionAnswers,
+};
 use starweaver_core::SessionId;
 use starweaver_model::{PartDelta, StreamDelta};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStreamEvent};
@@ -34,13 +37,17 @@ use super::{
     },
 };
 
+mod command_palette;
 mod commands;
 mod composer;
 mod cost;
 mod formatting;
+mod history;
 mod pickers;
 mod streaming;
+mod tasks;
 
+pub(in crate::tui) use command_palette::{CommandPaletteAccept, CommandPaletteState};
 pub(super) use formatting::display_lines_for_stream_record;
 use formatting::{
     body_line_display_text, cache_hit_rate_label, compact_status_text,
@@ -52,25 +59,8 @@ use formatting::{
     streaming_tool_arguments_match, streaming_tool_state_is_available, subagent_display_id,
     task_panel_items_from_value, tool_call_visibility_key,
 };
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum EnterMode {
-    Send,
-    Newline,
-}
-
-impl EnterMode {
-    const fn toggle(self) -> Self {
-        match self {
-            Self::Send => Self::Newline,
-            Self::Newline => Self::Send,
-        }
-    }
-
-    pub(super) const fn sends(self) -> bool {
-        matches!(self, Self::Send)
-    }
-}
+pub(in crate::tui) use history::HistorySearchState;
+use history::load_prompt_history;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum FooterMode {
@@ -196,10 +186,73 @@ pub(super) struct HitlPanelState {
     pub(super) tool_call_id: String,
     pub(super) tool_name: String,
     pub(super) request_preview: Option<String>,
-    pub(super) clarifying_questions: Vec<Value>,
+    pub(super) clarifying: Option<ClarifyingQuestionUiState>,
     pub(super) command: Option<String>,
     pub(super) risk_level: Option<String>,
     pub(super) reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ClarifyingQuestionUiState {
+    pub(super) questions: Vec<ClarifyingQuestion>,
+    pub(super) question_index: usize,
+    pub(super) option_index: usize,
+    pub(super) selections: Vec<BTreeSet<usize>>,
+    pub(super) free_form_answers: BTreeMap<usize, String>,
+    pub(super) free_form_active: bool,
+}
+
+impl ClarifyingQuestionUiState {
+    fn from_request(request: &Value) -> Option<Self> {
+        if request.get("kind").and_then(Value::as_str) != Some(CLARIFYING_QUESTIONS_REQUEST_KIND) {
+            return None;
+        }
+        let questions =
+            serde_json::from_value::<Vec<ClarifyingQuestion>>(request.get("questions")?.clone())
+                .ok()?;
+        if questions.is_empty() {
+            return None;
+        }
+        let selections = vec![BTreeSet::new(); questions.len()];
+        Some(Self {
+            questions,
+            question_index: 0,
+            option_index: 0,
+            selections,
+            free_form_answers: BTreeMap::new(),
+            free_form_active: false,
+        })
+    }
+
+    pub(super) fn current_question(&self) -> Option<&ClarifyingQuestion> {
+        self.questions.get(self.question_index)
+    }
+
+    fn selected_answer(&self, index: usize) -> Option<String> {
+        if let Some(answer) = self.free_form_answers.get(&index) {
+            return Some(answer.clone());
+        }
+        let question = self.questions.get(index)?;
+        let labels = self
+            .selections
+            .get(index)?
+            .iter()
+            .filter_map(|option| question.options.get(*option))
+            .map(|option| option.label.clone())
+            .collect::<Vec<_>>();
+        (!labels.is_empty()).then(|| labels.join(", "))
+    }
+
+    fn answers(&self) -> Option<ClarifyingQuestionAnswers> {
+        let mut answers = BTreeMap::new();
+        for (index, question) in self.questions.iter().enumerate() {
+            answers.insert(question.question.clone(), self.selected_answer(index)?);
+        }
+        Some(ClarifyingQuestionAnswers {
+            answers,
+            response: None,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -251,8 +304,6 @@ pub struct InteractiveTuiState {
     pub(super) model_transport_status: Option<String>,
     /// True while a background run is active.
     pub running: bool,
-    /// Current behavior for the Enter key in the composer.
-    pub(super) enter_mode: EnterMode,
     /// Scrollback offset from bottom.
     pub scroll_offset: usize,
     /// Last rendered transcript height, used to keep scroll handling cheap between frames.
@@ -269,8 +320,11 @@ pub struct InteractiveTuiState {
     pub(super) pending_attachments: Vec<PromptAttachment>,
     restored_prompt_parts: Option<(Vec<String>, Vec<String>)>,
     pub(super) history: Vec<String>,
+    history_path: PathBuf,
+    history_persistence_enabled: bool,
     pub(super) history_index: Option<usize>,
     pub(super) history_draft: String,
+    history_search: Option<HistorySearchState>,
     streaming_parts: HashMap<usize, StreamingPartKind>,
     active_model_segment: Option<ActiveModelSegment>,
     timeline: TuiTimeline,
@@ -290,11 +344,19 @@ pub struct InteractiveTuiState {
     pending_hitl: Option<HitlPanelState>,
     hitl_reload_session_id: Option<String>,
     task_panel_items: Vec<TaskPanelItem>,
+    task_panel_open: bool,
+    task_panel_index: usize,
+    task_panel_detail: bool,
+    task_panel_completed_hidden: bool,
     pending_clear_context: bool,
     selection_mode: bool,
     selection_index: Option<usize>,
     pending_submission_display_prompt: Option<String>,
     custom_commands: BTreeMap<String, SlashCommandDefinition>,
+    skills: Vec<crate::profiles::SkillSummary>,
+    command_palette: Option<CommandPaletteState>,
+    command_palette_dismissed_input: Option<String>,
+    help_panel_open: bool,
     model_choices: Vec<ModelChoice>,
     model_picker_open: bool,
     model_picker_index: usize,
@@ -324,10 +386,12 @@ impl InteractiveTuiState {
     /// Create an empty welcome state.
     #[must_use]
     pub fn welcome(config_dir: &Path) -> Self {
+        let workspace_dir =
+            env::current_dir().map_or_else(|_| ".".to_string(), |path| path.display().to_string());
+        let (history_path, history) = load_prompt_history(config_dir, &workspace_dir);
         Self {
             config_dir: config_dir.display().to_string(),
-            workspace_dir: env::current_dir()
-                .map_or_else(|_| ".".to_string(), |path| path.display().to_string()),
+            workspace_dir,
             session_id: None,
             session_affinity_id: SessionId::new().as_str().to_string(),
             body: Vec::new(),
@@ -342,7 +406,6 @@ impl InteractiveTuiState {
             phase: "ready".to_string(),
             model_transport_status: None,
             running: false,
-            enter_mode: EnterMode::Send,
             scroll_offset: usize::MAX,
             rendered_body_len: 0,
             body_viewport_height: 1,
@@ -351,9 +414,12 @@ impl InteractiveTuiState {
             input_status: None,
             pending_attachments: Vec::new(),
             restored_prompt_parts: None,
-            history: Vec::new(),
+            history,
+            history_path,
+            history_persistence_enabled: true,
             history_index: None,
             history_draft: String::new(),
+            history_search: None,
             streaming_parts: HashMap::new(),
             active_model_segment: None,
             timeline: TuiTimeline::default(),
@@ -373,11 +439,19 @@ impl InteractiveTuiState {
             pending_hitl: None,
             hitl_reload_session_id: None,
             task_panel_items: Vec::new(),
+            task_panel_open: false,
+            task_panel_index: 0,
+            task_panel_detail: false,
+            task_panel_completed_hidden: false,
             pending_clear_context: false,
             selection_mode: false,
             selection_index: None,
             pending_submission_display_prompt: None,
             custom_commands: BTreeMap::new(),
+            skills: Vec::new(),
+            command_palette: None,
+            command_palette_dismissed_input: None,
+            help_panel_open: false,
             model_choices: Vec::new(),
             model_picker_open: false,
             model_picker_index: 0,
@@ -402,6 +476,14 @@ impl InteractiveTuiState {
             usage_snapshots: BTreeMap::new(),
             next_steering_id: 0,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn welcome_ephemeral(config_dir: &Path) -> Self {
+        let mut state = Self::welcome(config_dir);
+        state.history.clear();
+        state.history_persistence_enabled = false;
+        state
     }
 
     pub(crate) fn set_render_mode(&mut self, render_mode: TuiRenderMode) {
@@ -504,6 +586,7 @@ impl InteractiveTuiState {
     pub fn set_model_choices(&mut self, choices: Vec<ModelChoice>) {
         self.model_choices = choices;
         self.sync_model_picker_index_to_current();
+        self.refresh_command_palette();
     }
 
     /// Return configured model choices.
@@ -515,6 +598,7 @@ impl InteractiveTuiState {
     pub fn set_session_choices(&mut self, choices: Vec<SessionChoice>) {
         self.session_choices = choices;
         self.sync_session_picker_index_to_current();
+        self.refresh_command_palette();
     }
 
     /// Return recent session choices.
@@ -556,7 +640,7 @@ impl InteractiveTuiState {
         self.pending_submission_display_prompt = None;
         self.pending_hitl = None;
         self.hitl_reload_session_id = None;
-        self.task_panel_items.clone_from(&snapshot.tasks);
+        self.set_task_panel_items(snapshot.tasks.clone());
         self.sync_session_picker_index_to_current();
         self.phase = "replay".to_string();
     }
@@ -710,8 +794,7 @@ impl InteractiveTuiState {
     pub(crate) fn clear_context_view(&mut self) {
         self.session_id = None;
         self.clear_composer();
-        self.history.clear();
-        self.history_draft.clear();
+        self.clear_persisted_history();
         self.timeline.clear();
         self.timeline_projection = TuiProjection::default();
         self.body.clear();
@@ -757,38 +840,11 @@ impl InteractiveTuiState {
         self.scroll_to_bottom();
     }
 
-    pub(super) fn toggle_enter_mode(&mut self) {
-        self.enter_mode = self.enter_mode.toggle();
-        self.input_status = Some(match self.enter_mode {
-            EnterMode::Send => "Enter sends".to_string(),
-            EnterMode::Newline => "Enter inserts newline".to_string(),
-        });
-    }
-
-    pub(super) const fn enter_sends(&self) -> bool {
-        self.enter_mode.sends()
-    }
-
-    pub(super) const fn enter_action_label(&self) -> &'static str {
-        match (self.running, self.shell_running, self.enter_mode) {
-            (_, true, EnterMode::Send) => "Enter: Wait",
-            (true, false, EnterMode::Send) => "Enter: Steer",
-            (false, false, EnterMode::Send) => "Enter: Send",
-            (_, _, EnterMode::Newline) => "Enter: Newline",
-        }
-    }
-
-    pub(super) const fn enter_toggle_label(&self) -> &'static str {
-        match (self.running, self.shell_running, self.enter_mode) {
-            (_, _, EnterMode::Send) => "Tab: Enter inserts newline",
-            (_, true, EnterMode::Newline) => "Tab: Enter waits",
-            (true, false, EnterMode::Newline) => "Tab: Enter steers",
-            (false, false, EnterMode::Newline) => "Tab: Enter sends",
-        }
-    }
-
+    #[cfg(test)]
     pub(super) fn input_mode_label(&self) -> &'static str {
-        if self.selection_mode {
+        if self.task_panel_open {
+            "TASKS"
+        } else if self.selection_mode {
             "SELECT"
         } else if self.session_picker_open {
             "SESSION"
@@ -885,14 +941,25 @@ impl InteractiveTuiState {
         self.input_status.as_deref()
     }
 
-    pub(super) const fn help_panel_visible() -> bool {
-        false
+    pub(super) const fn help_panel_visible(&self) -> bool {
+        self.help_panel_open
+    }
+
+    pub(super) fn open_help_panel(&mut self) {
+        self.help_panel_open = true;
+        self.input_status = Some("help".to_string());
+    }
+
+    pub(super) fn close_help_panel(&mut self) {
+        self.help_panel_open = false;
+        self.input_status = Some("help closed".to_string());
     }
 
     /// Set config-defined slash commands shown by `/help` and expanded before submit.
     pub fn set_custom_commands(&mut self, commands: BTreeMap<String, SlashCommandDefinition>) {
         self.custom_commands = commands;
         self.footer_mode = FooterMode::Context;
+        self.refresh_command_palette();
     }
 
     pub(super) const fn pending_hitl(&self) -> Option<&HitlPanelState> {
@@ -908,21 +975,192 @@ impl InteractiveTuiState {
     pub(super) fn clarifying_answer_ready(&self) -> bool {
         self.pending_hitl
             .as_ref()
-            .is_some_and(|hitl| hitl.approval_id.is_some() && !hitl.clarifying_questions.is_empty())
+            .is_some_and(|hitl| hitl.approval_id.is_some() && hitl.clarifying.is_some())
     }
 
-    pub(super) fn clarifying_answer(&self) -> Option<String> {
-        if !self.clarifying_answer_ready() {
+    pub(super) fn clarifying_question(&self) -> Option<&ClarifyingQuestionUiState> {
+        self.pending_hitl
+            .as_ref()
+            .and_then(|hitl| hitl.clarifying.as_ref())
+    }
+
+    pub(super) fn clarifying_free_form_active(&self) -> bool {
+        self.clarifying_question()
+            .is_some_and(|question| question.free_form_active)
+    }
+
+    pub(super) fn move_clarifying_option(&mut self, delta: isize) {
+        let Some(clarifying) = self
+            .pending_hitl
+            .as_mut()
+            .and_then(|hitl| hitl.clarifying.as_mut())
+        else {
+            return;
+        };
+        let Some(question) = clarifying.questions.get(clarifying.question_index) else {
+            return;
+        };
+        let len = question.options.len();
+        if len == 0 {
+            return;
+        }
+        clarifying.free_form_active = false;
+        let steps = delta.unsigned_abs() % len;
+        clarifying.option_index = if delta.is_negative() {
+            (clarifying.option_index + len - steps) % len
+        } else {
+            (clarifying.option_index + steps) % len
+        };
+        self.input_status = Some("question choice".to_string());
+    }
+
+    pub(super) fn move_clarifying_question(&mut self, delta: isize) {
+        let Some(clarifying) = self
+            .pending_hitl
+            .as_mut()
+            .and_then(|hitl| hitl.clarifying.as_mut())
+        else {
+            return;
+        };
+        let len = clarifying.questions.len();
+        if len == 0 {
+            return;
+        }
+        let steps = delta.unsigned_abs() % len;
+        clarifying.question_index = if delta.is_negative() {
+            (clarifying.question_index + len - steps) % len
+        } else {
+            (clarifying.question_index + steps) % len
+        };
+        clarifying.option_index = 0;
+        clarifying.free_form_active = false;
+        self.clear_composer_input();
+        self.input_status = Some("question changed".to_string());
+    }
+
+    pub(super) fn toggle_clarifying_selection(&mut self) {
+        let Some(clarifying) = self
+            .pending_hitl
+            .as_mut()
+            .and_then(|hitl| hitl.clarifying.as_mut())
+        else {
+            return;
+        };
+        let Some(question) = clarifying.questions.get(clarifying.question_index) else {
+            return;
+        };
+        let Some(selection) = clarifying.selections.get_mut(clarifying.question_index) else {
+            return;
+        };
+        clarifying
+            .free_form_answers
+            .remove(&clarifying.question_index);
+        clarifying.free_form_active = false;
+        if question.multi_select {
+            if !selection.insert(clarifying.option_index) {
+                selection.remove(&clarifying.option_index);
+            }
+        } else {
+            selection.clear();
+            selection.insert(clarifying.option_index);
+        }
+        self.input_status = Some("question selection updated".to_string());
+    }
+
+    pub(super) fn enter_clarifying_free_form(&mut self) {
+        let Some(clarifying) = self
+            .pending_hitl
+            .as_mut()
+            .and_then(|hitl| hitl.clarifying.as_mut())
+        else {
+            return;
+        };
+        clarifying.free_form_active = true;
+        if let Some(answer) = clarifying
+            .free_form_answers
+            .get(&clarifying.question_index)
+            .cloned()
+        {
+            self.input = answer;
+            self.move_composer_cursor_to_end();
+        } else {
+            self.clear_composer_input();
+        }
+        self.input_status = Some("type a custom answer; Enter confirms".to_string());
+    }
+
+    pub(super) fn leave_clarifying_free_form(&mut self) {
+        if let Some(clarifying) = self
+            .pending_hitl
+            .as_mut()
+            .and_then(|hitl| hitl.clarifying.as_mut())
+        {
+            clarifying.free_form_active = false;
+        }
+        self.clear_composer_input();
+        self.input_status = Some("question choices".to_string());
+    }
+
+    pub(super) fn confirm_clarifying_answer(&mut self) -> Option<ClarifyingQuestionAnswers> {
+        let draft = self.input.trim().to_string();
+        let (answers, next_label) = {
+            let clarifying = self
+                .pending_hitl
+                .as_mut()
+                .and_then(|hitl| hitl.clarifying.as_mut())?;
+            let index = clarifying.question_index;
+            if clarifying.free_form_active {
+                if draft.is_empty() {
+                    self.input_status = Some("custom answer cannot be empty".to_string());
+                    return None;
+                }
+                clarifying.free_form_answers.insert(index, draft);
+                clarifying.selections[index].clear();
+            } else {
+                let question = clarifying.questions.get(index)?;
+                let selection = clarifying.selections.get_mut(index)?;
+                if question.multi_select {
+                    if selection.is_empty() {
+                        self.input_status = Some("select at least one option".to_string());
+                        return None;
+                    }
+                } else {
+                    selection.clear();
+                    selection.insert(clarifying.option_index);
+                }
+                clarifying.free_form_answers.remove(&index);
+            }
+            clarifying.free_form_active = false;
+            if index + 1 < clarifying.questions.len() {
+                clarifying.question_index += 1;
+                clarifying.option_index = 0;
+                (
+                    None,
+                    Some(format!(
+                        "question {}/{}",
+                        clarifying.question_index + 1,
+                        clarifying.questions.len()
+                    )),
+                )
+            } else {
+                (clarifying.answers(), None)
+            }
+        };
+        self.clear_composer_input();
+        if let Some(label) = next_label {
+            self.input_status = Some(label);
             return None;
         }
-        let answer = self.input.trim().to_string();
-        (!answer.is_empty()).then_some(answer)
+        if answers.is_none() {
+            self.input_status = Some("answer every question before submitting".to_string());
+        }
+        answers
     }
 
     pub(crate) fn commit_clarifying_answer(&mut self) {
         self.clear_composer_input();
         self.reset_composer_scroll();
-        self.input_status = Some("answer submitted".to_string());
+        self.input_status = Some("answers submitted".to_string());
     }
 
     pub(crate) fn hitl_reload_session_id(&self) -> Option<&str> {
@@ -950,26 +1188,18 @@ impl InteractiveTuiState {
                 .and_then(Value::as_str)
                 .map(ToString::to_string)
         };
-        let clarifying_questions = if approval.action_name
-            == starweaver_agent::ASK_USER_QUESTION_TOOL_NAME
-            && approval.request.get("kind").and_then(Value::as_str)
-                == Some(starweaver_agent::CLARIFYING_QUESTIONS_REQUEST_KIND)
-        {
-            approval
-                .request
-                .get("questions")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
+        let clarifying = if approval.action_name == starweaver_agent::ASK_USER_QUESTION_TOOL_NAME {
+            ClarifyingQuestionUiState::from_request(&approval.request)
+                .or_else(|| existing.as_ref().and_then(|hitl| hitl.clarifying.clone()))
         } else {
-            Vec::new()
+            None
         };
         self.pending_hitl = Some(HitlPanelState {
             approval_id: Some(approval.approval_id.clone()),
             tool_call_id: approval.action_id.clone(),
             tool_name: approval.action_name.clone(),
             request_preview: Some(approval_request_preview(&approval.request)),
-            clarifying_questions,
+            clarifying,
             command: request_string("command")
                 .or_else(|| request_string("script"))
                 .or_else(|| existing.as_ref().and_then(|hitl| hitl.command.clone())),
@@ -981,7 +1211,7 @@ impl InteractiveTuiState {
         self.status = "WAITING".to_string();
         if self.clarifying_answer_ready() {
             self.phase = "clarifying question".to_string();
-            self.input_status = Some("type an answer and press Enter".to_string());
+            self.input_status = Some("use arrows and Enter; E for custom answer".to_string());
         } else {
             self.phase = "hitl approval".to_string();
             self.input_status = Some("approval: [a/y] approve, [r/n] reject".to_string());

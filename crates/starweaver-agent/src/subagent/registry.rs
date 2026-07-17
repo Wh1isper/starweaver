@@ -1092,7 +1092,8 @@ Resume a terminal background conversation only when you already have its agent I
             .agent
             .as_ref()
             .clone()
-            .with_appended_tools(&inherited_tools);
+            .with_appended_tools(&inherited_tools)
+            .with_denied_tool_names([crate::bundles::ASK_USER_QUESTION_TOOL_NAME]);
         let mut child_agent = child_agent;
         if let Some(control) = background_control {
             child_agent = child_agent

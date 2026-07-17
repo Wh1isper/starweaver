@@ -12,13 +12,17 @@ use serde_json::Value;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::{CliError, CliResult};
+use crate::{
+    CliError, CliResult,
+    command_catalog::{CommandDescriptor, key_binding_descriptors},
+};
 
 mod panels;
 mod pickers;
 
 use panels::{
-    render_hitl_panel, render_selection_panel, render_status_bar_lines, render_task_panel,
+    render_command_palette, render_hitl_panel, render_selection_panel, render_status_bar_lines,
+    render_task_panel, render_task_summary,
 };
 use pickers::{push_detail_row, render_model_picker_panel, render_session_picker_panel};
 
@@ -102,7 +106,7 @@ pub(super) fn render_live_history_lines(
 ) -> Vec<StyledLine> {
     let mut lines = render_session_header_card(state, width);
     if state.body.is_empty() {
-        lines.extend(render_startup_help());
+        lines.extend(render_startup_help(width));
     } else {
         lines.push(StyledLine::plain(""));
         lines.extend(render_transcript_lines(&state.body, width));
@@ -165,29 +169,48 @@ fn render_session_header_card(state: &InteractiveTuiState, width: usize) -> Vec<
     with_codex_border(rows, inner_width)
 }
 
-fn render_startup_help() -> Vec<StyledLine> {
-    vec![
-        StyledLine::styled(
-            "  To get started, describe a task or use these shortcuts:",
-            SegmentStyle::dim(),
-        ),
-        StyledLine::plain(""),
-        startup_help_line("Enter", " - submit the current message"),
-        startup_help_line("Tab", " - toggle whether Enter sends or inserts a newline"),
-        startup_help_line("Ctrl-O", " - insert a newline"),
-        startup_help_line("/help", " - print available commands"),
-        startup_help_line("/display", " - switch display mode"),
-        startup_help_line("/model", " - open the model profile selector"),
-        startup_help_line("/session", " - open the session selector"),
-        startup_help_line("!<command>", " - run a shell command inline"),
-    ]
-}
-
-fn startup_help_line(key: &str, description: &str) -> StyledLine {
-    let mut line = StyledLine::plain("  ");
-    line.push(key, SegmentStyle::default());
-    line.push(description, SegmentStyle::dim());
-    line
+fn render_startup_help(width: usize) -> Vec<StyledLine> {
+    let mut lines = wrap_text_width(
+        "To get started, describe a task or use these shortcuts:",
+        width.saturating_sub(2).max(1),
+    )
+    .into_iter()
+    .map(|text| {
+        let mut line = StyledLine::plain("  ");
+        line.push(text, SegmentStyle::dim());
+        line
+    })
+    .collect::<Vec<_>>();
+    lines.push(StyledLine::plain(""));
+    for binding in key_binding_descriptors()
+        .iter()
+        .filter(|binding| matches!(binding.keys, "Enter" | "Tab" | "Ctrl+O" | "? or F1"))
+    {
+        lines.extend(render_help_table_rows(
+            binding.keys,
+            binding.description,
+            SegmentStyle::warning(),
+            width,
+        ));
+    }
+    for command in crate::command_catalog::builtin_command_descriptors()
+        .into_iter()
+        .filter(|command| command.show_on_startup)
+    {
+        lines.extend(render_help_table_rows(
+            &command.usage,
+            &command.description,
+            SegmentStyle::blockquote(),
+            width,
+        ));
+    }
+    lines.extend(render_help_table_rows(
+        "!<command>",
+        "Run a shell command inline",
+        SegmentStyle::warning(),
+        width,
+    ));
+    lines
 }
 
 fn with_codex_border(rows: Vec<Vec<StyledSegment>>, inner_width: usize) -> Vec<StyledLine> {
@@ -244,12 +267,28 @@ pub(super) fn render_composer_lines_from_layout(
     let mut lines = Vec::with_capacity(layout.visible_lines.len().saturating_add(1));
     lines.push(StyledLine::plain(""));
     let prompt = composer_prompt(state);
+    let hidden_above = layout.visible_start > 0;
+    let hidden_below = layout
+        .visible_start
+        .saturating_add(layout.visible_lines.len())
+        < layout.total_visual_lines;
     for (offset, input) in layout.visible_lines.iter().enumerate() {
-        let mut line =
-            StyledLine::styled(if offset == 0 { prompt } else { " " }, SegmentStyle::bold());
+        let marker = if offset == 0 && hidden_above {
+            "↑"
+        } else if offset + 1 == layout.visible_lines.len() && hidden_below {
+            "↓"
+        } else if offset == 0 {
+            prompt
+        } else {
+            " "
+        };
+        let mut line = StyledLine::styled(marker, SegmentStyle::bold());
         line.push(" ", SegmentStyle::default());
         if input.is_empty() && offset == 0 && state.input.is_empty() {
-            line.push(composer_placeholder(state), SegmentStyle::dim());
+            line.push(
+                truncate_line(composer_placeholder(state), width.saturating_sub(2)),
+                SegmentStyle::dim(),
+            );
         } else {
             line.push(input, SegmentStyle::default());
         }
@@ -271,69 +310,88 @@ const fn composer_placeholder(state: &InteractiveTuiState) -> &'static str {
 }
 
 pub(super) fn render_footer_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
-    let mut lines = if InteractiveTuiState::help_panel_visible() {
-        render_help_panel(width)
-    } else {
-        Vec::new()
-    };
-    if state.session_picker_visible() {
+    let mut lines = Vec::new();
+    if let Some(hitl) = state.pending_hitl() {
+        lines.extend(render_hitl_panel(hitl, width));
+    } else if state.command_palette_visible() {
+        lines.extend(render_command_palette(state, width));
+    } else if state.session_picker_visible() {
         lines.extend(render_session_picker_panel(state, width));
     } else if state.model_picker_visible() {
         lines.extend(render_model_picker_panel(state, width));
+    } else if state.history_search_visible() {
+        lines.extend(render_history_search_panel(state, width));
+    } else if state.help_panel_visible() {
+        lines.extend(render_help_panel(&state.command_descriptors(), width));
     } else if state.selection_mode_visible() {
         lines.extend(render_selection_panel(state, width));
-    }
-    if let Some(hitl) = state.pending_hitl() {
-        lines.extend(render_hitl_panel(hitl, width));
-    }
-    if !state.task_panel_items().is_empty() {
-        lines.extend(render_task_panel(state.task_panel_items(), width));
+    } else if state.task_panel_expanded() {
+        lines.extend(render_task_panel(state, width));
+    } else if state.task_summary_visible() {
+        lines.extend(render_task_summary(state, width));
     }
     lines.extend(render_status_bar_lines(state, width));
     lines
 }
 
-#[cfg(test)]
-pub(super) fn render_shortcut_overlay(width: usize) -> Vec<StyledLine> {
-    render_help_panel(width)
+fn render_history_search_panel(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
+    let mut lines = vec![StyledLine::styled(
+        "HISTORY SEARCH",
+        SegmentStyle::code().merge(SegmentStyle::bold()),
+    )];
+    let query = state
+        .history_search()
+        .map_or("", |search| search.query.as_str());
+    lines.push(StyledLine::plain(format!(
+        "query: {}",
+        if query.is_empty() { "(all)" } else { query }
+    )));
+    if let Some(result) = state.history_search_result() {
+        let position = state
+            .history_search()
+            .and_then(super::state::HistorySearchState::position)
+            .map_or_else(String::new, |(current, total)| {
+                format!("{current}/{total} ")
+            });
+        for (index, row) in wrap_text_width(result, width.saturating_sub(2).max(1))
+            .into_iter()
+            .take(3)
+            .enumerate()
+        {
+            let prefix = if index == 0 {
+                format!("> {position}")
+            } else {
+                "  ".to_string()
+            };
+            let mut line = StyledLine::styled(prefix, SegmentStyle::warning());
+            line.push(row, SegmentStyle::default());
+            lines.push(pad_styled_line(line, width));
+        }
+    } else {
+        lines.push(StyledLine::styled(
+            "No matching prompts",
+            SegmentStyle::dim(),
+        ));
+    }
+    lines.push(StyledLine::styled(
+        "Ctrl+R/Down older · Up newer · Enter use · Esc cancel",
+        SegmentStyle::dim(),
+    ));
+    lines
+        .into_iter()
+        .map(|line| pad_styled_line(line, width))
+        .collect()
 }
 
-pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
-    let command_rows = [
-        ("/help", "Print this help in the transcript"),
-        ("/clear", "Clear output and start a fresh context"),
-        ("/cost", "Show usage and cost summary"),
-        (
-            "/display [mode]",
-            "Show or set display mode: normal, concise, or debug",
-        ),
-        ("/model [profile]", "Open selector or select model profile"),
-        ("/session [id]", "Open selector or reload session"),
-        (
-            "/goal <task>",
-            "Run task toward a verified goal until complete",
-        ),
-        ("/paste-image", "Attach image from system clipboard"),
-        ("!<command>", "Run an asynchronous shell command inline"),
-    ];
-    let key_rows = [
-        ("Ctrl+C", "Interrupt, clear a draft, or exit"),
-        ("Ctrl+D", "Exit only when idle with an empty composer"),
-        ("Ctrl+V", "Attach image from system clipboard"),
-        ("Tab", "Toggle Enter between send and newline"),
-        ("Ctrl+O", "Insert newline"),
-        ("Ctrl+P/N", "Browse prompt history"),
-        ("Up/Down", "Move across visual composer lines"),
-        ("Ctrl+A/E", "Move to line start/end"),
-        ("Alt+Left/Right", "Move by word"),
-        ("Command+Left/Right", "Move to line start/end"),
-        ("Alt+Up/Down", "Scroll multiline input"),
-        ("PageUp/PageDown", "Scroll transcript"),
-        ("Mouse wheel", "Scroll transcript"),
-        ("Ctrl+L", "Jump to live output"),
-        ("Esc", "Select transcript or refresh pending HITL state"),
-        ("A/Y or R/N", "Approve or reject a pending action"),
-    ];
+#[cfg(test)]
+pub(super) fn render_shortcut_overlay(width: usize) -> Vec<StyledLine> {
+    render_help_panel(
+        &crate::command_catalog::builtin_command_descriptors(),
+        width,
+    )
+}
+
+pub(super) fn render_help_panel(commands: &[CommandDescriptor], width: usize) -> Vec<StyledLine> {
     let mut lines = Vec::new();
     lines.push(StyledLine::plain(""));
     lines.extend(render_help_heading(
@@ -341,10 +399,10 @@ pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
         width,
         SegmentStyle::code().merge(SegmentStyle::bold()),
     ));
-    for (command, description) in command_rows {
+    for command in commands {
         lines.extend(render_help_table_rows(
-            command,
-            description,
+            &command.usage,
+            &format!("{} [{}]", command.description, command.source.label()),
             SegmentStyle::blockquote(),
             width,
         ));
@@ -367,10 +425,10 @@ pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
         width,
         SegmentStyle::code().merge(SegmentStyle::bold()),
     ));
-    for (key, description) in key_rows {
+    for binding in key_binding_descriptors() {
         lines.extend(render_help_table_rows(
-            key,
-            description,
+            binding.keys,
+            binding.description,
             SegmentStyle::warning(),
             width,
         ));
