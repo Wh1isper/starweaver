@@ -350,7 +350,7 @@ impl BackgroundRunWorker {
                 status: "running".to_string(),
                 error: None,
             }));
-        let (stream_sender, stream_receiver) = mpsc::channel::<AgentStreamRecord>();
+        let (stream_sender, stream_receiver) = mpsc::sync_channel::<AgentStreamRecord>(256);
         let stream_event_sender = self.event_sender.clone();
         let stream_handle = thread::spawn(move || {
             for record in stream_receiver {

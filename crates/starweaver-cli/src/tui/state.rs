@@ -271,6 +271,8 @@ pub struct InteractiveTuiState {
     active_model_segment: Option<ActiveModelSegment>,
     timeline: TuiTimeline,
     timeline_projection: TuiProjection,
+    projection_batch_depth: usize,
+    projection_dirty: bool,
     render_mode: TuiRenderMode,
     streaming_text_seen: bool,
     streaming_reasoning_seen: bool,
@@ -348,6 +350,8 @@ impl InteractiveTuiState {
             active_model_segment: None,
             timeline: TuiTimeline::default(),
             timeline_projection: TuiProjection::default(),
+            projection_batch_depth: 0,
+            projection_dirty: false,
             render_mode: TuiRenderMode::Normal,
             streaming_text_seen: false,
             streaming_reasoning_seen: false,
@@ -414,7 +418,23 @@ impl InteractiveTuiState {
         self.timeline_projection.active_tool_label()
     }
 
+    pub(crate) const fn begin_projection_batch(&mut self) {
+        self.projection_batch_depth = self.projection_batch_depth.saturating_add(1);
+    }
+
+    pub(crate) fn end_projection_batch(&mut self) {
+        self.projection_batch_depth = self.projection_batch_depth.saturating_sub(1);
+        if self.projection_batch_depth == 0 && self.projection_dirty {
+            self.reproject_body();
+        }
+    }
+
     fn reproject_body(&mut self) {
+        if self.projection_batch_depth > 0 {
+            self.projection_dirty = true;
+            return;
+        }
+        self.projection_dirty = false;
         let projection = project_timeline(&self.timeline, self.render_mode);
         let changed_while_paused = !self.is_at_bottom() && projection.lines != self.body;
         if changed_while_paused {

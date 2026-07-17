@@ -47,12 +47,10 @@ struct TuiRuntimeShutdownGuard {
 
 impl TuiRuntimeShutdownGuard {
     fn shutdown(&mut self) -> CliResult<()> {
-        let Some(coordinator) = self.coordinator.as_ref() else {
+        let Some(coordinator) = self.coordinator.take() else {
             return Ok(());
         };
-        coordinator.shutdown(TUI_BACKGROUND_SHUTDOWN_TIMEOUT)?;
-        self.coordinator = None;
-        Ok(())
+        coordinator.shutdown(TUI_BACKGROUND_SHUTDOWN_TIMEOUT)
     }
 }
 
@@ -75,9 +73,19 @@ const TUI_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const TUI_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(33);
 const TUI_MIN_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const TUI_BACKGROUND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const TUI_STREAM_DRAIN_BUDGET: usize = 256;
+const TUI_STREAM_DRAIN_TIME_BUDGET: Duration = Duration::from_millis(4);
 
 impl CliService {
     pub(super) fn tui(&mut self, command: &TuiCommand) -> CliResult<String> {
+        if command.interactive
+            && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal())
+        {
+            return Err(CliError::Run(
+                "interactive TUI requires stdin and stdout to be TTYs; use --snapshot for redirected output"
+                    .to_string(),
+            ));
+        }
         if should_run_interactive_tui(command) {
             tui_environment_attachments(&self.config)?;
             self.interactive_tui(command)?;
@@ -252,13 +260,14 @@ impl CliService {
                 false,
             )?;
         }
-        let mut tui = crate::tui::InteractiveTui::enter()?;
         let mut coordinator_config = self.config.clone();
         coordinator_config.oauth_refresh.enabled = false;
         let coordinator = CliRuntimeCoordinator::new(coordinator_config)?;
         let mut shutdown_guard = TuiRuntimeShutdownGuard {
             coordinator: Some(coordinator.clone()),
         };
+        // Acquire the terminal last so it is restored before runtime cleanup on unwind.
+        let mut tui = crate::tui::InteractiveTui::enter()?;
         let mut active_run: Option<ActiveTuiRun> = None;
         let mut queued_prompt: Option<(PromptInput, String, Option<GoalCommandOptions>)> = None;
         let mut pending_background_wakes = HashMap::<String, VecDeque<String>>::new();
@@ -279,7 +288,16 @@ impl CliService {
                     }
                 }
             }
+            let drain_started = Instant::now();
+            let mut drained_records = 0_usize;
+            state.begin_projection_batch();
             while let Some(run) = active_run.as_mut() {
+                if drained_records >= TUI_STREAM_DRAIN_BUDGET
+                    || drain_started.elapsed() >= TUI_STREAM_DRAIN_TIME_BUDGET
+                {
+                    break;
+                }
+                drained_records = drained_records.saturating_add(1);
                 match run.receiver.try_recv() {
                     Ok(TuiRunMessage::Stream(record)) => {
                         state.apply_stream_record(&record);
@@ -360,6 +378,7 @@ impl CliService {
                     }
                 }
             }
+            state.end_projection_batch();
 
             if active_run.is_none()
                 && let Some((session_id, attempt_id)) = take_pending_background_wake(
@@ -400,15 +419,24 @@ impl CliService {
             let event = crate::tui::InteractiveTui::poll_event(&mut state, poll_timeout)?;
             match event {
                 Some(crate::tui::InteractiveTuiEvent::Quit) if active_run.is_none() => {
+                    tui.restore()?;
                     shutdown_guard.shutdown()?;
                     return Ok(());
                 }
                 Some(crate::tui::InteractiveTuiEvent::Cancel) => {
-                    if let Some(run) = active_run.as_mut()
-                        && !run.cancelling
-                    {
-                        let _ = run.coordinator.cancel_run(&run.run_id);
-                        run.cancelling = true;
+                    if let Some(run) = active_run.as_mut() {
+                        if run.cancelling {
+                            // A second interrupt is the escape hatch when cooperative
+                            // cancellation or durable cleanup cannot finish promptly.
+                            tui.restore()?;
+                            return shutdown_guard.shutdown();
+                        }
+                        match run.coordinator.cancel_run(&run.run_id) {
+                            Ok(()) => run.cancelling = true,
+                            Err(error) => state.push_transcript_notice(format!(
+                                "[SYS] Unable to request cancellation: {error}"
+                            )),
+                        }
                     }
                     dirty = true;
                 }
@@ -531,11 +559,21 @@ impl CliService {
                 }
             }
             if state.profile != persisted_profile {
-                write_tui_selected_profile(&self.config, &state.profile)?;
+                if let Err(error) = write_tui_selected_profile(&self.config, &state.profile) {
+                    state.push_transcript_notice(format!(
+                        "[SYS] Could not persist the selected profile: {error}"
+                    ));
+                    dirty = true;
+                }
                 persisted_profile.clone_from(&state.profile);
             }
             if state.render_mode() != persisted_render_mode {
-                write_tui_render_mode(&self.config, state.render_mode())?;
+                if let Err(error) = write_tui_render_mode(&self.config, state.render_mode()) {
+                    state.push_transcript_notice(format!(
+                        "[SYS] Could not persist the display preference: {error}"
+                    ));
+                    dirty = true;
+                }
                 persisted_render_mode = state.render_mode();
             }
         }
@@ -608,7 +646,7 @@ fn spawn_tui_run(
     goal: Option<GoalCommandOptions>,
     background_attempt_id: Option<String>,
 ) -> ActiveTuiRun {
-    let (ui_sender, receiver) = mpsc::channel::<TuiRunMessage>();
+    let (ui_sender, receiver) = mpsc::sync_channel::<TuiRunMessage>(256);
     let environment_attachments = match tui_environment_attachments(config) {
         Ok(attachments) => attachments,
         Err(error) => {

@@ -1,6 +1,4 @@
 use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
     io::{self, Write},
     time::Duration,
 };
@@ -108,8 +106,6 @@ struct BodyRenderSignature {
     render_mode: crate::args::TuiRenderMode,
     timeline_generation: u64,
     body_len: usize,
-    body_total_bytes: usize,
-    body_hash: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -184,6 +180,13 @@ impl InteractiveTui {
             EnableMouseCapture,
             Hide
         ) {
+            let _ = execute!(
+                stdout,
+                Show,
+                DisableMouseCapture,
+                DisableBracketedPaste,
+                LeaveAlternateScreen
+            );
             let _ = terminal::disable_raw_mode();
             return Err(terminal_error(error));
         }
@@ -196,6 +199,36 @@ impl InteractiveTui {
             rendered_body_cache: RenderedBodyCache::default(),
             frame_cache: FrameCache::default(),
         })
+    }
+
+    /// Restore terminal modes immediately. Calling this more than once is safe.
+    pub fn restore(&mut self) -> CliResult<()> {
+        if !self.active {
+            return Ok(());
+        }
+        let mut first_error = None;
+        if self.keyboard_enhancements_enabled {
+            #[cfg(unix)]
+            if let Err(error) = execute!(self.stdout, PopKeyboardEnhancementFlags) {
+                first_error.get_or_insert_with(|| terminal_error(error));
+            }
+            self.keyboard_enhancements_enabled = false;
+        }
+        if let Err(error) = execute!(
+            self.stdout,
+            Show,
+            DisableMouseCapture,
+            DisableBracketedPaste,
+            LeaveAlternateScreen
+        ) {
+            first_error.get_or_insert_with(|| terminal_error(error));
+        }
+        if let Err(error) = terminal::disable_raw_mode() {
+            first_error.get_or_insert_with(|| terminal_error(error));
+        }
+        self.mouse_capture_enabled = false;
+        self.active = false;
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Render the current state.
@@ -382,10 +415,6 @@ impl InteractiveTui {
 }
 
 fn body_render_signature(state: &InteractiveTuiState, width: usize) -> BodyRenderSignature {
-    let mut body_hasher = DefaultHasher::new();
-    for line in &state.body {
-        line.hash(&mut body_hasher);
-    }
     BodyRenderSignature {
         width,
         workspace_dir: state.workspace_dir.clone(),
@@ -393,8 +422,6 @@ fn body_render_signature(state: &InteractiveTuiState, width: usize) -> BodyRende
         render_mode: state.render_mode(),
         timeline_generation: state.timeline_generation(),
         body_len: state.body.len(),
-        body_total_bytes: state.body.iter().map(String::len).sum(),
-        body_hash: body_hasher.finish(),
     }
 }
 
@@ -706,20 +733,6 @@ pub(super) fn handle_key_event(
 
 impl Drop for InteractiveTui {
     fn drop(&mut self) {
-        if self.active {
-            if self.keyboard_enhancements_enabled {
-                #[cfg(unix)]
-                let _ = execute!(self.stdout, PopKeyboardEnhancementFlags);
-            }
-            let _ = execute!(
-                self.stdout,
-                Show,
-                DisableMouseCapture,
-                DisableBracketedPaste,
-                LeaveAlternateScreen
-            );
-            let _ = terminal::disable_raw_mode();
-            self.active = false;
-        }
+        let _ = self.restore();
     }
 }

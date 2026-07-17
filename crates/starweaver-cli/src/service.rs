@@ -291,7 +291,7 @@ impl CliService {
     fn execute_prompt_run(
         &mut self,
         command: &RunCommand,
-        stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
+        stream_sender: Option<mpsc::SyncSender<AgentStreamRecord>>,
     ) -> CliResult<PromptRunExecution> {
         self.execute_prompt_run_with_channels(command, None, stream_sender, None, None)
     }
@@ -301,7 +301,7 @@ impl CliService {
         &mut self,
         command: &RunCommand,
         prompt_input: Option<PromptInput>,
-        stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
+        stream_sender: Option<mpsc::SyncSender<AgentStreamRecord>>,
         steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
         cancel_receiver: Option<mpsc::Receiver<()>>,
     ) -> CliResult<PromptRunExecution> {
@@ -437,7 +437,7 @@ impl CliService {
 
     pub(super) fn run_prepared_prompt(
         prepared: PreparedPromptRun,
-        stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
+        stream_sender: Option<mpsc::SyncSender<AgentStreamRecord>>,
         steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
         cancel_receiver: Option<mpsc::Receiver<()>>,
     ) -> CliResult<ExecutedPromptRun> {

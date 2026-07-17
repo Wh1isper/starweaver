@@ -79,6 +79,44 @@ fn interactive_state_applies_streaming_text() {
 }
 
 #[test]
+fn projection_batch_materializes_stream_changes_once_at_the_end() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("hello");
+    state.begin_projection_batch();
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 0,
+                part_kind: "text".to_string(),
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "batched output")),
+        },
+    ));
+
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| line.contains("batched output"))
+    );
+    state.end_projection_batch();
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line.contains("batched output"))
+    );
+}
+
+#[test]
 fn model_transport_selected_updates_status_bar_only() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.begin_run("hello");

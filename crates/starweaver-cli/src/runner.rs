@@ -162,7 +162,7 @@ pub fn execute_agent_session_with_stream_sender(
     process_environment: Option<&DynProcessShellProvider>,
     restore_state: Option<ResumableState>,
     policy: &CliRunPolicy,
-    stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
+    stream_sender: Option<mpsc::SyncSender<AgentStreamRecord>>,
 ) -> CliResult<CliRunExecution> {
     execute_agent_session_with_channels(
         input,
@@ -188,7 +188,7 @@ pub fn execute_agent_session_with_channels(
     process_environment: Option<&DynProcessShellProvider>,
     restore_state: Option<ResumableState>,
     policy: &CliRunPolicy,
-    stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
+    stream_sender: Option<mpsc::SyncSender<AgentStreamRecord>>,
     steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
     cancel_receiver: Option<mpsc::Receiver<()>>,
 ) -> CliResult<CliRunExecution> {
@@ -216,7 +216,7 @@ pub fn execute_agent_session_with_host(
     process_environment: Option<&DynProcessShellProvider>,
     restore_state: Option<ResumableState>,
     policy: &CliRunPolicy,
-    stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
+    stream_sender: Option<mpsc::SyncSender<AgentStreamRecord>>,
     steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
     cancel_receiver: Option<mpsc::Receiver<()>>,
     host: CliAgentExecutionHost,
@@ -525,7 +525,7 @@ fn start_steering_collector(receiver: mpsc::Receiver<CliSteeringMessage>) -> Arc
 }
 
 struct CliStreamObserver {
-    sender: Option<mpsc::Sender<AgentStreamRecord>>,
+    sender: Option<mpsc::SyncSender<AgentStreamRecord>>,
     records: Arc<Mutex<Vec<AgentStreamRecord>>>,
 }
 
