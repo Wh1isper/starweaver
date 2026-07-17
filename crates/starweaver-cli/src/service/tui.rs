@@ -577,7 +577,7 @@ fn spawn_tui_run(
             };
         }
     };
-    let run_id = started.run_id.clone();
+    let run_id = started.control_id.clone();
     thread::spawn(move || {
         while let Ok(event) = started.events.recv() {
             match event {
@@ -596,6 +596,10 @@ fn spawn_tui_run(
                     break;
                 }
                 RunStreamEvent::Status(_) => {}
+                RunStreamEvent::StartFailed(error) => {
+                    let _ = ui_sender.send(TuiRunMessage::Failed(error));
+                    break;
+                }
             }
         }
     });

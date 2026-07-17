@@ -40,10 +40,11 @@ pub(super) struct RunStatusItem {
 pub(super) enum RunStreamEvent {
     Status(RunStatusItem),
     Raw(Box<AgentStreamRecord>),
+    StartFailed(String),
 }
 
 pub(super) struct StartedRun {
-    pub(super) run_id: String,
+    pub(super) control_id: String,
     pub(super) events: mpsc::Receiver<RunStreamEvent>,
 }
 
@@ -289,11 +290,9 @@ struct BackgroundRunWorker {
     interactive_host: Arc<CliInteractiveExecutionHost>,
     command: RunCommand,
     prompt_input: Option<PromptInput>,
-    started_sender: mpsc::Sender<CliResult<(String, String)>>,
-    event_sender: mpsc::Sender<RunStreamEvent>,
-    steering_sender: mpsc::Sender<CliSteeringMessage>,
+    control_id: String,
+    event_sender: mpsc::SyncSender<RunStreamEvent>,
     steering_receiver: mpsc::Receiver<CliSteeringMessage>,
-    cancel_sender: mpsc::Sender<()>,
     cancel_receiver: mpsc::Receiver<()>,
     background_attempt_id: Option<String>,
 }
@@ -304,14 +303,20 @@ impl BackgroundRunWorker {
         let mut service = match CliService::open(self.config) {
             Ok(service) => service,
             Err(error) => {
-                let _ = self.started_sender.send(Err(error));
+                let _ = self
+                    .event_sender
+                    .send(RunStreamEvent::StartFailed(error.to_string()));
+                remove_active_run(&self.active_runs, &self.control_id);
                 return;
             }
         };
         let mut prepared = match service.prepare_prompt_run(&self.command, self.prompt_input) {
             Ok(prepared) => prepared,
             Err(error) => {
-                let _ = self.started_sender.send(Err(error));
+                let _ = self
+                    .event_sender
+                    .send(RunStreamEvent::StartFailed(error.to_string()));
+                remove_active_run(&self.active_runs, &self.control_id);
                 return;
             }
         };
@@ -327,22 +332,16 @@ impl BackgroundRunWorker {
                 Ok(claim_id) => Some((attempt_id.to_string(), claim_id)),
                 Err(error) => {
                     let _ = service.fail_prepared_prompt_run(run_on_error, &error);
-                    let _ = self.started_sender.send(Err(error));
+                    let _ = self
+                        .event_sender
+                        .send(RunStreamEvent::StartFailed(error.to_string()));
+                    remove_active_run(&self.active_runs, &self.control_id);
                     return;
                 }
             }
         } else {
             None
         };
-        if let Ok(mut runs) = self.active_runs.lock() {
-            runs.insert(
-                run_id.clone(),
-                ActiveRunControl {
-                    steering_sender: self.steering_sender,
-                    cancel_sender: self.cancel_sender,
-                },
-            );
-        }
         let _ = self
             .event_sender
             .send(RunStreamEvent::Status(RunStatusItem {
@@ -351,19 +350,6 @@ impl BackgroundRunWorker {
                 status: "running".to_string(),
                 error: None,
             }));
-        if self
-            .started_sender
-            .send(Ok((session_id.clone(), run_id.clone())))
-            .is_err()
-        {
-            if let Some((attempt_id, claim_id)) = delivery_claim.as_ref() {
-                self.interactive_host
-                    .release_continuation(&session_id, attempt_id, claim_id);
-            }
-            remove_active_run(&self.active_runs, &run_id);
-            return;
-        }
-
         let (stream_sender, stream_receiver) = mpsc::channel::<AgentStreamRecord>();
         let stream_event_sender = self.event_sender.clone();
         let stream_handle = thread::spawn(move || {
@@ -393,7 +379,7 @@ impl BackgroundRunWorker {
                 },
                 Err(error) => RunStatusItem {
                     session_id: session_id.clone(),
-                    run_id: run_id.clone(),
+                    run_id,
                     status: "failed".to_string(),
                     error: Some(error.to_string()),
                 },
@@ -402,7 +388,7 @@ impl BackgroundRunWorker {
                 let _ = service.fail_prepared_prompt_run(run_on_error, &error);
                 RunStatusItem {
                     session_id: session_id.clone(),
-                    run_id: run_id.clone(),
+                    run_id,
                     status: "failed".to_string(),
                     error: Some(error.to_string()),
                 }
@@ -413,7 +399,7 @@ impl BackgroundRunWorker {
                 .release_continuation(&session_id, &attempt_id, &claim_id);
         }
         let _ = self.event_sender.send(RunStreamEvent::Status(status));
-        remove_active_run(&self.active_runs, &run_id);
+        remove_active_run(&self.active_runs, &self.control_id);
     }
 }
 
@@ -440,21 +426,29 @@ impl CliRuntimeCoordinator {
                 "interactive runtime coordinator is shutting down".to_string(),
             ));
         }
-        let (started_sender, started_receiver) = mpsc::channel::<CliResult<(String, String)>>();
-        let (event_sender, event_receiver) = mpsc::channel::<RunStreamEvent>();
+        let (event_sender, event_receiver) = mpsc::sync_channel::<RunStreamEvent>(256);
         let (steering_sender, steering_receiver) = mpsc::channel::<CliSteeringMessage>();
         let (cancel_sender, cancel_receiver) = mpsc::channel::<()>();
+        let control_id = RunId::new().as_str().to_string();
+        self.active_runs
+            .lock()
+            .map_err(|error| CliError::Run(error.to_string()))?
+            .insert(
+                control_id.clone(),
+                ActiveRunControl {
+                    steering_sender,
+                    cancel_sender,
+                },
+            );
         let worker = BackgroundRunWorker {
             config: self.config.clone(),
             active_runs: Arc::clone(&self.active_runs),
             interactive_host: Arc::clone(&self.interactive_host),
             command,
             prompt_input,
-            started_sender,
+            control_id: control_id.clone(),
             event_sender,
-            steering_sender,
             steering_receiver,
-            cancel_sender,
             cancel_receiver,
             background_attempt_id,
         };
@@ -470,11 +464,8 @@ impl CliRuntimeCoordinator {
                 join: handle,
                 completed: completed_receiver,
             });
-        let (_session_id, run_id) = started_receiver
-            .recv()
-            .map_err(|error| CliError::Run(error.to_string()))??;
         Ok(StartedRun {
-            run_id,
+            control_id,
             events: event_receiver,
         })
     }
