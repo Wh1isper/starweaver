@@ -33,7 +33,7 @@ mod stream_archive;
 pub use local_database::{
     CANONICAL_SESSION_DATABASE_FILENAME, LocalStoreImportReport,
     SESSION_IMPORTED_FROM_METADATA_KEY, SESSION_SOURCE_PRODUCT_METADATA_KEY,
-    canonical_session_database_path,
+    canonical_session_database_path, default_starweaver_config_dir,
 };
 pub use migrations::{
     SqliteAppliedMigration, SqliteMigrationStatus, SqlitePendingMigration, migrate_sqlite_database,

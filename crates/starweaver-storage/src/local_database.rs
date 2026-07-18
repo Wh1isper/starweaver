@@ -1,6 +1,6 @@
 //! Product-neutral local database location and legacy project-store import.
 
-use std::{fs, path::Path, path::PathBuf};
+use std::{env, ffi::OsString, fs, io, path::Path, path::PathBuf};
 
 use chrono::Utc;
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
@@ -21,6 +21,63 @@ pub const SESSION_SOURCE_PRODUCT_METADATA_KEY: &str = "starweaver.source_product
 
 /// Metadata key recording the legacy database from which a session was imported.
 pub const SESSION_IMPORTED_FROM_METADATA_KEY: &str = "starweaver.imported_from";
+
+/// Resolve the default machine-local Starweaver configuration directory.
+///
+/// Native Windows applications normally expose `USERPROFILE` rather than `HOME`. Keeping this
+/// resolution in the shared storage layer prevents CLI, RPC, and future Desktop hosts from opening
+/// different default databases merely because their process environments or working directories
+/// differ. Resolution fails rather than falling back to the current directory, because a
+/// process-relative machine database would silently split durable sessions between products.
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::NotFound`] when the platform user profile cannot be resolved.
+pub fn default_starweaver_config_dir() -> io::Result<PathBuf> {
+    default_user_home_dir()
+        .map(|home| home.join(".starweaver"))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "cannot resolve the user profile for the Starweaver config directory; set STARWEAVER_CONFIG_DIR",
+            )
+        })
+}
+
+#[cfg(not(windows))]
+fn default_user_home_dir() -> Option<PathBuf> {
+    non_empty_os_path(env::var_os("HOME"))
+}
+
+#[cfg(windows)]
+fn default_user_home_dir() -> Option<PathBuf> {
+    windows_user_home_dir_from(
+        env::var_os("USERPROFILE"),
+        env::var_os("HOMEDRIVE"),
+        env::var_os("HOMEPATH"),
+        env::var_os("HOME"),
+    )
+}
+
+fn non_empty_os_path(value: Option<OsString>) -> Option<PathBuf> {
+    value.filter(|value| !value.is_empty()).map(PathBuf::from)
+}
+
+#[cfg(any(test, windows))]
+fn windows_user_home_dir_from(
+    user_profile: Option<OsString>,
+    home_drive: Option<OsString>,
+    home_path: Option<OsString>,
+    home: Option<OsString>,
+) -> Option<PathBuf> {
+    non_empty_os_path(user_profile)
+        .or_else(|| {
+            let mut drive = home_drive.filter(|value| !value.is_empty())?;
+            drive.push(home_path.filter(|value| !value.is_empty())?);
+            Some(PathBuf::from(drive))
+        })
+        .or_else(|| non_empty_os_path(home))
+}
 
 /// Resolve the canonical session database below a Starweaver config directory.
 #[must_use]
@@ -498,6 +555,28 @@ mod tests {
 
     use super::*;
     use crate::session_store::records::save_run_record;
+
+    #[test]
+    fn windows_home_resolution_prefers_native_profile_without_home() {
+        assert_eq!(
+            windows_user_home_dir_from(
+                Some(OsString::from(r"C:\Users\desktop")),
+                Some(OsString::from("D:")),
+                Some(OsString::from(r"\Users\fallback")),
+                None,
+            ),
+            Some(PathBuf::from(r"C:\Users\desktop"))
+        );
+        assert_eq!(
+            windows_user_home_dir_from(
+                None,
+                Some(OsString::from("D:")),
+                Some(OsString::from(r"\Users\fallback")),
+                None,
+            ),
+            Some(PathBuf::from(r"D:\Users\fallback"))
+        );
+    }
 
     #[tokio::test]
     async fn legacy_import_is_incremental_idempotent_and_preserves_target_ownership() {
