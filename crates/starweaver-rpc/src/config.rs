@@ -249,8 +249,10 @@ impl RpcConfig {
     /// Returns an error when the current directory or RPC config file cannot be read or parsed.
     pub fn resolve(store: Option<String>) -> RpcHostResult<Self> {
         let current_dir = env::current_dir().map_err(RpcHostError::Io)?;
-        let global_dir =
-            env::var_os("STARWEAVER_CONFIG_DIR").map_or_else(default_global_dir, PathBuf::from);
+        let global_dir = match env::var_os("STARWEAVER_CONFIG_DIR") {
+            Some(path) => PathBuf::from(path),
+            None => default_global_dir()?,
+        };
         let config_path = env::var_os("STARWEAVER_RPC_CONFIG")
             .map_or_else(|| global_dir.join("rpc.toml"), PathBuf::from);
         let file = read_file_config(&config_path)?;
@@ -470,11 +472,8 @@ const fn default_search_timeout_ms() -> u64 {
     2_000
 }
 
-fn default_global_dir() -> PathBuf {
-    env::var_os("HOME").map_or_else(
-        || PathBuf::from(".starweaver"),
-        |home| PathBuf::from(home).join(".starweaver"),
-    )
+fn default_global_dir() -> RpcHostResult<PathBuf> {
+    starweaver_storage::default_starweaver_config_dir().map_err(RpcHostError::Io)
 }
 
 #[cfg(test)]

@@ -513,7 +513,10 @@ impl ConfigResolver {
     /// Resolve final config.
     pub fn resolve(&self, cli: &Cli) -> CliResult<CliConfig> {
         let current_dir = self.current_dir.clone().unwrap_or_else(default_current_dir);
-        let global_dir = self.global_dir.clone().unwrap_or_else(default_global_dir);
+        let global_dir = match self.global_dir.clone() {
+            Some(global_dir) => global_dir,
+            None => default_global_dir()?,
+        };
         let project_dir = self
             .project_dir
             .clone()
@@ -571,10 +574,9 @@ impl ConfigResolver {
     }
 }
 
-fn default_global_dir() -> PathBuf {
-    env::var_os("HOME")
-        .map_or_else(|| PathBuf::from("."), PathBuf::from)
-        .join(".starweaver")
+fn default_global_dir() -> CliResult<PathBuf> {
+    starweaver_storage::default_starweaver_config_dir()
+        .map_err(|error| CliError::Config(error.to_string()))
 }
 
 fn default_shared_agents_dir() -> PathBuf {
@@ -640,9 +642,7 @@ const fn wants_project_config(cli: &Cli) -> bool {
 }
 
 fn find_project_dir(start: &Path, global_dir: &Path) -> Option<PathBuf> {
-    let home_project_dir = env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join(".starweaver"));
+    let home_project_dir = starweaver_storage::default_starweaver_config_dir().ok();
     let mut current = start.to_path_buf();
     loop {
         let candidate = current.join(".starweaver");

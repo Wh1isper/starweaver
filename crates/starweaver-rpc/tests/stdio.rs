@@ -19,7 +19,7 @@ fn standalone_stdio_process_handles_initialize_and_shutdown() {
     let mut child = ChildGuard::spawn(
         Command::new(env!("CARGO_BIN_EXE_starweaver-rpc"))
             .current_dir(temp.path())
-            .env("HOME", temp.path())
+            .env("STARWEAVER_CONFIG_DIR", temp.path())
             .arg("--store")
             .arg(&store)
             .arg("stdio"),
@@ -76,6 +76,132 @@ fn standalone_stdio_process_handles_initialize_and_shutdown() {
             "method": "shutdown",
             "params": {}
         }),
+    );
+    assert_eq!(shutdown["result"]["status"], "shutdown");
+    drop(stdin);
+    child.wait_for_exit();
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn standalone_rpc_reads_cli_style_session_from_shared_database() {
+    use starweaver_core::{ConversationId, RunId};
+    use starweaver_session::{RunRecord, RunStatus};
+    use starweaver_stream::{DisplayMessage, DisplayMessageKind, ReplayScope, StreamArchive};
+
+    let temp = tempfile::tempdir().expect("temp dir");
+    let store = temp.path().join("starweaver.sqlite");
+    let storage = starweaver_storage::SqliteStorage::open(&store).expect("shared storage");
+    let session = storage
+        .create_session_for_product(
+            Some("general".to_string()),
+            Some("CLI session visible to Desktop".to_string()),
+            Some(temp.path().to_string_lossy().into_owned()),
+            Some("cli"),
+        )
+        .expect("CLI-style session");
+    let run_id = RunId::from_string("run_cli_to_rpc_process");
+    let mut run = RunRecord::new(
+        session.session_id.clone(),
+        run_id.clone(),
+        ConversationId::new(),
+    );
+    run.trigger_type = Some("cli".to_string());
+    run.status = RunStatus::Completed;
+    run.output_preview = Some("persisted CLI output".to_string());
+    storage.begin_run(run).expect("CLI-style run");
+    let display = DisplayMessage::new(
+        1,
+        session.session_id.clone(),
+        run_id.clone(),
+        DisplayMessageKind::RunCompleted,
+    )
+    .with_preview("persisted CLI output");
+    tokio::runtime::Runtime::new()
+        .expect("test runtime")
+        .block_on(async {
+            storage
+                .stream_archive()
+                .append_display_messages(ReplayScope::run(run_id.as_str()), vec![display])
+                .await
+                .expect("CLI-style display evidence");
+        });
+    drop(storage);
+
+    let mut child = ChildGuard::spawn(
+        Command::new(env!("CARGO_BIN_EXE_starweaver-rpc"))
+            .current_dir(temp.path())
+            .env("STARWEAVER_CONFIG_DIR", temp.path())
+            .arg("--store")
+            .arg(&store)
+            .arg("stdio"),
+    );
+    let mut stdin = child.stdin();
+    let mut stdout = BufReader::new(child.stdout());
+    let initialized = rpc_round_trip(
+        &mut stdin,
+        &mut stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"clientInfo": {"name": "desktop-test"}}
+        }),
+    );
+    assert!(initialized.get("error").is_none(), "{initialized}");
+
+    let listed = rpc_round_trip(
+        &mut stdin,
+        &mut stdout,
+        &json!({"jsonrpc": "2.0", "id": 2, "method": "session.list", "params": {}}),
+    );
+    assert!(
+        listed["result"]["sessions"]
+            .as_array()
+            .expect("session list")
+            .iter()
+            .any(|value| value["session_id"] == session.session_id.as_str()),
+        "{listed}"
+    );
+
+    let loaded = rpc_round_trip(
+        &mut stdin,
+        &mut stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "session.get",
+            "params": {"sessionId": session.session_id.as_str()}
+        }),
+    );
+    assert_eq!(
+        loaded["result"]["session"]["title"],
+        "CLI session visible to Desktop"
+    );
+    assert_eq!(loaded["result"]["runs"][0]["run_id"], run_id.as_str());
+
+    let replayed = rpc_round_trip(
+        &mut stdin,
+        &mut stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "stream.replay",
+            "params": {
+                "sessionId": session.session_id.as_str(),
+                "runId": run_id.as_str()
+            }
+        }),
+    );
+    assert_eq!(
+        replayed["result"]["messages"][0]["preview"],
+        "persisted CLI output"
+    );
+
+    let shutdown = rpc_round_trip(
+        &mut stdin,
+        &mut stdout,
+        &json!({"jsonrpc": "2.0", "id": 5, "method": "shutdown", "params": {}}),
     );
     assert_eq!(shutdown["result"]["status"], "shutdown");
     drop(stdin);
