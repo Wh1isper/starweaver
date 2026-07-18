@@ -1,6 +1,6 @@
 [package]
 name = "starweaver-py"
-version = "0.8.1"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.96"
 authors = ["wh1isper"]
@@ -18,21 +18,21 @@ async-trait = "0.1.89"
 pyo3 = { version = "0.29.0", features = ["extension-module"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
-starweaver-agent = { path = "../../crates/starweaver-agent", version = "0.8.1" }
-starweaver-context = { path = "../../crates/starweaver-context", version = "0.8.1" }
-starweaver-core = { path = "../../crates/starweaver-core", version = "0.8.1" }
-starweaver-envd = { path = "../../crates/starweaver-envd", version = "0.8.1" }
-starweaver-envd-client = { path = "../../crates/starweaver-envd-client", version = "0.8.1" }
-starweaver-envd-core = { path = "../../crates/starweaver-envd-core", version = "0.8.1" }
-starweaver-environment = { path = "../../crates/starweaver-environment", version = "0.8.1" }
-starweaver-model = { path = "../../crates/starweaver-model", version = "0.8.1" }
-starweaver-oauth = { path = "../../crates/starweaver-oauth", version = "0.8.1" }
-starweaver-oauth-provider = { path = "../../crates/starweaver-oauth-provider", version = "0.8.1" }
-starweaver-runtime = { path = "../../crates/starweaver-runtime", version = "0.8.1" }
-starweaver-session = { path = "../../crates/starweaver-session", version = "0.8.1" }
-starweaver-storage = { path = "../../crates/starweaver-storage", version = "0.8.1" }
-starweaver-stream = { path = "../../crates/starweaver-stream", version = "0.8.1" }
-starweaver-tools = { path = "../../crates/starweaver-tools", version = "0.8.1" }
+starweaver-agent = { path = "../../crates/starweaver-agent", version = "0.9.0" }
+starweaver-context = { path = "../../crates/starweaver-context", version = "0.9.0" }
+starweaver-core = { path = "../../crates/starweaver-core", version = "0.9.0" }
+starweaver-envd = { path = "../../crates/starweaver-envd", version = "0.9.0" }
+starweaver-envd-client = { path = "../../crates/starweaver-envd-client", version = "0.9.0" }
+starweaver-envd-core = { path = "../../crates/starweaver-envd-core", version = "0.9.0" }
+starweaver-environment = { path = "../../crates/starweaver-environment", version = "0.9.0" }
+starweaver-model = { path = "../../crates/starweaver-model", version = "0.9.0" }
+starweaver-oauth = { path = "../../crates/starweaver-oauth", version = "0.9.0" }
+starweaver-oauth-provider = { path = "../../crates/starweaver-oauth-provider", version = "0.9.0" }
+starweaver-runtime = { path = "../../crates/starweaver-runtime", version = "0.9.0" }
+starweaver-session = { path = "../../crates/starweaver-session", version = "0.9.0" }
+starweaver-storage = { path = "../../crates/starweaver-storage", version = "0.9.0" }
+starweaver-stream = { path = "../../crates/starweaver-stream", version = "0.9.0" }
+starweaver-tools = { path = "../../crates/starweaver-tools", version = "0.9.0" }
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "sync", "time"] }
 
 [lints.rust]

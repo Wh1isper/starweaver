@@ -2,7 +2,7 @@
 
 <!-- Generated from spec/capabilities.toml by `cargo run -p xtask -- check-capabilities --bless`. Do not edit manually. -->
 
-This is the normative current implementation-status view for release `0.8.1`. Feature maps, roadmaps, and backlogs describe design or future work and must defer to this generated view for current status.
+This is the normative current implementation-status view for release `0.9.0`. Feature maps, roadmaps, and backlogs describe design or future work and must defer to this generated view for current status.
 
 | Capability | Owner | Stability | Status | Normative spec | Implementation evidence | Contract evidence |
 | --- | --- | --- | --- | --- | --- | --- |
