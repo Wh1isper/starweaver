@@ -11,12 +11,15 @@ use starweaver_environment::EnvironmentState;
 use starweaver_model::{ModelMessage, ModelRequest, ModelRequestPart, ToolReturnPart};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
 use starweaver_session::{
-    ApprovalRecord, ApprovalStatus, DeferredToolRecord, EnvironmentStateRef, ExecutionStatus,
-    InputPart, RelatedRunUpdate, RunRecord, RunStatus, SessionRecord, SessionSearchError,
-    SessionSearchPage, SessionSearchProvider, SessionSearchQuery, SessionSearchScope,
-    SessionStatus, SessionStoreError, StreamCursorRef,
+    AcquireRunAdmission, ApprovalRecord, ApprovalStatus, DeferredToolRecord, EnvironmentStateRef,
+    ExecutionStatus, InputPart, LOCAL_SESSION_NAMESPACE, RelatedRunUpdate, RunAdmissionLease,
+    RunRecord, RunStatus, SessionRecord, SessionSearchError, SessionSearchPage,
+    SessionSearchProvider, SessionSearchQuery, SessionSearchScope, SessionStatus,
+    SessionStoreError, StreamCursorRef,
 };
-use starweaver_storage::{LocalSessionSearchProvider, RunEvidenceCommit, SqliteStorage};
+use starweaver_storage::{
+    LocalSessionSearchProvider, RunEvidenceCommit, SqliteStorage, canonical_session_database_path,
+};
 use starweaver_stream::{DisplayMessage, ReplayCursor, ReplayScope, ReplaySnapshot};
 use uuid::Uuid;
 
@@ -45,6 +48,7 @@ pub const HITL_RESUME_PREFLIGHT_SOURCE_RUN_ID_METADATA_KEY: &str =
 pub struct LocalStore {
     storage: SqliteStorage,
     file_store_path: PathBuf,
+    workspace: String,
     search_scope: SessionSearchScope,
 }
 
@@ -133,9 +137,21 @@ impl LocalStore {
     /// Open canonical shared storage and the CLI-owned blob directory.
     pub fn open(config: &CliConfig) -> CliResult<Self> {
         crate::config::ensure_config_dirs(config)?;
+        let storage = SqliteStorage::open(&config.database_path).map_err(storage_error)?;
+        if config.database_path == canonical_session_database_path(&config.global_dir) {
+            let legacy_database = config.project_dir.join("starweaver.sqlite");
+            storage
+                .import_legacy_project_database(&legacy_database, &config.workspace_root)
+                .map_err(storage_error)?;
+        }
+        let workspace = fs::canonicalize(&config.workspace_root)
+            .unwrap_or_else(|_| config.workspace_root.clone())
+            .to_string_lossy()
+            .into_owned();
         Ok(Self {
-            storage: SqliteStorage::open(&config.database_path).map_err(storage_error)?,
+            storage,
             file_store_path: config.file_store_path.clone(),
+            workspace,
             search_scope: SessionSearchScope::local(
                 config.database_path.to_string_lossy().into_owned(),
             ),
@@ -149,7 +165,12 @@ impl LocalStore {
         title: Option<String>,
     ) -> CliResult<SessionRecord> {
         self.storage
-            .create_session(Some(profile.to_string()), title)
+            .create_session_for_product(
+                Some(profile.to_string()),
+                title,
+                Some(self.workspace.clone()),
+                Some("cli"),
+            )
             .map_err(storage_error)
     }
 
@@ -158,6 +179,15 @@ impl LocalStore {
         self.storage
             .load_session(&SessionId::from_string(session_id))
             .map_err(storage_error)
+    }
+
+    /// Load a session and require it to belong to the current workspace.
+    pub fn load_workspace_session(&self, session_id: &str) -> CliResult<SessionRecord> {
+        let session = self.load_session(session_id)?;
+        if session.workspace.as_deref() != Some(self.workspace.as_str()) {
+            return Err(CliError::NotFound(session_id.to_string()));
+        }
+        Ok(session)
     }
 
     /// Resolve an exact session id or unique prefix.
@@ -174,23 +204,40 @@ impl LocalStore {
             })
     }
 
-    /// Delete one session and its shared durable evidence plus CLI-owned blobs.
+    /// Tombstone one shared session and remove only CLI-owned compatibility blobs.
     pub fn delete_session(&mut self, session_id: &str) -> CliResult<bool> {
         let session_id = SessionId::from_string(session_id);
-        let deleted = self
+        let session = self
             .storage
-            .delete_session(&session_id)
+            .load_session(&session_id)
             .map_err(storage_error)?;
-        if deleted {
-            let path = self
-                .file_store_path
-                .join("sessions")
-                .join(session_id.as_str());
-            if path.exists() {
-                fs::remove_dir_all(&path).map_err(|error| io_error(&path, error))?;
-            }
+        let newly_tombstoned = session.status != SessionStatus::Deleted;
+        if newly_tombstoned {
+            let fence_id = format!("cli-delete-{}", Uuid::new_v4());
+            let idempotency_key = fence_id.clone();
+            let command_fingerprint = format!("delete:{}", session_id.as_str());
+            self.storage
+                .acquire_session_deletion_fence(
+                    &session_id,
+                    session.revision,
+                    &fence_id,
+                    "cli",
+                    &idempotency_key,
+                    &command_fingerprint,
+                )
+                .map_err(storage_error)?;
+            self.storage
+                .tombstone_session(&session_id, &fence_id)
+                .map_err(storage_error)?;
         }
-        Ok(deleted)
+        let path = self
+            .file_store_path
+            .join("sessions")
+            .join(session_id.as_str());
+        if path.exists() {
+            fs::remove_dir_all(&path).map_err(|error| io_error(&path, error))?;
+        }
+        Ok(newly_tombstoned)
     }
 
     /// Load a run.
@@ -203,17 +250,16 @@ impl LocalStore {
             .map_err(storage_error)
     }
 
-    /// Latest active session.
+    /// Latest active session in the current workspace.
     pub fn latest_session(&self) -> CliResult<Option<SessionRecord>> {
         Ok(self
-            .storage
-            .list_sessions()
-            .map_err(storage_error)?
+            .workspace_sessions()?
             .into_iter()
             .find(|session| session.status == SessionStatus::Active))
     }
 
-    /// Append a queued run and update session pointers atomically.
+    /// Append a queued run without admission for fixture construction only.
+    #[cfg(test)]
     pub fn append_run(
         &mut self,
         session_id: &str,
@@ -224,10 +270,62 @@ impl LocalStore {
         let session = self.load_session(session_id)?;
         let mut run = RunRecord::new(session.session_id, RunId::new(), ConversationId::new());
         run.restore_from_run_id = restore_from_run_id.map(RunId::from_string);
-        run.trigger_type = Some("cli".to_string());
+        run.trigger_type = Some("cli-test-fixture".to_string());
         run.profile = Some(profile.to_string());
         run.input = vec![InputPart::text(prompt)];
         self.storage.begin_run(run).map_err(storage_error)
+    }
+
+    /// Atomically admit a queued run and return its fenced lease.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_run(
+        &mut self,
+        session_id: &str,
+        prompt: String,
+        restore_from_run_id: Option<String>,
+        profile: &str,
+        host_instance_id: &str,
+        replaces_waiting_run_id: Option<RunId>,
+    ) -> CliResult<(RunRecord, RunAdmissionLease)> {
+        let session = self.load_session(session_id)?;
+        let mut run = RunRecord::new(session.session_id, RunId::new(), ConversationId::new());
+        run.restore_from_run_id = restore_from_run_id.map(RunId::from_string);
+        run.trigger_type = Some("cli".to_string());
+        run.profile = Some(profile.to_string());
+        run.input = vec![InputPart::text(prompt)];
+        let run_id = run.run_id.clone();
+        let receipt = self
+            .storage
+            .acquire_run_admission(AcquireRunAdmission {
+                run,
+                namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+                host_instance_id: host_instance_id.to_string(),
+                admission_id: format!("cli-admission-{}", Uuid::new_v4()),
+                lease_expires_at: Utc::now() + chrono::Duration::seconds(30),
+                idempotency_key: format!("cli-run-{}", run_id.as_str()),
+                command_fingerprint: format!("cli-run-v1:{}", run_id.as_str()),
+                replaces_waiting_run_id,
+            })
+            .map_err(storage_error)?;
+        Ok((receipt.run, receipt.lease))
+    }
+
+    /// Extend a CLI-owned durable admission lease.
+    pub fn heartbeat_run_admission(
+        config: &CliConfig,
+        lease: &RunAdmissionLease,
+    ) -> CliResult<RunAdmissionLease> {
+        SqliteStorage::open(&config.database_path)
+            .map_err(storage_error)?
+            .heartbeat_run_admission(lease, Utc::now() + chrono::Duration::seconds(30))
+            .map_err(storage_error)
+    }
+
+    /// Release a CLI-owned durable admission lease.
+    pub fn release_run_admission(&self, lease: &RunAdmissionLease) -> CliResult<()> {
+        self.storage
+            .release_run_admission(lease)
+            .map_err(storage_error)
     }
 
     /// Complete or pause a run and atomically commit shared durable evidence.
@@ -483,11 +581,9 @@ impl LocalStore {
             .collect())
     }
 
-    /// List session summaries.
+    /// List session summaries for the current workspace.
     pub fn list_sessions(&self, limit: usize) -> CliResult<Vec<SessionSummary>> {
-        self.storage
-            .list_sessions()
-            .map_err(storage_error)?
+        self.workspace_sessions()?
             .into_iter()
             .take(limit)
             .map(|session| {
@@ -624,14 +720,25 @@ impl LocalStore {
         Ok(report)
     }
 
-    /// Return all session ids.
+    /// Return all session ids in the current workspace.
     pub fn all_session_ids(&self) -> CliResult<Vec<String>> {
+        Ok(self
+            .workspace_sessions()?
+            .into_iter()
+            .map(|session| session.session_id.as_str().to_string())
+            .collect())
+    }
+
+    fn workspace_sessions(&self) -> CliResult<Vec<SessionRecord>> {
         Ok(self
             .storage
             .list_sessions()
             .map_err(storage_error)?
             .into_iter()
-            .map(|session| session.session_id.as_str().to_string())
+            .filter(|session| {
+                session.workspace.as_deref() == Some(self.workspace.as_str())
+                    && session.status != SessionStatus::Deleted
+            })
             .collect())
     }
 

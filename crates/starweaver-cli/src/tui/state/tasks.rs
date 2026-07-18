@@ -16,10 +16,28 @@ impl InteractiveTuiState {
                 .iter()
                 .all(|item| item.status == "completed");
         let is_complete = !items.is_empty() && items.iter().all(|item| item.status == "completed");
+        let selected_task_id = self
+            .task_panel_items
+            .get(self.task_panel_index)
+            .map(|item| item.id.as_str());
+        let latest_changed_index = items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                self.task_panel_items
+                    .iter()
+                    .find(|previous| previous.id == item.id)
+                    != Some(*item)
+            })
+            .map(|(index, _)| index)
+            .next_back();
+        let retained_index = selected_task_id
+            .and_then(|id| items.iter().position(|item| item.id == id))
+            .unwrap_or(0);
+        self.task_panel_index = latest_changed_index
+            .unwrap_or(retained_index)
+            .min(items.len().saturating_sub(1));
         self.task_panel_items = items;
-        self.task_panel_index = self
-            .task_panel_index
-            .min(self.task_panel_items.len().saturating_sub(1));
         if is_complete {
             self.task_panel_open = false;
             self.task_panel_completed_hidden = true;

@@ -25,23 +25,116 @@ const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
 const MAX_HTTP_CONNECTIONS: usize = 64;
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const STDIO_OUTBOUND_CAPACITY: usize = 256;
+const STDIO_RESPONSE_DEADLINE: Duration = Duration::from_secs(5);
+const STDIO_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(12);
+const STDIO_QUEUE_RETRY: Duration = Duration::from_millis(5);
+
+struct StdioOutput {
+    value: Value,
+    flushed: Option<mpsc::SyncSender<()>>,
+}
+
+struct StdioThread {
+    handle: thread::JoinHandle<()>,
+    completed: mpsc::Receiver<()>,
+}
+
+fn spawn_stdio_thread(task: impl FnOnce() + Send + 'static) -> StdioThread {
+    let (completed_sender, completed) = mpsc::sync_channel(1);
+    let handle = thread::spawn(move || {
+        task();
+        let _ = completed_sender.send(());
+    });
+    StdioThread { handle, completed }
+}
+
+fn join_stdio_thread(thread: StdioThread, deadline: Instant, label: &str) -> RpcHostResult<()> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match thread.completed.recv_timeout(remaining) {
+        Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => thread
+            .handle
+            .join()
+            .map_err(|_| RpcHostError::Runtime(format!("stdio {label} panicked"))),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // Rust cannot safely kill a thread blocked in an arbitrary `Write` implementation.
+            // Detaching the handle bounds host shutdown; standalone process exit terminates it.
+            drop(thread.handle);
+            Err(RpcHostError::Runtime(format!(
+                "stdio {label} did not stop before the shutdown deadline; detached blocked thread"
+            )))
+        }
+    }
+}
+
+fn send_stdio_output(
+    sender: &mpsc::SyncSender<StdioOutput>,
+    mut frame: StdioOutput,
+    deadline: Instant,
+) -> RpcHostResult<()> {
+    loop {
+        match sender.try_send(frame) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                return Err(RpcHostError::Runtime(
+                    "stdio response writer disconnected".to_string(),
+                ));
+            }
+            Err(mpsc::TrySendError::Full(returned)) => {
+                if Instant::now() >= deadline {
+                    return Err(RpcHostError::Runtime(
+                        "stdio outbound queue remained full until the response deadline"
+                            .to_string(),
+                    ));
+                }
+                frame = returned;
+                thread::sleep(
+                    STDIO_QUEUE_RETRY.min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
+        }
+    }
+}
 
 /// Run the JSON-RPC stdio server until stdin closes or `shutdown` is requested.
 pub fn run_stdio(config: &RpcConfig) -> RpcHostResult<()> {
-    let (output_sender, output_receiver) = mpsc::channel::<Value>();
-    let writer = thread::spawn(move || {
+    let (outbound_sender, outbound_receiver) =
+        mpsc::sync_channel::<StdioOutput>(STDIO_OUTBOUND_CAPACITY);
+    let writer = spawn_stdio_thread(move || {
         let mut stdout = io::stdout();
-        while let Ok(response) = output_receiver.recv() {
-            if serde_json::to_writer(&mut stdout, &response).is_err() {
+        while let Ok(frame) = outbound_receiver.recv() {
+            if serde_json::to_writer(&mut stdout, &frame.value).is_err() {
                 break;
             }
             if stdout.write_all(b"\n").is_err() || stdout.flush().is_err() {
                 break;
             }
+            if let Some(flushed) = frame.flushed {
+                let _ = flushed.send(());
+            }
+        }
+    });
+    let (notification_sender, mut notification_receiver) =
+        tokio::sync::mpsc::channel::<Value>(STDIO_OUTBOUND_CAPACITY);
+    let notification_output = outbound_sender.clone();
+    let notification_forwarder = spawn_stdio_thread(move || {
+        while let Some(value) = notification_receiver.blocking_recv() {
+            if send_stdio_output(
+                &notification_output,
+                StdioOutput {
+                    value,
+                    flushed: None,
+                },
+                Instant::now() + STDIO_RESPONSE_DEADLINE,
+            )
+            .is_err()
+            {
+                break;
+            }
         }
     });
     let service = RpcService::live(config.clone())?;
-    let connection = service.connection();
+    let connection = service.live_connection(notification_sender.clone());
     let stdin = io::stdin();
     let serve_result = (|| -> RpcHostResult<()> {
         for line in stdin.lock().lines() {
@@ -51,9 +144,27 @@ pub fn run_stdio(config: &RpcConfig) -> RpcHostResult<()> {
             }
             let outcome = connection.handle_text(&line);
             if let Some(response) = outcome.response {
-                output_sender
-                    .send(response)
-                    .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+                let (flushed_sender, flushed_receiver) = mpsc::sync_channel(0);
+                let response_deadline = Instant::now() + STDIO_RESPONSE_DEADLINE;
+                send_stdio_output(
+                    &outbound_sender,
+                    StdioOutput {
+                        value: response,
+                        flushed: Some(flushed_sender),
+                    },
+                    response_deadline,
+                )?;
+                flushed_receiver
+                    .recv_timeout(response_deadline.saturating_duration_since(Instant::now()))
+                    .map_err(|error| match error {
+                        mpsc::RecvTimeoutError::Timeout => RpcHostError::Runtime(
+                            "stdio response was not flushed before its deadline".to_string(),
+                        ),
+                        mpsc::RecvTimeoutError::Disconnected => RpcHostError::Runtime(
+                            "stdio response writer disconnected before flush".to_string(),
+                        ),
+                    })?;
+                connection.activate_pending_subscriptions();
             }
             if outcome.shutdown {
                 break;
@@ -61,16 +172,30 @@ pub fn run_stdio(config: &RpcConfig) -> RpcHostResult<()> {
         }
         Ok(())
     })();
-    let shutdown_result = service.shutdown_owned_runtime(Duration::from_secs(10));
+    drop(connection);
+    drop(notification_sender);
+    let shutdown_deadline = Instant::now() + STDIO_SHUTDOWN_DEADLINE;
+    let forwarder_result = join_stdio_thread(
+        notification_forwarder,
+        shutdown_deadline,
+        "notification forwarder",
+    );
+    let shutdown_result = service.shutdown_owned_runtime(
+        shutdown_deadline
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_secs(10)),
+    );
     drop(service);
-    drop(output_sender);
-    let writer_result = writer
-        .join()
-        .map_err(|_| RpcHostError::Runtime("stdio response writer panicked".to_string()));
-    serve_result?;
-    shutdown_result?;
-    writer_result?;
-    Ok(())
+    drop(outbound_sender);
+    let writer_result = join_stdio_thread(writer, shutdown_deadline, "response writer");
+
+    let mut result = serve_result;
+    for cleanup in [forwarder_result, shutdown_result, writer_result] {
+        if result.is_ok() {
+            result = cleanup;
+        }
+    }
+    result
 }
 
 /// Run the JSON-RPC HTTP server until `shutdown` is requested or the listener fails.
@@ -593,6 +718,40 @@ mod tests {
             let error = validate_http_host(host).unwrap_err();
             assert!(error.to_string().contains("loopback"), "{error}");
         }
+    }
+
+    #[test]
+    fn stdio_queue_and_thread_waits_obey_deadlines() {
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        sender
+            .try_send(StdioOutput {
+                value: json!({"first": true}),
+                flushed: None,
+            })
+            .unwrap();
+        let started = Instant::now();
+        let error = send_stdio_output(
+            &sender,
+            StdioOutput {
+                value: json!({"second": true}),
+                flushed: None,
+            },
+            started + Duration::from_millis(25),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("queue remained full"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        let (release, blocked) = mpsc::sync_channel(0);
+        let worker = spawn_stdio_thread(move || {
+            let _ = blocked.recv();
+        });
+        let started = Instant::now();
+        let error = join_stdio_thread(worker, started + Duration::from_millis(25), "test writer")
+            .unwrap_err();
+        assert!(error.to_string().contains("detached blocked thread"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let _ = release.send(());
     }
 
     #[test]

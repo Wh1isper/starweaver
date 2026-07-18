@@ -6,7 +6,7 @@ Revision: 2026-07-14
 
 The Starweaver host protocol is implemented by the standalone `starweaver-rpc` product. It is a local control plane for durable sessions, non-blocking runs, replay, HITL records, RPC-owned model profiles, and RPC-owned environment attachments.
 
-This document describes only implemented v1 behavior. Proposed long-connection subscriptions, additional authorization roles, richer idempotency, sockets, WebSocket, and hosted deployment semantics live in `rfcs/host-protocol-future.md` and are not part of v1 conformance. Optional pluggable historical discovery and the implemented `session.search` projection are defined in `07-session-search.md`. Proposed model-facing session query/control composition, resource ownership, composite targets, revisions, fenced admission, and durable control receipts live in `08-agent-session-management.md`; those mutation/control additions do not enter this method profile until their code and conformance coverage land.
+This document describes implemented v1 behavior. Proposed additional authorization roles, richer idempotency, sockets, WebSocket, and hosted deployment semantics live in `rfcs/host-protocol-future.md`. The stdio profile implements connection-owned live subscriptions; unary HTTP remains replay-only.
 
 ## Product Boundary
 
@@ -48,16 +48,16 @@ Initialization returns the shared identity shape:
 
 Identity constants are owned by `starweaver-rpc-core`. Clients validate `name` and `major`, then use `features`. `session.search` appears only when the RPC-owned configuration installs a provider; it is omitted when search is disabled. They must not compare revision strings for ordering. The previous top-level `protocolVersion` date field is accepted as legacy response evidence but is no longer emitted.
 
-`stream.subscribe` is not advertised. Calling `stream.subscribe` or `stream.unsubscribe` returns `unsupported_feature` on current stdio and unary HTTP transports.
+`stream.subscribe` is advertised only by stdio connections with an installed bounded notification sink. Unary HTTP returns `unsupported_feature` for subscribe/unsubscribe and uses replay/status polling.
 
 ## RPC-owned Configuration
 
-RPC resolves `$STARWEAVER_CONFIG_DIR/rpc.toml` (default `~/.starweaver/rpc.toml`) or `STARWEAVER_RPC_CONFIG`. It never reads CLI `config.toml` through CLI types.
+RPC resolves `$STARWEAVER_CONFIG_DIR/rpc.toml` (default `~/.starweaver/rpc.toml`) or `STARWEAVER_RPC_CONFIG`. It never reads CLI `config.toml` through CLI types. Unless explicitly overridden, RPC and CLI open the same `$STARWEAVER_CONFIG_DIR/starweaver.sqlite`; `STARWEAVER_SESSION_DB` is the shared override and `STARWEAVER_STORE` is retained as a compatibility alias. CLI sessions carry normalized workspace and source-product provenance. CLI default listing and implicit continuation stay workspace-scoped even though the durable database is machine-global. Legacy project databases are imported incrementally so evidence appended during a rolling upgrade is not stranded; process-control records are excluded, and source-specific import tombstones prevent physically deleted canonical sessions from being recreated by a later legacy import.
 
 ```toml
 [server]
 default_profile = "default"
-database_path = "starweaver.sqlite3"
+database_path = "starweaver.sqlite"
 workspace_root = "."
 
 [server.session_search]
@@ -87,7 +87,7 @@ api_key_env = "OPENAI_API_KEY"
 base_url = "https://api.openai.com/v1"
 ```
 
-At run start RPC validates the profile/toolsets, resolves `protocol:model` or `provider@protocol:model`, reads the configured API-key environment variable, builds a production `ProtocolModelClient`, projects an `AgentSpec`, and constructs its own runtime. Deterministic models are private test fixtures and are not production management profiles.
+At run start RPC validates the profile/toolsets, resolves `protocol:model` or `provider@protocol:model`, reads the configured API-key environment variable, builds a production `ProtocolModelClient`, projects an `AgentSpec`, and constructs its own runtime. Deterministic models are private test fixtures and are not production management profiles. `model.select`, `model.list`, `model.current`, and run profile resolution all use the durable `rpc` client-state scope when `clientStateScope` (or the compatibility `client` alias) is omitted; an explicit scope continues to isolate another client's selection.
 
 ## JSON-RPC Envelope
 
@@ -137,7 +137,10 @@ Messages are safe for client display and must not include credentials, provider 
 - One UTF-8 JSON object per non-empty input line.
 - stdin carries requests; stdout carries responses; stderr carries diagnostics.
 - The process exits after successful `shutdown` response or stdin close.
-- Live display notifications may be emitted only by the stdio service mode that explicitly enables them.
+- Live subscriptions are connection-owned, use bounded outbound backpressure, and start notifications only after the subscribe response is flushed.
+- One connection may own at most 32 subscriptions. Subscription ids are unique per connection, and a second subscription for the same session/run pair is rejected until the first closes.
+- Response queue admission and response-flush acknowledgement share one five-second response deadline. Shutdown gives the notification forwarder, cooperative runtime drain, and response writer one shared twelve-second deadline rather than joining indefinitely.
+- Rust cannot safely force-kill a thread blocked inside an arbitrary OS or custom `Write`. If the stdout writer does not return by the shutdown deadline, the host reports an error and detaches that thread; standalone process exit is the final termination boundary. Therefore a timed-out response is not claimed to have been delivered.
 
 ### Unary HTTP
 
@@ -160,7 +163,7 @@ Messages are safe for client display and must not include credentials, provider 
 | Profiles              | `profile.list`, `profile.get`, `model.list`, `model.current`, `model.select`                                                                                              |
 | Sessions              | `session.create`, `session.list`, `session.search`, `session.get`, `session.current.get`, `session.current.set`, `session.delete`                                         |
 | Runs                  | `run.start`, `run.prompt`, `run.status`, `run.await`, `run.cancel`, `run.steer`, `run.attach`                                                                             |
-| Streams               | `stream.replay`                                                                                                                                                           |
+| Streams               | `stream.replay`, stdio-only `stream.subscribe`, `stream.unsubscribe`                                                                                                      |
 | Compatibility aliases | `session.output`, `session.replay`                                                                                                                                        |
 | HITL                  | `approval.list`, `approval.show`, `approval.decide`, `deferred.list`, `deferred.show`, `deferred.complete`, `deferred.fail`                                               |
 | Environments          | `environment.attach`, `environment.detach`, `environment.list`, `environment.health`, `environment.active_mount`, `environment.active_unmount`, `environment.active_list` |
@@ -242,11 +245,11 @@ Rules:
 - Replay returns events with sequence greater than the supplied event-family cursor.
 - Event sequence is monotonic within one scope; retention gaps are explicit.
 - Display-message sequence and replay-event sequence are independent. A display replay event preserves the nested display-family sequence while the outer event uses RPC's event-family sequence.
-- RPC owns append, live publication, and persistence for its replay-event projection. Agent/runtime display persistence remains a separate lower-level archive family.
+- RPC-owned runs append canonical replay events. The first replay-source decision for each scope is written atomically to durable storage and never changes afterward: RPC-owned runs force canonical events; imported/legacy runs select canonical events when any exist in that decision transaction and otherwise select the display archive. A canonical event appended after display selection cannot reinterpret a host cursor on the next page. Display-only fallback events retain host v1 `replay_event` cursors while translating them to display-family cursors only at the archive boundary.
 - RPC projections preserve the canonical replay event and can add display-message or AGUI payloads.
 - Environment lifecycle events remain typed replay events and project to `HOST_EVENT`; they are not text chunks.
 
-`run.attach`, `session.output`, and `session.replay` are compatibility surfaces over retained replay. `stream.subscribe` is reserved but not implemented.
+`run.attach`, `session.output`, and `session.replay` are compatibility surfaces over retained replay. On stdio, `stream.subscribe` returns retained replay first, then emits `subscription.ready`, ordered `stream.event` notifications, terminal `run.status`, and `subscription.closed`. After terminal status becomes visible, the subscription continues replaying fixed-size pages until it observes an additional empty page, so terminal backlog is not truncated. `stream.unsubscribe` is connection-local and idempotent.
 
 ## Environment Attachments
 
@@ -315,4 +318,4 @@ make capability-check
 git diff --check
 ```
 
-Fixtures cover protocol identity, feature negotiation, JSON-RPC id/params framing, typed input, all lifecycle values, replay cursor validation, projections, loopback HTTP policy, bearer/scope/Host/Origin/content-type rejection, absolute await timeout, RPC-owned profile materialization, local/envd attachments, active binding mutations, redaction, stdio stdout purity, authenticated HTTP shutdown, and the CLI/RPC dependency prohibition. Stdio and HTTP consume one shared method-group/error conformance vector set so transport dispatch cannot drift.
+Fixtures cover protocol identity, feature negotiation, JSON-RPC id/params framing, typed input, all lifecycle values, replay cursor validation, durable first-decision-wins mixed-evidence source selection and pagination, projections, loopback HTTP policy, bearer/scope/Host/Origin/content-type rejection, absolute await timeout, RPC-owned profile materialization and default client-state scope, local/envd attachments, active binding mutations, redaction, bounded stdio queue/flush/thread shutdown behavior, terminal subscription backlog draining and per-connection subscription limits, stdio stdout purity, authenticated HTTP shutdown, and the CLI/RPC dependency prohibition. Stdio and HTTP consume one shared method-group/error conformance vector set so transport dispatch cannot drift.

@@ -435,6 +435,11 @@ fn acquire_run_admission_locked(
             run.updated_at = now;
         }
         inner.run_admissions.remove(&session_target);
+        if let Some(session) = inner.sessions.get_mut(&request.run.session_id)
+            && session.active_run_id.as_ref() == Some(&active.target.run_id)
+        {
+            session.active_run_id = None;
+        }
     }
     {
         let session = inner.sessions.get(&request.run.session_id).ok_or_else(|| {
@@ -448,6 +453,26 @@ fn acquire_run_admission_locked(
         if session.status != SessionStatus::Active || session.deletion_fence.blocks_continuation() {
             return Err(SessionStoreError::Conflict(
                 "session cannot admit new work".to_string(),
+            ));
+        }
+        if let Some(active_run_id) = session.active_run_id.as_ref() {
+            let valid_waiting_replacement = request.replaces_waiting_run_id.as_ref()
+                == Some(active_run_id)
+                && request.run.restore_from_run_id.as_ref() == Some(active_run_id)
+                && inner
+                    .runs
+                    .get(&run_key(&request.run.session_id, active_run_id))
+                    .is_some_and(|source| source.status == RunStatus::Waiting);
+            if !valid_waiting_replacement {
+                return Err(SessionStoreError::RunConflict(format!(
+                    "session {} already has active run {}",
+                    request.run.session_id.as_str(),
+                    active_run_id.as_str()
+                )));
+            }
+        } else if request.replaces_waiting_run_id.is_some() {
+            return Err(SessionStoreError::Conflict(
+                "waiting-run replacement has no parked active run".to_string(),
             ));
         }
     }
@@ -782,6 +807,26 @@ fn validate_background_artifact_quota(
     Ok(())
 }
 
+fn ensure_background_parent_writable(
+    inner: &StoreInner,
+    record: &BackgroundSubagentRecord,
+) -> SessionStoreResult<()> {
+    let session = inner
+        .sessions
+        .get(&record.parent_session_id)
+        .filter(|session| session.namespace_id == record.namespace_id)
+        .ok_or_else(|| {
+            SessionStoreError::NotFound(record.parent_session_id.as_str().to_string())
+        })?;
+    if session.status != SessionStatus::Active || session.deletion_fence.blocks_continuation() {
+        return Err(SessionStoreError::Conflict(
+            "background owner write rejected because parent session is deleting or deleted"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn commit_background_terminal(
     inner: &mut StoreInner,
     mut record: BackgroundSubagentRecord,
@@ -805,6 +850,7 @@ fn commit_background_terminal(
         .get(&record.attempt_id)
         .cloned()
         .ok_or_else(|| SessionStoreError::NotFound(record.attempt_id.as_str().to_string()))?;
+    ensure_background_parent_writable(inner, &current)?;
     let terminal_fingerprint = background_terminal_fingerprint(&record, artifact.as_ref())?;
     if current.execution_status.is_terminal() {
         let persisted_fingerprint = persisted_background_terminal_fingerprint(inner, &current)?;
@@ -1213,6 +1259,29 @@ impl SessionStore for InMemorySessionStore {
                 idempotency_key.to_string(),
             ));
         }
+        if inner
+            .sessions
+            .get(session_id)
+            .is_some_and(|session| session.active_run_id.is_some())
+            || inner
+                .run_admissions
+                .contains_key(&ManagedSessionTarget::new(&key.0, session_id.clone()))
+        {
+            return Err(SessionStoreError::RunConflict(
+                "session still has an admitted active run".to_string(),
+            ));
+        }
+        let now = chrono::Utc::now();
+        if inner.background_subagents.values().any(|record| {
+            record.namespace_id == key.0
+                && &record.parent_session_id == session_id
+                && !record.execution_status.is_terminal()
+                && !record.owner_lease.expired_at(now)
+        }) {
+            return Err(SessionStoreError::RunConflict(
+                "session still has active background-subagent ownership".to_string(),
+            ));
+        }
         let session = inner
             .sessions
             .get_mut(session_id)
@@ -1256,6 +1325,16 @@ impl SessionStore for InMemorySessionStore {
         {
             return Err(SessionStoreError::RunConflict(
                 "session still has an active run".to_string(),
+            ));
+        }
+        let now = chrono::Utc::now();
+        if inner.background_subagents.values().any(|record| {
+            &record.parent_session_id == session_id
+                && !record.execution_status.is_terminal()
+                && !record.owner_lease.expired_at(now)
+        }) {
+            return Err(SessionStoreError::RunConflict(
+                "session still has active background-subagent ownership".to_string(),
             ));
         }
         let session = inner
@@ -1562,6 +1641,7 @@ impl SessionStore for InMemorySessionStore {
             .background_subagents
             .get(&record.attempt_id)
             .ok_or_else(|| SessionStoreError::NotFound(record.attempt_id.as_str().to_string()))?;
+        ensure_background_parent_writable(&inner, current)?;
         if current.owner_lease.expired_at(chrono::Utc::now())
             || !same_background_identity(current, &record)
             || !same_background_owner(current, &record)
@@ -1591,6 +1671,12 @@ impl SessionStore for InMemorySessionStore {
     ) -> SessionStoreResult<BackgroundSubagentRecord> {
         let now = chrono::Utc::now();
         let mut inner = self.inner.lock().map_err(store_failed)?;
+        let identity = inner
+            .background_subagents
+            .get(attempt_id)
+            .cloned()
+            .ok_or_else(|| SessionStoreError::NotFound(attempt_id.as_str().to_string()))?;
+        ensure_background_parent_writable(&inner, &identity)?;
         let record = inner
             .background_subagents
             .get_mut(attempt_id)

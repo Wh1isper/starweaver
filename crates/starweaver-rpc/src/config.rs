@@ -241,7 +241,8 @@ impl RpcConfig {
     ///
     /// The optional file defaults to `$STARWEAVER_CONFIG_DIR/rpc.toml` (or
     /// `~/.starweaver/rpc.toml`) and has an RPC-specific schema. `STARWEAVER_RPC_CONFIG`,
-    /// `STARWEAVER_STORE`, and `STARWEAVER_RPC_PROFILE` remain process-level overrides.
+    /// `STARWEAVER_SESSION_DB` (`STARWEAVER_STORE` compatibility alias), and
+    /// `STARWEAVER_RPC_PROFILE` remain process-level overrides.
     ///
     /// # Errors
     ///
@@ -257,10 +258,11 @@ impl RpcConfig {
         let server = file.server.unwrap_or_default();
         let database_path = store
             .map(PathBuf::from)
+            .or_else(|| env::var_os("STARWEAVER_SESSION_DB").map(PathBuf::from))
             .or_else(|| env::var_os("STARWEAVER_STORE").map(PathBuf::from))
             .unwrap_or_else(|| {
                 server.database_path.map_or_else(
-                    || global_dir.join("starweaver.sqlite3"),
+                    || starweaver_storage::canonical_session_database_path(&global_dir),
                     |path| resolve_path(config_dir, path),
                 )
             });
@@ -343,7 +345,7 @@ impl RpcConfig {
         };
         Self {
             config_path: root.join("rpc.toml"),
-            database_path: root.join("starweaver.sqlite3"),
+            database_path: root.join("starweaver.sqlite"),
             state_dir: root.join("rpc-state"),
             workspace_root: root.join("workspace"),
             default_profile: DEFAULT_PROFILE_NAME.to_string(),

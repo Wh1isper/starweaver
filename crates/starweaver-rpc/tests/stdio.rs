@@ -41,7 +41,7 @@ fn standalone_stdio_process_handles_initialize_and_shutdown() {
     assert_eq!(initialized["result"]["capabilities"]["sessions"], true);
     assert_eq!(
         initialized["result"]["capabilities"]["streamSubscribe"],
-        false
+        true
     );
     assert_eq!(initialized["result"]["capabilities"]["steering"], true);
     assert_eq!(
@@ -49,7 +49,11 @@ fn standalone_stdio_process_handles_initialize_and_shutdown() {
         true
     );
 
-    for (index, vector) in common::conformance_vectors().iter().enumerate() {
+    for (index, vector) in common::conformance_vectors()
+        .iter()
+        .filter(|vector| vector.method != "stream.subscribe")
+        .enumerate()
+    {
         let response = rpc_round_trip(
             &mut stdin,
             &mut stdout,

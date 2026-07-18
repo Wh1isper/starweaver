@@ -527,7 +527,7 @@ impl ConfigResolver {
             project_dir: project_dir.clone(),
             tui_state_dir: global_dir.join("tui"),
             desktop_state_dir: global_dir.join("desktop"),
-            database_path: project_dir.join("starweaver.sqlite"),
+            database_path: starweaver_storage::canonical_session_database_path(&global_dir),
             file_store_path: project_dir.join("store"),
             default_profile: "general".to_string(),
             skill_dirs: default_skill_dirs(&global_dir, &shared_agents_dir, &project_dir),

@@ -362,18 +362,30 @@ fn concurrent_cli_runs_append_without_sequence_races() {
             let project_dir = project_dir.clone();
             let global_dir = global_dir.clone();
             thread::spawn(move || {
-                Command::new(env!("CARGO_BIN_EXE_starweaver-cli"))
-                    .env("STARWEAVER_PROJECT_DIR", project_dir)
-                    .env("STARWEAVER_CONFIG_DIR", global_dir)
-                    .args([
-                        "-p",
-                        &format!("run-{index}"),
-                        "--continue",
-                        "--output",
-                        "silent",
-                    ])
-                    .output()
-                    .unwrap()
+                for attempt in 0..100 {
+                    let output = Command::new(env!("CARGO_BIN_EXE_starweaver-cli"))
+                        .env("STARWEAVER_PROJECT_DIR", &project_dir)
+                        .env("STARWEAVER_CONFIG_DIR", &global_dir)
+                        .args([
+                            "-p",
+                            &format!("run-{index}"),
+                            "--continue",
+                            "--output",
+                            "silent",
+                        ])
+                        .output()
+                        .unwrap();
+                    if output.status.success() {
+                        return output;
+                    }
+                    let expected_conflict =
+                        String::from_utf8_lossy(&output.stderr).contains("session run conflict");
+                    if !expected_conflict || attempt == 99 {
+                        return output;
+                    }
+                    thread::sleep(std::time::Duration::from_millis(20));
+                }
+                unreachable!("bounded retry loop always returns")
             })
         })
         .collect::<Vec<_>>();
@@ -787,7 +799,7 @@ fn cli_persists_restore_environment_control_flow_and_storage_artifacts() {
             .contains("status=waiting")
     );
 
-    let db = temp.path().join(".starweaver/starweaver.sqlite");
+    let db = starweaver_storage::canonical_session_database_path(temp.path().join("global"));
     let storage = starweaver_storage::SqliteStorage::open(&db).unwrap();
     let sessions = storage.list_sessions().unwrap();
     let runs = sessions

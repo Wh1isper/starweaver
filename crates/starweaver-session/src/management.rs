@@ -567,6 +567,12 @@ pub struct AcquireRunAdmission {
     pub idempotency_key: String,
     /// Normalized command fingerprint.
     pub command_fingerprint: String,
+    /// Waiting run whose parked active slot this admission is authorized to replace.
+    ///
+    /// Ordinary admissions must leave this unset. A HITL continuation sets it to the source run
+    /// and must also restore from that same waiting run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces_waiting_run_id: Option<RunId>,
 }
 
 /// Result of admission or an exact retry.

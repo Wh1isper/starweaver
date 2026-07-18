@@ -584,6 +584,7 @@ async fn managed_admission_is_single_active_fenced_and_idempotent() {
         lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(1),
         idempotency_key: key.to_string(),
         command_fingerprint: format!("fingerprint-{run_id}"),
+        replaces_waiting_run_id: None,
     };
     let first = store
         .acquire_run_admission(request("run-a", "key-a"))
@@ -674,6 +675,7 @@ async fn deletion_fence_blocks_continuations_and_new_admission() {
         lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(1),
         idempotency_key: "start-blocked".to_string(),
         command_fingerprint: "start-blocked-v1".to_string(),
+        replaces_waiting_run_id: None,
     };
     assert!(matches!(
         store.acquire_run_admission(admission).await,

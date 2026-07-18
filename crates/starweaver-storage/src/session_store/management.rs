@@ -130,7 +130,7 @@ impl SqliteSessionStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn acquire_session_deletion_fence_sync(
+    pub(crate) fn acquire_session_deletion_fence_sync(
         &self,
         session_id: &SessionId,
         expected_revision: u64,
@@ -164,6 +164,19 @@ impl SqliteSessionStore {
                 "session already has a deletion fence".to_string(),
             ));
         }
+        let now = Utc::now();
+        if session.active_run_id.is_some()
+            || load_session_admission(&transaction, &session.namespace_id, session_id)?.is_some()
+        {
+            return Err(SessionStoreError::RunConflict(
+                "session still has an admitted active run".to_string(),
+            ));
+        }
+        if has_active_background_ownership(&transaction, &session.namespace_id, session_id, now)? {
+            return Err(SessionStoreError::RunConflict(
+                "session still has active background-subagent ownership".to_string(),
+            ));
+        }
         session.deletion_fence = SessionDeletionFence::Deleting {
             fence_id: fence_id.to_string(),
             expected_revision,
@@ -183,7 +196,7 @@ impl SqliteSessionStore {
         Ok(session)
     }
 
-    pub(super) fn tombstone_session_sync(
+    pub(crate) fn tombstone_session_sync(
         &self,
         session_id: &SessionId,
         fence_id: &str,
@@ -215,6 +228,16 @@ impl SqliteSessionStore {
         if active {
             return Err(SessionStoreError::RunConflict(
                 "session still has an active run".to_string(),
+            ));
+        }
+        if has_active_background_ownership(
+            &transaction,
+            &session.namespace_id,
+            session_id,
+            Utc::now(),
+        )? {
+            return Err(SessionStoreError::RunConflict(
+                "session still has active background-subagent ownership".to_string(),
             ));
         }
         session.status = SessionStatus::Deleted;
@@ -254,7 +277,7 @@ impl SqliteSessionStore {
         })
     }
 
-    pub(super) fn acquire_run_admission_sync(
+    pub(crate) fn acquire_run_admission_sync(
         &self,
         request: AcquireRunAdmission,
     ) -> SessionStoreResult<RunAdmissionReceipt> {
@@ -267,7 +290,7 @@ impl SqliteSessionStore {
         Ok(receipt)
     }
 
-    pub(super) fn heartbeat_run_admission_sync(
+    pub(crate) fn heartbeat_run_admission_sync(
         &self,
         lease: &RunAdmissionLease,
         lease_expires_at: DateTime<Utc>,
@@ -302,7 +325,7 @@ impl SqliteSessionStore {
         Ok(current)
     }
 
-    pub(super) fn release_run_admission_sync(
+    pub(crate) fn release_run_admission_sync(
         &self,
         lease: &RunAdmissionLease,
     ) -> SessionStoreResult<()> {
@@ -326,7 +349,7 @@ impl SqliteSessionStore {
         transaction.commit().map_err(map_sqlite_session_error)
     }
 
-    pub(super) fn load_run_admission_sync(
+    pub(crate) fn load_run_admission_sync(
         &self,
         target: &ManagedRunTarget,
     ) -> SessionStoreResult<Option<RunAdmissionLease>> {
@@ -542,14 +565,22 @@ pub(super) fn acquire_run_admission_in_transaction(
             .map_err(map_sqlite_session_error)?;
         session.active_run_id = None;
     } else if let Some(active_run_id) = session.active_run_id.clone() {
-        let mut orphan = load_run_record(transaction, &session.session_id, &active_run_id)?;
-        if orphan.status.is_active() {
-            orphan.status = RunStatus::Cancelled;
-            orphan.output_preview = Some("interrupted during admission reconciliation".to_string());
-            orphan.updated_at = Utc::now();
-            save_run_record(transaction, &orphan)?;
+        let source = load_run_record(transaction, &session.session_id, &active_run_id)?;
+        let valid_waiting_replacement = request.replaces_waiting_run_id.as_ref()
+            == Some(&active_run_id)
+            && request.run.restore_from_run_id.as_ref() == Some(&active_run_id)
+            && source.status == RunStatus::Waiting;
+        if !valid_waiting_replacement {
+            return Err(SessionStoreError::RunConflict(format!(
+                "session {} already has active run {}",
+                session.session_id.as_str(),
+                active_run_id.as_str()
+            )));
         }
-        session.active_run_id = None;
+    } else if request.replaces_waiting_run_id.is_some() {
+        return Err(SessionStoreError::Conflict(
+            "waiting-run replacement has no parked active run".to_string(),
+        ));
     }
     let generation = next_generation(transaction, &request.namespace_id, &request.run.session_id)?;
     let mut run = request.run;
@@ -612,6 +643,27 @@ pub(super) fn acquire_run_admission_in_transaction(
         )
         .map_err(map_sqlite_session_error)?;
     Ok(receipt)
+}
+
+fn has_active_background_ownership(
+    transaction: &Transaction<'_>,
+    namespace_id: &str,
+    session_id: &SessionId,
+    now: DateTime<Utc>,
+) -> SessionStoreResult<bool> {
+    transaction
+        .query_row(
+            "SELECT 1 FROM background_subagent_records
+             WHERE namespace_id = ?1 AND parent_session_id = ?2
+               AND execution_status IN ('accepted', 'starting', 'running', 'waiting')
+               AND owner_lease_expires_at > ?3
+             LIMIT 1",
+            params![namespace_id, session_id.as_str(), now.to_rfc3339()],
+            |_row| Ok(()),
+        )
+        .optional()
+        .map(|value| value.is_some())
+        .map_err(map_sqlite_session_error)
 }
 
 fn load_session_mutation_receipt(

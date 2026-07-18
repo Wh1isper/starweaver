@@ -369,4 +369,61 @@ pub const SQLITE_MIGRATIONS: &[SqliteMigration] = &[
     ",
         hook_version: None,
     },
+    SqliteMigration {
+        id: "20260718_000008_local_store_imports",
+        description: "track idempotent imports from legacy project-local session databases",
+        sql: r"
+        CREATE TABLE IF NOT EXISTS local_store_imports (
+            source_path TEXT PRIMARY KEY,
+            workspace TEXT NOT NULL,
+            sessions_imported INTEGER NOT NULL,
+            rows_imported INTEGER NOT NULL,
+            imported_at TEXT NOT NULL
+        );
+    ",
+        hook_version: None,
+    },
+    SqliteMigration {
+        id: "20260718_000009_incremental_local_store_imports",
+        description: "track source provenance per imported session for incremental legacy evidence imports",
+        sql: r"
+        CREATE TABLE IF NOT EXISTS local_store_import_sessions (
+            source_path TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            imported_at TEXT NOT NULL,
+            PRIMARY KEY (source_path, session_id),
+            FOREIGN KEY (session_id) REFERENCES session_records(session_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS ix_local_store_import_sessions_session
+            ON local_store_import_sessions(session_id, source_path);
+    ",
+        hook_version: None,
+    },
+    SqliteMigration {
+        id: "20260718_000010_durable_replay_source_selection",
+        description: "persist immutable replay evidence-family selection per scope",
+        sql: r"
+        CREATE TABLE IF NOT EXISTS replay_source_selections (
+            scope TEXT PRIMARY KEY,
+            source TEXT NOT NULL CHECK (source IN ('replay_events', 'display_messages')),
+            selected_at TEXT NOT NULL
+        );
+    ",
+        hook_version: None,
+    },
+    SqliteMigration {
+        id: "20260718_000011_local_store_import_tombstones",
+        description: "prevent physically deleted legacy imports from being recreated",
+        sql: r"
+        CREATE TABLE IF NOT EXISTS local_store_import_tombstones (
+            source_path TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            deleted_at TEXT NOT NULL,
+            PRIMARY KEY (source_path, session_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_local_store_import_tombstones_session
+            ON local_store_import_tombstones(session_id, source_path);
+    ",
+        hook_version: None,
+    },
 ];

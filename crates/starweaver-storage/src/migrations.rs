@@ -1192,7 +1192,7 @@ mod tests {
             .expect("legacy full checkpoint");
 
         let applied = apply_sqlite_migrations(&mut connection).expect("migrate legacy database");
-        assert_eq!(applied.len(), 7);
+        assert_eq!(applied.len(), 11);
         assert_eq!(
             scalar_string(&connection, "SELECT record FROM session_records"),
             r#"{"kind":"legacy-session"}"#
@@ -1450,6 +1450,10 @@ mod tests {
                 "20260714_000005_agent_session_management",
                 "20260714_000006_async_subagent_delivery",
                 "20260715_000007_background_terminal_fingerprint",
+                "20260718_000008_local_store_imports",
+                "20260718_000009_incremental_local_store_imports",
+                "20260718_000010_durable_replay_source_selection",
+                "20260718_000011_local_store_import_tombstones",
             ]
         );
         let migrated_checkpoint = from_versioned_json::<AgentCheckpoint>(&scalar_string(
@@ -1614,6 +1618,10 @@ mod tests {
                 "20260714_000005_agent_session_management",
                 "20260714_000006_async_subagent_delivery",
                 "20260715_000007_background_terminal_fingerprint",
+                "20260718_000008_local_store_imports",
+                "20260718_000009_incremental_local_store_imports",
+                "20260718_000010_durable_replay_source_selection",
+                "20260718_000011_local_store_import_tombstones",
             ]
         );
         let moved = from_versioned_json::<ReplaySnapshot>(&scalar_string(

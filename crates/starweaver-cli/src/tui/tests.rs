@@ -2192,6 +2192,29 @@ fn session_reload_resets_task_panel_and_default_expands_new_tasks() {
     assert!(!footer.contains("Session A task"));
 }
 
+#[test]
+fn task_panel_follows_the_latest_changed_task() {
+    let mut state = test_tui_state();
+    let initial = (1..=9)
+        .map(|index| test_task_panel_item(&index.to_string(), &format!("Task {index}")))
+        .collect();
+    state.set_task_panel_items(initial);
+    assert_eq!(state.task_panel_index(), 0);
+
+    let updated = (1..=10)
+        .map(|index| test_task_panel_item(&index.to_string(), &format!("Task {index}")))
+        .collect::<Vec<_>>();
+    state.set_task_panel_items(updated.clone());
+
+    assert_eq!(state.task_panel_index(), 9);
+    let footer = line_texts(&render_footer_lines(&state, 80)).join("\n");
+    assert!(footer.contains("Task 10"));
+    assert!(footer.contains("2 earlier"));
+
+    state.set_task_panel_items(updated);
+    assert_eq!(state.task_panel_index(), 9);
+}
+
 fn test_task_panel_item(id: &str, subject: &str) -> TaskPanelItem {
     TaskPanelItem {
         id: id.to_string(),
