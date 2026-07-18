@@ -79,6 +79,69 @@ pub struct CliSteeringMessage {
     pub text: String,
 }
 
+/// Shared steering admission queue for one interactive run.
+#[derive(Clone)]
+pub struct CliSteeringChannel {
+    state: Arc<Mutex<CliSteeringState>>,
+}
+
+#[derive(Default)]
+struct CliSteeringState {
+    accepting: bool,
+    pending: VecDeque<CliSteeringMessage>,
+}
+
+impl Default for CliSteeringChannel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CliSteeringChannel {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(CliSteeringState {
+                accepting: true,
+                pending: VecDeque::new(),
+            })),
+        }
+    }
+
+    pub(crate) fn submit(&self, message: CliSteeringMessage) -> Result<(), CliSteeringMessage> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.accepting {
+            return Err(message);
+        }
+        state.pending.push_back(message);
+        drop(state);
+        Ok(())
+    }
+
+    fn drain_into(&self, context: &mut AgentContext, seal_if_empty: bool) -> bool {
+        let messages = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.pending.is_empty() && seal_if_empty {
+                state.accepting = false;
+            }
+            state.pending.drain(..).collect::<Vec<_>>()
+        };
+        let drained = !messages.is_empty();
+        for message in messages {
+            context.enqueue_message(BusMessage::new(
+                "steering",
+                json!({"id": message.id, "text": message.text}),
+            ));
+        }
+        drained
+    }
+}
+
 #[derive(Clone)]
 pub struct CliAgentExecutionHost {
     delegation_mode: SubagentDelegationMode,
@@ -189,7 +252,7 @@ pub fn execute_agent_session_with_channels(
     restore_state: Option<ResumableState>,
     policy: &CliRunPolicy,
     stream_sender: Option<mpsc::SyncSender<AgentStreamRecord>>,
-    steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
+    steering_channel: Option<CliSteeringChannel>,
     cancel_receiver: Option<mpsc::Receiver<()>>,
 ) -> CliResult<CliRunExecution> {
     execute_agent_session_with_host(
@@ -201,7 +264,7 @@ pub fn execute_agent_session_with_channels(
         restore_state,
         policy,
         stream_sender,
-        steering_receiver,
+        steering_channel,
         cancel_receiver,
         CliAgentExecutionHost::blocking(),
     )
@@ -217,7 +280,7 @@ pub fn execute_agent_session_with_host(
     restore_state: Option<ResumableState>,
     policy: &CliRunPolicy,
     stream_sender: Option<mpsc::SyncSender<AgentStreamRecord>>,
-    steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
+    steering_channel: Option<CliSteeringChannel>,
     cancel_receiver: Option<mpsc::Receiver<()>>,
     host: CliAgentExecutionHost,
 ) -> CliResult<CliRunExecution> {
@@ -233,7 +296,6 @@ pub fn execute_agent_session_with_host(
             .with_output_policy(OutputPolicy::new().with_retries(retry_budget))
             .with_capability(Arc::new(GoalCapability::new(options)));
     }
-    let pending_steering = steering_receiver.map(start_steering_collector);
     let observed_records = Arc::new(Mutex::new(Vec::new()));
     agent = agent.with_stream_observer(Arc::new(CliStreamObserver {
         sender: stream_sender,
@@ -249,8 +311,8 @@ pub fn execute_agent_session_with_host(
     agent = agent.with_capability(Arc::new(CliGuidanceAdapter {
         guidance_text_parts,
     }));
-    if let Some(pending) = pending_steering {
-        agent = agent.with_capability(Arc::new(CliSteeringAdapter { pending }));
+    if let Some(channel) = steering_channel {
+        agent = agent.with_capability(Arc::new(CliSteeringAdapter { channel }));
     }
     if let Some(token) = cancellation_token.as_ref() {
         agent = agent.with_cancellation_token(token.clone());
@@ -517,19 +579,6 @@ fn spawn_cancel_watcher(
         }
     });
     CancelWatcher { completion_sender }
-}
-
-fn start_steering_collector(receiver: mpsc::Receiver<CliSteeringMessage>) -> Arc<PendingSteering> {
-    let pending = Arc::new(PendingSteering::default());
-    let thread_pending = Arc::clone(&pending);
-    thread::spawn(move || {
-        while let Ok(message) = receiver.recv() {
-            if let Ok(mut messages) = thread_pending.messages.lock() {
-                messages.push_back(message);
-            }
-        }
-    });
-    pending
 }
 
 struct CliStreamObserver {
@@ -802,13 +851,8 @@ fn is_static_instruction_prefix_part(part: &ModelRequestPart) -> bool {
     }
 }
 
-#[derive(Default)]
-struct PendingSteering {
-    messages: Mutex<VecDeque<CliSteeringMessage>>,
-}
-
 struct CliSteeringAdapter {
-    pending: Arc<PendingSteering>,
+    channel: CliSteeringChannel,
 }
 
 #[async_trait]
@@ -820,7 +864,7 @@ impl AgentCapability for CliSteeringAdapter {
         _request: &mut ModelRequest,
         _settings: &mut Option<ModelSettings>,
     ) -> CapabilityResult<()> {
-        drain_pending_steering(&self.pending, context);
+        self.channel.drain_into(context, false);
         Ok(())
     }
 
@@ -830,23 +874,9 @@ impl AgentCapability for CliSteeringAdapter {
         context: &mut AgentContext,
         _output: &str,
     ) -> CapabilityResult<()> {
-        drain_pending_steering(&self.pending, context);
+        self.channel.drain_into(context, true);
         Ok(())
     }
-}
-
-fn drain_pending_steering(pending: &PendingSteering, context: &mut AgentContext) -> bool {
-    let mut drained = false;
-    if let Ok(mut messages) = pending.messages.lock() {
-        while let Some(message) = messages.pop_front() {
-            context.enqueue_message(BusMessage::new(
-                "steering",
-                json!({"id": message.id, "text": message.text}),
-            ));
-            drained = true;
-        }
-    }
-    drained
 }
 
 #[cfg(test)]
@@ -877,9 +907,9 @@ mod tests {
 
     use super::{
         CLI_GUIDANCE_KEY_METADATA, CLI_GUIDANCE_ORIGIN, CliGuidanceAdapter,
-        CliPromptContentAdapter, CliRunPolicy, CliSteeringMessage, SessionRunOutcome,
-        cancelled_display_projection, cli_guidance_key, interrupted_partial_response,
-        preserve_environment_export_evidence, run_session_stream, start_steering_collector,
+        CliPromptContentAdapter, CliRunPolicy, CliSteeringAdapter, CliSteeringChannel,
+        CliSteeringMessage, SessionRunOutcome, cancelled_display_projection, cli_guidance_key,
+        interrupted_partial_response, preserve_environment_export_evidence, run_session_stream,
         sync_run_execution_identity, sync_run_request_metadata, sync_run_session_affinity,
     };
     use crate::{args::HitlPolicy, prompt_input::PromptAttachment};
@@ -1625,36 +1655,115 @@ mod tests {
     }
 
     #[test]
-    fn steering_collector_buffers_messages_without_runtime_ack() {
-        let (steer_sender, steer_receiver) = mpsc::channel::<CliSteeringMessage>();
-        let pending = start_steering_collector(steer_receiver);
+    fn steering_adapter_drains_messages_synchronously_at_the_guard_boundary() {
+        let channel = CliSteeringChannel::new();
+        let mut context = AgentContext::default();
+        context.subscribe_messages();
 
+        channel
+            .submit(CliSteeringMessage {
+                id: "steer_test".to_string(),
+                text: "tighten scroll".to_string(),
+            })
+            .expect("steering channel should remain open");
+
+        assert!(channel.drain_into(&mut context, false));
+        let messages = context.messages.peek(context.agent_id.as_str());
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content["id"], "steer_test");
+        assert_eq!(messages[0].content["text"], "tighten scroll");
+    }
+
+    #[test]
+    fn empty_final_drain_seals_steering_admission_without_silent_acceptance() {
+        let channel = CliSteeringChannel::new();
+        let mut context = AgentContext::default();
+        context.subscribe_messages();
+
+        assert!(!channel.drain_into(&mut context, true));
+        let message = CliSteeringMessage {
+            id: "steer_after_seal".to_string(),
+            text: "preserve this correction".to_string(),
+        };
+        assert_eq!(channel.submit(message.clone()), Err(message));
+    }
+
+    #[test]
+    fn nonempty_final_drain_keeps_steering_admission_open_for_guard_turn() {
+        let channel = CliSteeringChannel::new();
+        let mut context = AgentContext::default();
+        context.subscribe_messages();
+        channel
+            .submit(CliSteeringMessage {
+                id: "steer_first".to_string(),
+                text: "first correction".to_string(),
+            })
+            .unwrap();
+
+        assert!(channel.drain_into(&mut context, true));
         assert!(
-            steer_sender
-                .send(CliSteeringMessage {
-                    id: "steer_test".to_string(),
-                    text: "tighten scroll".to_string(),
+            channel
+                .submit(CliSteeringMessage {
+                    id: "steer_second".to_string(),
+                    text: "second correction".to_string(),
                 })
                 .is_ok()
         );
+    }
 
-        let mut buffered = None;
-        for _ in 0..20 {
-            buffered = {
-                let mut messages = pending
-                    .messages
-                    .lock()
-                    .expect("pending steering lock should be available");
-                messages.pop_front()
-            };
-            if buffered.is_some() {
-                break;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        let buffered = buffered.expect("steering message should be buffered");
-        assert_eq!(buffered.id, "steer_test");
-        assert_eq!(buffered.text, "tighten scroll");
+    #[test]
+    fn steering_sent_before_final_validation_is_reinjected_before_completion() {
+        let channel = CliSteeringChannel::new();
+        let model_channel = channel.clone();
+        let requests = Arc::new(Mutex::new(Vec::<Vec<ModelMessage>>::new()));
+        let captured_requests = Arc::clone(&requests);
+        let request_count = Arc::new(Mutex::new(0_usize));
+        let model_request_count = Arc::clone(&request_count);
+        let model = FunctionModel::new(
+            move |messages: Vec<ModelMessage>,
+                  _settings: Option<ModelSettings>,
+                  _info: FunctionModelInfo| {
+                captured_requests.lock().unwrap().push(messages);
+                let mut count = model_request_count.lock().unwrap();
+                *count += 1;
+                if *count == 1 {
+                    model_channel
+                        .submit(CliSteeringMessage {
+                            id: "steer_late".to_string(),
+                            text: "include the late correction".to_string(),
+                        })
+                        .expect("steering channel should remain open");
+                    Ok(ModelResponse::text("first answer"))
+                } else {
+                    Ok(ModelResponse::text("corrected answer"))
+                }
+            },
+        );
+        let agent = AgentBuilder::new(Arc::new(model))
+            .build()
+            .with_capability(Arc::new(CliSteeringAdapter { channel }));
+        let mut session = AgentSession::new(agent);
+
+        let stream = tokio::runtime::Runtime::new()
+            .expect("runtime should start")
+            .block_on(session.run_stream("hello"))
+            .expect("steering guard should continue the run");
+
+        assert_eq!(stream.result.output, "corrected answer");
+        assert_eq!(*request_count.lock().unwrap(), 2);
+        let second_request = serde_json::to_string(&requests.lock().unwrap()[1]).unwrap();
+        assert!(second_request.contains("include the late correction"));
+        assert!(
+            stream
+                .events
+                .iter()
+                .any(|record| matches!(&record.event, AgentStreamEvent::SteeringGuard { .. }))
+        );
+        assert!(stream.events.iter().any(|record| matches!(
+            &record.event,
+            AgentStreamEvent::Custom { event }
+                if event.kind == "steering_received" && event.payload["id"] == "steer_late"
+        )));
     }
 
     #[test]

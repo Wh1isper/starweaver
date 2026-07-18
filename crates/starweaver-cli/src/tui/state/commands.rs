@@ -67,7 +67,7 @@ impl InteractiveTuiState {
             self.clear_composer_input();
             self.pending_attachments.clear();
             self.footer_mode = FooterMode::Context;
-            self.open_task_panel();
+            self.toggle_task_panel();
             return LocalCommandOutcome::Consumed;
         }
         if input == "/paste-image" {

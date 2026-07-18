@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -103,6 +103,7 @@ where
 /// Receiver for incremental model JSON events.
 pub struct ModelEventStream {
     receiver: tokio::sync::mpsc::Receiver<Result<Value, ModelError>>,
+    prefetched: VecDeque<Result<Value, ModelError>>,
     cancellation_token: CancellationToken,
     drop_abort_token: Option<CancellationToken>,
 }
@@ -132,9 +133,20 @@ impl ModelEventStream {
     ) -> Self {
         Self {
             receiver,
+            prefetched: VecDeque::new(),
             cancellation_token,
             drop_abort_token,
         }
+    }
+
+    pub(crate) fn prepend_events(
+        mut self,
+        events: impl IntoIterator<Item = Result<Value, ModelError>>,
+    ) -> Self {
+        let mut prefetched = events.into_iter().collect::<VecDeque<_>>();
+        prefetched.append(&mut self.prefetched);
+        self.prefetched = prefetched;
+        self
     }
 
     /// Return the transport-local drop-abort token, when the stream owns one.
@@ -149,6 +161,9 @@ impl ModelEventStream {
             return Some(Err(ModelError::Cancelled {
                 reason: "model event stream cancellation requested".to_string(),
             }));
+        }
+        if let Some(event) = self.prefetched.pop_front() {
+            return Some(event);
         }
         tokio::select! {
             biased;

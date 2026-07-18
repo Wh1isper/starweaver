@@ -25,7 +25,7 @@ use super::{
     render::{
         StyledLine, composer_input_width, composer_layout, queue_styled_line_at,
         render_composer_lines_from_layout, render_footer_lines, render_live_history_lines,
-        terminal_error,
+        render_status_bar_lines, terminal_error,
     },
     state::{
         BodyScrollDirection, COMPOSER_VISIBLE_LINES, CommandPaletteAccept, InteractiveTuiState,
@@ -126,63 +126,101 @@ pub(super) struct ResponsiveFrameBudget {
     pub(super) panels: usize,
     pub(super) status: usize,
     pub(super) composer: usize,
+    pub(super) bottom_padding: usize,
 }
 
 pub(super) fn responsive_frame_budget(
     height: usize,
     desired_composer: usize,
+    desired_status: usize,
     available_panel_lines: usize,
 ) -> ResponsiveFrameBudget {
     let height = height.max(1);
+    let has_panel = available_panel_lines > 0;
     let mut composer = 1usize;
-    let status = usize::from(height >= 2);
-    let mut body = usize::from(height >= 3);
-    let mut remaining = height.saturating_sub(composer + status + body);
+    let mut status = usize::from(height >= 2);
+    let mut body = usize::from(!has_panel && height >= 3);
+    let bottom_padding = usize::from((!has_panel && height >= 6) || (has_panel && height >= 12));
+    let mut remaining = height.saturating_sub(composer + status + body + bottom_padding);
+
+    // Active panels own the footer interaction. Reserve their rows before
+    // passive status metadata so compact questions, approvals, tasks, and
+    // pickers retain visible content as well as an action.
+    let panels = if has_panel {
+        available_panel_lines.min(remaining)
+    } else {
+        0
+    };
+    remaining = remaining.saturating_sub(panels);
+
+    let status_extra = desired_status
+        .max(status)
+        .saturating_sub(status)
+        .min(remaining);
+    status = status.saturating_add(status_extra);
+    remaining = remaining.saturating_sub(status_extra);
 
     let composer_extra = desired_composer.max(1).saturating_sub(1).min(remaining);
     composer = composer.saturating_add(composer_extra);
     remaining = remaining.saturating_sub(composer_extra);
 
-    // Panels are useful, but they may not starve the transcript. Compact them
-    // to at most half of the remaining rows and give all other rows to output.
-    let panels = available_panel_lines.min(remaining / 2);
-    body = body.saturating_add(remaining.saturating_sub(panels));
+    body = body.saturating_add(remaining);
 
     ResponsiveFrameBudget {
         body,
         panels,
         status,
         composer,
+        bottom_padding,
     }
 }
 
-fn compact_panel_lines(panel_lines: &[StyledLine], budget: usize, width: usize) -> Vec<StyledLine> {
+fn compact_panel_lines(
+    panel_lines: &[StyledLine],
+    budget: usize,
+    _width: usize,
+) -> Vec<StyledLine> {
+    if budget == 0 {
+        return Vec::new();
+    }
     if panel_lines.len() <= budget {
         return panel_lines.to_vec();
     }
-    if budget == 1 {
-        return panel_lines.last().cloned().into_iter().collect();
-    }
-    if budget == 2 {
-        return vec![
-            panel_lines[0].clone(),
-            panel_lines[panel_lines.len().saturating_sub(1)].clone(),
-        ];
-    }
-    let hidden = panel_lines.len().saturating_sub(budget.saturating_sub(1));
-    let mut lines = panel_lines
+    let meaningful = panel_lines
         .iter()
-        .take(budget.saturating_sub(2))
+        .filter_map(|line| panel_line_is_meaningful(line).then_some(line.clone()))
+        .collect::<Vec<_>>();
+    if meaningful.len() <= budget {
+        return meaningful;
+    }
+    if budget == 1 {
+        return meaningful.last().cloned().into_iter().collect();
+    }
+    let mut lines = meaningful
+        .iter()
+        .take(budget.saturating_sub(1))
         .cloned()
         .collect::<Vec<_>>();
-    let notice = format!("… {hidden} panel line(s) hidden; enlarge terminal …");
-    lines.push(StyledLine::plain(super::render::truncate_line(
-        &notice, width,
-    )));
-    if let Some(action) = panel_lines.last() {
+    if let Some(action) = meaningful.last()
+        && lines.last() != Some(action)
+    {
         lines.push(action.clone());
     }
+    lines.truncate(budget);
     lines
+}
+
+fn panel_line_is_meaningful(line: &StyledLine) -> bool {
+    let text = line
+        .segments
+        .iter()
+        .map(|segment| segment.text.as_str())
+        .collect::<String>();
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.starts_with('╭') || trimmed.starts_with('╰') {
+        return false;
+    }
+    !trimmed.trim_matches('│').trim().is_empty()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -221,10 +259,12 @@ fn compose_frame_from_body(
         input_width,
     );
     let all_footer_lines = render_footer_lines(state, render_width);
-    let status_index = all_footer_lines.len().saturating_sub(1);
+    let desired_status = render_status_bar_lines(state, render_width).len();
+    let status_index = all_footer_lines.len().saturating_sub(desired_status);
     let (panel_lines, all_status_lines) = all_footer_lines.split_at(status_index);
     let desired_composer = preview_layout.visible_lines.len().saturating_add(1);
-    let budget = responsive_frame_budget(height, desired_composer, panel_lines.len());
+    let budget =
+        responsive_frame_budget(height, desired_composer, desired_status, panel_lines.len());
     let composer_visible_lines = if budget.composer > 1 {
         budget.composer.saturating_sub(1)
     } else {
@@ -750,6 +790,10 @@ pub(super) fn handle_key_event(
         }
         return None;
     }
+    if key.code == KeyCode::F(2) {
+        state.toggle_task_panel();
+        return None;
+    }
     if state.help_panel_visible() {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::F(1) => state.close_help_panel(),
@@ -761,21 +805,6 @@ pub(super) fn handle_key_event(
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 state.close_help_panel();
-            }
-            _ => {}
-        }
-        return None;
-    }
-    if state.task_panel_expanded() {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => state.close_task_panel(),
-            KeyCode::Enter => state.toggle_task_panel_detail(),
-            KeyCode::Up => state.move_task_panel_selection(-1),
-            KeyCode::Down => state.move_task_panel_selection(1),
-            KeyCode::PageUp => state.move_task_panel_selection(-8),
-            KeyCode::PageDown => state.move_task_panel_selection(8),
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                state.close_task_panel();
             }
             _ => {}
         }
@@ -874,6 +903,7 @@ pub(super) fn handle_key_event(
         KeyCode::Char('?') if key.modifiers.is_empty() && state.composer_is_empty() => {
             state.open_help_panel();
         }
+        KeyCode::Esc if state.task_panel_expanded() => {}
         KeyCode::Esc => {
             state.open_selection_mode();
         }

@@ -364,7 +364,6 @@ pub(super) fn render_task_summary(state: &InteractiveTuiState, width: usize) -> 
         text.push_str(&blocked.to_string());
         text.push_str(" blocked");
     }
-    text.push_str(" · /tasks details");
     vec![pad_styled_line_with_style(
         StyledLine::styled(
             truncate_line(&text, width),
@@ -396,9 +395,9 @@ pub(super) fn render_task_panel(state: &InteractiveTuiState, width: usize) -> Ve
             style: SegmentStyle::dim(),
         },
     ]];
-    let selected = state.task_panel_index().min(items.len().saturating_sub(1));
+    let anchor = state.task_panel_index().min(items.len().saturating_sub(1));
     let visible_count = 8usize.min(items.len());
-    let start = selected
+    let start = anchor
         .saturating_sub(visible_count / 2)
         .min(items.len().saturating_sub(visible_count));
     let end = start.saturating_add(visible_count).min(items.len());
@@ -408,12 +407,8 @@ pub(super) fn render_task_panel(state: &InteractiveTuiState, width: usize) -> Ve
             style: SegmentStyle::dim(),
         }]);
     }
-    for (offset, item) in items[start..end].iter().enumerate() {
-        rows.push(render_task_row(
-            item,
-            start + offset == selected,
-            inner_width,
-        ));
+    for item in &items[start..end] {
+        rows.push(render_task_row(item, false, inner_width));
     }
     if end < items.len() {
         rows.push(vec![StyledSegment {
@@ -421,66 +416,9 @@ pub(super) fn render_task_panel(state: &InteractiveTuiState, width: usize) -> Ve
             style: SegmentStyle::dim(),
         }]);
     }
-    if state.task_panel_detail_visible()
-        && let Some(item) = state.selected_task()
-    {
-        rows.push(Vec::new());
-        push_detail_row(
-            &mut rows,
-            "subject:",
-            &item.subject,
-            inner_width,
-            SegmentStyle::default().merge(SegmentStyle::bold()),
-        );
-        if !item.description.trim().is_empty() {
-            push_detail_row(
-                &mut rows,
-                "description:",
-                &item.description,
-                inner_width,
-                SegmentStyle::default(),
-            );
-        }
-        if let Some(active) = item.active_form.as_deref() {
-            push_detail_row(
-                &mut rows,
-                "progress:",
-                active,
-                inner_width,
-                SegmentStyle::code(),
-            );
-        }
-        if let Some(owner) = item.owner.as_deref() {
-            push_detail_row(
-                &mut rows,
-                "owner:",
-                owner,
-                inner_width,
-                SegmentStyle::default(),
-            );
-        }
-        if !item.blocked_by.is_empty() {
-            push_detail_row(
-                &mut rows,
-                "blocked by:",
-                &item.blocked_by.join(", "),
-                inner_width,
-                SegmentStyle::warning(),
-            );
-        }
-        if !item.blocks.is_empty() {
-            push_detail_row(
-                &mut rows,
-                "blocks:",
-                &item.blocks.join(", "),
-                inner_width,
-                SegmentStyle::dim(),
-            );
-        }
-    }
     rows.push(Vec::new());
     rows.push(vec![StyledSegment {
-        text: "↑/↓: Move · Enter: Details · Esc: Close".to_string(),
+        text: "F2: Close".to_string(),
         style: SegmentStyle::dim(),
     }]);
     let mut lines = vec![StyledLine::plain("")];
@@ -587,70 +525,87 @@ pub(super) fn render_status_bar_lines(
     if width == 0 {
         return Vec::new();
     }
-    vec![pad_styled_line_with_style(
-        render_semantic_status_bar(state, width),
-        width,
-        SegmentStyle::status_bar(),
-    )]
+    render_semantic_status_bar(state, width)
+        .into_iter()
+        .map(|line| pad_styled_line_with_style(line, width, SegmentStyle::status_bar()))
+        .collect()
 }
 
-fn render_semantic_status_bar(state: &InteractiveTuiState, width: usize) -> StyledLine {
+fn render_semantic_status_bar(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
     let (badge, badge_style) = status_badge(state);
-    let mut line = StyledLine::styled(
-        format!(" {badge} "),
+    let badge = format!(" {badge} ");
+    let mut lines = vec![StyledLine::styled(
+        truncate_line(&badge, width),
         SegmentStyle::mode_badge().merge(badge_style),
-    );
-    let remaining = width.saturating_sub(line.visible_width());
+    )];
+    let remaining = width.saturating_sub(lines[0].visible_width());
     let action =
         pick_status_candidate(remaining.saturating_sub(3), status_action_candidates(state));
     if !action.is_empty() {
-        push_bounded_status_segment(&mut line, width, action, badge_style);
+        push_bounded_status_segment(&mut lines[0], width, action, badge_style);
     }
     if let Some(activity) = status_activity(state) {
-        push_optional_status_segment(
-            &mut line,
+        push_wrapped_status_segment(
+            &mut lines,
             width,
             activity,
             SegmentStyle::status_warning().merge(SegmentStyle::bold()),
         );
     }
     if state.pasted_image_count() > 0 {
-        push_optional_status_segment(
-            &mut line,
+        push_wrapped_status_segment(
+            &mut lines,
             width,
             format!("images {}", state.pasted_image_count()),
             SegmentStyle::status_warning(),
         );
     }
     if !state.is_at_bottom() {
-        push_optional_status_segment(
-            &mut line,
+        push_wrapped_status_segment(
+            &mut lines,
             width,
             format!("{} new", state.unread_output_lines),
             SegmentStyle::status_warning(),
         );
     }
-    push_optional_status_segment(
-        &mut line,
+    push_wrapped_status_segment(
+        &mut lines,
+        width,
+        format!("cost {}", state.session_cost_label()),
+        SegmentStyle::status_bar(),
+    );
+    push_wrapped_status_segment(
+        &mut lines,
+        width,
+        format!("time {}", state.session_elapsed_label()),
+        SegmentStyle::status_bar(),
+    );
+    push_wrapped_status_segment(
+        &mut lines,
         width,
         format!("ctx {}", state.context_percent_label()),
         SegmentStyle::status_bar(),
     );
     if let Some(notification) = state.input_notification() {
-        push_optional_status_segment(
-            &mut line,
+        push_wrapped_status_segment(
+            &mut lines,
             width,
             notification,
             SegmentStyle::status_warning(),
         );
     }
     if width >= 100 && !state.profile.is_empty() {
-        push_optional_status_segment(&mut line, width, &state.profile, SegmentStyle::status_bar());
+        push_wrapped_status_segment(
+            &mut lines,
+            width,
+            &state.profile,
+            SegmentStyle::status_bar(),
+        );
     }
     if width >= 120 {
-        push_optional_status_segment(&mut line, width, &state.model, SegmentStyle::status_bar());
+        push_wrapped_status_segment(&mut lines, width, &state.model, SegmentStyle::status_bar());
     }
-    line
+    lines
 }
 
 fn status_badge(state: &InteractiveTuiState) -> (&'static str, SegmentStyle) {
@@ -670,8 +625,6 @@ fn status_badge(state: &InteractiveTuiState) -> (&'static str, SegmentStyle) {
         ("HISTORY", SegmentStyle::code().merge(SegmentStyle::bold()))
     } else if state.help_panel_visible() {
         ("HELP", SegmentStyle::code().merge(SegmentStyle::bold()))
-    } else if state.task_panel_expanded() {
-        ("TASKS", SegmentStyle::code().merge(SegmentStyle::bold()))
     } else if state.session_picker_visible() {
         ("SESSION", SegmentStyle::code().merge(SegmentStyle::bold()))
     } else if state.model_picker_visible() {
@@ -744,12 +697,6 @@ fn status_action_candidates(state: &InteractiveTuiState) -> &'static [&'static s
         ]
     } else if state.help_panel_visible() {
         &["Esc close", "Esc"]
-    } else if state.task_panel_expanded() {
-        &[
-            "↑/↓ move · Enter details · Esc close",
-            "Enter details · Esc",
-            "Enter · Esc",
-        ]
     } else if state.session_picker_visible() {
         &[
             "↑/↓ select · Enter reload · Esc",
@@ -854,20 +801,33 @@ fn push_bounded_status_segment(
     push_status_segment(line, truncate_line(text.as_ref(), content_width), style);
 }
 
-fn push_optional_status_segment(
-    line: &mut StyledLine,
+fn push_wrapped_status_segment(
+    lines: &mut Vec<StyledLine>,
     width: usize,
     text: impl AsRef<str>,
     style: SegmentStyle,
 ) {
+    let text = text.as_ref();
+    if text.is_empty() || width == 0 {
+        return;
+    }
     let separator_width = visible_width(" · ");
-    let available = width.saturating_sub(line.visible_width());
-    if available <= separator_width {
+    let fits_current = lines.last().is_some_and(|line| {
+        line.visible_width()
+            .saturating_add(separator_width)
+            .saturating_add(visible_width(text))
+            <= width
+    });
+    if fits_current {
+        if let Some(line) = lines.last_mut() {
+            push_status_segment(line, text, style);
+        }
         return;
     }
-    let content_width = available.saturating_sub(separator_width);
-    if visible_width(text.as_ref()) > content_width {
-        return;
-    }
-    push_status_segment(line, text.as_ref(), style);
+    let mut line = StyledLine::styled(" ", SegmentStyle::status_bar());
+    line.push(
+        truncate_line(text, width.saturating_sub(1)),
+        style.merge(SegmentStyle::status_bar()),
+    );
+    lines.push(line);
 }

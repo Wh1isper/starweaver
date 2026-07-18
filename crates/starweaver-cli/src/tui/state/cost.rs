@@ -49,6 +49,13 @@ impl InteractiveTuiState {
         lines
     }
 
+    pub(in crate::tui) fn session_cost_label(&self) -> String {
+        UsageSummary::from_snapshots(self.usage_snapshots.values())
+            .total_pricing
+            .as_ref()
+            .map_or_else(|| "--".to_string(), format_usd_pricing)
+    }
+
     pub(in crate::tui) fn context_percent_label(&self) -> String {
         let tokens = self.latest_request_total_tokens.or(self.context_tokens);
         match (tokens, self.context_window) {

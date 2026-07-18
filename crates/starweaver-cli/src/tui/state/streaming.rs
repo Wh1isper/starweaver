@@ -365,23 +365,10 @@ impl InteractiveTuiState {
     fn apply_model_transport_event(&mut self, kind: &str, payload: &Value) {
         let normalized = normalized_event_kind(kind);
         if normalized.ends_with("model_transport_fallback") {
-            let reason = payload
-                .get("reason")
-                .and_then(Value::as_str)
-                .filter(|reason| !reason.trim().is_empty());
-            let status = reason.map_or_else(
-                || "Transport: websocket -> http".to_string(),
-                |reason| format!("Transport: websocket -> http ({reason})"),
-            );
-            self.model_transport_status = Some(status.clone());
-            let detail = payload
-                .get("detail")
-                .and_then(Value::as_str)
-                .filter(|detail| !detail.trim().is_empty());
-            self.push_system_notice(
-                NoticeLevel::Warning,
-                detail.map_or_else(|| status.clone(), |detail| format!("{status}: {detail}")),
-            );
+            // A fallback event means the request recovered by switching transports.
+            // Keep the diagnostic in the durable stream, but do not present it as
+            // an active warning or leave the superseded transport in the status bar.
+            self.model_transport_status = None;
         } else if normalized.ends_with("model_transport_selected")
             && let Some(transport) = payload.get("transport").and_then(Value::as_str)
         {

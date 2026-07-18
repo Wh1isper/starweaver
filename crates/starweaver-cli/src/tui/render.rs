@@ -21,8 +21,8 @@ mod panels;
 mod pickers;
 
 use panels::{
-    render_command_palette, render_hitl_panel, render_selection_panel, render_status_bar_lines,
-    render_task_panel, render_task_summary,
+    render_command_palette, render_hitl_panel, render_selection_panel, render_task_panel,
+    render_task_summary,
 };
 use pickers::{push_detail_row, render_model_picker_panel, render_session_picker_panel};
 
@@ -307,6 +307,13 @@ const fn composer_placeholder(state: &InteractiveTuiState) -> &'static str {
     } else {
         "Ask Starweaver to do anything"
     }
+}
+
+pub(super) fn render_status_bar_lines(
+    state: &InteractiveTuiState,
+    width: usize,
+) -> Vec<StyledLine> {
+    panels::render_status_bar_lines(state, width)
 }
 
 pub(super) fn render_footer_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
