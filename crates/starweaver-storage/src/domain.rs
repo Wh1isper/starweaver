@@ -58,9 +58,31 @@ impl SqliteStorage {
         profile: Option<String>,
         title: Option<String>,
     ) -> SessionStoreResult<SessionRecord> {
+        self.create_session_for_product(profile, title, None, None)
+    }
+
+    /// Create a durable session with product and workspace provenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error when the record cannot be persisted.
+    pub fn create_session_for_product(
+        &self,
+        profile: Option<String>,
+        title: Option<String>,
+        workspace: Option<String>,
+        source_product: Option<&str>,
+    ) -> SessionStoreResult<SessionRecord> {
         let mut session = SessionRecord::new(SessionId::new());
         session.profile = profile;
         session.title = title;
+        session.workspace = workspace;
+        if let Some(source_product) = source_product {
+            session.metadata.insert(
+                crate::SESSION_SOURCE_PRODUCT_METADATA_KEY.to_string(),
+                Value::String(source_product.to_string()),
+            );
+        }
         let connection = self.lock()?;
         save_session_record(&connection, &session)?;
         Ok(session)
@@ -1017,6 +1039,11 @@ impl SqliteStorage {
             transaction.commit().map_err(map_sqlite_session_error)?;
             return Ok(false);
         }
+        let imported_from = load_session_record(&transaction, session_id)?
+            .metadata
+            .get(crate::SESSION_IMPORTED_FROM_METADATA_KEY)
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
         let run_ids = load_run_ids(&transaction, session_id)?;
         for run_id in &run_ids {
             delete_run_evidence(&transaction, session_id, run_id)?;
@@ -1039,6 +1066,17 @@ impl SqliteStorage {
                 params![format!("session:{}", session_id.as_str())],
             )
             .map_err(map_sqlite_session_error)?;
+        if let Some(source_path) = imported_from {
+            transaction
+                .execute(
+                    "INSERT INTO local_store_import_tombstones
+                     (source_path, session_id, deleted_at) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(source_path, session_id) DO UPDATE SET
+                       deleted_at = excluded.deleted_at",
+                    params![source_path, session_id.as_str(), Utc::now().to_rfc3339()],
+                )
+                .map_err(map_sqlite_session_error)?;
+        }
         transaction
             .execute(
                 "DELETE FROM session_records WHERE session_id = ?1",

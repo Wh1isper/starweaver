@@ -98,6 +98,7 @@ impl SqliteSessionStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(map_sqlite_session_error)?;
         let current = load_background_record(&transaction, &record.attempt_id)?;
+        ensure_background_parent_writable(&transaction, &current)?;
         if current.owner_lease.expired_at(Utc::now())
             || !same_background_identity(&current, &record)
             || !same_background_owner(&current, &record)
@@ -130,6 +131,7 @@ impl SqliteSessionStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(map_sqlite_session_error)?;
         let mut record = load_background_record(&transaction, attempt_id)?;
+        ensure_background_parent_writable(&transaction, &record)?;
         if record.execution_status.is_terminal()
             || record.owner_lease.expired_at(now)
             || record.owner_lease.host_instance_id != host_instance_id
@@ -1018,6 +1020,7 @@ fn commit_background_terminal_transaction(
         ));
     }
     let current = load_background_record(transaction, &record.attempt_id)?;
+    ensure_background_parent_writable(transaction, &current)?;
     let terminal_fingerprint = background_terminal_fingerprint(&record, artifact.as_ref())?;
     if current.execution_status.is_terminal() {
         let persisted_fingerprint =
@@ -1154,6 +1157,23 @@ fn commit_background_terminal_transaction(
     save_background_record(transaction, &record, false)?;
     save_background_terminal_fingerprint(transaction, &record.attempt_id, &terminal_fingerprint)?;
     Ok(record)
+}
+
+fn ensure_background_parent_writable(
+    transaction: &Transaction<'_>,
+    record: &BackgroundSubagentRecord,
+) -> SessionStoreResult<()> {
+    let session = load_session_record(transaction, &record.parent_session_id)?;
+    if session.namespace_id != record.namespace_id
+        || session.status != SessionStatus::Active
+        || session.deletion_fence.blocks_continuation()
+    {
+        return Err(SessionStoreError::Conflict(
+            "background owner write rejected because parent session is deleting or deleted"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn load_background_record(

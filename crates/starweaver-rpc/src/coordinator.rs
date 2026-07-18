@@ -36,11 +36,11 @@ use starweaver_session::{
     RunAdmissionReceipt, RunRecord, RunStatus, SessionDeletionFence, SessionStatus, SessionStore,
     SessionStoreError,
 };
-use starweaver_storage::SqliteStorage;
+use starweaver_storage::{DurableReplaySource, SqliteStorage};
 use starweaver_stream::{
     DefaultDisplayMessageProjector, DisplayMessageProjector, DisplayProjectionContext,
     EnvironmentLifecycleEvent, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayEventLog,
-    ReplayScope, StreamTerminalMarker,
+    ReplayScope, StreamArchive, StreamTerminalMarker,
 };
 use tokio::{sync::watch, task::JoinHandle};
 
@@ -406,6 +406,7 @@ impl RpcRuntimeCoordinator {
                         + chrono::Duration::from_std(ACTIVE_LEASE_TTL).unwrap_or_default(),
                     idempotency_key: request.idempotency_key.clone(),
                     command_fingerprint: request.command_fingerprint.clone(),
+                    replaces_waiting_run_id: None,
                 })
                 .await?
         };
@@ -1224,33 +1225,59 @@ impl RpcRuntimeCoordinator {
         cursor: Option<ReplayCursor>,
         limit: Option<usize>,
     ) -> RpcHostResult<Vec<ReplayEvent>> {
-        self.storage
+        let run = self
+            .storage
             .session_store()
             .load_run(session_id, run_id)
             .await?;
         let target = Self::target(session_id, run_id);
         let scope = ReplayScope::run(run_id.as_str());
-        let mut events = self
-            .storage
-            .replay_event_log()
-            .replay_after(&scope, cursor.clone(), limit)
-            .await?;
-        let live = self
-            .active
-            .lock()
-            .map_err(active_registry_error)?
-            .get(&target)
-            .map(|run| run.events.clone())
-            .or_else(|| {
-                self.terminal.lock().ok().and_then(|cache| {
-                    cache
-                        .iter()
-                        .rev()
-                        .find(|run| run.target == target)
-                        .map(|run| run.events.clone())
+        // Persist the first evidence-family decision so a later canonical event cannot reinterpret
+        // a public replay-event cursor that was projected from display-message sequences.
+        let replay_source = self.storage.resolve_replay_source(
+            &scope,
+            matches!(
+                run.trigger_type.as_deref(),
+                Some("rpc" | "async_subagent_result")
+            ),
+        )?;
+        let canonical_source = replay_source == DurableReplaySource::ReplayEvents;
+        let mut events = if canonical_source {
+            self.storage
+                .replay_event_log()
+                .replay_after(&scope, cursor.clone(), limit)
+                .await?
+        } else {
+            let display_cursor = cursor
+                .as_ref()
+                .map(|cursor| ReplayCursor::display(scope.clone(), cursor.sequence));
+            self.storage
+                .stream_archive()
+                .replay_display_after(&scope, display_cursor)
+                .await?
+                .into_iter()
+                .map(|message| ReplayEvent::display(scope.clone(), message))
+                .collect()
+        };
+        let live = if canonical_source {
+            self.active
+                .lock()
+                .map_err(active_registry_error)?
+                .get(&target)
+                .map(|run| run.events.clone())
+                .or_else(|| {
+                    self.terminal.lock().ok().and_then(|cache| {
+                        cache
+                            .iter()
+                            .rev()
+                            .find(|run| run.target == target)
+                            .map(|run| run.events.clone())
+                    })
                 })
-            })
-            .unwrap_or_default();
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         for event in live {
             if cursor
                 .as_ref()
@@ -1391,6 +1418,7 @@ impl RpcRuntimeCoordinator {
                         + chrono::Duration::from_std(ACTIVE_LEASE_TTL).unwrap_or_default(),
                     idempotency_key: idempotency_key.clone(),
                     command_fingerprint: command_fingerprint.clone(),
+                    replaces_waiting_run_id: None,
                 },
             })
             .await?;
@@ -2948,6 +2976,7 @@ mod tests {
                 lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
                 idempotency_key: "live-background-consumer".to_string(),
                 command_fingerprint: "live-background-consumer-v1".to_string(),
+                replaces_waiting_run_id: None,
             })
             .await
             .unwrap();
@@ -3114,6 +3143,7 @@ mod tests {
                 lease_expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
                 idempotency_key: "foreign-start".to_string(),
                 command_fingerprint: "foreign-command".to_string(),
+                replaces_waiting_run_id: None,
             })
             .await
             .unwrap();

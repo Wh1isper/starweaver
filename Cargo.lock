@@ -2568,6 +2568,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
+ "fs2",
  "serde",
  "serde_json",
  "sha2",

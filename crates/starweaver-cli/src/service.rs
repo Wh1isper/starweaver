@@ -1,7 +1,18 @@
 //! CLI service layer over local storage and SDK execution.
 #![allow(clippy::redundant_pub_crate)]
 
-use std::{collections::BTreeSet, fs, path::Path, sync::mpsc, thread, time::Duration};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::Path,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Duration,
+};
 
 use chrono::Utc;
 use serde_json::{Value, json};
@@ -10,7 +21,7 @@ use starweaver_core::{RunId, SessionId, sdk_name};
 use starweaver_oauth_provider::create_oauth_refresh_supervisor_for_models_with_options;
 use starweaver_runtime::AgentStreamRecord;
 use starweaver_session::{
-    ApprovalStatus, HitlResumeClaim, RunRecord, RunStatus, SessionSearchFilter,
+    ApprovalStatus, HitlResumeClaim, RunAdmissionLease, RunRecord, RunStatus, SessionSearchFilter,
     SessionSearchGranularity, SessionSearchQuery, SessionSearchSource, SessionStatus, SessionStore,
 };
 use starweaver_stream::DisplayMessage;
@@ -76,6 +87,8 @@ pub(super) struct PreparedPromptRun {
     pub(super) run_id: String,
     pub(super) output_mode: OutputMode,
     pub(super) run: RunRecord,
+    pub(super) admission: CliRunAdmission,
+    admission_cancel_receiver: Option<mpsc::Receiver<()>>,
     run_input: PromptInput,
     resolved_profile: ResolvedProfile,
     pub(super) environment: ResolvedEnvironment,
@@ -95,6 +108,7 @@ pub(super) struct ExecutedPromptRun {
     run: RunRecord,
     output_mode: OutputMode,
     execution: crate::runner::CliRunExecution,
+    admission: CliRunAdmission,
 }
 
 enum HitlResumeClaimOperation {
@@ -250,18 +264,133 @@ impl Drop for OAuthRefreshGuard {
     }
 }
 
+#[derive(Clone)]
+pub(super) struct CliRunAdmission {
+    config: CliConfig,
+    lease: Arc<Mutex<RunAdmissionLease>>,
+    stop_sender: mpsc::Sender<()>,
+    handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
+    released: Arc<AtomicBool>,
+    lost: Arc<AtomicBool>,
+}
+
+impl CliRunAdmission {
+    fn start(config: CliConfig, lease: RunAdmissionLease) -> (Self, mpsc::Receiver<()>) {
+        const RETRY_INTERVAL: Duration = Duration::from_secs(1);
+        const SAFETY_MARGIN: chrono::Duration = chrono::Duration::seconds(5);
+
+        let lease = Arc::new(Mutex::new(lease));
+        let (stop_sender, stop_receiver) = mpsc::channel();
+        let (cancel_sender, cancel_receiver) = mpsc::channel();
+        let lost = Arc::new(AtomicBool::new(false));
+        let heartbeat_lease = Arc::clone(&lease);
+        let heartbeat_lost = Arc::clone(&lost);
+        let heartbeat_config = config.clone();
+        let handle = thread::spawn(move || {
+            let mut wait = Duration::from_secs(10);
+            loop {
+                match stop_receiver.recv_timeout(wait) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
+                let current = if let Ok(lease) = heartbeat_lease.lock() {
+                    lease.clone()
+                } else {
+                    heartbeat_lost.store(true, Ordering::Release);
+                    let _ = cancel_sender.send(());
+                    break;
+                };
+                if let Ok(refreshed) =
+                    LocalStore::heartbeat_run_admission(&heartbeat_config, &current)
+                {
+                    if let Ok(mut lease) = heartbeat_lease.lock() {
+                        *lease = refreshed;
+                    } else {
+                        heartbeat_lost.store(true, Ordering::Release);
+                        let _ = cancel_sender.send(());
+                        break;
+                    }
+                    wait = Duration::from_secs(10);
+                } else {
+                    if Utc::now() + SAFETY_MARGIN >= current.lease_expires_at {
+                        heartbeat_lost.store(true, Ordering::Release);
+                        let _ = cancel_sender.send(());
+                        break;
+                    }
+                    wait = RETRY_INTERVAL;
+                }
+            }
+        });
+        (
+            Self {
+                config,
+                lease,
+                stop_sender,
+                handle: Arc::new(Mutex::new(Some(handle))),
+                released: Arc::new(AtomicBool::new(false)),
+                lost,
+            },
+            cancel_receiver,
+        )
+    }
+
+    fn refresh(&self) -> CliResult<()> {
+        if self.lost.load(Ordering::Acquire) {
+            return Err(CliError::Run(
+                "run admission lease was lost before completion".to_string(),
+            ));
+        }
+        if self.released.load(Ordering::Acquire) {
+            return Err(CliError::Run(
+                "run admission lease was already released".to_string(),
+            ));
+        }
+        let current = self
+            .lease
+            .lock()
+            .map_err(|error| CliError::Storage(error.to_string()))?
+            .clone();
+        let refreshed = LocalStore::heartbeat_run_admission(&self.config, &current)?;
+        *self
+            .lease
+            .lock()
+            .map_err(|error| CliError::Storage(error.to_string()))? = refreshed;
+        Ok(())
+    }
+
+    fn release(&self, store: &LocalStore) -> CliResult<()> {
+        if self.released.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let _ = self.stop_sender.send(());
+        if let Ok(mut handle) = self.handle.lock()
+            && let Some(handle) = handle.take()
+        {
+            let _ = handle.join();
+        }
+        let lease = self
+            .lease
+            .lock()
+            .map_err(|error| CliError::Storage(error.to_string()))?
+            .clone();
+        store.release_run_admission(&lease)
+    }
+}
+
 /// CLI service.
 pub struct CliService {
     config: CliConfig,
     store: Option<LocalStore>,
+    host_instance_id: String,
 }
 
 impl CliService {
     /// Open service from resolved config.
-    pub const fn open(config: CliConfig) -> CliResult<Self> {
+    pub fn open(config: CliConfig) -> CliResult<Self> {
         Ok(Self {
             config,
             store: None,
+            host_instance_id: format!("cli-host-{}", uuid::Uuid::new_v4()),
         })
     }
 
@@ -368,11 +497,13 @@ impl CliService {
     ) -> CliResult<PromptRunExecution> {
         let mut prepared = self.prepare_prompt_run(command, prompt_input)?;
         let run_on_error = prepared.run.clone();
+        let admission_on_error = prepared.admission.clone();
         if let Err(error) = self.start_prepared_hitl_resume(&mut prepared) {
-            self.fail_prepared_prompt_run(run_on_error, &error)?;
+            self.fail_prepared_prompt_run(run_on_error, &error, &admission_on_error)?;
             return Err(error);
         }
         let run_on_error = prepared.run.clone();
+        let admission_on_error = prepared.admission.clone();
         let executed = match Self::run_prepared_prompt(
             prepared,
             stream_sender,
@@ -381,7 +512,7 @@ impl CliService {
         ) {
             Ok(executed) => executed,
             Err(error) => {
-                self.fail_prepared_prompt_run(run_on_error, &error)?;
+                self.fail_prepared_prompt_run(run_on_error, &error, &admission_on_error)?;
                 return Err(error);
             }
         };
@@ -542,7 +673,7 @@ impl CliService {
             &session_id,
             command.hitl_resume,
         )?;
-        let hitl_resume_claim = hitl_resume_source_run_id.map(|source_run_id| {
+        let hitl_resume_claim = hitl_resume_source_run_id.clone().map(|source_run_id| {
             HitlResumeClaim::new(
                 format!("cli-hitl-resume-{}", uuid::Uuid::new_v4()),
                 SessionId::from_string(&session_id),
@@ -556,13 +687,16 @@ impl CliService {
                 HitlResumeClaimOperation::Claim(claim),
             )?;
         }
-        let mut run = match self.store()?.append_run(
+        let host_instance_id = self.host_instance_id.clone();
+        let (mut run, admission_lease) = match self.store()?.admit_run(
             &session_id,
             prompt,
             restore_from,
             &resolved_profile.name,
+            &host_instance_id,
+            hitl_resume_source_run_id,
         ) {
-            Ok(run) => run,
+            Ok(admitted) => admitted,
             Err(error) => {
                 if let Some(claim) = hitl_resume_claim.as_ref() {
                     let release = run_hitl_resume_claim_operation(
@@ -582,6 +716,8 @@ impl CliService {
                 return Err(error);
             }
         };
+        let (admission, admission_cancel_receiver) =
+            CliRunAdmission::start(self.config.clone(), admission_lease);
         if let Some(claim) = hitl_resume_claim.as_ref() {
             run.metadata.insert(
                 HITL_RESUME_PREFLIGHT_SOURCE_RUN_ID_METADATA_KEY.to_string(),
@@ -648,6 +784,8 @@ impl CliService {
             run_id: run.run_id.as_str().to_string(),
             output_mode,
             run,
+            admission,
+            admission_cancel_receiver: Some(admission_cancel_receiver),
             run_input,
             resolved_profile,
             environment,
@@ -715,6 +853,8 @@ impl CliService {
         let PreparedPromptRun {
             output_mode,
             run,
+            admission,
+            admission_cancel_receiver,
             run_input,
             resolved_profile,
             environment,
@@ -734,12 +874,14 @@ impl CliService {
             stream_sender,
             steering_channel,
             cancel_receiver,
+            admission_cancel_receiver,
             execution_host,
         );
         result.map(|execution| ExecutedPromptRun {
             run,
             output_mode,
             execution,
+            admission,
         })
     }
 
@@ -747,10 +889,13 @@ impl CliService {
         &mut self,
         mut run: RunRecord,
         error: &CliError,
+        admission: &CliRunAdmission,
     ) -> CliResult<()> {
+        admission.refresh()?;
         let messages = failed_display_message(&run, &error.to_string());
         self.store()?
-            .fail_run_with_messages(&mut run, error.to_string(), &messages)
+            .fail_run_with_messages(&mut run, error.to_string(), &messages)?;
+        admission.release(self.store()?)
     }
 
     pub(super) fn complete_prompt_run(
@@ -761,12 +906,15 @@ impl CliService {
             mut run,
             output_mode,
             execution,
+            admission,
         } = executed;
+        admission.refresh()?;
         let execution_failed = execution.artifacts.status == RunStatus::Failed;
         let output = execution.output;
         let messages = self
             .store()?
             .complete_run(&mut run, output.clone(), execution.artifacts)?;
+        admission.release(self.store()?)?;
         if execution_failed && matches!(output_mode, OutputMode::Text | OutputMode::Silent) {
             return Err(CliError::Run(output));
         }
@@ -839,7 +987,7 @@ impl CliService {
         }
         if command.continue_session {
             if let Some(session_id) = read_current_session(&self.config)?
-                && self.store()?.load_session(&session_id).is_ok()
+                && self.store()?.load_workspace_session(&session_id).is_ok()
             {
                 return Ok((session_id, false));
             }
@@ -916,7 +1064,13 @@ impl CliService {
                 } else if let Some(session_id) = command.session {
                     vec![session_id]
                 } else {
-                    read_current_session(&self.config)?.into_iter().collect()
+                    read_current_session(&self.config)?
+                        .filter(|session_id| {
+                            self.store()
+                                .is_ok_and(|store| store.load_workspace_session(session_id).is_ok())
+                        })
+                        .into_iter()
+                        .collect()
                 };
                 let older_than = command
                     .older_than
@@ -1056,7 +1210,7 @@ impl CliService {
             return Ok(session_id.to_string());
         }
         if let Some(session_id) = read_current_session(&self.config)?
-            && self.store()?.load_session(&session_id).is_ok()
+            && self.store()?.load_workspace_session(&session_id).is_ok()
         {
             return Ok(session_id);
         }

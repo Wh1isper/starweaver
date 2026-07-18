@@ -20,6 +20,7 @@
 
 mod blocking;
 pub(crate) mod domain;
+mod local_database;
 mod migrations;
 mod replay_log;
 mod schema;
@@ -29,6 +30,11 @@ mod sqlite;
 mod storage;
 mod stream_archive;
 
+pub use local_database::{
+    CANONICAL_SESSION_DATABASE_FILENAME, LocalStoreImportReport,
+    SESSION_IMPORTED_FROM_METADATA_KEY, SESSION_SOURCE_PRODUCT_METADATA_KEY,
+    canonical_session_database_path,
+};
 pub use migrations::{
     SqliteAppliedMigration, SqliteMigrationStatus, SqlitePendingMigration, migrate_sqlite_database,
     sqlite_migration_status,
@@ -37,7 +43,7 @@ pub use replay_log::SqliteReplayEventLog;
 pub use session_search::{LocalSessionSearchLimits, LocalSessionSearchProvider};
 pub use session_store::SqliteSessionStore;
 pub use starweaver_session::RunEvidenceCommit;
-pub use storage::SqliteStorage;
+pub use storage::{DurableReplaySource, SqliteStorage};
 pub use stream_archive::SqliteStreamArchive;
 
 #[cfg(test)]
@@ -50,7 +56,10 @@ mod tests {
     use rusqlite::{Connection, params};
     use starweaver_context::{AgentCheckpoint, AgentRunState};
     use starweaver_core::{AgentExecutionNode, ConversationId, Metadata, RunId, SessionId};
-    use starweaver_session::{RunRecord, SessionRecord, SessionStore};
+    use starweaver_session::{
+        AcquireRunAdmission, LOCAL_SESSION_NAMESPACE, RunRecord, RunStatus, SessionRecord,
+        SessionStore,
+    };
     use starweaver_stream::{
         AgentStreamEvent, AgentStreamRecord, ReplayEventKind, ReplayEventLog, ReplayScope,
     };
@@ -73,6 +82,10 @@ mod tests {
                 "20260714_000005_agent_session_management",
                 "20260714_000006_async_subagent_delivery",
                 "20260715_000007_background_terminal_fingerprint",
+                "20260718_000008_local_store_imports",
+                "20260718_000009_incremental_local_store_imports",
+                "20260718_000010_durable_replay_source_selection",
+                "20260718_000011_local_store_import_tombstones",
             ]
         );
         let second = migrate_sqlite_database(&database_path).expect("second migration");
@@ -103,6 +116,10 @@ mod tests {
         "run_evidence_commits",
         "stream_publication_outbox",
         "hitl_resume_claims",
+        "local_store_imports",
+        "local_store_import_sessions",
+        "replay_source_selections",
+        "local_store_import_tombstones",
     ];
 
     const FOUNDATION_INDEXES: &[&str] = &[
@@ -110,6 +127,8 @@ mod tests {
         "ix_replay_events_scope_sequence",
         "ix_display_message_records_scope_sequence",
         "ix_stream_publication_outbox_session",
+        "ix_local_store_import_sessions_session",
+        "ix_local_store_import_tombstones_session",
     ];
 
     fn assert_table_exists(connection: &Connection, table: &str) {
@@ -390,6 +409,80 @@ mod tests {
         assert!(run.stream_cursors.is_empty());
         let session = store.load_session(&session_id).await.expect("load session");
         assert!(session.stream_cursors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn parked_waiting_run_requires_typed_replacement_admission() {
+        let store = SqliteSessionStore::in_memory().expect("sqlite store");
+        let session_id = SessionId::from_string("session_waiting_replacement");
+        store
+            .save_session(SessionRecord::new(session_id.clone()))
+            .await
+            .expect("save session");
+
+        let source_run_id = RunId::from_string("run_waiting_source");
+        let mut source = RunRecord::new(
+            session_id.clone(),
+            source_run_id.clone(),
+            ConversationId::new(),
+        );
+        source.sequence_no = 1;
+        store.append_run(source).await.expect("append source run");
+        store
+            .update_run_status(&session_id, &source_run_id, RunStatus::Waiting, None)
+            .await
+            .expect("park waiting run");
+
+        let ordinary_run = RunRecord::new(
+            session_id.clone(),
+            RunId::from_string("run_ordinary_competitor"),
+            ConversationId::new(),
+        );
+        let error = store
+            .acquire_run_admission(AcquireRunAdmission {
+                run: ordinary_run,
+                namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+                host_instance_id: "ordinary-host".to_string(),
+                admission_id: "ordinary-admission".to_string(),
+                lease_expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
+                idempotency_key: "ordinary-key".to_string(),
+                command_fingerprint: "ordinary-fingerprint".to_string(),
+                replaces_waiting_run_id: None,
+            })
+            .await
+            .expect_err("ordinary admission must not replace a waiting run");
+        assert!(error.to_string().contains("active run"));
+
+        let replacement_run_id = RunId::from_string("run_typed_replacement");
+        let mut replacement = RunRecord::new(
+            session_id.clone(),
+            replacement_run_id.clone(),
+            ConversationId::new(),
+        );
+        replacement.restore_from_run_id = Some(source_run_id.clone());
+        let receipt = store
+            .acquire_run_admission(AcquireRunAdmission {
+                run: replacement,
+                namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+                host_instance_id: "hitl-host".to_string(),
+                admission_id: "hitl-admission".to_string(),
+                lease_expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
+                idempotency_key: "hitl-key".to_string(),
+                command_fingerprint: "hitl-fingerprint".to_string(),
+                replaces_waiting_run_id: Some(source_run_id.clone()),
+            })
+            .await
+            .expect("typed waiting replacement admission");
+        assert_eq!(receipt.run.run_id, replacement_run_id);
+        assert_eq!(
+            store
+                .load_run(&session_id, &source_run_id)
+                .await
+                .expect("load source")
+                .status,
+            RunStatus::Waiting,
+            "admission must preserve waiting source evidence"
+        );
     }
 
     #[tokio::test]

@@ -616,9 +616,9 @@ Example handshake and client model selection:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"tui"}}}
-{"jsonrpc":"2.0","id":2,"method":"model.list","params":{"client":"tui"}}
-{"jsonrpc":"2.0","id":3,"method":"model.select","params":{"client":"tui","profile":"coding"}}
-{"jsonrpc":"2.0","id":4,"method":"run.start","params":{"client":"tui","prompt":"hello","newSession":true}}
+{"jsonrpc":"2.0","id":2,"method":"model.list","params":{"clientStateScope":"tui"}}
+{"jsonrpc":"2.0","id":3,"method":"model.select","params":{"clientStateScope":"tui","profile":"coding"}}
+{"jsonrpc":"2.0","id":4,"method":"run.start","params":{"clientStateScope":"tui","prompt":"hello"}}
 {"jsonrpc":"2.0","id":5,"method":"stream.subscribe","params":{"sessionId":"session_...","runId":"run_...","subscriptionId":"sub_1"}}
 {"jsonrpc":"2.0","id":6,"method":"stream.unsubscribe","params":{"subscriptionId":"sub_1"}}
 {"jsonrpc":"2.0","id":7,"method":"shutdown","params":{}}
@@ -626,11 +626,11 @@ Example handshake and client model selection:
 
 The `stream.subscribe` example is for notification-capable transports such as stdio. Unary HTTP clients should omit live subscriptions and use replay/status polling.
 
-`model.select` writes `~/.starweaver/tui/state.json` or `~/.starweaver/desktop/state.json` depending on the `client` parameter. `run.prompt` and `run.start` use this priority for model selection: explicit `profile`/`modelProfile`, then selected profile for the supplied `client`, then the resolved config default profile.
+`model.select` writes the selected profile into RPC-owned `$state_dir/state.json`, keyed by the validated `clientStateScope`; legacy `client` is accepted as an alias, but conflicting values are rejected. Omitting the scope consistently uses the `rpc` scope for selection, inspection, and later runs. Updates use locked read-modify-write and atomic replacement, so current-session and other scope selections are preserved. `run.prompt` and `run.start` resolve model profiles in this order: explicit `profile`/`modelProfile`, scoped selection, then the RPC config default.
 
-`run.start` is non-blocking: it returns `sessionId`, `runId`, `status`, and `payloadFormat` after durable run creation and active-run registration. The runtime coordinator emits scoped Starweaver replay events; the RPC protocol edge maps those events into `run.started`, `run.output`, and `run.status` notifications. Stream payloads default to `agui`; pass `payloadFormat` or `stream.payloadFormat` as `display_message` to receive Starweaver `DisplayMessage` payloads instead. `run.prompt` remains the blocking method that returns the compact final JSON summary.
+`run.start` is non-blocking: it returns `sessionId`, `runId`, `status`, and `payloadFormat` after durable run creation and active-run registration. On stdio, subscriptions emit `subscription.ready` only after the subscribe response is flushed, followed by ordered canonical `stream.event` frames and terminal `run.status`; unary HTTP remains replay-only. Each connection permits at most 32 subscriptions and only one subscription per run. A terminal subscription drains all retained pages before closing. Stdio response flush and shutdown waits are deadline-bounded so an unread Desktop pipe cannot block server shutdown indefinitely.
 
-Use `stream.replay` for persisted output and `stream.subscribe` / `stream.unsubscribe` for explicit stream subscription lifecycle on notification-capable transports. `session.replay`, `session.output`, and `run.attach` remain product-shaped aliases over the same replay and active-run coordinator paths. Cursor semantics are scope-local: run output uses `run:<runId>` sequence values, while session output uses `session:<sessionId>` sequence values over the ordered session display feed. RPC clients may pass a full `cursor` object or the numeric `after` shorthand, which is interpreted within the requested scope. Active control methods are `run.cancel`, `run.steer`, `session.steer`, and `run.await`.
+Use `stream.replay` for persisted output and stdio `stream.subscribe` / `stream.unsubscribe` for connection-owned live tails. `session.replay`, `session.output`, and `run.attach` remain compatibility aliases over the same replay-event cursor family. RPC also wraps CLI/legacy display-only evidence into that outer family, allowing Desktop to replay CLI runs without cursor migration. The first replay of each run durably records whether that run uses canonical replay events or display messages; later evidence cannot switch cursor spaces between pages.
 
 ## Environment
 
@@ -647,6 +647,10 @@ shell_enabled = false
 Profiles can request `environment`, `filesystem`, and `shell` toolsets. Local policy still governs actual file and shell behavior.
 
 ## Local storage
+
+The CLI and RPC resolve the same canonical local session database, `$STARWEAVER_CONFIG_DIR/starweaver.sqlite` by default. `STARWEAVER_SESSION_DB` overrides it for both products (`STARWEAVER_STORE` remains a compatibility alias). The CLI incrementally and idempotently imports an older workspace-local `.starweaver/starweaver.sqlite`, including evidence appended by an older CLI after an earlier import, and records per-session workspace/source provenance. For sessions proven to belong to that exact legacy source, later imports also synchronize same-key mutable session, run, approval, deferred, context, environment, and snapshot records so queued or waiting state can advance to terminal state. Independently created canonical session-ID collisions continue to win, process-control ownership is never imported, and a physically deleted imported session is protected by a source-specific durable import tombstone so a later startup cannot recreate it from the legacy database. Project-local state keeps UX pointers and blobs, not an independent session database. CLI implicit continuation, fallback selection, default listing, trimming, and retention are restricted to the normalized current workspace; an invalid project current-session pointer is ignored rather than granting cross-workspace authority. Explicit session IDs remain the cross-workspace boundary.
+
+CLI and RPC runs share the same durable one-active-run admission and fencing generation. CLI renews its lease during execution, retries transient heartbeat failures, and cooperatively cancels before the retained lease can expire if ownership cannot be refreshed. Session deletion is a durable tombstone operation: active runs and live background-subagent ownership fence deletion, while repeated delete requests retry idempotent cleanup of CLI-owned compatibility blobs.
 
 The CLI uses a local SQLite database and file store. Diagnostics print resolved paths, provider readiness, workspace policy, and WAL status:
 
@@ -680,7 +684,7 @@ starweaver-cli reset --yes
 sw reset --yes
 ```
 
-`reset` removes the resolved SQLite database, `state.json`, and file store. It leaves `config.toml`, `tools.toml`, `mcp.json`, `skills/`, and `subagents/` in place.
+`reset` tombstones sessions belonging to the current normalized workspace, removes its project `state.json` and CLI-owned file store, and preserves the shared canonical SQLite database plus sessions from other workspaces. It leaves `config.toml`, `tools.toml`, `mcp.json`, `skills/`, and `subagents/` in place.
 
 ## Config
 

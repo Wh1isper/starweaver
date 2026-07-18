@@ -16,8 +16,8 @@ use starweaver_session::{
     DurableBackgroundSubagentExecutionStatus, DurableBackgroundSubagentOwnerLease,
     DurableBackgroundSubagentResultRef, DurableBackgroundSubagentRetentionStatus, HitlResumeClaim,
     InputPart, LOCAL_SESSION_NAMESPACE, RelatedRunUpdate, RunEvidenceCommit, RunRecord, RunStatus,
-    SessionRecord, SessionStore, SessionStoreError, StreamPublicationTarget,
-    StreamPublicationTargets,
+    SessionDeletionFence, SessionRecord, SessionStatus, SessionStore, SessionStoreError,
+    StreamPublicationTarget, StreamPublicationTargets,
 };
 
 pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix: &str) {
@@ -280,6 +280,30 @@ pub async fn assert_background_subagent_contract(store: Arc<dyn SessionStore>, s
         .record_background_subagent_acceptance(record.clone())
         .await
         .expect("record acceptance");
+    let parent_before_delete = store
+        .load_session(&session_id)
+        .await
+        .expect("load parent before deletion fence");
+    store
+        .acquire_session_deletion_fence(
+            &session_id,
+            parent_before_delete.revision,
+            &format!("background-active-fence-{suffix}"),
+            "contract",
+            &format!("background-active-delete-{suffix}"),
+            &format!("background-active-delete-v1-{suffix}"),
+        )
+        .await
+        .expect_err("active background ownership must atomically reject deletion fencing");
+    assert_eq!(
+        store
+            .load_session(&session_id)
+            .await
+            .expect("load unfenced parent")
+            .deletion_fence,
+        SessionDeletionFence::Stable,
+        "rejected deletion must not leave a partial fence"
+    );
     store
         .record_background_subagent_acceptance(record.clone())
         .await
@@ -426,6 +450,7 @@ pub async fn assert_background_subagent_contract(store: Arc<dyn SessionStore>, s
             lease_expires_at: Utc::now() + chrono::Duration::minutes(1),
             idempotency_key: format!("background-idempotency-{suffix}"),
             command_fingerprint: format!("background-fingerprint-{suffix}"),
+            replaces_waiting_run_id: None,
         },
     };
     let mut forged_cause = request.clone();
@@ -1191,6 +1216,116 @@ pub async fn assert_background_subagent_contract(store: Arc<dyn SessionStore>, s
         .record_background_subagent_terminal(replay_record)
         .await
         .expect("exact terminal replay remains valid after owner expiry");
+
+    let fenced_session_id =
+        SessionId::from_string(format!("background-fail-closed-session-{suffix}"));
+    let fenced_run_id = RunId::from_string(format!("background-fail-closed-run-{suffix}"));
+    store
+        .save_session(SessionRecord::new(fenced_session_id.clone()))
+        .await
+        .expect("save fail-closed session");
+    let mut fenced_parent = RunRecord::new(
+        fenced_session_id.clone(),
+        fenced_run_id.clone(),
+        ConversationId::from_string(format!("background-fail-closed-conversation-{suffix}")),
+    );
+    fenced_parent.status = RunStatus::Completed;
+    store
+        .append_run(fenced_parent)
+        .await
+        .expect("save fail-closed parent run");
+    let fenced_now = Utc::now();
+    let fenced_attempt =
+        SubagentAttemptId::from_string(format!("background-fail-closed-attempt-{suffix}"));
+    let mut fenced_record = BackgroundSubagentRecord {
+        schema_version: BACKGROUND_SUBAGENT_RECORD_VERSION,
+        attempt_id: fenced_attempt.clone(),
+        agent_id: format!("background-fail-closed-agent-{suffix}"),
+        linked_task_id: None,
+        subagent_name: "researcher".to_string(),
+        namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+        parent_session_id: fenced_session_id.clone(),
+        parent_run_id: fenced_run_id,
+        child_run_id: None,
+        continuation_run_id: None,
+        profile: "default".to_string(),
+        owner_lease: DurableBackgroundSubagentOwnerLease {
+            host_instance_id: format!("background-fail-closed-owner-{suffix}"),
+            fencing_generation: 1,
+            heartbeat_at: fenced_now,
+            lease_expires_at: fenced_now + chrono::Duration::minutes(5),
+        },
+        execution_status: DurableBackgroundSubagentExecutionStatus::Accepted,
+        result_ref: None,
+        failure_category: None,
+        cancellation_reason: None,
+        delivery_status: DurableBackgroundSubagentDeliveryStatus::Undelivered,
+        delivery_claim: None,
+        delivered_claim_id: None,
+        automatic_continuation_suppressed_by_run_id: None,
+        retention_status: DurableBackgroundSubagentRetentionStatus::Inline,
+        retention_expires_at: None,
+        trace_context: None,
+        accepted_at: fenced_now,
+        updated_at: fenced_now,
+        terminal_at: None,
+    };
+    store
+        .record_background_subagent_acceptance(fenced_record.clone())
+        .await
+        .expect("save fail-closed acceptance");
+    let mut deleting = store
+        .load_session(&fenced_session_id)
+        .await
+        .expect("load fail-closed session");
+    deleting.deletion_fence = SessionDeletionFence::Deleting {
+        fence_id: format!("forced-background-fence-{suffix}"),
+        expected_revision: deleting.revision,
+        requested_by: "contract-fixture".to_string(),
+        started_at: Utc::now(),
+    };
+    store
+        .save_session(deleting)
+        .await
+        .expect("force deletion fixture through low-level save");
+    store
+        .heartbeat_background_subagent(
+            &fenced_attempt,
+            &fenced_record.owner_lease.host_instance_id,
+            fenced_record.owner_lease.fencing_generation,
+            Utc::now() + chrono::Duration::minutes(5),
+        )
+        .await
+        .expect_err("background heartbeat must fail closed once deletion starts");
+    fenced_record.execution_status = DurableBackgroundSubagentExecutionStatus::Starting;
+    fenced_record.updated_at = Utc::now();
+    store
+        .update_background_subagent_execution(fenced_record.clone())
+        .await
+        .expect_err("background execution update must fail closed once deletion starts");
+    fenced_record.execution_status = DurableBackgroundSubagentExecutionStatus::Failed;
+    fenced_record.failure_category = Some("execution_error".to_string());
+    fenced_record.result_ref = Some(DurableBackgroundSubagentResultRef {
+        error: Some("must not be committed after deletion starts".to_string()),
+        size_bytes: 42,
+        ..DurableBackgroundSubagentResultRef::default()
+    });
+    fenced_record.terminal_at = Some(Utc::now());
+    fenced_record.updated_at = fenced_record.terminal_at.expect("terminal timestamp");
+    fenced_record.retention_expires_at = Some(Utc::now() + chrono::Duration::hours(1));
+    store
+        .record_background_subagent_terminal(fenced_record)
+        .await
+        .expect_err("background terminal update must fail closed once deletion starts");
+    let mut deleted = store
+        .load_session(&fenced_session_id)
+        .await
+        .expect("load deleting fixture");
+    deleted.status = SessionStatus::Deleted;
+    store
+        .save_session(deleted)
+        .await
+        .expect("save deleted fixture");
 }
 
 fn resumable_state(

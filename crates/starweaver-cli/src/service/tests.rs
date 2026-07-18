@@ -4,7 +4,10 @@ use chrono::Utc;
 use serde_json::json;
 use starweaver_core::{AgentId, RunId, SessionId, TaskId};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, AgentStreamSource};
-use starweaver_session::{ApprovalRecord, DeferredToolRecord, ExecutionStatus, RunStatus};
+use starweaver_session::{
+    ApprovalRecord, DeferredToolRecord, ExecutionStatus, RunStatus, SessionDeletionFence,
+    SessionStatus,
+};
 use starweaver_stream::{
     DefaultDisplayMessageProjector, DisplayMessage, DisplayMessageKind,
     DisplayMessageProjector as _, DisplayProjectionContext, ReplayScope, StreamArchive as _,
@@ -356,29 +359,230 @@ fn test_run_command(
 }
 
 #[test]
-fn ordinary_active_run_without_waiting_lineage_allows_concurrent_admission() {
+fn implicit_session_selection_is_scoped_to_the_current_workspace() {
+    let temp = tempfile::tempdir().unwrap();
+    let shared_global = temp.path().join("global");
+    let shared_database = starweaver_storage::canonical_session_database_path(&shared_global);
+    let mut config_a = test_config(&temp.path().join("workspace-a"));
+    config_a.global_dir = shared_global.clone();
+    config_a.database_path = shared_database.clone();
+    let mut config_b = test_config(&temp.path().join("workspace-b"));
+    config_b.global_dir = shared_global;
+    config_b.database_path = shared_database;
+
+    let session_a = LocalStore::open(&config_a)
+        .unwrap()
+        .create_session("general", Some("Workspace A".to_string()))
+        .unwrap();
+    let session_b = LocalStore::open(&config_b)
+        .unwrap()
+        .create_session("general", Some("Workspace B".to_string()))
+        .unwrap();
+
+    let store_a = LocalStore::open(&config_a).unwrap();
+    let listed_a = store_a.list_sessions(10).unwrap();
+    assert_eq!(listed_a.len(), 1);
+    assert_eq!(listed_a[0].session_id, session_a.session_id.as_str());
+    assert_eq!(
+        store_a.latest_session().unwrap().unwrap().session_id,
+        session_a.session_id
+    );
+    assert!(
+        store_a
+            .load_workspace_session(session_b.session_id.as_str())
+            .is_err()
+    );
+
+    let store_b = LocalStore::open(&config_b).unwrap();
+    let listed_b = store_b.list_sessions(10).unwrap();
+    assert_eq!(listed_b.len(), 1);
+    assert_eq!(listed_b[0].session_id, session_b.session_id.as_str());
+}
+
+#[test]
+fn invalid_current_session_pointer_cannot_escape_workspace_for_resume_or_trim() {
+    let temp = tempfile::tempdir().unwrap();
+    let shared_global = temp.path().join("global");
+    let shared_database = starweaver_storage::canonical_session_database_path(&shared_global);
+    let mut config_a = test_config(&temp.path().join("workspace-a"));
+    config_a.global_dir = shared_global.clone();
+    config_a.database_path = shared_database.clone();
+    let mut config_b = test_config(&temp.path().join("workspace-b"));
+    config_b.global_dir = shared_global;
+    config_b.database_path = shared_database;
+
+    let session_a = LocalStore::open(&config_a)
+        .unwrap()
+        .create_session("general", Some("Workspace A".to_string()))
+        .unwrap();
+    let session_b = LocalStore::open(&config_b)
+        .unwrap()
+        .create_session("general", Some("Workspace B".to_string()))
+        .unwrap();
+    write_current_session(&config_a, session_b.session_id.as_str()).unwrap();
+
+    let mut service = CliService::open(config_a).unwrap();
+    assert_eq!(
+        service.resolve_session_id(None).unwrap(),
+        session_a.session_id.as_str()
+    );
+    let trim = service
+        .session(SessionCommand::Trim(crate::args::SessionTrimCommand {
+            current: true,
+            all: false,
+            session: None,
+            keep_runs: 0,
+            older_than: None,
+            dry_run: true,
+            output: OutputMode::Json,
+        }))
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_str(&trim).unwrap();
+    assert_eq!(report["sessions_scanned"], 0);
+}
+
+#[test]
+fn reset_tombstones_only_current_workspace_and_preserves_shared_database() {
+    let temp = tempfile::tempdir().unwrap();
+    let shared_global = temp.path().join("global");
+    let shared_database = starweaver_storage::canonical_session_database_path(&shared_global);
+    let mut config_a = test_config(&temp.path().join("workspace-a"));
+    config_a.global_dir = shared_global.clone();
+    config_a.database_path = shared_database.clone();
+    let mut config_b = test_config(&temp.path().join("workspace-b"));
+    config_b.global_dir = shared_global;
+    config_b.database_path = shared_database.clone();
+
+    let session_a = LocalStore::open(&config_a)
+        .unwrap()
+        .create_session("general", Some("Workspace A".to_string()))
+        .unwrap();
+    let session_b = LocalStore::open(&config_b)
+        .unwrap()
+        .create_session("general", Some("Workspace B".to_string()))
+        .unwrap();
+
+    let mut service = CliService::open(config_a).unwrap();
+    service
+        .reset(&crate::args::ResetCommand {
+            yes: true,
+            output: OutputMode::Json,
+        })
+        .unwrap();
+
+    assert!(shared_database.exists());
+    let store = starweaver_storage::SqliteStorage::open(&shared_database).unwrap();
+    assert_eq!(
+        store.load_session(&session_a.session_id).unwrap().status,
+        SessionStatus::Deleted
+    );
+    assert_eq!(
+        store.load_session(&session_b.session_id).unwrap().status,
+        SessionStatus::Active
+    );
+}
+
+#[test]
+fn ordinary_active_run_rejects_cross_connection_admission() {
     let temp = tempfile::tempdir().unwrap();
     let config = test_config(temp.path());
-    let session_id = {
+    let (session_id, first_lease) = {
         let mut store = LocalStore::open(&config).unwrap();
         let session = store
-            .create_session("general", Some("Concurrent admission".to_string()))
+            .create_session("general", Some("Exclusive admission".to_string()))
             .unwrap();
-        store
-            .append_run(
-                session.session_id.as_str(),
-                "ordinary active run".to_string(),
+        let session_id = session.session_id.as_str().to_string();
+        let (_, lease) = store
+            .admit_run(
+                &session_id,
+                "first active run".to_string(),
                 None,
                 "general",
+                "cli-host-a",
+                None,
             )
             .unwrap();
-        session.session_id.as_str().to_string()
+        (session_id, lease)
     };
 
-    let mut service = CliService::open(config).unwrap();
-    service
-        .reject_ordinary_admission_during_waiting_continuation(&session_id, false)
+    let mut competing = LocalStore::open(&config).unwrap();
+    let error = competing
+        .admit_run(
+            &session_id,
+            "competing run".to_string(),
+            None,
+            "general",
+            "rpc-host-b",
+            None,
+        )
+        .expect_err("a second host must not acquire the same session");
+    assert!(error.to_string().contains("active run"));
+
+    let owner = LocalStore::open(&config).unwrap();
+    owner.release_run_admission(&first_lease).unwrap();
+}
+
+#[test]
+fn delete_session_is_fenced_by_active_work_and_tombstones_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = test_config(temp.path());
+    let mut store = LocalStore::open(&config).unwrap();
+
+    let active = store
+        .create_session("general", Some("Active deletion fence".to_string()))
         .unwrap();
+    let active_id = active.session_id.as_str().to_string();
+    let (_, lease) = store
+        .admit_run(
+            &active_id,
+            "still running".to_string(),
+            None,
+            "general",
+            "cli-delete-test-host",
+            None,
+        )
+        .unwrap();
+    let error = store
+        .delete_session(&active_id)
+        .expect_err("active work must fence deletion");
+    assert!(error.to_string().contains("active run"));
+    assert_eq!(
+        store.load_session(&active_id).unwrap().deletion_fence,
+        SessionDeletionFence::Stable,
+        "failed deletion must not leave a partial fence"
+    );
+    store.release_run_admission(&lease).unwrap();
+
+    let deletable = store
+        .create_session("general", Some("Durable tombstone".to_string()))
+        .unwrap();
+    let deletable_id = deletable.session_id.as_str().to_string();
+    assert!(store.delete_session(&deletable_id).unwrap());
+    let tombstone = store
+        .load_session(&deletable_id)
+        .expect("tombstoned record remains durable");
+    assert_eq!(tombstone.status, SessionStatus::Deleted);
+    assert!(matches!(
+        tombstone.deletion_fence,
+        SessionDeletionFence::Deleted { .. }
+    ));
+    let stale_blob_dir = config
+        .file_store_path
+        .join("sessions")
+        .join(&deletable_id)
+        .join("runs")
+        .join("stale");
+    std::fs::create_dir_all(&stale_blob_dir).unwrap();
+    std::fs::write(stale_blob_dir.join("display.compact.json"), b"stale").unwrap();
+    assert!(!store.delete_session(&deletable_id).unwrap());
+    assert!(
+        !config
+            .file_store_path
+            .join("sessions")
+            .join(&deletable_id)
+            .exists(),
+        "a tombstone retry must retry CLI-owned blob cleanup"
+    );
 }
 
 #[test]

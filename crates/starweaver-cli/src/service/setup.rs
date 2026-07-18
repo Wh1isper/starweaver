@@ -53,17 +53,25 @@ impl CliService {
                 "pass --yes to remove runtime session state".to_string(),
             ));
         }
+        let session_ids = self.store()?.all_session_ids()?;
+        let mut removed_sessions = 0_usize;
+        for session_id in session_ids {
+            if self.store()?.delete_session(&session_id)? {
+                removed_sessions = removed_sessions.saturating_add(1);
+            }
+        }
         self.store = None;
-        let removed_database = remove_file_if_exists(&self.config.database_path)?;
+        let removed_database = false;
         let removed_state = remove_file_if_exists(&self.config.project_dir.join("state.json"))?;
         let removed_store = remove_dir_if_exists(&self.config.file_store_path)?;
         match command.output {
             OutputMode::Text => Ok(format!(
-                "removed_database={removed_database}\nremoved_state={removed_state}\nremoved_store={removed_store}\nstatus=reset\n"
+                "removed_sessions={removed_sessions}\nremoved_database={removed_database}\nremoved_state={removed_state}\nremoved_store={removed_store}\nstatus=reset\n"
             )),
             OutputMode::DisplayJsonl | OutputMode::AguiJsonl | OutputMode::Json => Ok(format!(
                 "{}\n",
                 serde_json::to_string(&json!({
+                    "removed_sessions": removed_sessions,
                     "removed_database": removed_database,
                     "removed_state": removed_state,
                     "removed_store": removed_store,

@@ -266,6 +266,7 @@ pub fn execute_agent_session_with_channels(
         stream_sender,
         steering_channel,
         cancel_receiver,
+        None,
         CliAgentExecutionHost::blocking(),
     )
 }
@@ -282,13 +283,15 @@ pub fn execute_agent_session_with_host(
     stream_sender: Option<mpsc::SyncSender<AgentStreamRecord>>,
     steering_channel: Option<CliSteeringChannel>,
     cancel_receiver: Option<mpsc::Receiver<()>>,
+    admission_cancel_receiver: Option<mpsc::Receiver<()>>,
     host: CliAgentExecutionHost,
 ) -> CliResult<CliRunExecution> {
     let mut agent = profile.build_agent_with_delegation(
         host.delegation_mode,
         host.background_subagent_supervisor.clone(),
     )?;
-    let cancellation_token = cancel_receiver.as_ref().map(|_| CancellationToken::new());
+    let cancellation_token = (cancel_receiver.is_some() || admission_cancel_receiver.is_some())
+        .then(CancellationToken::new);
     if let Some(goal) = policy.goal.as_ref() {
         let options = GoalRunOptions::new(goal.objective.clone(), goal.max_iterations);
         let retry_budget = options.max_iterations().saturating_add(5);
@@ -345,11 +348,15 @@ pub fn execute_agent_session_with_host(
     if let Some(supervisor) = host.background_subagent_supervisor.as_ref() {
         supervisor.begin_parent_run(run.run_id.clone());
     }
+    let cancel_receivers = [cancel_receiver, admission_cancel_receiver]
+        .into_iter()
+        .flatten()
+        .collect();
     let run_outcome = run_session_stream(
         &runtime,
         &mut session,
         prompt_text,
-        cancel_receiver,
+        cancel_receivers,
         cancellation_token,
     );
     if let Some(supervisor) = host.background_subagent_supervisor.as_ref() {
@@ -527,24 +534,29 @@ fn run_session_stream(
     runtime: &tokio::runtime::Runtime,
     session: &mut AgentSession,
     prompt: String,
-    cancel_receiver: Option<mpsc::Receiver<()>>,
+    cancel_receivers: Vec<mpsc::Receiver<()>>,
     cancellation_token: Option<CancellationToken>,
 ) -> CliResult<SessionRunOutcome> {
     let run_future = session.run_stream(prompt);
-    if let Some(cancel_receiver) = cancel_receiver {
+    if cancel_receivers.is_empty() {
+        Ok(session_run_outcome(runtime.block_on(run_future)))
+    } else {
         let cancellation_token = cancellation_token.unwrap_or_default();
-        let cancel_watcher = spawn_cancel_watcher(cancel_receiver, cancellation_token.clone());
+        let cancel_watchers = cancel_receivers
+            .into_iter()
+            .map(|receiver| spawn_cancel_watcher(receiver, cancellation_token.clone()))
+            .collect::<Vec<_>>();
         runtime.block_on(async move {
             tokio::pin!(run_future);
             let outcome = tokio::select! {
                 result = &mut run_future => session_run_outcome(result),
                 () = cancellation_token.cancelled() => SessionRunOutcome::Cancelled,
             };
-            cancel_watcher.complete();
+            for watcher in cancel_watchers {
+                watcher.complete();
+            }
             Ok(outcome)
         })
-    } else {
-        Ok(session_run_outcome(runtime.block_on(run_future)))
     }
 }
 
@@ -1867,7 +1879,7 @@ mod tests {
                 &runtime,
                 &mut session,
                 "hello".to_string(),
-                Some(cancel_receiver),
+                vec![cancel_receiver],
                 Some(CancellationToken::new()),
             ) {
                 Ok(SessionRunOutcome::Cancelled) => Ok(()),
