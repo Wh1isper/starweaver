@@ -9,7 +9,7 @@ use syntect::{
 use unicode_width::UnicodeWidthChar;
 
 use super::render::{
-    SegmentStyle, StyledLine, truncate_line_center, visible_width, wrap_text_width,
+    SegmentStyle, StyledLine, truncate_line, truncate_line_center, visible_width, wrap_text_width,
 };
 
 pub(super) const ASSISTANT_CONTENT_PREFIX: &str = "\u{200b}";
@@ -140,28 +140,23 @@ fn render_transcript_status_lines(line: &str, width: usize) -> Vec<StyledLine> {
         )];
     }
     if let Some(text) = line.strip_prefix("Steering received:") {
-        let mut rendered = StyledLine::styled("  ✓ steer received", SegmentStyle::blockquote());
-        let detail = text.trim_start();
-        if !detail.is_empty() {
-            rendered.push(" ", SegmentStyle::dim());
-            rendered.push(detail, SegmentStyle::dim());
-        }
-        return vec![rendered];
+        return render_feedback_lines(
+            "  ✓ steer received",
+            text.trim_start(),
+            SegmentStyle::blockquote(),
+            width,
+        );
     }
     if line == "Steering received" {
-        return vec![StyledLine::styled(
-            "  ✓ steer received",
-            SegmentStyle::blockquote(),
-        )];
+        return render_feedback_lines("  ✓ steer received", "", SegmentStyle::blockquote(), width);
     }
     if let Some(text) = line.strip_prefix("Steering:") {
-        let mut rendered = StyledLine::styled("  >>> steer", SegmentStyle::warning());
-        let detail = text.trim_start();
-        if !detail.is_empty() {
-            rendered.push(" ", SegmentStyle::dim());
-            rendered.push(detail, SegmentStyle::dim());
-        }
-        return vec![rendered];
+        return render_feedback_lines(
+            "  >>> steer",
+            text.trim_start(),
+            SegmentStyle::warning(),
+            width,
+        );
     }
     if let Some(thinking) = line.strip_prefix("Thinking:") {
         let mut rendered = StyledLine::styled("  ◌ thinking", SegmentStyle::warning());
@@ -409,6 +404,50 @@ fn render_file_content_lines(line: &str, width: usize) -> Option<Vec<StyledLine>
         ));
     }
     None
+}
+
+fn render_feedback_lines(
+    prefix: &str,
+    detail: &str,
+    prefix_style: SegmentStyle,
+    width: usize,
+) -> Vec<StyledLine> {
+    if detail.is_empty() {
+        return vec![StyledLine::styled(
+            truncate_line(prefix, width.max(1)),
+            prefix_style,
+        )];
+    }
+    let width = width.max(1);
+    let rendered_prefix = truncate_line(prefix, width);
+    let prefix_width = visible_width(&rendered_prefix);
+    if prefix_width.saturating_add(1) >= width {
+        let mut lines = vec![StyledLine::styled(rendered_prefix, prefix_style)];
+        lines.extend(
+            wrap_text_width(detail, width)
+                .into_iter()
+                .map(|chunk| StyledLine::styled(chunk, SegmentStyle::dim())),
+        );
+        return lines;
+    }
+    let content_start = prefix_width.saturating_add(1);
+    let available = width.saturating_sub(content_start).max(1);
+    let chunks = wrap_text_width(detail, available);
+    chunks
+        .into_iter()
+        .enumerate()
+        .map(|(index, chunk)| {
+            let mut line = if index == 0 {
+                let mut line = StyledLine::styled(rendered_prefix.clone(), prefix_style);
+                line.push(" ", SegmentStyle::dim());
+                line
+            } else {
+                StyledLine::plain(" ".repeat(content_start))
+            };
+            line.push(chunk, SegmentStyle::dim());
+            line
+        })
+        .collect()
 }
 
 fn render_prefixed_content_lines(

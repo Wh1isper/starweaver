@@ -74,9 +74,12 @@ Evidence:
 
 - [x] Replaced append-order composition with semantic priority.
 - [x] Removed redundant state combinations such as `READY | State: IDLE`.
-- [x] Uses one compact status line by default.
+- [x] Uses one compact status line when content fits and wraps semantic segments on narrow terminals.
 - [x] Keeps question, approval, error, waiting, running, paused output, and current action ahead of metadata.
-- [x] Adds context, profile, model, session, and transport metadata only when width permits.
+- [x] Shows session-scoped estimated cost, current-run elapsed time, and context usage; elapsed time uses unit-suffixed formatting, freezes at terminal/waiting state, resets for the next run, and `/clear` or session changes reset the view-scoped metrics.
+- [x] Keeps the status area above the composer and uses adaptive bottom padding to lift input without reversing the hierarchy.
+- [x] Adds profile, model, session, and transport metadata only when relevant.
+- [x] Keeps successful WebSocket-to-HTTP fallback as durable diagnostic evidence without surfacing a warning in the normal TUI; terminal transport failures remain visible.
 - [x] Uses bounded transient notifications.
 - [x] Preserves a current action when only one status row is available.
 
@@ -88,8 +91,8 @@ Evidence:
 
 ### 5. Task Panel Redesign
 
-- [x] Defaults to one progress/current-task summary row.
-- [x] Provides an expandable selectable task list and detail view.
+- [x] Expands automatically when the first active task snapshot arrives and toggles to a one-line progress/current-task summary with `F2`.
+- [x] Provides a read-only task list without selection, arrow navigation, Enter details, or Esc dismissal; `/tasks` remains the command equivalent without a permanent summary hint.
 - [x] Shows `active_form` as current activity rather than truncating it to a status token.
 - [x] Distinguishes completed, active, pending, and blocked tasks.
 - [x] Adds `/tasks` and command discovery.
@@ -101,7 +104,7 @@ Evidence:
 - `crates/starweaver-cli/src/tui/state/tasks.rs`
 - `crates/starweaver-cli/src/tui/render/panels.rs`
 - `crates/starweaver-cli/src/tui/state/commands.rs`
-- Task rendering and modal tests in `crates/starweaver-cli/src/tui/tests.rs`.
+- Task rendering and F2 toggle tests in `crates/starweaver-cli/src/tui/tests.rs`.
 
 ### 6. Help and Composer Discoverability
 
@@ -109,6 +112,9 @@ Evidence:
 - [x] Uses modal-specific status actions; transient help is opened from the composer context.
 - [x] Keeps `/help` as the persistent transcript form generated from shared descriptors.
 - [x] Shows up/down overflow markers for hidden composer lines.
+- [x] Wraps submitted and received steering feedback at terminal display width.
+- [x] Drains accepted steering synchronously at request and final-output guard boundaries so late guidance is reinjected before completion; admission closure is linearized with the final drain, and rejected post-guard steering is queued as the next continuation instead of dropped.
+- [x] Renders consecutive thinking segments without empty spacer rows while preserving boundaries around text, tools, and system events.
 - [x] Keeps `Ctrl+O` as an explicit newline shortcut after assigning Tab to completion.
 
 Evidence:
@@ -142,7 +148,7 @@ Evidence:
 - [x] Asserts that no rendered line exceeds the effective terminal width.
 - [x] Covers multi-question, multi-select, preview, free-form, retained draft, and compact question rendering.
 - [x] Covers built-in, configured command, alias, skill, and argument completion.
-- [x] Covers semantic status, task summary/detail, and critical action visibility.
+- [x] Covers semantic status wrapping, session cost, frozen/reset run timing, composer placement, default-expanded read-only tasks, F2 toggling, successful transport fallback suppression, terminal transport failure visibility, steering guard reinjection, compact consecutive thinking, and critical action visibility.
 - [x] Covers transient help, composer overflow, persistent history, malformed recovery, and reverse search.
 - [x] Uses deterministic full-frame smoke coverage because the test environment cannot retain alternate-screen PTY frames reliably.
 

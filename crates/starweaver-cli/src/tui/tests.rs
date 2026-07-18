@@ -1,6 +1,11 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use std::{collections::BTreeMap, ffi::OsStr, path::Path};
+use std::{
+    collections::BTreeMap,
+    ffi::OsStr,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseEvent, MouseEventKind,
@@ -34,16 +39,18 @@ use super::{
         composer_cursor_position_wrapped, composer_input_width, input_tail_lines,
         input_viewport_lines, input_viewport_lines_wrapped, input_visual_line_count,
         render_composer_lines, render_footer_lines, render_live_history_lines,
-        render_shortcut_overlay, truncate_line, visible_width,
+        render_shortcut_overlay, render_status_bar_lines, truncate_line, visible_width,
     },
+    snapshot::TuiSnapshot,
     state::{
-        FooterMode, InteractiveTuiState, ModelChoice, SessionChoice,
+        FooterMode, InteractiveTuiState, ModelChoice, SessionChoice, TaskPanelItem,
         display_lines_for_stream_record,
     },
     terminal::{
         InteractiveTuiEvent, compose_frame, handle_key_event, handle_mouse_event,
         responsive_frame_budget, should_capture_mouse, visible_body_bounds,
     },
+    timeline::{ContextEventCategory, TuiTimeline, project_timeline},
 };
 
 fn test_tui_state() -> InteractiveTuiState {
@@ -146,12 +153,21 @@ fn model_transport_selected_updates_status_bar_only() {
 }
 
 #[test]
-fn model_transport_fallback_updates_status_bar_and_transcript() {
+fn model_transport_fallback_is_hidden_after_successful_http_recovery() {
     let mut state = test_tui_state();
     state.begin_run("hello");
-
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "model_transport_selected",
+                json!({"transport": "websocket"}),
+            ),
+        },
+    ));
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
         AgentStreamEvent::Custom {
             event: AgentEvent::new(
                 "model_transport_fallback",
@@ -167,12 +183,33 @@ fn model_transport_fallback_updates_status_bar_and_transcript() {
     ));
 
     let footer = line_texts(&render_footer_lines(&state, 160)).join("\n");
-    assert!(footer.contains("Transport: websocket -> http"));
-    assert!(footer.contains("websocket_transport_error"));
-    assert!(state.body.iter().any(|line| {
-        line.contains("Transport: websocket -> http (websocket_transport_error)")
-            && line.contains("websocket closed before response.completed")
-    }));
+    let transcript = state.body.join("\n");
+    assert!(!footer.contains("Transport:"));
+    assert!(!transcript.contains("websocket_transport_error"));
+    assert!(!transcript.contains("websocket closed before response.completed"));
+}
+
+#[test]
+fn terminal_transport_failure_remains_visible() {
+    let mut state = test_tui_state();
+    state.begin_run("hello");
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::RunFailed {
+            run_id: RunId::from_string("run_transport_failure"),
+            error_kind: "transport_error".to_string(),
+            message: "transport failed after HTTP fallback".to_string(),
+        },
+    ));
+
+    assert_eq!(state.status, "FAILED");
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line.contains("transport failed after HTTP fallback"))
+    );
 }
 
 #[test]
@@ -2065,11 +2102,23 @@ fn tool_duration_and_task_panels_render_runtime_metadata() {
         },
     ));
     let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
-    assert!(footer.contains("Tasks 1/2"));
-    assert!(footer.contains("Current: #2 Working"));
-    assert!(!footer.contains("Done"));
+    assert!(footer.contains("1/2 complete"));
+    assert!(footer.contains("Done"));
+    assert!(footer.contains("Working"));
+    assert!(footer.contains("F2: Close"));
+    assert!(!footer.contains("Details"));
+    assert!(!footer.contains("Move"));
 
-    state.open_task_panel();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Esc)), None);
+    assert!(state.task_panel_expanded());
+    assert!(!state.selection_mode_visible());
+
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::F(2))), None);
+    let minimized = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(minimized.contains("Tasks 1/2"));
+    assert!(minimized.contains("Current: #2 Working"));
+
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::F(2))), None);
     let expanded = line_texts(&render_footer_lines(&state, 120)).join("\n");
     assert!(expanded.contains("1/2 complete"));
     assert!(expanded.contains("Done"));
@@ -2119,8 +2168,41 @@ fn begin_run_preserves_task_panel_items_for_next_prompt() {
     state.begin_run("next prompt");
 
     let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
-    assert!(footer.contains("Tasks 0/1"));
-    assert!(footer.contains("Current: #1 Working"));
+    assert!(footer.contains("0/1 complete"));
+    assert!(footer.contains("Working"));
+    assert!(footer.contains("F2: Close"));
+}
+
+#[test]
+fn session_reload_resets_task_panel_and_default_expands_new_tasks() {
+    let mut state = test_tui_state();
+    state.set_task_panel_items(vec![test_task_panel_item("a", "Session A task")]);
+    state.close_task_panel();
+    assert!(!state.task_panel_expanded());
+
+    state.set_snapshot(&TuiSnapshot {
+        session_id: "session_b".to_string(),
+        tasks: vec![test_task_panel_item("b", "Session B task")],
+        ..TuiSnapshot::default()
+    });
+
+    assert!(state.task_panel_expanded());
+    let footer = line_texts(&render_footer_lines(&state, 80)).join("\n");
+    assert!(footer.contains("Session B task"));
+    assert!(!footer.contains("Session A task"));
+}
+
+fn test_task_panel_item(id: &str, subject: &str) -> TaskPanelItem {
+    TaskPanelItem {
+        id: id.to_string(),
+        subject: subject.to_string(),
+        description: String::new(),
+        status: "in_progress".to_string(),
+        active_form: None,
+        owner: None,
+        blocked_by: Vec::new(),
+        blocks: Vec::new(),
+    }
 }
 
 #[test]
@@ -2227,7 +2309,7 @@ fn accepted_clear_resets_conversation_state_and_preserves_process_state() {
 
     state.input = "/cost".to_string();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
-    assert!(body_has_line(&state, "[SYS]   Input:  7 tokens"));
+    assert!(body_has_line(&state, "[SYS] No usage data available."));
 }
 
 #[test]
@@ -2390,6 +2472,62 @@ fn begin_run_does_not_precreate_empty_assistant_transcript_item() {
     assert!(body_has_line(&state, "User: respond"));
     assert!(!body_has_line(&state, "Assistant:"));
     assert!(!body_has_line(&state, ""));
+}
+
+#[test]
+fn consecutive_thinking_segments_do_not_insert_a_blank_line() {
+    let mut state = test_tui_state();
+    state.begin_run("respond");
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::thinking(
+                0,
+                "Planning integration test approach",
+            )),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::thinking(
+                1,
+                "Implementing and refining integration test",
+            )),
+        },
+    ));
+
+    let first = body_line_index(&state, "> Planning integration test approach");
+    let second = body_line_index(&state, "> Implementing and refining integration test");
+    assert_eq!(second, first + 1);
+}
+
+#[test]
+fn skipped_items_do_not_break_consecutive_visible_thinking_segments() {
+    let mut timeline = TuiTimeline::default();
+    timeline.push_thinking("Planning integration test approach", false);
+    timeline.push_context_event(
+        ContextEventCategory::Other,
+        vec!["hidden concise context".to_string()],
+    );
+    timeline.push_thinking("", false);
+    timeline.push_thinking("Implementing and refining integration test", false);
+
+    let projection = project_timeline(&timeline, TuiRenderMode::Concise);
+    let first = projection
+        .lines
+        .iter()
+        .position(|line| line.contains("Planning integration test approach"))
+        .unwrap();
+    let second = projection
+        .lines
+        .iter()
+        .position(|line| line.contains("Implementing and refining integration test"))
+        .unwrap();
+
+    assert_eq!(second, first + 1);
 }
 
 #[test]
@@ -5391,12 +5529,16 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
     let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
     assert!(footer.contains("Tasks"));
     assert!(footer.contains("Restoring task"));
-    assert!(footer.contains("1 blocked"));
+    assert!(
+        footer.contains("blocked by #2"),
+        "unexpected task footer: {footer}"
+    );
     state.open_task_panel();
-    state.toggle_task_panel_detail();
     let expanded = line_texts(&render_footer_lines(&state, 120)).join("\n");
-    assert!(expanded.contains("Replay task"));
+    assert!(expanded.contains("Restoring task"));
     assert!(expanded.contains("blocked by"));
+    assert!(expanded.contains("F2: Close"));
+    assert!(!expanded.contains("description:"));
 }
 
 #[test]
@@ -5723,6 +5865,97 @@ fn composer_paste_keeps_image_only_path_paste_behavior() {
 }
 
 #[test]
+fn run_elapsed_time_freezes_at_terminal_state_and_resets_for_next_run() {
+    let mut state = test_tui_state();
+    state.begin_run("first run");
+    state.session_timer_started_at =
+        Some(Instant::now().checked_sub(Duration::from_secs(65)).unwrap());
+
+    state.finish_run(Some("session_timer".to_string()));
+    assert_eq!(state.session_elapsed_label(), "1m05s");
+    let frozen = state.session_elapsed();
+    std::thread::sleep(Duration::from_millis(10));
+    assert_eq!(state.session_elapsed(), frozen);
+
+    state.begin_run("second run");
+    assert!(state.session_elapsed() < Duration::from_secs(1));
+    assert_eq!(state.session_elapsed_label(), "0s");
+    state.session_timer_started_at = Some(
+        Instant::now()
+            .checked_sub(Duration::from_secs(3_661))
+            .unwrap(),
+    );
+    state.wait_run(None);
+    assert_eq!(state.session_elapsed_label(), "1h01m01s");
+}
+
+#[test]
+fn status_bar_wraps_session_cost_and_elapsed_time_above_lifted_composer() {
+    let mut state = test_tui_state();
+    state.session_timer_started_at = Some(
+        Instant::now()
+            .checked_sub(Duration::from_secs(3_661))
+            .unwrap(),
+    );
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "usage_snapshot",
+                serde_json::to_value(UsageSnapshot {
+                    run_id: "run_status_cost".to_string(),
+                    estimate_pricing: Some(PricingEstimate::from_micros_usd(1_234_567)),
+                    ..UsageSnapshot::default()
+                })
+                .unwrap(),
+            ),
+        },
+    ));
+
+    let width = 36;
+    let status = render_status_bar_lines(&state, width);
+    let status_text = line_texts(&status).join("\n");
+    assert!(status.len() > 1);
+    assert!(status_text.contains("cost $1.234567"));
+    assert!(status_text.contains("time 1h01m01s"));
+    assert!(status.iter().all(|line| line.visible_width() <= width));
+
+    let frame = compose_frame(&mut state, width + 1, 12);
+    let lines = line_texts(&frame.lines);
+    let composer = lines
+        .iter()
+        .position(|line| line.starts_with("> Ask Starweaver"))
+        .unwrap();
+    let status = lines
+        .iter()
+        .position(|line| line.contains("READY"))
+        .unwrap();
+    assert!(
+        status < composer,
+        "status bar should remain above the composer"
+    );
+    assert!(
+        frame
+            .lines
+            .last()
+            .is_some_and(|line| line.visible_width() == 0),
+        "normal-height frames should keep one blank row below the composer"
+    );
+}
+
+#[test]
+fn steering_feedback_wraps_to_terminal_width() {
+    let detail = "please revise the implementation with a much longer steering message that cannot fit on one terminal line";
+    for prefix in ["Steering: ", "Steering received: "] {
+        let rendered = render_transcript_lines(&[format!("{prefix}{detail}")], 32);
+        assert!(rendered.len() > 1);
+        assert!(rendered.iter().all(|line| line.visible_width() <= 32));
+    }
+    let bare = render_transcript_lines(&["Steering received".to_string()], 8);
+    assert!(bare.iter().all(|line| line.visible_width() <= 8));
+}
+
+#[test]
 fn status_bar_secondary_uses_compact_text_on_narrow_widths() {
     let state = test_tui_state();
     let text = line_texts(&render_footer_lines(&state, 36)).join(
@@ -5865,9 +6098,9 @@ fn notifications_and_paused_output_are_visible_and_follow_can_resume() {
 #[test]
 fn responsive_budget_never_exceeds_real_terminal_height() {
     for height in 1..=20 {
-        let budget = responsive_frame_budget(height, 6, 40);
+        let budget = responsive_frame_budget(height, 6, 2, 40);
         assert_eq!(
-            budget.body + budget.panels + budget.status + budget.composer,
+            budget.body + budget.panels + budget.status + budget.composer + budget.bottom_padding,
             height
         );
         assert!(budget.composer >= 1);
@@ -5875,11 +6108,23 @@ fn responsive_budget_never_exceeds_real_terminal_height() {
             assert!(budget.status >= 1);
         }
         if height >= 3 {
-            assert!(budget.body >= 1);
+            let no_panel = responsive_frame_budget(height, 6, 2, 0);
+            assert!(no_panel.body >= 1);
+            assert_eq!(
+                no_panel.body
+                    + no_panel.panels
+                    + no_panel.status
+                    + no_panel.composer
+                    + no_panel.bottom_padding,
+                height
+            );
         }
     }
-    assert_eq!(responsive_frame_budget(1, 6, 40).composer, 1);
-    assert_eq!(responsive_frame_budget(2, 6, 40).status, 1);
+    assert_eq!(responsive_frame_budget(1, 6, 2, 40).bottom_padding, 0);
+    assert_eq!(responsive_frame_budget(5, 6, 2, 0).bottom_padding, 0);
+    assert_eq!(responsive_frame_budget(6, 6, 2, 0).bottom_padding, 1);
+    assert_eq!(responsive_frame_budget(11, 6, 2, 40).bottom_padding, 0);
+    assert_eq!(responsive_frame_budget(12, 6, 2, 40).bottom_padding, 1);
 }
 
 #[test]
@@ -6290,6 +6535,12 @@ fn compact_question_frame_preserves_action_and_hides_task_panel() {
             text.contains("Enter"),
             "missing action at {width}x{height}: {text}"
         );
+        if width >= 40 {
+            assert!(
+                text.contains("Choose features"),
+                "missing question content at {width}x{height}: {text}"
+            );
+        }
         assert!(!text.contains("Background task"));
         assert!(!text.contains("Must not cover"));
     }
@@ -6318,7 +6569,10 @@ fn help_history_search_and_empty_composer_history_navigation_are_modal() {
     assert!(state.history_search_visible());
     let search = line_texts(&compose_frame(&mut state, 60, 12).lines).join("\n");
     assert!(search.contains("HISTORY SEARCH"));
-    assert!(search.contains("third matching prompt"));
+    assert!(
+        search.contains("third matching prompt"),
+        "unexpected history search frame: {search}"
+    );
     assert_eq!(
         handle_key_event(&mut state, key_modified('r', KeyModifiers::CONTROL)),
         None

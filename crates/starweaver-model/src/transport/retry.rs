@@ -197,8 +197,10 @@ pub async fn send_event_stream_with_retries(
 
 /// Send a per-request WebSocket stream request with retry policy.
 ///
-/// Retries are applied only while establishing the stream. Once a stream is returned, event
-/// consumption is not replayed.
+/// Retries are applied while establishing the stream and when the provider reports a 429 before
+/// any output-bearing event. Startup events are buffered across this probe and replayed only for
+/// the successful attempt. Once an output-bearing event is observed, later stream errors are not
+/// replayed.
 ///
 /// # Errors
 ///
@@ -213,9 +215,10 @@ pub async fn send_websocket_event_stream_with_retries(
     retry_with_policy(sleeper, policy, Some(cancellation_token), || {
         let request = request.clone();
         async move {
-            client
+            let stream = client
                 .send_websocket_event_stream_incremental(request)
-                .await
+                .await?;
+            probe_websocket_rate_limit(stream).await
         }
     })
     .await
@@ -224,7 +227,7 @@ pub async fn send_websocket_event_stream_with_retries(
 /// Send a session-scoped WebSocket stream request with retry policy.
 ///
 /// The session is reset between retry attempts so reusable WebSocket state cannot leak across a
-/// failed setup attempt.
+/// failed setup attempt or a pre-output 429 response.
 ///
 /// # Errors
 ///
@@ -238,9 +241,13 @@ pub async fn send_websocket_session_event_stream_with_retries(
     let max_attempts = policy.max_attempts.max(1);
     let mut attempt = 1;
     loop {
-        let result = session
+        let result = match session
             .send_websocket_event_stream_incremental(request.clone())
-            .await;
+            .await
+        {
+            Ok(stream) => probe_websocket_rate_limit(stream).await,
+            Err(error) => Err(error),
+        };
         match result {
             Ok(stream) => return Ok(stream),
             Err(error) if attempt < max_attempts && should_retry_error(&error, policy) => {
@@ -263,6 +270,82 @@ pub async fn send_websocket_session_event_stream_with_retries(
             Err(error) => return Err(error),
         }
     }
+}
+
+async fn probe_websocket_rate_limit(
+    mut stream: ModelEventStream,
+) -> Result<ModelEventStream, ModelError> {
+    let mut prefetched = Vec::new();
+    while let Some(event) = stream.recv().await {
+        match event {
+            Ok(value) => {
+                if let Some(error) = websocket_rate_limit_event_error(&value) {
+                    return Err(error);
+                }
+                let continue_probe = is_websocket_startup_event(&value);
+                prefetched.push(Ok(value));
+                if !continue_probe {
+                    return Ok(stream.prepend_events(prefetched));
+                }
+            }
+            Err(error) => {
+                if matches!(error, ModelError::ProviderStatus { status: 429, .. }) {
+                    return Err(error);
+                }
+                prefetched.push(Err(error));
+                return Ok(stream.prepend_events(prefetched));
+            }
+        }
+    }
+    Ok(stream.prepend_events(prefetched))
+}
+
+fn websocket_rate_limit_event_error(event: &serde_json::Value) -> Option<ModelError> {
+    let kind = event.get("type").and_then(serde_json::Value::as_str)?;
+    if !matches!(kind, "error" | "response.failed") {
+        return None;
+    }
+
+    let response = event.get("response");
+    let error = event
+        .get("error")
+        .or_else(|| response.and_then(|response| response.get("error")));
+    let status = [Some(event), response, error]
+        .into_iter()
+        .flatten()
+        .find_map(websocket_event_status);
+    let code = error
+        .and_then(|error| error.get("code").or_else(|| error.get("type")))
+        .and_then(serde_json::Value::as_str);
+    if status != Some(429)
+        && !matches!(
+            code,
+            Some("rate_limit_exceeded" | "insufficient_quota" | "usage_not_included")
+        )
+    {
+        return None;
+    }
+
+    Some(ModelError::ProviderStatus {
+        status: 429,
+        body: event.clone(),
+        retryable: true,
+    })
+}
+
+fn websocket_event_status(value: &serde_json::Value) -> Option<u16> {
+    value
+        .get("status")
+        .or_else(|| value.get("status_code"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|status| u16::try_from(status).ok())
+}
+
+fn is_websocket_startup_event(event: &serde_json::Value) -> bool {
+    matches!(
+        event.get("type").and_then(serde_json::Value::as_str),
+        Some("response.created" | "response.in_progress" | "response.queued")
+    )
 }
 
 async fn sleep_before_retry(
@@ -295,7 +378,10 @@ async fn sleep_before_retry(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, sync::Mutex};
+    use std::{
+        collections::{BTreeMap, VecDeque},
+        sync::Mutex,
+    };
 
     use async_trait::async_trait;
     use serde_json::{Map, json};
@@ -328,6 +414,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn event_stream_retries_provider_429_setup_errors() {
+        let client = RetryStreamClient::rate_limited(1);
+        let mut stream = result_or_panic(
+            send_event_stream_with_retries(
+                &client,
+                &NoopSleeper,
+                test_request(),
+                &test_retry_policy(2),
+            )
+            .await,
+            "SSE setup should retry 429",
+        );
+
+        assert_eq!(client.attempts(), 2);
+        assert!(matches!(stream.recv().await, Some(Ok(_))));
+    }
+
+    #[tokio::test]
     async fn event_stream_does_not_retry_after_stream_is_returned() {
         let client = RetryStreamClient::new(0, true);
         let mut stream = result_or_panic(
@@ -345,6 +449,170 @@ mod tests {
         assert!(matches!(
             option_or_panic(stream.recv().await, "stream error should exist"),
             Err(ModelError::Transport(message)) if message == "midstream failure"
+        ));
+        assert_eq!(client.attempts(), 1);
+    }
+
+    #[tokio::test]
+    async fn websocket_stream_retries_429_before_output() {
+        let client = ScriptedWebSocketClient::new(vec![
+            vec![
+                Ok(json!({"type": "response.created"})),
+                Ok(json!({
+                    "type": "error",
+                    "status": 429,
+                    "error": {"type": "usage_limit_reached"}
+                })),
+            ],
+            vec![
+                Ok(json!({"type": "response.created"})),
+                Ok(json!({"type": "response.completed"})),
+            ],
+        ]);
+        let mut stream = result_or_panic(
+            send_websocket_event_stream_with_retries(
+                &client,
+                &NoopSleeper,
+                test_request(),
+                &test_retry_policy(3),
+            )
+            .await,
+            "websocket 429 should retry",
+        );
+
+        assert_eq!(client.attempts(), 2);
+        assert_eq!(
+            result_or_panic(
+                option_or_panic(stream.recv().await, "created event should be preserved"),
+                "created event should succeed",
+            ),
+            json!({"type": "response.created"})
+        );
+        assert_eq!(
+            result_or_panic(
+                option_or_panic(stream.recv().await, "completed event should be preserved"),
+                "completed event should succeed",
+            ),
+            json!({"type": "response.completed"})
+        );
+        assert!(stream.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn websocket_session_retries_429_before_output_and_resets() {
+        let mut session = ScriptedWebSocketSession::new(vec![
+            vec![Err(rate_limit_error())],
+            vec![Ok(json!({"type": "response.completed"}))],
+        ]);
+        let mut stream = result_or_panic(
+            send_websocket_session_event_stream_with_retries(
+                &mut session,
+                &NoopSleeper,
+                test_request(),
+                &test_retry_policy(2),
+            )
+            .await,
+            "websocket session 429 should retry",
+        );
+
+        assert_eq!(session.attempts, 2);
+        assert_eq!(session.resets, 1);
+        assert!(matches!(stream.recv().await, Some(Ok(_))));
+    }
+
+    #[tokio::test]
+    async fn websocket_stream_reports_exhausted_pre_output_429() {
+        let client = ScriptedWebSocketClient::new(vec![
+            vec![Ok(rate_limit_failed_event())],
+            vec![Err(rate_limit_error())],
+        ]);
+        let Err(error) = send_websocket_event_stream_with_retries(
+            &client,
+            &NoopSleeper,
+            test_request(),
+            &test_retry_policy(2),
+        )
+        .await
+        else {
+            panic!("repeated websocket 429 should exhaust retries");
+        };
+
+        assert!(matches!(
+            error,
+            ModelError::RetryExhausted {
+                attempts: 2,
+                source,
+            } if matches!(source.as_ref(), ModelError::ProviderStatus { status: 429, .. })
+        ));
+        assert_eq!(client.attempts(), 2);
+    }
+
+    #[tokio::test]
+    async fn websocket_rate_limit_probe_preserves_cancellation() {
+        let cancellation_token = CancellationToken::default();
+        let (_sender, receiver) = tokio::sync::mpsc::channel(1);
+        let stream = ModelEventStream::new_with_cancellation(receiver, cancellation_token.clone());
+        cancellation_token.cancel();
+
+        let mut stream = result_or_panic(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                probe_websocket_rate_limit(stream),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("cancelled websocket probe should stop waiting")),
+            "cancellation should remain a stream error",
+        );
+
+        assert!(matches!(
+            stream.recv().await,
+            Some(Err(ModelError::Cancelled { .. }))
+        ));
+    }
+
+    #[tokio::test]
+    async fn websocket_rate_limit_probe_aborts_discarded_stream() {
+        let drop_abort_token = CancellationToken::default();
+        let stream = stream_from_events_with_drop_abort(
+            vec![Ok(rate_limit_failed_event())],
+            drop_abort_token.clone(),
+        );
+
+        let Err(error) = probe_websocket_rate_limit(stream).await else {
+            panic!("pre-output websocket 429 should fail the attempt");
+        };
+
+        assert!(matches!(
+            error,
+            ModelError::ProviderStatus { status: 429, .. }
+        ));
+        assert!(drop_abort_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn websocket_stream_does_not_retry_429_after_output() {
+        let client = ScriptedWebSocketClient::new(vec![
+            vec![
+                Ok(json!({"type": "response.output_text.delta", "delta": "partial"})),
+                Err(rate_limit_error()),
+            ],
+            vec![Ok(json!({"type": "response.completed"}))],
+        ]);
+        let mut stream = result_or_panic(
+            send_websocket_event_stream_with_retries(
+                &client,
+                &NoopSleeper,
+                test_request(),
+                &test_retry_policy(3),
+            )
+            .await,
+            "websocket stream should be returned after output starts",
+        );
+
+        assert!(matches!(stream.recv().await, Some(Ok(value)) if value["delta"] == "partial"));
+        assert!(matches!(
+            stream.recv().await,
+            Some(Err(ModelError::ProviderStatus { status: 429, .. }))
         ));
         assert_eq!(client.attempts(), 1);
     }
@@ -374,6 +642,7 @@ mod tests {
     struct RetryStreamClient {
         attempts: Mutex<u32>,
         fail_setup_attempts: u32,
+        fail_with_rate_limit: bool,
         stream_error: bool,
     }
 
@@ -382,7 +651,17 @@ mod tests {
             Self {
                 attempts: Mutex::new(0),
                 fail_setup_attempts,
+                fail_with_rate_limit: false,
                 stream_error,
+            }
+        }
+
+        fn rate_limited(fail_setup_attempts: u32) -> Self {
+            Self {
+                attempts: Mutex::new(0),
+                fail_setup_attempts,
+                fail_with_rate_limit: true,
+                stream_error: false,
             }
         }
 
@@ -410,7 +689,11 @@ mod tests {
                 *attempts
             };
             if attempt <= self.fail_setup_attempts {
-                return Err(ModelError::Transport("setup failure".to_string()));
+                return if self.fail_with_rate_limit {
+                    Err(rate_limit_error())
+                } else {
+                    Err(ModelError::Transport("setup failure".to_string()))
+                };
             }
 
             let (sender, receiver) = tokio::sync::mpsc::channel(4);
@@ -424,6 +707,131 @@ mod tests {
                 let _ = sender.send(event).await;
             });
             Ok(ModelEventStream::new(receiver))
+        }
+    }
+
+    #[derive(Debug)]
+    struct ScriptedWebSocketClient {
+        attempts: Mutex<u32>,
+        streams: Mutex<VecDeque<Vec<Result<serde_json::Value, ModelError>>>>,
+    }
+
+    impl ScriptedWebSocketClient {
+        fn new(streams: Vec<Vec<Result<serde_json::Value, ModelError>>>) -> Self {
+            Self {
+                attempts: Mutex::new(0),
+                streams: Mutex::new(VecDeque::from(streams)),
+            }
+        }
+
+        fn attempts(&self) -> u32 {
+            *lock_or_panic(self.attempts.lock(), "attempts lock should not be poisoned")
+        }
+    }
+
+    #[async_trait]
+    impl ModelHttpClient for ScriptedWebSocketClient {
+        async fn send(&self, _request: HttpRequest) -> Result<HttpResponse, ModelError> {
+            Err(ModelError::Transport(
+                "send is not used by websocket retry tests".to_string(),
+            ))
+        }
+
+        async fn send_websocket_event_stream_incremental(
+            &self,
+            _request: HttpRequest,
+        ) -> Result<ModelEventStream, ModelError> {
+            *lock_or_panic(self.attempts.lock(), "attempts lock should not be poisoned") += 1;
+            let events = lock_or_panic(self.streams.lock(), "streams lock should not be poisoned")
+                .pop_front()
+                .ok_or_else(|| {
+                    ModelError::Transport("missing scripted websocket stream".to_string())
+                })?;
+            Ok(stream_from_events(events))
+        }
+    }
+
+    #[derive(Debug)]
+    struct ScriptedWebSocketSession {
+        attempts: u32,
+        resets: u32,
+        streams: VecDeque<Vec<Result<serde_json::Value, ModelError>>>,
+    }
+
+    impl ScriptedWebSocketSession {
+        fn new(streams: Vec<Vec<Result<serde_json::Value, ModelError>>>) -> Self {
+            Self {
+                attempts: 0,
+                resets: 0,
+                streams: VecDeque::from(streams),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ModelWebSocketEventSession for ScriptedWebSocketSession {
+        async fn send_websocket_event_stream_incremental(
+            &mut self,
+            _request: HttpRequest,
+        ) -> Result<ModelEventStream, ModelError> {
+            self.attempts += 1;
+            let events = self.streams.pop_front().ok_or_else(|| {
+                ModelError::Transport("missing scripted websocket session stream".to_string())
+            })?;
+            Ok(stream_from_events(events))
+        }
+
+        async fn reset(&mut self) {
+            self.resets += 1;
+        }
+    }
+
+    fn stream_from_events(events: Vec<Result<serde_json::Value, ModelError>>) -> ModelEventStream {
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            for event in events {
+                if sender.send(event).await.is_err() {
+                    return;
+                }
+            }
+        });
+        ModelEventStream::new(receiver)
+    }
+
+    fn stream_from_events_with_drop_abort(
+        events: Vec<Result<serde_json::Value, ModelError>>,
+        drop_abort_token: CancellationToken,
+    ) -> ModelEventStream {
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            for event in events {
+                if sender.send(event).await.is_err() {
+                    return;
+                }
+            }
+        });
+        ModelEventStream::new_with_cancellation_and_drop_abort(
+            receiver,
+            CancellationToken::default(),
+            Some(drop_abort_token),
+        )
+    }
+
+    fn rate_limit_failed_event() -> serde_json::Value {
+        json!({
+            "type": "response.failed",
+            "response": {
+                "status": "failed",
+                "error": {"code": "rate_limit_exceeded"}
+            }
+        })
+    }
+
+    fn rate_limit_error() -> ModelError {
+        ModelError::ProviderStatus {
+            status: 429,
+            body: json!({"error": "rate limited"}),
+            retryable: true,
         }
     }
 

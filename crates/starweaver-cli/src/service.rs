@@ -38,7 +38,7 @@ use crate::{
     profiles::{ResolvedProfile, list_profiles, resolve_profile},
     prompt_input::PromptInput,
     runner::{
-        CliAgentExecutionHost, CliRunPolicy, CliSteeringMessage, execute_agent_session_with_host,
+        CliAgentExecutionHost, CliRunPolicy, CliSteeringChannel, execute_agent_session_with_host,
         failed_display_message,
     },
     slash_commands::{ExpandedExplicitSkills, expand_explicit_skills, expand_slash_command},
@@ -363,7 +363,7 @@ impl CliService {
         command: &RunCommand,
         prompt_input: Option<PromptInput>,
         stream_sender: Option<mpsc::SyncSender<AgentStreamRecord>>,
-        steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
+        steering_channel: Option<CliSteeringChannel>,
         cancel_receiver: Option<mpsc::Receiver<()>>,
     ) -> CliResult<PromptRunExecution> {
         let mut prepared = self.prepare_prompt_run(command, prompt_input)?;
@@ -376,7 +376,7 @@ impl CliService {
         let executed = match Self::run_prepared_prompt(
             prepared,
             stream_sender,
-            steering_receiver,
+            steering_channel,
             cancel_receiver,
         ) {
             Ok(executed) => executed,
@@ -709,7 +709,7 @@ impl CliService {
     pub(super) fn run_prepared_prompt(
         prepared: PreparedPromptRun,
         stream_sender: Option<mpsc::SyncSender<AgentStreamRecord>>,
-        steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
+        steering_channel: Option<CliSteeringChannel>,
         cancel_receiver: Option<mpsc::Receiver<()>>,
     ) -> CliResult<ExecutedPromptRun> {
         let PreparedPromptRun {
@@ -732,7 +732,7 @@ impl CliService {
             restore_state,
             &policy,
             stream_sender,
-            steering_receiver,
+            steering_channel,
             cancel_receiver,
             execution_host,
         );

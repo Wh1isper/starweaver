@@ -115,6 +115,10 @@ pub const fn key_binding_descriptors() -> &'static [KeyBindingDescriptor] {
             description: "Open contextual help from an empty composer",
         },
         KeyBindingDescriptor {
+            keys: "F2",
+            description: "Toggle the task panel",
+        },
+        KeyBindingDescriptor {
             keys: "Esc",
             description: "Close the active modal or select transcript",
         },
@@ -181,7 +185,7 @@ pub fn builtin_command_descriptors() -> Vec<CommandDescriptor> {
         (
             "tasks",
             "/tasks",
-            "Open the task list",
+            "Toggle the task list",
             CommandArguments::None,
             false,
         ),

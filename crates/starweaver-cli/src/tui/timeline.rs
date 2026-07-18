@@ -399,7 +399,15 @@ impl TuiProjection {
 pub(super) fn project_timeline(timeline: &TuiTimeline, mode: TuiRenderMode) -> TuiProjection {
     let mut projection = TuiProjection::default();
     let mut exploration_group = ConciseExplorationGroup::default();
+    let mut previous_projected_thinking = false;
     for item in &timeline.items {
+        let follows_thinking = previous_projected_thinking && exploration_group.lines.is_empty();
+        let line_count_before = projection.lines.len();
+        let projects_visible_thinking = matches!(
+            &item.kind,
+            TuiItemKind::Thinking { text, streaming }
+                if !text.trim().is_empty() || *streaming
+        );
         match &item.kind {
             TuiItemKind::UserPrompt { text } => {
                 flush_concise_exploration_group(&mut exploration_group, &mut projection.lines);
@@ -419,7 +427,13 @@ pub(super) fn project_timeline(timeline: &TuiTimeline, mode: TuiRenderMode) -> T
             }
             TuiItemKind::Thinking { text, streaming } => {
                 flush_concise_exploration_group(&mut exploration_group, &mut projection.lines);
-                project_thinking(text, *streaming, mode, &mut projection.lines);
+                project_thinking(
+                    text,
+                    *streaming,
+                    mode,
+                    !follows_thinking,
+                    &mut projection.lines,
+                );
             }
             TuiItemKind::ToolCall(tool)
                 if matches!(mode, TuiRenderMode::Concise) && is_groupable_exploration(tool) =>
@@ -464,16 +478,27 @@ pub(super) fn project_timeline(timeline: &TuiTimeline, mode: TuiRenderMode) -> T
                 projection.lines.push(line.clone());
             }
         }
+        if projection.lines.len() > line_count_before {
+            previous_projected_thinking = projects_visible_thinking;
+        }
     }
     flush_concise_exploration_group(&mut exploration_group, &mut projection.lines);
     projection
 }
 
-fn project_thinking(text: &str, streaming: bool, _mode: TuiRenderMode, lines: &mut Vec<String>) {
+fn project_thinking(
+    text: &str,
+    streaming: bool,
+    _mode: TuiRenderMode,
+    separate_section: bool,
+    lines: &mut Vec<String>,
+) {
     if text.trim().is_empty() && !streaming {
         return;
     }
-    push_section_gap(lines);
+    if separate_section {
+        push_section_gap(lines);
+    }
     push_markdown_lines(lines, &format_thinking_markdown(text, streaming));
 }
 

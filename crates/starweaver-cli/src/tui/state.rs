@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     env,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -280,6 +281,10 @@ pub struct InteractiveTuiState {
     pub session_id: Option<String>,
     /// Stable provider-routing affinity id for this TUI process.
     pub session_affinity_id: String,
+    /// Frozen elapsed time for the current or most recently completed run.
+    pub(super) session_elapsed_frozen: Duration,
+    /// Monotonic start time while the current run is active.
+    pub(super) session_timer_started_at: Option<Instant>,
     /// Main scrollback body.
     pub body: Vec<String>,
     /// Status line.
@@ -346,7 +351,6 @@ pub struct InteractiveTuiState {
     task_panel_items: Vec<TaskPanelItem>,
     task_panel_open: bool,
     task_panel_index: usize,
-    task_panel_detail: bool,
     task_panel_completed_hidden: bool,
     pending_clear_context: bool,
     selection_mode: bool,
@@ -394,6 +398,8 @@ impl InteractiveTuiState {
             workspace_dir,
             session_id: None,
             session_affinity_id: SessionId::new().as_str().to_string(),
+            session_elapsed_frozen: Duration::ZERO,
+            session_timer_started_at: None,
             body: Vec::new(),
             status: "IDLE".to_string(),
             input: String::new(),
@@ -441,7 +447,6 @@ impl InteractiveTuiState {
             task_panel_items: Vec::new(),
             task_panel_open: false,
             task_panel_index: 0,
-            task_panel_detail: false,
             task_panel_completed_hidden: false,
             pending_clear_context: false,
             selection_mode: false,
@@ -577,6 +582,39 @@ impl InteractiveTuiState {
         self.context_window = context_window.or(Some(DEFAULT_CONTEXT_WINDOW_TOKENS));
     }
 
+    /// Return elapsed wall-clock time for the current or most recently completed run.
+    pub(crate) fn session_elapsed(&self) -> Duration {
+        self.session_timer_started_at
+            .map_or(self.session_elapsed_frozen, |started_at| {
+                started_at.elapsed()
+            })
+    }
+
+    pub(in crate::tui) fn session_elapsed_label(&self) -> String {
+        format_session_duration(self.session_elapsed())
+    }
+
+    fn start_session_timer(&mut self) {
+        self.session_elapsed_frozen = Duration::ZERO;
+        self.session_timer_started_at = Some(Instant::now());
+    }
+
+    fn stop_session_timer(&mut self) {
+        if let Some(started_at) = self.session_timer_started_at.take() {
+            self.session_elapsed_frozen = started_at.elapsed();
+        }
+    }
+
+    fn reset_session_metrics(&mut self) {
+        self.session_elapsed_frozen = Duration::ZERO;
+        self.session_timer_started_at = None;
+        self.context_tokens = None;
+        self.latest_request_total_tokens = None;
+        self.current_run_id = None;
+        self.current_run_usage = None;
+        self.usage_snapshots.clear();
+    }
+
     /// Set the maximum runtime goal retry iterations shown by `/goal`.
     pub fn set_goal_max_iterations(&mut self, max_iterations: usize) {
         self.goal_max_iterations = max_iterations.max(1);
@@ -616,6 +654,11 @@ impl InteractiveTuiState {
 
     /// Replace body with a persisted snapshot.
     pub fn set_snapshot(&mut self, snapshot: &TuiSnapshot) {
+        let session_changed = self.session_id.as_deref() != Some(snapshot.session_id.as_str());
+        if session_changed {
+            self.reset_session_metrics();
+            self.reset_task_panel_for_session();
+        }
         self.session_id = Some(snapshot.session_id.clone());
         let lines = snapshot_interactive_lines(snapshot);
         self.finish_current_model_item();
@@ -662,6 +705,7 @@ impl InteractiveTuiState {
     }
 
     fn prepare_run_rendering(&mut self) {
+        self.start_session_timer();
         self.running = true;
         self.cancel_requested = false;
         self.status = "RUNNING".to_string();
@@ -696,6 +740,7 @@ impl InteractiveTuiState {
 
     /// Mark a run as durably waiting while retaining live HITL and deferred-tool context.
     pub fn wait_run(&mut self, session_id: Option<String>) {
+        self.stop_session_timer();
         if let Some(session_id) = session_id {
             self.session_id = Some(session_id);
         }
@@ -715,6 +760,7 @@ impl InteractiveTuiState {
 
     /// Mark a run finished with durable ids.
     pub fn finish_run(&mut self, session_id: Option<String>) {
+        self.stop_session_timer();
         if let Some(session_id) = session_id {
             self.session_id = Some(session_id);
         }
@@ -741,6 +787,7 @@ impl InteractiveTuiState {
 
     /// Mark a run failed.
     pub fn fail_run(&mut self, error: &str) {
+        self.stop_session_timer();
         self.running = false;
         self.cancel_requested = false;
         self.status = "ERROR".to_string();
@@ -763,6 +810,7 @@ impl InteractiveTuiState {
 
     /// Mark a run cancelled by the interactive user.
     pub fn cancel_run(&mut self, reason: &str) {
+        self.stop_session_timer();
         self.running = false;
         self.cancel_requested = false;
         self.status = "IDLE".to_string();
@@ -800,11 +848,8 @@ impl InteractiveTuiState {
         self.body.clear();
         self.rendered_body_len = 0;
         self.active_model_segment = None;
-        self.context_tokens = None;
-        self.latest_request_total_tokens = None;
+        self.reset_session_metrics();
         self.model_transport_status = None;
-        self.current_run_id = None;
-        self.current_run_usage = None;
         self.streaming_parts.clear();
         self.streaming_text_seen = false;
         self.streaming_reasoning_seen = false;
@@ -817,7 +862,7 @@ impl InteractiveTuiState {
         self.subagent_states.clear();
         self.pending_hitl = None;
         self.hitl_reload_session_id = None;
-        self.task_panel_items.clear();
+        self.reset_task_panel_for_session();
         self.pending_clear_context = false;
         self.selection_mode = false;
         self.selection_index = None;
@@ -842,9 +887,7 @@ impl InteractiveTuiState {
 
     #[cfg(test)]
     pub(super) fn input_mode_label(&self) -> &'static str {
-        if self.task_panel_open {
-            "TASKS"
-        } else if self.selection_mode {
+        if self.selection_mode {
             "SELECT"
         } else if self.session_picker_open {
             "SESSION"
@@ -1377,6 +1420,20 @@ pub(super) fn approval_request_preview(request: &Value) -> String {
         preview.push('…');
     }
     preview
+}
+
+fn format_session_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    let hours = seconds / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    let seconds = seconds % 60;
+    if hours > 0 {
+        format!("{hours}h{minutes:02}m{seconds:02}s")
+    } else if minutes > 0 {
+        format!("{minutes}m{seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
 }
 
 const fn render_mode_label(render_mode: TuiRenderMode) -> &'static str {

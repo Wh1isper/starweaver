@@ -420,6 +420,7 @@ impl CliService {
         let mut persisted_profile = state.profile.clone();
         let mut persisted_render_mode = initial_render_mode;
         let mut dirty = true;
+        let mut rendered_elapsed_second = u64::MAX;
         let now = Instant::now();
         let mut last_render = now.checked_sub(TUI_FRAME_INTERVAL).unwrap_or(now);
         loop {
@@ -641,6 +642,12 @@ impl CliService {
                 dirty = true;
             }
 
+            let elapsed_second = state.session_elapsed().as_secs();
+            if elapsed_second != rendered_elapsed_second {
+                rendered_elapsed_second = elapsed_second;
+                dirty = true;
+            }
+
             if dirty && last_render.elapsed() >= TUI_FRAME_INTERVAL {
                 tui.render(&mut state)?;
                 last_render = Instant::now();
@@ -710,19 +717,23 @@ impl CliService {
                 Some(crate::tui::InteractiveTuiEvent::Steer(steering)) => {
                     if let Some(run) = active_run.as_ref()
                         && !run.cancelling
-                        && run
-                            .coordinator
-                            .steer_run(
-                                &run.run_id,
-                                CliSteeringMessage {
-                                    id: steering.id,
-                                    text: steering.text,
-                                },
-                            )
-                            .is_err()
+                        && let Err(message) = run.coordinator.steer_run(
+                            &run.run_id,
+                            CliSteeringMessage {
+                                id: steering.id,
+                                text: steering.text,
+                            },
+                        )
                     {
-                        state.fail_run("background steering channel closed");
-                        active_run = None;
+                        queue_rejected_tui_steering(
+                            &mut queued_prompt,
+                            message,
+                            context_generation,
+                        );
+                        state.push_transcript_notice(
+                            "[SYS] Steering arrived after the final guard and was queued for the next continuation."
+                                .to_string(),
+                        );
                     }
                     dirty = true;
                 }
@@ -1259,6 +1270,26 @@ fn take_pending_background_wake(
     is_undelivered(session_id, &attempt_id).then(|| (session_id.to_string(), attempt_id))
 }
 
+fn queue_rejected_tui_steering(
+    queued: &mut Option<QueuedTuiPrompt>,
+    message: CliSteeringMessage,
+    context_generation: u64,
+) {
+    let continuation_text = format!("Steering update from the user:\n{}", message.text);
+    if let Some(queued) = queued.as_mut()
+        && queued.context_generation == context_generation
+    {
+        queued.prompt.extra_text_parts.push(continuation_text);
+        return;
+    }
+    *queued = Some(QueuedTuiPrompt {
+        prompt: PromptInput::text(continuation_text),
+        display_prompt: message.text,
+        goal: None,
+        context_generation,
+    });
+}
+
 fn restore_queued_tui_prompt(
     state: &mut crate::tui::InteractiveTuiState,
     queued: QueuedTuiPrompt,
@@ -1671,6 +1702,52 @@ mod tests {
         ConfigResolver::for_tests(temp.path())
             .resolve(&cli)
             .unwrap()
+    }
+
+    #[test]
+    fn rejected_final_steering_is_queued_as_a_follow_up_prompt() {
+        let mut queued = None;
+        queue_rejected_tui_steering(
+            &mut queued,
+            CliSteeringMessage {
+                id: "steer_after_guard".to_string(),
+                text: "preserve this correction".to_string(),
+            },
+            7,
+        );
+
+        let queued = queued.unwrap();
+        assert_eq!(queued.context_generation, 7);
+        assert_eq!(queued.display_prompt, "preserve this correction");
+        assert_eq!(
+            queued.prompt.text,
+            "Steering update from the user:\npreserve this correction"
+        );
+    }
+
+    #[test]
+    fn rejected_final_steering_is_appended_to_an_existing_follow_up() {
+        let mut queued = Some(QueuedTuiPrompt {
+            prompt: PromptInput::text("existing prompt"),
+            display_prompt: "existing prompt".to_string(),
+            goal: None,
+            context_generation: 3,
+        });
+        queue_rejected_tui_steering(
+            &mut queued,
+            CliSteeringMessage {
+                id: "steer_after_guard".to_string(),
+                text: "also preserve this".to_string(),
+            },
+            3,
+        );
+
+        let queued = queued.unwrap();
+        assert_eq!(queued.prompt.text, "existing prompt");
+        assert_eq!(
+            queued.prompt.extra_text_parts,
+            vec!["Steering update from the user:\nalso preserve this"]
+        );
     }
 
     #[test]

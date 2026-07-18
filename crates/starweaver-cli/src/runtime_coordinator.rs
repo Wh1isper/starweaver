@@ -25,7 +25,7 @@ use crate::{
     args::RunCommand,
     config::CliConfig,
     prompt_input::PromptInput,
-    runner::{CliAgentExecutionHost, CliSteeringMessage},
+    runner::{CliAgentExecutionHost, CliSteeringChannel, CliSteeringMessage},
 };
 
 #[derive(Clone, Debug)]
@@ -75,7 +75,7 @@ struct BackgroundWorkerHandle {
 }
 
 struct ActiveRunControl {
-    steering_sender: mpsc::Sender<CliSteeringMessage>,
+    steering_channel: CliSteeringChannel,
     cancel_sender: mpsc::Sender<()>,
 }
 
@@ -292,7 +292,7 @@ struct BackgroundRunWorker {
     prompt_input: Option<PromptInput>,
     control_id: String,
     event_sender: mpsc::SyncSender<RunStreamEvent>,
-    steering_receiver: mpsc::Receiver<CliSteeringMessage>,
+    steering_channel: CliSteeringChannel,
     cancel_receiver: mpsc::Receiver<()>,
     background_attempt_id: Option<String>,
 }
@@ -374,7 +374,7 @@ impl BackgroundRunWorker {
         let executed = CliService::run_prepared_prompt(
             prepared,
             Some(stream_sender),
-            Some(self.steering_receiver),
+            Some(self.steering_channel),
             Some(self.cancel_receiver),
         );
         let _ = stream_handle.join();
@@ -436,7 +436,7 @@ impl CliRuntimeCoordinator {
             ));
         }
         let (event_sender, event_receiver) = mpsc::sync_channel::<RunStreamEvent>(256);
-        let (steering_sender, steering_receiver) = mpsc::channel::<CliSteeringMessage>();
+        let steering_channel = CliSteeringChannel::new();
         let (cancel_sender, cancel_receiver) = mpsc::channel::<()>();
         let control_id = RunId::new().as_str().to_string();
         self.active_runs
@@ -445,7 +445,7 @@ impl CliRuntimeCoordinator {
             .insert(
                 control_id.clone(),
                 ActiveRunControl {
-                    steering_sender,
+                    steering_channel: steering_channel.clone(),
                     cancel_sender,
                 },
             );
@@ -457,7 +457,7 @@ impl CliRuntimeCoordinator {
             prompt_input,
             control_id: control_id.clone(),
             event_sender,
-            steering_receiver,
+            steering_channel,
             cancel_receiver,
             background_attempt_id,
         };
@@ -479,17 +479,21 @@ impl CliRuntimeCoordinator {
         })
     }
 
-    pub(super) fn steer_run(&self, run_id: &str, message: CliSteeringMessage) -> CliResult<()> {
-        let sender = self
+    pub(super) fn steer_run(
+        &self,
+        run_id: &str,
+        message: CliSteeringMessage,
+    ) -> Result<(), CliSteeringMessage> {
+        let channel = self
             .active_runs
             .lock()
-            .map_err(|error| CliError::Run(error.to_string()))?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(run_id)
-            .map(|control| control.steering_sender.clone())
-            .ok_or_else(|| CliError::NotFound(run_id.to_string()))?;
-        sender
-            .send(message)
-            .map_err(|error| CliError::Run(error.to_string()))
+            .map(|control| control.steering_channel.clone());
+        let Some(channel) = channel else {
+            return Err(message);
+        };
+        channel.submit(message)
     }
 
     pub(super) fn take_background_completions(
