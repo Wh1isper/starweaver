@@ -20,7 +20,7 @@ fn silent_value(stdout: &[u8], key: &str) -> String {
 fn assert_pending_hitl_blocks_resume(output: &Output, expected_id: &str) {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("cannot resume run"));
+    assert!(stderr.contains("cannot resume run"), "stderr={stderr}");
     assert!(stderr.contains(expected_id));
 }
 

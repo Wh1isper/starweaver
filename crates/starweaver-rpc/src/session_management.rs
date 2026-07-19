@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use starweaver_agent::{AgentSessionControl, AgentSessionQuery};
+use starweaver_agent::{AgentSessionControl, AgentSessionQuery, ContinuationMaterializationMode};
 use starweaver_core::{RunId, SessionId};
 use starweaver_runtime::AgentInput;
 use starweaver_session::{
@@ -528,6 +528,7 @@ impl AgentSessionControl for RpcAgentSessionAdapter {
                 environment_attachments: Vec::new(),
                 idempotency_key: command.idempotency_key,
                 command_fingerprint: fingerprint,
+                continuation_mode: ContinuationMaterializationMode::Preserve,
                 install_session_management: false,
             })
             .await

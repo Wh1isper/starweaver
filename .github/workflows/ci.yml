@@ -72,8 +72,11 @@ jobs:
       - name: Run tests
         run: make test
 
+      - name: Validate RPC v1 wire contracts across transports
+        run: make rpc-contracts-check
+
       - name: Run CLI/RPC subprocess interoperability
-        run: make desktop-rpc-e2e
+        run: make rpc-interop-e2e
 
   cross-platform-tests:
     name: Tests (${{ matrix.os }})
@@ -96,8 +99,11 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-targets --all-features --locked
 
+      - name: Validate RPC v1 wire contracts across transports
+        run: make rpc-contracts-check
+
       - name: Run CLI/RPC subprocess interoperability
-        run: make desktop-rpc-e2e
+        run: make rpc-interop-e2e
 
   xtask:
     name: Xtask

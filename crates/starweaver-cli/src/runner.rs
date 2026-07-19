@@ -12,11 +12,11 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use starweaver_agent::{
-    AgentError, AgentSession, AgentStreamRecord, BackgroundSubagentSupervisor, ResumableState,
-    SubagentDelegationMode, attach_process_shell, attach_shell_review_handle,
+    AgentError, AgentHitlResults, AgentSession, AgentStreamRecord, BackgroundSubagentSupervisor,
+    ResumableState, SubagentDelegationMode, attach_process_shell, attach_shell_review_handle,
 };
-use starweaver_context::{AgentContext, BusMessage};
-use starweaver_core::{CancellationToken, SessionId};
+use starweaver_context::{AgentCheckpoint, AgentContext, BusMessage};
+use starweaver_core::{AgentExecutionNode, CancellationToken, SessionId};
 use starweaver_environment::{
     DynEnvironmentProvider, DynProcessShellProvider, EnvironmentError, EnvironmentState,
 };
@@ -30,8 +30,8 @@ use starweaver_runtime::{
     GoalRunOptions, ModelResponseStreamEvent, OutputPolicy,
 };
 use starweaver_session::{
-    ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, RunRecord, RunStatus,
-    ToolReturnRecordInput,
+    ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, PreparedContinuation,
+    RunRecord, RunStatus, ToolReturnRecordInput,
 };
 use starweaver_stream::{
     DefaultDisplayMessageProjector, DisplayMessage, DisplayMessageKind, DisplayMessageProjector,
@@ -192,6 +192,36 @@ pub struct CliRunExecution {
     pub artifacts: RunArtifacts,
 }
 
+/// Validate one prepared waiting continuation without invoking hooks or tools.
+///
+/// This preflight must run before the CLI acquires a durable resume claim or admits the
+/// replacement run. Approved tools are executed only by [`execute_agent_session_with_host`]
+/// after atomic waiting-replacement admission.
+pub fn validate_prepared_hitl_continuation(
+    profile: &ResolvedProfile,
+    environment: &DynEnvironmentProvider,
+    process_environment: Option<&DynProcessShellProvider>,
+    prepared: &PreparedContinuation,
+) -> CliResult<()> {
+    let agent = profile.build_agent_with_delegation(SubagentDelegationMode::Disabled, None)?;
+    let mut session = AgentSession::from_state(agent, prepared.snapshot.state.clone());
+    session.set_environment(environment.clone());
+    if let Some(process_environment) = process_environment {
+        attach_process_shell(session.context_mut(), process_environment.clone());
+    }
+    profile.configure_context(session.context_mut());
+    if let Some(shell_review) = profile.shell_review.as_ref() {
+        attach_shell_review_handle(session.context_mut(), shell_review.clone());
+    }
+    let waiting_state = prepared
+        .waiting_state()
+        .ok_or_else(|| CliError::Run("missing prepared HITL state".to_string()))?;
+    let results = AgentHitlResults::from_prepared_continuation(prepared);
+    session
+        .validate_hitl_results_for_state(waiting_state, &results)
+        .map_err(|error| CliError::Run(format!("invalid HITL continuation: {error}")))
+}
+
 /// Execute a resolved profile through `AgentSession`.
 #[allow(dead_code)]
 pub fn execute_agent_session(
@@ -262,6 +292,7 @@ pub fn execute_agent_session_with_channels(
         environment,
         process_environment,
         restore_state,
+        None,
         policy,
         stream_sender,
         steering_channel,
@@ -279,6 +310,7 @@ pub fn execute_agent_session_with_host(
     environment: &DynEnvironmentProvider,
     process_environment: Option<&DynProcessShellProvider>,
     restore_state: Option<ResumableState>,
+    prepared_continuation: Option<&PreparedContinuation>,
     policy: &CliRunPolicy,
     stream_sender: Option<mpsc::SyncSender<AgentStreamRecord>>,
     steering_channel: Option<CliSteeringChannel>,
@@ -348,6 +380,15 @@ pub fn execute_agent_session_with_host(
     if let Some(supervisor) = host.background_subagent_supervisor.as_ref() {
         supervisor.begin_parent_run(run.run_id.clone());
     }
+    if let Some(prepared) = prepared_continuation {
+        let waiting_state = prepared
+            .waiting_state()
+            .ok_or_else(|| CliError::Run("missing prepared HITL state".to_string()))?;
+        let results = AgentHitlResults::from_prepared_continuation(prepared);
+        runtime
+            .block_on(session.inject_hitl_results_for_state(waiting_state, results))
+            .map_err(|error| CliError::Run(format!("HITL result injection failed: {error}")))?;
+    }
     let cancel_receivers = [cancel_receiver, admission_cancel_receiver]
         .into_iter()
         .flatten()
@@ -414,6 +455,15 @@ pub fn execute_agent_session_with_host(
                 )
             }
         };
+    let checkpoints = if projection.status == RunStatus::Waiting {
+        session
+            .last_run_state()
+            .map(|state| AgentCheckpoint::new(AgentExecutionNode::ToolReturn, state))
+            .into_iter()
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut state = session.export_full_state();
     let environment_state = preserve_environment_export_evidence(&mut state, environment_state);
     state
@@ -449,6 +499,7 @@ pub fn execute_agent_session_with_host(
         state,
         environment_state,
         raw_records,
+        checkpoints,
         display_messages: projection.messages,
         display_snapshot: projection.snapshot,
         approvals: projection.approvals,

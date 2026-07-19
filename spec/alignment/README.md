@@ -38,7 +38,7 @@ flowchart TD
 | `09-architecture-review.md`                 | Architecture, security, durability, API, and consolidation review        |
 | `10-session-search-evidence.md`             | Phase 1 session-search implementation and boundary evidence              |
 | `11-tui-ui-ux-completion.md`                | Complete TUI interaction, status, task, history, and test implementation |
-| `12-desktop-rpc-readiness.md`               | CLI/RPC interoperability and Desktop host design readiness               |
+| `12-rpc-host-readiness.md`                  | RPC host contract, durability, recovery, and interoperability readiness  |
 
 ## Remaining Theme
 

@@ -2,10 +2,10 @@ use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use starweaver_core::SessionId;
 use starweaver_session::{
-    AcquireRunAdmission, DurableControlReceipt, HitlResumeClaim, HitlResumeClaimState,
-    ManagedRunTarget, ManagedSessionTarget, RunAdmissionLease, RunAdmissionReceipt, RunStatus,
-    SessionContinuationFence, SessionDeletionFence, SessionRecord, SessionStatus,
-    SessionStoreError, SessionStoreResult, UpdateManagedSession,
+    AcquireRunAdmission, ContinuationEffectState, DurableControlReceipt, HitlResumeClaim,
+    HitlResumeClaimState, ManagedRunTarget, ManagedSessionTarget, RunAdmissionLease,
+    RunAdmissionReceipt, RunRecord, RunStatus, SessionContinuationFence, SessionDeletionFence,
+    SessionRecord, SessionStatus, SessionStoreError, SessionStoreResult, UpdateManagedSession,
 };
 
 use crate::sqlite::{deserialize_json_record, map_sqlite_session_error, serialize_json_record};
@@ -696,10 +696,19 @@ pub(super) fn acquire_run_admission_in_transaction(
                 active_run_id.as_str()
             )));
         }
-    } else if request.replaces_waiting_run_id.is_some() {
-        return Err(SessionStoreError::Conflict(
-            "waiting-run replacement has no parked active run".to_string(),
-        ));
+    } else if let Some(source_run_id) = request.replaces_waiting_run_id.as_ref() {
+        // A pre-effect replacement can clear the active pointer while preserving its waiting
+        // source. Allow only that exact source to be retried under a new claim and replacement;
+        // the source identity and Waiting status are still validated in this transaction.
+        let source = load_run_record(transaction, &session.session_id, source_run_id)?;
+        let valid_unparked_waiting_replacement = request.run.restore_from_run_id.as_ref()
+            == Some(source_run_id)
+            && source.status == RunStatus::Waiting;
+        if !valid_unparked_waiting_replacement {
+            return Err(SessionStoreError::Conflict(
+                "waiting-run replacement has no retryable waiting source".to_string(),
+            ));
+        }
     }
     let mut hitl_claim = match (
         request.replaces_waiting_run_id.as_ref(),
@@ -746,7 +755,7 @@ pub(super) fn acquire_run_admission_in_transaction(
     session.revision = session.revision.saturating_add(1);
     save_session_record(transaction, &session)?;
     if let Some(claim) = hitl_claim.as_mut() {
-        claim.state = HitlResumeClaimState::Started;
+        claim.state = HitlResumeClaimState::Admitted;
         let updated = transaction
             .execute(
                 "UPDATE hitl_resume_claims SET record = ?3
@@ -1012,10 +1021,92 @@ fn terminalize_orphan(
 ) -> SessionStoreResult<()> {
     let mut run = load_run_record(transaction, &lease.target.session_id, &lease.target.run_id)?;
     if run.status.is_active() {
+        let effect_started = reconcile_hitl_source_for_orphan(transaction, &run, now)?;
         run.status = RunStatus::Cancelled;
         run.output_preview = Some("interrupted after host lease expired".to_string());
         run.updated_at = now;
+        if effect_started {
+            ContinuationEffectState::indeterminate()
+                .insert_into(&mut run.metadata)
+                .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
+        }
         save_run_record(transaction, &run)?;
     }
     Ok(())
+}
+
+fn reconcile_hitl_source_for_orphan(
+    transaction: &Transaction<'_>,
+    replacement: &RunRecord,
+    now: DateTime<Utc>,
+) -> SessionStoreResult<bool> {
+    let Some(source_run_id) = replacement.restore_from_run_id.as_ref() else {
+        return Ok(false);
+    };
+    let mut source = load_run_record(transaction, &replacement.session_id, source_run_id)?;
+    if source.status != RunStatus::Waiting {
+        return Ok(false);
+    }
+    let persisted = transaction
+        .query_row(
+            "SELECT record FROM hitl_resume_claims WHERE session_id = ?1 AND run_id = ?2",
+            params![replacement.session_id.as_str(), source_run_id.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(map_sqlite_session_error)?
+        .ok_or_else(|| {
+            SessionStoreError::Conflict(format!(
+                "waiting replacement source {} has no resume claim",
+                source_run_id.as_str()
+            ))
+        })?;
+    let claim = deserialize_json_record::<HitlResumeClaim>(&persisted)?;
+    if claim.session_id != replacement.session_id || claim.run_id != *source_run_id {
+        return Err(SessionStoreError::Conflict(format!(
+            "waiting replacement source {} has a mismatched resume claim",
+            source_run_id.as_str()
+        )));
+    }
+    match claim.state {
+        // No approved tool can have executed before this boundary. Discarding an orphaned
+        // admitted claim restores the source waiting run for a fresh (new-key) continuation.
+        HitlResumeClaimState::Admitted => {}
+        // An approved tool may have executed after `Started`, so never make the source eligible
+        // for automatic retry. Persist a typed indeterminate projection for host recovery UI.
+        HitlResumeClaimState::Started => {
+            source.status = RunStatus::Cancelled;
+            source.output_preview = Some("interrupted after host lease expired".to_string());
+            source.updated_at = now;
+            ContinuationEffectState::indeterminate()
+                .insert_into(&mut source.metadata)
+                .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
+            save_run_record(transaction, &source)?;
+        }
+        HitlResumeClaimState::Preflight => {
+            return Err(SessionStoreError::Conflict(format!(
+                "waiting replacement source {} has an invalid preflight claim",
+                source_run_id.as_str()
+            )));
+        }
+    }
+    let deleted = transaction
+        .execute(
+            "DELETE FROM hitl_resume_claims
+             WHERE session_id = ?1 AND run_id = ?2 AND claim_id = ?3 AND record = ?4",
+            params![
+                claim.session_id.as_str(),
+                claim.run_id.as_str(),
+                claim.claim_id,
+                persisted,
+            ],
+        )
+        .map_err(map_sqlite_session_error)?;
+    if deleted != 1 {
+        return Err(SessionStoreError::Conflict(format!(
+            "resume claim changed while reconciling run {}",
+            source_run_id.as_str()
+        )));
+    }
+    Ok(claim.state == HitlResumeClaimState::Started)
 }

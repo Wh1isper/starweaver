@@ -55,6 +55,7 @@ pub struct Agent {
     stream_observers: Vec<Arc<dyn AgentCapability>>,
     cancellation_token: Option<CancellationToken>,
     executor: DynAgentExecutor,
+    durable_hitl_preparation_required: bool,
     trace_recorder: DynTraceRecorder,
     policy: AgentRuntimePolicy,
     model_config: Option<ModelConfig>,
@@ -84,6 +85,7 @@ impl Agent {
             stream_observers: Vec::new(),
             cancellation_token: None,
             executor: Arc::new(DirectAgentExecutor),
+            durable_hitl_preparation_required: false,
             trace_recorder: Arc::new(NoopTraceRecorder),
             policy: AgentRuntimePolicy::default(),
             model_config: None,
@@ -383,9 +385,19 @@ impl Agent {
         self
     }
 
+    /// Return whether HITL effects require durable continuation preparation.
+    ///
+    /// This is a sticky safety property inherited from every installed executor. Replacing an
+    /// executor cannot downgrade an agent that was previously store-backed.
+    #[must_use]
+    pub const fn requires_durable_hitl_preparation(&self) -> bool {
+        self.durable_hitl_preparation_required
+    }
+
     /// Set durable execution checkpoint handler.
     #[must_use]
     pub fn with_executor(mut self, executor: DynAgentExecutor) -> Self {
+        self.durable_hitl_preparation_required |= executor.requires_durable_hitl_preparation();
         self.executor = executor;
         self
     }

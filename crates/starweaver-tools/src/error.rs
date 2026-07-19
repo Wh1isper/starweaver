@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 use starweaver_core::Metadata;
-use starweaver_model::{ToolCallPart, ToolReturnPart};
+use starweaver_model::{TOOL_RETURN_APPROVAL_ARGUMENTS_METADATA_KEY, ToolCallPart, ToolReturnPart};
 use thiserror::Error;
 
 /// Function tool execution error.
@@ -122,6 +122,16 @@ pub fn error_return(call: &ToolCallPart, error: &ToolError) -> ToolReturnPart {
         serde_json::json!(runtime_retryable),
     );
     metadata.insert("unexpected".to_string(), serde_json::json!(unexpected));
+    if metadata
+        .get("control_flow")
+        .and_then(Value::as_str)
+        .is_some_and(|control_flow| control_flow == "approval_required")
+    {
+        metadata.insert(
+            TOOL_RETURN_APPROVAL_ARGUMENTS_METADATA_KEY.to_string(),
+            call.arguments.execution_value(),
+        );
+    }
 
     ToolReturnPart {
         tool_call_id: call.id.clone(),

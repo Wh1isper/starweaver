@@ -30,7 +30,7 @@ Current workspace members:
 - `crates/starweaver-storage` — canonical shared SQLite migrations, atomic evidence domain operations, concrete `SessionStore`, replay event-log, stream archive adapters, typed query facade, and migration status reporting
 - `crates/starweaver-cli` — independent CLI/TUI product surface for headless runs, terminal interaction, display rendering, session restore, launcher dispatch, direct environment/envd connectivity, and install/update workflows
 - `crates/starweaver-rpc-core` — typed JSON-RPC host protocol contracts, envelopes, errors, stream payload projection, and replay result helpers
-- `crates/starweaver-rpc` — independent standalone JSON-RPC host product for Desktop and local host integrations, owning `rpc.toml`, AgentSpec/profile/model materialization, handlers, coordination, authorization, subscriptions, environment attachments, and transports
+- `crates/starweaver-rpc` — independent standalone JSON-RPC host product for local and external host integrations, owning `rpc.toml`, AgentSpec/profile/model materialization, handlers, coordination, authorization, subscriptions, environment attachments, and transports
 - `packages/starweaver-py` — in-process Python SDK bindings, Python tool injection, live `AgentRun` control, message bus facades, typed HITL helpers, deterministic test models, sessions, stream records, and Python distribution artifacts
 
 Planned areas live in `spec/` until their responsibilities, integration points, and validation paths are clear:
@@ -148,7 +148,7 @@ Current specs:
 - `spec/alignment/09-architecture-review.md` — cross-workspace architecture, security, durability, API, and consolidation review baseline
 - `spec/alignment/10-session-search-evidence.md` — Phase 1 session-search implementation, conformance, and boundary evidence
 - `spec/alignment/11-tui-ui-ux-completion.md` — complete TUI interaction, status, task, history, and validation evidence
-- `spec/alignment/12-desktop-rpc-readiness.md` — CLI/RPC shared-storage interoperability review and Desktop design entry gates
+- `spec/alignment/12-rpc-host-readiness.md` — RPC host contract, durability, recovery, and interoperability readiness
 
 Use `spec/alignment/` for readiness notes, design comparisons, implementation evidence, and roadmap reminders. Keep unfinished work in the spec that owns the changed contract.
 

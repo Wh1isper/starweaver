@@ -58,6 +58,10 @@ impl SessionStoreExecutor {
 
 #[async_trait]
 impl AgentExecutor for SessionStoreExecutor {
+    fn requires_durable_hitl_preparation(&self) -> bool {
+        true
+    }
+
     async fn checkpoint(
         &self,
         checkpoint: AgentCheckpoint,

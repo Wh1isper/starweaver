@@ -196,6 +196,7 @@ def _validate_approval_transition(
         "action_id",
         "action_name",
         "request",
+        "reviewed_arguments",
         "created_at",
         "trace_context",
         "metadata",

@@ -29,7 +29,7 @@ pub fn check() -> Result<(), String> {
         }
     }
 
-    let temp = env::temp_dir().join(format!("starweaver-desktop-rpc-e2e-{}", std::process::id()));
+    let temp = env::temp_dir().join(format!("starweaver-rpc-interop-e2e-{}", std::process::id()));
     if temp.exists() {
         fs::remove_dir_all(&temp).map_err(|error| error.to_string())?;
     }
@@ -312,8 +312,9 @@ fn run_e2e(cli: &Path, rpc: &Path, root: &Path) -> Result<(), String> {
             "sessionId": session_id,
             "restoreFromRunId": cli_run_id,
             "profile": "local",
+            "continuationMode": "switch",
             "prompt": "rpc continues cli",
-            "idempotencyKey": "desktop-e2e-cli-to-rpc"
+            "idempotencyKey": "rpc-interop-e2e-cli-to-rpc"
         }),
     )?;
     assert_no_rpc_error(&started)?;
@@ -445,11 +446,7 @@ impl RpcHost {
     }
 
     fn initialize(&mut self) -> Result<(), String> {
-        let response = self.request(
-            1,
-            "initialize",
-            json!({"clientInfo": {"name": "xtask-desktop-e2e"}}),
-        )?;
+        let response = self.request(1, "initialize", json!({}))?;
         assert_no_rpc_error(&response)
     }
 

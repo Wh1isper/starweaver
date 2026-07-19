@@ -42,7 +42,7 @@ fn standalone_http_process_serves_initialize_and_shutdown() {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": {"clientInfo": {"name": "desktop-test"}}
+            "params": {"clientInfo": {"name": "rpc-http-test"}}
         }),
         HTTP_TOKEN,
     );

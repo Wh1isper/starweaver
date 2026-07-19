@@ -26,6 +26,7 @@ pub use environment::{
     LOCAL_ENVIRONMENT_ATTACHMENT_KIND, environment_attachment_lease_result,
     environment_attachment_list_result, environment_attachment_refs, environment_attachment_result,
     environment_health_result, is_valid_environment_attachment_id,
+    normalize_environment_attachment_refs,
 };
 
 /// JSON-RPC parse error code.
@@ -60,6 +61,83 @@ pub const ENVIRONMENT_UNAVAILABLE: i64 = -32_031;
 pub const SESSION_SEARCH_UNAVAILABLE: i64 = -32_032;
 /// Starweaver host error code for configuration or profile resolution failures.
 pub const CONFIGURATION_FAILED: i64 = -32_050;
+
+/// One stable JSON-RPC error exposed by the v1 host wire contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct V1ErrorContract {
+    /// Stable Rust/catalog name.
+    pub name: &'static str,
+    /// Stable JSON-RPC numeric code.
+    pub code: i64,
+}
+
+/// Every stable JSON-RPC and Starweaver host error code exposed to v1 clients.
+pub const V1_ERROR_CONTRACTS: &[V1ErrorContract] = &[
+    V1ErrorContract {
+        name: "PARSE_ERROR",
+        code: PARSE_ERROR,
+    },
+    V1ErrorContract {
+        name: "INVALID_REQUEST",
+        code: INVALID_REQUEST,
+    },
+    V1ErrorContract {
+        name: "METHOD_NOT_FOUND",
+        code: METHOD_NOT_FOUND,
+    },
+    V1ErrorContract {
+        name: "INVALID_PARAMS",
+        code: INVALID_PARAMS,
+    },
+    V1ErrorContract {
+        name: "SERVER_ERROR",
+        code: SERVER_ERROR,
+    },
+    V1ErrorContract {
+        name: "NOT_INITIALIZED",
+        code: NOT_INITIALIZED,
+    },
+    V1ErrorContract {
+        name: "UNSUPPORTED_FEATURE",
+        code: UNSUPPORTED_FEATURE,
+    },
+    V1ErrorContract {
+        name: "NOT_FOUND",
+        code: NOT_FOUND,
+    },
+    V1ErrorContract {
+        name: "ALREADY_EXISTS",
+        code: ALREADY_EXISTS,
+    },
+    V1ErrorContract {
+        name: "IDEMPOTENCY_CONFLICT",
+        code: IDEMPOTENCY_CONFLICT,
+    },
+    V1ErrorContract {
+        name: "RUN_CONFLICT",
+        code: RUN_CONFLICT,
+    },
+    V1ErrorContract {
+        name: "STALE_FENCE",
+        code: STALE_FENCE,
+    },
+    V1ErrorContract {
+        name: "STORAGE_UNAVAILABLE",
+        code: STORAGE_UNAVAILABLE,
+    },
+    V1ErrorContract {
+        name: "ENVIRONMENT_UNAVAILABLE",
+        code: ENVIRONMENT_UNAVAILABLE,
+    },
+    V1ErrorContract {
+        name: "SESSION_SEARCH_UNAVAILABLE",
+        code: SESSION_SEARCH_UNAVAILABLE,
+    },
+    V1ErrorContract {
+        name: "CONFIGURATION_FAILED",
+        code: CONFIGURATION_FAILED,
+    },
+];
 
 /// Stable host-control protocol family name.
 pub const HOST_PROTOCOL_NAME: &str = "starweaver.host";
@@ -102,12 +180,44 @@ pub fn host_protocol_identity_with_session_search(installed: bool) -> ProtocolId
 }
 
 /// Optional initialize negotiation fields accepted from host clients.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostInitializeParams {
     /// Requested host protocol identity. Omitted only by legacy clients.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<ProtocolIdentity>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HostInitializeWire {
+    #[serde(default)]
+    protocol: Option<ProtocolIdentity>,
+    #[serde(default)]
+    client_info: Option<HostClientInfo>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HostClientInfo {
+    name: String,
+    #[serde(default)]
+    version: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for HostInitializeParams {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = HostInitializeWire::deserialize(deserializer)?;
+        if let Some(client_info) = wire.client_info {
+            let _ = (client_info.name, client_info.version);
+        }
+        Ok(Self {
+            protocol: wire.protocol,
+        })
+    }
 }
 
 /// Typed parameters for `storage.importLegacy`.
@@ -122,7 +232,7 @@ pub struct StorageImportLegacyParams {
 
 /// Typed result for `storage.importLegacy`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StorageImportLegacyResult {
     /// Normalized source database path.
     pub source_path: PathBuf,
@@ -134,6 +244,74 @@ pub struct StorageImportLegacyResult {
     pub rows_imported: usize,
     /// Whether this invocation inserted or synchronized any row.
     pub imported: bool,
+}
+
+/// Explicit materialization policy for continuing a durable run.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuationMode {
+    /// Require the exact source materialization fingerprint.
+    #[default]
+    Preserve,
+    /// Permit only an `AgentSpec` revision while preserving model, tools, policy, and environment.
+    Compatible,
+    /// Explicitly accept every reported materialization change.
+    Switch,
+}
+
+/// Credential-free resolved agent materialization returned to host clients.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentMaterialization {
+    /// Evidence schema version.
+    pub version: u32,
+    /// Digest of the allowlisted semantic `AgentSpec` projection.
+    pub agent_spec_digest: String,
+    /// Stable resolved model profile identity.
+    pub model_profile_id: String,
+    /// Stable effective toolset identities.
+    pub toolset_ids: Vec<String>,
+    /// Host policy bundle version.
+    pub policy_version: String,
+    /// Credential-free environment binding category.
+    pub environment_binding_class: String,
+    /// Domain-separated digest of resolved provider and runtime behavior.
+    pub runtime_binding_digest: String,
+    /// Domain-separated digest of the host workspace root identity.
+    pub workspace_root_digest: String,
+    /// Fingerprint of this evidence.
+    pub fingerprint: String,
+}
+
+/// One safe materialization field that changed across a continuation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaterializationDrift {
+    /// Stable field name.
+    pub field: String,
+    /// Previous safe value, absent for legacy source evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Value>,
+    /// Requested safe value.
+    pub target: Value,
+}
+
+/// Accepted materialization assessment for a continuation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContinuationAssessment {
+    /// Explicit policy used for the assessment.
+    pub mode: ContinuationMode,
+    /// Verified source fingerprint when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_fingerprint: Option<String>,
+    /// Target materialization fingerprint.
+    pub target_fingerprint: String,
+    /// Ordered safe drift details.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drift: Vec<MaterializationDrift>,
+    /// Always true for an admitted or replayed run result.
+    pub allowed: bool,
 }
 
 /// Typed parameters for `run.resume` on a durable waiting HITL run.
@@ -150,13 +328,16 @@ pub struct RunResumeParams {
     /// Existing environment attachments to bind to the continuation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environment_attachments: Vec<EnvironmentAttachmentRef>,
+    /// Explicit materialization policy. Defaults to preserving the source fingerprint.
+    #[serde(default)]
+    pub continuation_mode: ContinuationMode,
     /// Required key providing exactly-once resume admission semantics.
     pub idempotency_key: String,
 }
 
 /// Typed result for `run.resume`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunResumeResult {
     /// Durable session id.
     pub session_id: starweaver_core::SessionId,
@@ -169,12 +350,23 @@ pub struct RunResumeResult {
     /// Effective environment attachments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environment_attachments: Vec<EnvironmentAttachmentRef>,
+    /// Credential-free target materialization persisted for this run.
+    ///
+    /// Absent only when replaying a receipt admitted before materialization evidence existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialization: Option<AgentMaterialization>,
+    /// Accepted source-to-target materialization assessment.
+    ///
+    /// Absent only when replaying a receipt admitted before materialization evidence existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<ContinuationAssessment>,
     /// True when this response replays an existing exact admission.
     pub idempotent_replay: bool,
 }
 
 /// Structured durable input accepted by run-start methods.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunInput {
     /// Ordered durable input parts.
     pub parts: Vec<starweaver_session::InputPart>,
@@ -272,7 +464,7 @@ impl SessionSearchParams {
 
 /// Typed host result for `session.search`.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionSearchResult {
     /// Discovery hits.
     pub hits: Vec<starweaver_session::SessionSearchHit>,
@@ -295,7 +487,7 @@ impl From<starweaver_session::SessionSearchPage> for SessionSearchResult {
 
 /// Optional detailed initialize projection for an installed provider.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionSearchFeatureCapabilities {
     /// Provider is installed for this server context.
     pub available: bool,
@@ -400,7 +592,9 @@ pub fn handle_json_rpc_text(
         }
     };
     let id = request.id.clone();
-    let result = dispatch(&request.method, &request.params);
+    let result = validate_and_dispatch_v1(&request.method, &request.params, |method, params| {
+        dispatch(method, params)
+    });
     let shutdown = request.method == "shutdown" && result.is_ok();
     let Some(id) = id else {
         return JsonRpcOutcome {
@@ -453,7 +647,15 @@ where
     };
     let id = request.id.clone();
     let method = request.method;
-    let result = dispatch(method.clone(), request.params).await;
+    let result = if v1_method_contract(&method).is_some() {
+        match validate_v1_method_params(&method, &request.params) {
+            Ok(()) => dispatch(method.clone(), request.params).await,
+            Err(error) => Err(RpcError::new(INVALID_PARAMS, error)),
+        }
+    } else {
+        dispatch(method.clone(), request.params).await
+    };
+    let result = validate_v1_dispatch_result(&method, result);
     let shutdown = method == "shutdown" && result.is_ok();
     let Some(id) = id else {
         return JsonRpcOutcome {
@@ -473,6 +675,30 @@ where
 
 fn empty_params() -> Value {
     Value::Object(serde_json::Map::new())
+}
+
+fn validate_and_dispatch_v1(
+    method: &str,
+    params: &Value,
+    dispatch: impl FnOnce(&str, &Value) -> Result<Value, RpcError>,
+) -> Result<Value, RpcError> {
+    if v1_method_contract(method).is_some() {
+        validate_v1_method_params(method, params)
+            .map_err(|error| RpcError::new(INVALID_PARAMS, error))?;
+    }
+    validate_v1_dispatch_result(method, dispatch(method, params))
+}
+
+fn validate_v1_dispatch_result(
+    method: &str,
+    result: Result<Value, RpcError>,
+) -> Result<Value, RpcError> {
+    let value = result?;
+    if v1_method_contract(method).is_some() {
+        validate_v1_method_result(method, &value)
+            .map_err(|error| RpcError::new(SERVER_ERROR, error))?;
+    }
+    Ok(value)
 }
 
 fn request_from_value(value: Value) -> Result<JsonRpcRequest, Value> {
@@ -573,7 +799,7 @@ impl StreamPayloadFormat {
 
 /// Projected run output item carried by `run.output`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunOutputItem {
     /// Durable session id owning the projected event.
     pub session_id: String,
@@ -596,7 +822,7 @@ pub struct RunOutputItem {
 
 /// Projection entry carried alongside the canonical stream event.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunOutputProjection {
     /// Projection format.
     pub payload_format: StreamPayloadFormat,
@@ -840,6 +1066,33 @@ mod tests {
     }
 
     #[test]
+    fn v1_dispatch_rejects_invalid_params_and_nonconformant_results() {
+        let invalid = handle_json_rpc_text(
+            r#"{"jsonrpc":"2.0","id":1,"method":"shutdown","params":{"unexpected":true}}"#,
+            |_method, _params| panic!("invalid typed params must not dispatch"),
+        );
+        assert_eq!(invalid.response.unwrap()["error"]["code"], INVALID_PARAMS);
+
+        let invalid_result = handle_json_rpc_text(
+            r#"{"jsonrpc":"2.0","id":2,"method":"shutdown","params":{}}"#,
+            |_method, _params| Ok(json!({"unexpected": true})),
+        );
+        assert_eq!(
+            invalid_result.response.unwrap()["error"]["code"],
+            SERVER_ERROR
+        );
+
+        let unknown = handle_json_rpc_text(
+            r#"{"jsonrpc":"2.0","id":3,"method":"extension.echo","params":{"value":1}}"#,
+            |method, params| Ok(json!({"method": method, "value": params["value"]})),
+        );
+        assert_eq!(
+            unknown.response.unwrap()["result"],
+            json!({"method": "extension.echo", "value": 1})
+        );
+    }
+
+    #[test]
     fn parses_stream_payload_format_from_top_level_or_stream_object() {
         assert_eq!(
             stream_payload_format(&json!({"payloadFormat": "display-message"})).unwrap(),
@@ -853,6 +1106,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn parses_environment_attachment_refs_and_rejects_duplicates() {
         let refs = environment_attachment_refs(&json!({
             "environmentAttachments": [
@@ -931,6 +1185,49 @@ mod tests {
         .unwrap();
         assert_eq!(one_default.len(), 2);
         assert!(one_default[0].is_default);
+
+        let matching_aliases = environment_attachment_refs(&json!({
+            "environmentAttachments": {"id": "workspace"},
+            "environments": [{
+                "id": "workspace",
+                "mode": "read_write",
+                "default": true,
+                "defaultForShell": true
+            }],
+            "environment": {"id": "workspace", "default": true}
+        }))
+        .unwrap();
+        assert_eq!(matching_aliases.len(), 1);
+        assert_eq!(matching_aliases[0].id, "workspace");
+        assert!(matching_aliases[0].is_default);
+        assert_eq!(matching_aliases[0].requested_mode(), None);
+
+        let reordered_aliases = environment_attachment_refs(&json!({
+            "environmentAttachments": [
+                {"id": "workspace", "default": true},
+                {"id": "data", "mode": "read_only"}
+            ],
+            "environments": [
+                {"id": "data", "mode": "read_only"},
+                {
+                    "id": "workspace",
+                    "mode": "read_write",
+                    "default": true,
+                    "defaultForShell": true
+                }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(reordered_aliases[0].id, "workspace");
+        assert_eq!(reordered_aliases[1].id, "data");
+
+        let conflicting_aliases = environment_attachment_refs(&json!({
+            "environmentAttachments": {"id": "workspace"},
+            "environment": {"id": "data"}
+        }))
+        .unwrap_err();
+        assert_eq!(conflicting_aliases.code, INVALID_PARAMS);
+        assert!(conflicting_aliases.message.contains("aliases"));
     }
 
     #[test]

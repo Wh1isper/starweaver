@@ -345,7 +345,10 @@ impl BackgroundRunWorker {
             None
         };
         if let Err(error) = service.start_prepared_hitl_resume(&mut prepared) {
-            let _ = service.fail_prepared_prompt_run(run_on_error, &error, &admission_on_error);
+            // Keep the phase-aware HITL source binding that `start_prepared_hitl_resume` placed
+            // on the replacement before it attempted the durable effect fence.
+            let _ =
+                service.fail_prepared_prompt_run(prepared.run.clone(), &error, &admission_on_error);
             let _ = self
                 .event_sender
                 .send(RunStreamEvent::StartFailed(error.to_string()));

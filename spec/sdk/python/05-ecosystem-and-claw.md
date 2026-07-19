@@ -321,7 +321,7 @@ Full Claw parity is a product runtime, not an SDK feature. The detailed plan is
 
 ## Host Boundary
 
-The standalone `starweaver-rpc` product serves external hosts and Desktop process boundaries. The independent CLI product owns headless CLI and TUI behavior. Neither product should be used as the core Python library path or as an implementation dependency of the other.
+The standalone `starweaver-rpc` product serves external hosts and external host process boundaries. The independent CLI product owns headless CLI and TUI behavior. Neither product should be used as the core Python library path or as an implementation dependency of the other.
 
 When behavior is useful to Python, CLI/TUI, and RPC, factor only the product-neutral part into a Rust SDK/runtime/session/stream/environment seam and let each surface call it independently.
 

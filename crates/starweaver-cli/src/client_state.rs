@@ -1,14 +1,12 @@
-//! Frontend-specific local state helpers.
-
-use std::path::PathBuf;
+//! TUI local state helpers.
 
 use serde_json::{Value, json};
 
 use crate::{CliError, CliResult, args::TuiRenderMode, config::CliConfig};
 
-/// Read the selected model/profile name for a frontend client.
-pub fn read_selected_profile(config: &CliConfig, client: &str) -> CliResult<Option<String>> {
-    let value = read_client_state(config, client)?;
+/// Read the selected model/profile name for the TUI.
+pub fn read_selected_profile(config: &CliConfig) -> CliResult<Option<String>> {
+    let value = read_tui_state(config)?;
     Ok(value
         .get("selected_profile")
         .or_else(|| value.get("selectedProfile"))
@@ -16,17 +14,17 @@ pub fn read_selected_profile(config: &CliConfig, client: &str) -> CliResult<Opti
         .map(ToString::to_string))
 }
 
-/// Persist the selected model/profile name for a frontend client.
-pub fn write_selected_profile(config: &CliConfig, client: &str, profile: &str) -> CliResult<()> {
-    update_client_state(config, client, |value| {
+/// Persist the selected model/profile name for the TUI.
+pub fn write_selected_profile(config: &CliConfig, profile: &str) -> CliResult<()> {
+    update_tui_state(config, |value| {
         value["selected_profile"] = json!(profile);
         value["updated_at"] = json!(chrono::Utc::now().to_rfc3339());
     })
 }
 
-/// Read the TUI transcript rendering mode for a frontend client.
-pub fn read_render_mode(config: &CliConfig, client: &str) -> CliResult<Option<TuiRenderMode>> {
-    let value = read_client_state(config, client)?;
+/// Read the TUI transcript rendering mode.
+pub fn read_render_mode(config: &CliConfig) -> CliResult<Option<TuiRenderMode>> {
+    let value = read_tui_state(config)?;
     let Some(raw) = value
         .get("render_mode")
         .or_else(|| value.get("renderMode"))
@@ -44,20 +42,16 @@ pub fn read_render_mode(config: &CliConfig, client: &str) -> CliResult<Option<Tu
     }
 }
 
-/// Persist the TUI transcript rendering mode for a frontend client.
-pub fn write_render_mode(
-    config: &CliConfig,
-    client: &str,
-    render_mode: TuiRenderMode,
-) -> CliResult<()> {
-    update_client_state(config, client, |value| {
+/// Persist the TUI transcript rendering mode.
+pub fn write_render_mode(config: &CliConfig, render_mode: TuiRenderMode) -> CliResult<()> {
+    update_tui_state(config, |value| {
         value["render_mode"] = json!(render_mode_name(render_mode));
         value["updated_at"] = json!(chrono::Utc::now().to_rfc3339());
     })
 }
 
-fn read_client_state(config: &CliConfig, client: &str) -> CliResult<Value> {
-    let path = client_state_dir(config, client)?.join("state.json");
+fn read_tui_state(config: &CliConfig) -> CliResult<Value> {
+    let path = config.tui_state_dir.join("state.json");
     if !path.exists() {
         return Ok(json!({}));
     }
@@ -66,15 +60,11 @@ fn read_client_state(config: &CliConfig, client: &str) -> CliResult<Value> {
     Ok(serde_json::from_str::<Value>(&content)?)
 }
 
-fn update_client_state(
-    config: &CliConfig,
-    client: &str,
-    update: impl FnOnce(&mut Value),
-) -> CliResult<()> {
-    let dir = client_state_dir(config, client)?;
-    std::fs::create_dir_all(&dir).map_err(|error| crate::error::io_error(&dir, error))?;
+fn update_tui_state(config: &CliConfig, update: impl FnOnce(&mut Value)) -> CliResult<()> {
+    let dir = &config.tui_state_dir;
+    std::fs::create_dir_all(dir).map_err(|error| crate::error::io_error(dir, error))?;
     let path = dir.join("state.json");
-    let mut value = read_client_state(config, client)?;
+    let mut value = read_tui_state(config)?;
     if !value.is_object() {
         value = json!({});
     }
@@ -90,15 +80,5 @@ const fn render_mode_name(render_mode: TuiRenderMode) -> &'static str {
         TuiRenderMode::Normal => "normal",
         TuiRenderMode::Concise => "concise",
         TuiRenderMode::Debug => "debug",
-    }
-}
-
-fn client_state_dir(config: &CliConfig, client: &str) -> CliResult<PathBuf> {
-    match client {
-        "tui" => Ok(config.tui_state_dir.clone()),
-        "desktop" => Ok(config.desktop_state_dir.clone()),
-        other => Err(CliError::Usage(format!(
-            "unknown client state scope: {other}; expected tui or desktop"
-        ))),
     }
 }

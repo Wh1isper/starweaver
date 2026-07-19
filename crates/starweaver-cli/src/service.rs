@@ -15,7 +15,9 @@ use std::{
 };
 
 use chrono::Utc;
+use ring::digest::{SHA256, digest};
 use serde_json::{Value, json};
+use starweaver_agent::materialization::STARWEAVER_AGENT_POLICY_VERSION;
 use starweaver_agent::{
     ContinuationMaterialization, ResolvedAgentMaterialization, ResumableState,
     environment_binding_class,
@@ -24,8 +26,9 @@ use starweaver_core::{RunId, SessionId, sdk_name};
 use starweaver_oauth_provider::create_oauth_refresh_supervisor_for_models_with_options;
 use starweaver_runtime::AgentStreamRecord;
 use starweaver_session::{
-    ApprovalStatus, HitlResumeClaim, RunAdmissionLease, RunRecord, RunStatus, SessionSearchFilter,
-    SessionSearchGranularity, SessionSearchQuery, SessionSearchSource, SessionStatus, SessionStore,
+    ApprovalStatus, ExecutionStatus, HitlResumeAbortOutcome, HitlResumeClaim, PreparedContinuation,
+    RunAdmissionLease, RunRecord, RunStatus, SessionSearchFilter, SessionSearchGranularity,
+    SessionSearchQuery, SessionSearchSource, SessionStatus, SessionStore,
 };
 use starweaver_stream::DisplayMessage;
 
@@ -54,7 +57,7 @@ use crate::{
     prompt_input::PromptInput,
     runner::{
         CliAgentExecutionHost, CliRunPolicy, CliSteeringChannel, execute_agent_session_with_host,
-        failed_display_message,
+        failed_display_message, validate_prepared_hitl_continuation,
     },
     slash_commands::{ExpandedExplicitSkills, expand_explicit_skills, expand_slash_command},
 };
@@ -98,6 +101,7 @@ pub(super) struct PreparedPromptRun {
     resolved_profile: ResolvedProfile,
     pub(super) environment: ResolvedEnvironment,
     restore_state: Option<ResumableState>,
+    prepared_continuation: Option<PreparedContinuation>,
     policy: CliRunPolicy,
     execution_host: CliAgentExecutionHost,
     hitl_resume_claim: Option<HitlResumeClaim>,
@@ -118,9 +122,9 @@ pub(super) struct ExecutedPromptRun {
 
 enum HitlResumeClaimOperation {
     Claim(HitlResumeClaim),
-    Start {
-        session_id: SessionId,
-        run_id: RunId,
+    StartEffect {
+        lease: RunAdmissionLease,
+        source_run_id: RunId,
         claim_id: String,
     },
     Release {
@@ -132,10 +136,24 @@ enum HitlResumeClaimOperation {
 
 const PROJECT_GUIDANCE_TAG: &str = "project-guidance";
 const USER_RULES_TAG: &str = "user-rules";
-const CLI_AGENT_POLICY_VERSION: &str = "cli-agent-policy-v1";
 
 fn restore_requires_hitl_claim(status: RunStatus, hitl_resume: bool, branch_from: bool) -> bool {
     status == RunStatus::Waiting && !hitl_resume && !branch_from
+}
+
+fn deterministic_hitl_resume_claim_id(session_id: &str, run_id: &RunId) -> String {
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let identity = format!(
+        "starweaver.cli.hitl_resume_claim.v1\0{session_id}\0{}",
+        run_id.as_str()
+    );
+    let digest = digest(&SHA256, identity.as_bytes());
+    let mut fingerprint = String::with_capacity(digest.as_ref().len() * 2);
+    for byte in digest.as_ref() {
+        fingerprint.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        fingerprint.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+    }
+    format!("cli-hitl-resume-{fingerprint}")
 }
 
 fn search_query(command: SessionSearchCommand) -> SessionSearchQuery {
@@ -522,10 +540,11 @@ impl CliService {
         cancel_receiver: Option<mpsc::Receiver<()>>,
     ) -> CliResult<PromptRunExecution> {
         let mut prepared = self.prepare_prompt_run(command, prompt_input)?;
-        let run_on_error = prepared.run.clone();
         let admission_on_error = prepared.admission.clone();
         if let Err(error) = self.start_prepared_hitl_resume(&mut prepared) {
-            self.fail_prepared_prompt_run(run_on_error, &error, &admission_on_error)?;
+            // The phase-aware start path records the source claim relation before it attempts
+            // the durable fence. Preserve that mutated run when cleanup must consume Started.
+            self.fail_prepared_prompt_run(prepared.run.clone(), &error, &admission_on_error)?;
             return Err(error);
         }
         let run_on_error = prepared.run.clone();
@@ -686,10 +705,47 @@ impl CliService {
                 )));
             }
         }
-        let restore_state = self
-            .store()?
-            .load_restore_state(&session_id, restore_from.as_deref())?;
+        let prepared_continuation = match hitl_resume_source_run_id.as_ref() {
+            Some(source_run_id) => Some(
+                self.store()?
+                    .prepare_waiting_continuation(&session_id, source_run_id.as_str())?,
+            ),
+            None => None,
+        };
+        let restore_state = match prepared_continuation.as_ref() {
+            Some(prepared) => Some(prepared.snapshot.state.clone()),
+            None => self
+                .store()?
+                .load_restore_state(&session_id, restore_from.as_deref())?,
+        };
         if let Some(source_run_id) = waiting_restore_without_claim {
+            let mut pending = self
+                .store()?
+                .list_approvals(Some(&session_id), Some(&source_run_id))?
+                .into_iter()
+                .filter(|approval| approval.status == ApprovalStatus::Pending)
+                .map(|approval| approval.approval_id)
+                .collect::<Vec<_>>();
+            pending.extend(
+                self.store()?
+                    .list_deferred_tools(Some(&session_id), Some(&source_run_id))?
+                    .into_iter()
+                    .filter(|deferred| {
+                        matches!(
+                            deferred.status,
+                            ExecutionStatus::Pending
+                                | ExecutionStatus::Running
+                                | ExecutionStatus::Waiting
+                        )
+                    })
+                    .map(|deferred| deferred.deferred_id),
+            );
+            if !pending.is_empty() {
+                return Err(CliError::Run(format!(
+                    "cannot resume run {source_run_id} while HITL items are pending: {}",
+                    pending.join(", ")
+                )));
+            }
             return Err(CliError::Run(format!(
                 "run {source_run_id} is waiting and requires an explicit HITL resume"
             )));
@@ -708,7 +764,7 @@ impl CliService {
             .spec
             .resolved_materialization(
                 &resolved_profile.registry,
-                CLI_AGENT_POLICY_VERSION,
+                STARWEAVER_AGENT_POLICY_VERSION,
                 binding_class,
             )
             .map_err(|error| CliError::Config(error.to_string()))?;
@@ -734,6 +790,14 @@ impl CliService {
                 Ok(assessment)
             })
             .transpose()?;
+        if let Some(prepared) = prepared_continuation.as_ref() {
+            validate_prepared_hitl_continuation(
+                &resolved_profile,
+                &environment.provider,
+                environment.process_provider.as_ref(),
+                prepared,
+            )?;
+        }
         let mut admission_metadata = serde_json::Map::new();
         materialization
             .insert_into(&mut admission_metadata)
@@ -750,7 +814,7 @@ impl CliService {
         )?;
         let hitl_resume_claim = hitl_resume_source_run_id.clone().map(|source_run_id| {
             HitlResumeClaim::new(
-                format!("cli-hitl-resume-{}", uuid::Uuid::new_v4()),
+                deterministic_hitl_resume_claim_id(&session_id, &source_run_id),
                 SessionId::from_string(&session_id),
                 source_run_id,
                 Utc::now(),
@@ -869,6 +933,7 @@ impl CliService {
             resolved_profile,
             environment,
             restore_state,
+            prepared_continuation,
             policy: CliRunPolicy { hitl, goal },
             execution_host: if command.worker.is_some() || command.worker_label.is_some() {
                 CliAgentExecutionHost::disabled()
@@ -879,6 +944,11 @@ impl CliService {
         })
     }
 
+    /// Advance a fenced waiting-run claim immediately before approved-tool execution.
+    ///
+    /// The shared store transition is the only operation that moves an admitted continuation to
+    /// `Started`; after it succeeds a process loss is deliberately reconciled as indeterminate
+    /// rather than allowing a second product to repeat the approved effect.
     pub(super) fn start_prepared_hitl_resume(
         &self,
         prepared: &mut PreparedPromptRun,
@@ -886,32 +956,11 @@ impl CliService {
         let Some(claim) = prepared.hitl_resume_claim.take() else {
             return Ok(());
         };
-        let session_id = claim.session_id;
         let source_run_id = claim.run_id;
         let claim_id = claim.claim_id;
-        if let Err(error) = run_hitl_resume_claim_operation(
-            self.config.clone(),
-            HitlResumeClaimOperation::Start {
-                session_id: session_id.clone(),
-                run_id: source_run_id.clone(),
-                claim_id: claim_id.clone(),
-            },
-        ) {
-            let release = run_hitl_resume_claim_operation(
-                self.config.clone(),
-                HitlResumeClaimOperation::Release {
-                    session_id,
-                    run_id: source_run_id,
-                    claim_id,
-                },
-            );
-            return match release {
-                Ok(()) => Err(error),
-                Err(release_error) => Err(CliError::Storage(format!(
-                    "{error}; failed to release preflight HITL claim: {release_error}"
-                ))),
-            };
-        }
+        // Record the relation before attempting the effect fence. If the store committed
+        // `Started` but its response was lost, ordinary error cleanup must atomically consume
+        // this source claim instead of terminalizing only the replacement.
         prepared.run.metadata.insert(
             HITL_RESUME_CLAIM_ID_METADATA_KEY.to_string(),
             json!(claim_id),
@@ -920,6 +969,33 @@ impl CliService {
             HITL_RESUME_SOURCE_RUN_ID_METADATA_KEY.to_string(),
             json!(source_run_id.as_str()),
         );
+        let lease_before_refresh = prepared.admission.current_lease()?;
+        if let Err(refresh_error) = prepared.admission.refresh() {
+            return Err(phase_aware_hitl_start_error(
+                self.config.clone(),
+                lease_before_refresh,
+                source_run_id,
+                claim_id,
+                refresh_error,
+            ));
+        }
+        let lease = prepared.admission.current_lease()?;
+        if let Err(start_error) = run_hitl_resume_claim_operation(
+            self.config.clone(),
+            HitlResumeClaimOperation::StartEffect {
+                lease: lease.clone(),
+                source_run_id: source_run_id.clone(),
+                claim_id: claim_id.clone(),
+            },
+        ) {
+            return Err(phase_aware_hitl_start_error(
+                self.config.clone(),
+                lease,
+                source_run_id,
+                claim_id,
+                start_error,
+            ));
+        }
         Ok(())
     }
 
@@ -938,6 +1014,7 @@ impl CliService {
             resolved_profile,
             environment,
             restore_state,
+            prepared_continuation,
             policy,
             execution_host,
             ..
@@ -949,6 +1026,7 @@ impl CliService {
             &environment.provider,
             environment.process_provider.as_ref(),
             restore_state,
+            prepared_continuation.as_ref(),
             &policy,
             stream_sender,
             steering_channel,
@@ -970,6 +1048,18 @@ impl CliService {
         error: &CliError,
         admission: &CliRunAdmission,
     ) -> CliResult<()> {
+        // `abort_admitted_hitl_resume` has already terminalized an admitted replacement in the
+        // no-effect branch. Do not overwrite that durable decision with generic evidence; just
+        // release its matching lease. Started and uncertain branches remain non-terminal here,
+        // so the normal fenced evidence path consumes the source claim recorded on `run`.
+        if self
+            .store()?
+            .load_run(run.session_id.as_str(), run.run_id.as_str())?
+            .status
+            .is_terminal()
+        {
+            return admission.release(self.store()?);
+        }
         admission.refresh()?;
         let lease = admission.current_lease()?;
         let messages = failed_display_message(&run, &error.to_string());
@@ -1396,6 +1486,59 @@ fn continuation_drift_prefix(continuation: Option<&ContinuationMaterialization>)
         })
 }
 
+fn phase_aware_hitl_start_error(
+    config: CliConfig,
+    lease: RunAdmissionLease,
+    source_run_id: RunId,
+    claim_id: String,
+    start_error: CliError,
+) -> CliError {
+    // A response error is not proof that the state transition did not commit. Abort is
+    // phase-aware: an admitted claim safely terminalizes only this replacement, while a started
+    // claim is left for the caller's fenced related-run evidence.
+    match abort_admitted_hitl_resume_operation(
+        config,
+        lease,
+        source_run_id,
+        claim_id,
+        "HITL continuation failed before effect start",
+    ) {
+        Ok(HitlResumeAbortOutcome::AbortedBeforeEffect | HitlResumeAbortOutcome::EffectStarted) => {
+            start_error
+        }
+        Err(abort_error) => CliError::Storage(format!(
+            "{start_error}; failed to determine HITL effect phase: {abort_error}"
+        )),
+    }
+}
+
+fn abort_admitted_hitl_resume_operation(
+    config: CliConfig,
+    lease: RunAdmissionLease,
+    source_run_id: RunId,
+    claim_id: String,
+    output_preview: &'static str,
+) -> CliResult<HitlResumeAbortOutcome> {
+    thread::spawn(move || {
+        let store =
+            LocalSessionStore::new(config).map_err(|error| CliError::Storage(error.to_string()))?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| CliError::Run(error.to_string()))?;
+        runtime
+            .block_on(store.abort_admitted_hitl_resume(
+                &lease,
+                &source_run_id,
+                &claim_id,
+                output_preview,
+            ))
+            .map_err(|error| CliError::Storage(error.to_string()))
+    })
+    .join()
+    .map_err(|_| CliError::Run("HITL resume abort worker panicked".to_string()))?
+}
+
 fn run_hitl_resume_claim_operation(
     config: CliConfig,
     operation: HitlResumeClaimOperation,
@@ -1410,14 +1553,22 @@ fn run_hitl_resume_claim_operation(
         runtime
             .block_on(async {
                 match operation {
-                    HitlResumeClaimOperation::Claim(claim) => store.claim_hitl_resume(claim).await,
-                    HitlResumeClaimOperation::Start {
-                        session_id,
-                        run_id,
+                    HitlResumeClaimOperation::Claim(claim) => {
+                        store
+                            .reconcile_expired_run_admissions(
+                                starweaver_session::LOCAL_SESSION_NAMESPACE,
+                                Utc::now(),
+                            )
+                            .await?;
+                        store.claim_hitl_resume(claim).await
+                    }
+                    HitlResumeClaimOperation::StartEffect {
+                        lease,
+                        source_run_id,
                         claim_id,
                     } => {
                         store
-                            .mark_hitl_resume_started(&session_id, &run_id, &claim_id)
+                            .start_hitl_resume_effect(&lease, &source_run_id, &claim_id)
                             .await
                     }
                     HitlResumeClaimOperation::Release {

@@ -34,7 +34,7 @@ fn standalone_stdio_process_handles_initialize_and_shutdown() {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": {"clientInfo": {"name": "desktop-test"}}
+            "params": {"clientInfo": {"name": "rpc-stdio-test"}}
         }),
     );
     assert_eq!(initialized["jsonrpc"], "2.0");
@@ -95,7 +95,7 @@ fn standalone_rpc_reads_cli_style_session_from_shared_database() {
     let session = storage
         .create_session_for_product(
             Some("general".to_string()),
-            Some("CLI session visible to Desktop".to_string()),
+            Some("CLI session visible to RPC host".to_string()),
             Some(temp.path().to_string_lossy().into_owned()),
             Some("cli"),
         )
@@ -145,7 +145,7 @@ fn standalone_rpc_reads_cli_style_session_from_shared_database() {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": {"clientInfo": {"name": "desktop-test"}}
+            "params": {"clientInfo": {"name": "rpc-stdio-test"}}
         }),
     );
     assert!(initialized.get("error").is_none(), "{initialized}");
@@ -176,7 +176,7 @@ fn standalone_rpc_reads_cli_style_session_from_shared_database() {
     );
     assert_eq!(
         loaded["result"]["session"]["title"],
-        "CLI session visible to Desktop"
+        "CLI session visible to RPC host"
     );
     assert_eq!(loaded["result"]["runs"][0]["run_id"], run_id.as_str());
 

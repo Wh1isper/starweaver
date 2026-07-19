@@ -1845,6 +1845,7 @@ fn durability_error_to_py(error: AgentDurabilityError) -> PyFutureError {
         AgentDurabilityError::MissingSessionStore
         | AgentDurabilityError::MissingCheckpointState { .. }
         | AgentDurabilityError::SessionMismatch { .. }
+        | AgentDurabilityError::InvalidContinuationEvidence(_)
         | AgentDurabilityError::MissingPublicationSink { .. }
         | AgentDurabilityError::SessionStore(_)
         | AgentDurabilityError::Replay(_) => PyFutureError::State(error.to_string()),

@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use starweaver_core::{Metadata, RunId, SessionId, TraceContext};
+use starweaver_model::TOOL_RETURN_APPROVAL_ARGUMENTS_METADATA_KEY;
 
 use crate::records::ExecutionStatus;
 
@@ -124,6 +125,9 @@ pub struct ApprovalRecord {
     /// Requested action payload.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub request: Value,
+    /// Canonical tool arguments independently persisted as the reviewed effect boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_arguments: Option<Value>,
     /// Current approval status.
     #[serde(default)]
     pub status: ApprovalStatus,
@@ -165,6 +169,7 @@ impl ApprovalRecord {
             action_id: action_id.into(),
             action_name: action_name.into(),
             request: Value::Null,
+            reviewed_arguments: None,
             status: ApprovalStatus::Pending,
             decision: None,
             created_at: now,
@@ -192,6 +197,10 @@ impl ApprovalRecord {
             .get("approval")
             .cloned()
             .unwrap_or(Value::Null);
+        record.reviewed_arguments = input
+            .metadata
+            .get(TOOL_RETURN_APPROVAL_ARGUMENTS_METADATA_KEY)
+            .cloned();
         if let Some(trace_context) = input.trace_context {
             record.trace_context = trace_context.clone();
         }

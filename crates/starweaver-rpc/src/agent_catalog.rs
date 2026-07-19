@@ -1,8 +1,11 @@
 //! RPC-owned agent profile catalog and production model materialization.
 
-use std::{env, sync::Arc};
+use std::{env, path::Path, sync::Arc};
 
 use serde::Serialize;
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use starweaver_agent::materialization::STARWEAVER_AGENT_POLICY_VERSION;
 use starweaver_agent::{
     AgentRuntimeBuilder, AgentSpec, AgentSpecRegistry, ModelPreset, ResolvedAgentMaterialization,
     SubagentConfig, SubagentToolInheritancePolicy, agent_session_control_tools,
@@ -193,8 +196,18 @@ impl RpcAgentCatalog {
             profile,
             Arc::new(starweaver_model::TestModel::with_text("identity-only")),
         );
-        spec.resolved_materialization(&registry, "rpc-agent-policy-v1", environment_binding_class)
-            .map_err(|error| RpcHostError::Invalid(error.to_string()))
+        spec.resolved_materialization(
+            &registry,
+            STARWEAVER_AGENT_POLICY_VERSION,
+            environment_binding_class,
+        )
+        .map(|materialization| {
+            materialization.with_host_bindings(
+                rpc_runtime_binding_digest(profile, &self.config.providers),
+                workspace_root_digest(&self.config.workspace_root),
+            )
+        })
+        .map_err(|error| RpcHostError::Invalid(error.to_string()))
     }
 
     /// Return whether a profile explicitly grants one toolset.
@@ -399,6 +412,50 @@ fn apply_http_overrides(config: &mut HttpModelConfig, provider: &RpcProviderConf
     }
 }
 
+fn rpc_runtime_binding_digest(
+    profile: &RpcProfileConfig,
+    providers: &std::collections::BTreeMap<String, RpcProviderConfig>,
+) -> String {
+    let provider = RpcModelId::parse(&profile.model_id).ok().and_then(|model| {
+        providers.get(&model.provider_key).map(|provider| {
+            json!({
+                "key": model.provider_key,
+                "protocol": model.protocol_name,
+                "provider": model.provider_name,
+                "enabled": provider.enabled,
+                "baseUrl": provider.base_url,
+                "endpointPath": provider.endpoint_path,
+            })
+        })
+    });
+    digest_binding(
+        b"starweaver.rpc.materialization.runtime-binding/v1",
+        &json!({
+            "modelId": profile.model_id,
+            "modelSettings": profile.model_settings,
+            "modelConfig": profile.model_config,
+            "testModel": profile.test_response.is_some(),
+            "provider": provider,
+        }),
+    )
+}
+
+fn workspace_root_digest(root: &Path) -> String {
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    digest_binding(
+        b"starweaver.rpc.materialization.workspace-root/v1",
+        &json!({"root": canonical.to_string_lossy()}),
+    )
+}
+
+fn digest_binding(domain: &[u8], value: &serde_json::Value) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    hasher.update([0]);
+    hasher.update(serde_json::to_vec(&value).unwrap_or_default());
+    format!("sha256:{:x}", hasher.finalize())
+}
+
 struct RpcModelId {
     provider_key: String,
     provider_name: String,
@@ -499,6 +556,65 @@ mod tests {
         let catalog = RpcAgentCatalog::new(config).unwrap();
         assert_eq!(catalog.profiles()[0].source, "rpc_test");
         assert!(catalog.runtime_builder("default").is_ok());
+    }
+
+    #[test]
+    fn materialization_binds_provider_endpoint_behavior_and_workspace_without_leaking_them() {
+        let first_root = tempfile::tempdir().unwrap();
+        let second_root = tempfile::tempdir().unwrap();
+        let mut first = RpcConfig::for_tests(first_root.path());
+        first.profiles.insert(
+            "production".to_string(),
+            RpcProfileConfig {
+                model_id: "gateway@openai-responses:gpt-5".to_string(),
+                test_response: None,
+                ..RpcProfileConfig::default()
+            },
+        );
+        first.providers.insert(
+            "gateway".to_string(),
+            RpcProviderConfig {
+                base_url: Some("https://first.example.invalid/v1".to_string()),
+                endpoint_path: Some("private-route-marker".to_string()),
+                ..RpcProviderConfig::default()
+            },
+        );
+        let first_evidence = RpcAgentCatalog::new(first.clone())
+            .unwrap()
+            .materialization("production", "local:read_write")
+            .unwrap();
+
+        let mut endpoint_changed = first.clone();
+        endpoint_changed
+            .providers
+            .get_mut("gateway")
+            .unwrap()
+            .endpoint_path = Some("chat/completions".to_string());
+        let endpoint_evidence = RpcAgentCatalog::new(endpoint_changed)
+            .unwrap()
+            .materialization("production", "local:read_write")
+            .unwrap();
+        assert_ne!(
+            first_evidence.runtime_binding_digest,
+            endpoint_evidence.runtime_binding_digest
+        );
+        assert_ne!(first_evidence.fingerprint, endpoint_evidence.fingerprint);
+
+        let mut workspace_changed = first;
+        workspace_changed.workspace_root = second_root.path().join("workspace");
+        let workspace_evidence = RpcAgentCatalog::new(workspace_changed)
+            .unwrap()
+            .materialization("production", "local:read_write")
+            .unwrap();
+        assert_ne!(
+            first_evidence.workspace_root_digest,
+            workspace_evidence.workspace_root_digest
+        );
+        assert_ne!(first_evidence.fingerprint, workspace_evidence.fingerprint);
+        let rendered = serde_json::to_string(&first_evidence).unwrap();
+        assert!(!rendered.contains("first.example.invalid"));
+        assert!(!rendered.contains("private-route-marker"));
+        assert!(!rendered.contains(first_root.path().to_string_lossy().as_ref()));
     }
 
     #[test]

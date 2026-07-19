@@ -2596,6 +2596,7 @@ dependencies = [
 name = "starweaver-rpc-core"
 version = "0.9.0"
 dependencies = [
+ "jsonschema",
  "serde",
  "serde_json",
  "starweaver-core",

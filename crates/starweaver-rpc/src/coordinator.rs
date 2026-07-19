@@ -17,7 +17,9 @@ use starweaver_agent::{
     AgentContext, AgentControlHandle, AgentDurabilityError, AgentHitlResults,
     AgentSessionControlHandle, AgentSessionQueryHandle, AgentStreamDropPolicy, AgentStreamError,
     AgentStreamOptions, BackgroundSubagentSupervisor, BackgroundSubagentTaskResult,
+    ContinuationMaterialization, ContinuationMaterializationMode, ResolvedAgentMaterialization,
     SubagentDelegationMode, attach_agent_session_control, attach_agent_session_query,
+    environment_binding_class,
 };
 use starweaver_core::{ConversationId, RunId, SessionId, SubagentAttemptId};
 use starweaver_environment::{
@@ -31,8 +33,9 @@ use starweaver_runtime::{AgentInput, AgentStreamRecord};
 use starweaver_session::{
     AcquireBackgroundSubagentContinuation, AcquireRunAdmission, AgentSessionOperation,
     AgentSessionScope, BackgroundSubagentContinuationCause, BackgroundSubagentRecord,
-    DurableBackgroundSubagentDeliveryStatus, DurableBackgroundSubagentRetentionStatus,
-    DurableControlReceipt, HitlResumeClaim, InputPart, LOCAL_SESSION_NAMESPACE, ManagedRunTarget,
+    ContinuationEffectState, DurableBackgroundSubagentDeliveryStatus,
+    DurableBackgroundSubagentRetentionStatus, DurableControlReceipt, HitlResumeAbortOutcome,
+    HitlResumeClaim, InputPart, LOCAL_SESSION_NAMESPACE, ManagedRunTarget, PreparedContinuation,
     RunAdmissionLease, RunAdmissionReceipt, RunRecord, RunStatus, SessionDeletionFence,
     SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError,
 };
@@ -63,6 +66,7 @@ const RPC_PROFILE_METADATA_KEY: &str = "rpc.profile";
 const RPC_ENVIRONMENT_ATTACHMENTS_METADATA_KEY: &str = "rpc.environment_attachments";
 const ACTIVE_LEASE_TTL: Duration = Duration::from_secs(30);
 const ACTIVE_LEASE_HEARTBEAT: Duration = Duration::from_secs(10);
+const DURABLE_TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const TERMINAL_CACHE_LIMIT: usize = 64;
 const ACTIVE_EVENT_CACHE_LIMIT: usize = 2_048;
 const DEFAULT_REPLAY_PAGE_LIMIT: usize = 200;
@@ -71,6 +75,41 @@ const BACKGROUND_COMPLETION_TASK_LIMIT: usize = 256;
 const BACKGROUND_RECORD_SCAN_LIMIT: usize = 1_024;
 const BACKGROUND_RETENTION_CLEANUP_LIMIT: usize = 256;
 const BACKGROUND_CONTINUATION_LEASE_TTL: Duration = Duration::from_secs(30);
+
+/// Maintains a newly admitted run while RPC is still resolving state, injecting HITL results, and
+/// registering the worker. The worker takes over with its own heartbeat after registration.
+struct RpcPreworkerAdmissionHeartbeat {
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl RpcPreworkerAdmissionHeartbeat {
+    fn start(session_store: Arc<dyn SessionStore>, lease: RunAdmissionLease) -> Self {
+        let (stop, mut stopped) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(ACTIVE_LEASE_HEARTBEAT);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    _ = interval.tick() => {
+                        let expires = chrono::Utc::now()
+                            + chrono::Duration::from_std(ACTIVE_LEASE_TTL).unwrap_or_default();
+                        if session_store.heartbeat_run_admission(&lease, expires).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        Self { stop: Some(stop) }
+    }
+}
+
+impl Drop for RpcPreworkerAdmissionHeartbeat {
+    fn drop(&mut self) {
+        let _ = self.stop.take();
+    }
+}
 
 type RpcBoxFuture<'a, T> = Pin<Box<dyn Future<Output = RpcHostResult<T>> + Send + 'a>>;
 
@@ -93,6 +132,8 @@ pub struct RpcRunRequest {
     pub idempotency_key: String,
     /// Normalized typed start command fingerprint.
     pub command_fingerprint: String,
+    /// Explicit materialization policy for a restored run.
+    pub continuation_mode: ContinuationMaterializationMode,
     /// Install profile-granted session query/control handles for this run.
     pub install_session_management: bool,
 }
@@ -112,6 +153,8 @@ pub struct RpcHitlResumeRequest {
     pub idempotency_key: String,
     /// Normalized typed resume-command fingerprint.
     pub command_fingerprint: String,
+    /// Explicit materialization policy for this continuation.
+    pub continuation_mode: ContinuationMaterializationMode,
     /// Install profile-granted session query/control handles for this run.
     pub install_session_management: bool,
 }
@@ -139,6 +182,9 @@ pub struct RpcRunStatus {
     /// Safe runtime error when the run failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Fail-closed effect recovery projection when a started continuation lost its host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation_effect: Option<ContinuationEffectState>,
 }
 
 impl RpcRunStatus {
@@ -260,6 +306,47 @@ impl RpcRuntimeCoordinator {
         }
     }
 
+    fn materialization_plan(
+        &self,
+        profile: &str,
+        attachments: &[EnvironmentAttachmentRef],
+        source: Option<&RunRecord>,
+        mode: ContinuationMaterializationMode,
+    ) -> RpcHostResult<(
+        ResolvedAgentMaterialization,
+        Option<ContinuationMaterialization>,
+    )> {
+        let binding_class = environment_binding_class(attachments.iter().map(|attachment| {
+            let mode = match attachment.resolved_mode() {
+                starweaver_rpc_core::EnvironmentAttachmentAccessMode::ReadOnly => "read_only",
+                starweaver_rpc_core::EnvironmentAttachmentAccessMode::ReadWrite => "read_write",
+            };
+            (attachment.kind.clone(), mode.to_string())
+        }));
+        let materialization = self.catalog.materialization(profile, binding_class)?;
+        let continuation = source
+            .map(|source| {
+                let source_materialization =
+                    ResolvedAgentMaterialization::from_metadata(&source.metadata)
+                        .map_err(|error| RpcHostError::Invalid(error.to_string()))?;
+                let assessment = ContinuationMaterialization::assess(
+                    source_materialization.as_ref(),
+                    &materialization,
+                    mode,
+                );
+                if !assessment.allowed {
+                    return Err(RpcHostError::Invalid(format!(
+                        "continuation materialization mode {} rejected drift: {}",
+                        assessment.mode.as_str(),
+                        assessment.drift_summary()
+                    )));
+                }
+                Ok(assessment)
+            })
+            .transpose()?;
+        Ok((materialization, continuation))
+    }
+
     fn supervisor_for_session(
         &self,
         session_id: &SessionId,
@@ -367,7 +454,8 @@ impl RpcRuntimeCoordinator {
     /// Resume a durable waiting run through the ordinary active-run pipeline.
     ///
     /// All materialization and HITL validation occurs before the exclusive claim is acquired.
-    /// Waiting replacement admission atomically transitions that claim to `Started`; from that
+    /// Waiting replacement admission atomically transitions that claim to `Admitted`; the runtime
+    /// effect boundary later validates the live admission and advances it to `Started`. From that
     /// point failures are persisted as related-run evidence instead of releasing the claim.
     ///
     /// # Errors
@@ -431,7 +519,7 @@ impl RpcRuntimeCoordinator {
                 idempotent_replay: true,
             });
         }
-        let mut snapshot = store
+        let snapshot = store
             .resume_snapshot(&request.session_id, &request.source_run_id)
             .await?;
         if snapshot.run.status != RunStatus::Waiting {
@@ -465,20 +553,14 @@ impl RpcRuntimeCoordinator {
                 request.source_run_id.as_str()
             )));
         }
-        let checkpoint_state = {
-            let checkpoint = snapshot.latest_checkpoint.as_mut().ok_or_else(|| {
-                RpcHostError::Invalid(format!(
-                    "waiting run {} has no resumable checkpoint",
-                    request.source_run_id.as_str()
-                ))
-            })?;
-            // Checkpoints are execution snapshots and may precede the terminal Waiting projection.
-            // The durable source run status is authoritative for continuation admission; normalize
-            // the in-memory effective state without rewriting immutable checkpoint evidence.
-            checkpoint.state.status = starweaver_runtime::RunStatus::Waiting;
-            checkpoint.state.clone()
-        };
-        let results = AgentHitlResults::from_resume_snapshot(&snapshot);
+        let prepared = PreparedContinuation::waiting_hitl(snapshot)
+            .map_err(|error| RpcHostError::Invalid(error.to_string()))?;
+        let checkpoint_state = prepared
+            .waiting_state()
+            .cloned()
+            .ok_or_else(|| RpcHostError::Runtime("missing prepared HITL state".to_string()))?;
+        let results = AgentHitlResults::from_prepared_continuation(&prepared);
+        let snapshot = prepared.into_snapshot();
 
         // Resolve the complete runtime boundary before claiming. This may open provider handles,
         // but it does not preprocess user input, execute tools, or mutate durable claim state.
@@ -486,6 +568,12 @@ impl RpcRuntimeCoordinator {
             &self.config.workspace_root,
             request.session_id.as_str(),
             &request.environment_attachments,
+        )?;
+        let (materialization, continuation) = self.materialization_plan(
+            &request.profile,
+            &request.environment_attachments,
+            Some(&snapshot.run),
+            request.continuation_mode,
         )?;
         let preflight_context = AgentContext::from_state(snapshot.state.clone());
         let preflight_runtime = self
@@ -516,6 +604,15 @@ impl RpcRuntimeCoordinator {
                 &request.environment_attachments
             )),
         );
+        materialization
+            .insert_into(&mut run.metadata)
+            .map_err(|error| RpcHostError::Invalid(error.to_string()))?;
+        let continuation = continuation.ok_or_else(|| {
+            RpcHostError::Runtime("missing HITL continuation materialization plan".to_string())
+        })?;
+        continuation
+            .insert_into(&mut run.metadata)
+            .map_err(|error| RpcHostError::Invalid(error.to_string()))?;
         let admission_request = AcquireRunAdmission {
             run,
             namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
@@ -572,6 +669,7 @@ impl RpcRuntimeCoordinator {
                 environment_attachments: request.environment_attachments,
                 idempotency_key: request.idempotency_key,
                 command_fingerprint: request.command_fingerprint,
+                continuation_mode: request.continuation_mode,
                 install_session_management: request.install_session_management,
             },
             admission,
@@ -651,17 +749,38 @@ impl RpcRuntimeCoordinator {
             .load_run(&admission.run.session_id, &admission.run.run_id)
             .await?;
         if !durable.status.is_terminal() {
-            if let Err(persist_error) = self
-                .persist_started_hitl_launch_failure(
-                    &admission,
-                    &launch,
+            // This phase-aware operation proves whether an approved effect can have run. An
+            // admitted replacement is safely aborted without consuming its waiting source;
+            // a started replacement must instead write fail-closed related-run evidence.
+            match store
+                .abort_admitted_hitl_resume(
+                    &admission.lease,
+                    &launch.snapshot.run.run_id,
+                    &launch.claim_id,
                     "runtime preparation failed",
                 )
                 .await
             {
-                return Err(RpcHostError::Runtime(format!(
-                    "{error}; failed to persist started continuation failure: {persist_error}"
-                )));
+                Ok(HitlResumeAbortOutcome::AbortedBeforeEffect) => {}
+                Ok(HitlResumeAbortOutcome::EffectStarted) => {
+                    if let Err(persist_error) = self
+                        .persist_started_hitl_launch_failure(
+                            &admission,
+                            &launch,
+                            "runtime preparation failed",
+                        )
+                        .await
+                    {
+                        return Err(RpcHostError::Runtime(format!(
+                            "{error}; failed to persist started continuation failure: {persist_error}"
+                        )));
+                    }
+                }
+                Err(abort_error) => {
+                    return Err(RpcHostError::Runtime(format!(
+                        "{error}; failed to reconcile admitted continuation failure: {abort_error}"
+                    )));
+                }
             }
             durable = store
                 .load_run(&admission.run.session_id, &admission.run.run_id)
@@ -746,6 +865,32 @@ impl RpcRuntimeCoordinator {
             .await?)
     }
 
+    async fn ensure_started_hitl_terminal_evidence(
+        &self,
+        admission: &RunAdmissionReceipt,
+        launch: &HitlLaunch,
+        fallback: &str,
+    ) -> RpcHostResult<RunRecord> {
+        let store = self.storage.session_store();
+        let durable = store
+            .load_run(&admission.run.session_id, &admission.run.run_id)
+            .await?;
+        if durable.status.is_terminal() {
+            return Ok(durable);
+        }
+        self.persist_started_hitl_launch_failure(admission, launch, fallback)
+            .await?;
+        let durable = store
+            .load_run(&admission.run.session_id, &admission.run.run_id)
+            .await?;
+        if !durable.status.is_terminal() {
+            return Err(RpcHostError::Runtime(
+                "started HITL continuation has no atomic terminal related-run evidence".to_string(),
+            ));
+        }
+        Ok(durable)
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn start_inner(
         &self,
@@ -780,6 +925,25 @@ impl RpcRuntimeCoordinator {
                 .await?
         };
         let session_id = session.session_id.clone();
+        let materialization_plan = if preadmitted.is_none() {
+            let source = match request.restore_from_run_id.as_ref() {
+                Some(run_id) => Some(
+                    self.storage
+                        .session_store()
+                        .load_run(&session_id, run_id)
+                        .await?,
+                ),
+                None => None,
+            };
+            Some(self.materialization_plan(
+                &request.profile,
+                &request.environment_attachments,
+                source.as_ref(),
+                request.continuation_mode,
+            )?)
+        } else {
+            None
+        };
         let launch_preadmitted = preadmitted.is_some();
         let admission = if let Some(admission) = preadmitted {
             if admission.run.session_id != session_id
@@ -817,6 +981,20 @@ impl RpcRuntimeCoordinator {
                     &request.environment_attachments
                 )),
             );
+            let (materialization, continuation) =
+                materialization_plan.as_ref().ok_or_else(|| {
+                    RpcHostError::Runtime(
+                        "missing RPC materialization plan before admission".to_string(),
+                    )
+                })?;
+            materialization
+                .insert_into(&mut run.metadata)
+                .map_err(|error| RpcHostError::Invalid(error.to_string()))?;
+            if let Some(continuation) = continuation.as_ref() {
+                continuation
+                    .insert_into(&mut run.metadata)
+                    .map_err(|error| RpcHostError::Invalid(error.to_string()))?;
+            }
             self.storage
                 .session_store()
                 .acquire_run_admission(AcquireRunAdmission {
@@ -871,6 +1049,13 @@ impl RpcRuntimeCoordinator {
                 idempotent_replay: true,
             });
         }
+        // Start lease maintenance before any potentially slow durable result hydration or HITL
+        // injection. Without this guard a 30-second admission can expire before the worker's
+        // existing heartbeat is installed.
+        let preworker_heartbeat = RpcPreworkerAdmissionHeartbeat::start(
+            Arc::new(self.storage.session_store()),
+            admission.lease.clone(),
+        );
         let supervisor = self.supervisor_for_session(&session_id)?;
         if admission.run.trigger_type.as_deref() != Some("async_subagent_result") {
             let pending = self
@@ -1015,51 +1200,26 @@ impl RpcRuntimeCoordinator {
                 .terminal_replay_sequence(Arc::clone(&terminal_replay_sequence))
                 .build();
             let input = request.input.clone();
-            if let Some(launch) = hitl_launch.as_ref() {
-                let checkpoint = launch.snapshot.latest_checkpoint.as_ref().ok_or_else(|| {
-                    RpcHostError::Invalid("waiting resume snapshot lost its checkpoint".to_string())
-                })?;
-                if let Err(error) = runtime
-                    .session()
-                    .validate_hitl_results_for_state(&checkpoint.state, &launch.results)
-                {
-                    let message = format!("HITL validation changed after admission: {error}");
-                    let persisted = runtime
-                        .persist_hitl_injection_failure(
-                            &launch.snapshot,
-                            &launch.results,
-                            launch.claim_id.clone(),
-                            message.clone(),
-                        )
-                        .await;
-                    return Err(RpcHostError::Runtime(match persisted {
-                        Ok(()) => message,
-                        Err(persist_error) => {
-                            format!("{message}; failed to persist started continuation failure: {persist_error}")
-                        }
-                    }));
-                }
-                if let Err(error) = runtime
-                    .session_mut()
-                    .inject_hitl_results_for_state(&checkpoint.state, launch.results.clone())
+            if let Some(launch) = hitl_launch.as_ref()
+                && let Err(error) = runtime
+                    .inject_prepared_hitl_results(&launch.snapshot.run.run_id, &launch.claim_id)
                     .await
-                {
-                    let message = format!("HITL result injection failed: {error}");
-                    let persisted = runtime
-                        .persist_hitl_injection_failure(
-                            &launch.snapshot,
-                            &launch.results,
-                            launch.claim_id.clone(),
-                            message.clone(),
-                        )
-                        .await;
-                    return Err(RpcHostError::Runtime(match persisted {
-                        Ok(()) => message,
-                        Err(persist_error) => {
-                            format!("{message}; failed to persist started continuation failure: {persist_error}")
-                        }
-                    }));
-                }
+            {
+                let message = format!("HITL result injection failed: {error}");
+                let persisted = runtime
+                    .persist_hitl_injection_failure(
+                        &launch.snapshot,
+                        &launch.results,
+                        launch.claim_id.clone(),
+                        message.clone(),
+                    )
+                    .await;
+                return Err(RpcHostError::Runtime(match persisted {
+                    Ok(()) => message,
+                    Err(persist_error) => {
+                        format!("{message}; failed to persist started continuation failure: {persist_error}")
+                    }
+                }));
             }
             let handle = match runtime.try_stream_with_stream_options(
                 input.clone(),
@@ -1124,8 +1284,8 @@ impl RpcRuntimeCoordinator {
             .mark_run_started(run_id.as_str(), &resolved_environment.attachments)
         {
             let _ = control.interrupt(Some("environment lease registration failed".to_string()));
-            if let Some(launch) = hitl_launch.as_ref() {
-                let _ = runtime
+            let hitl_completion_error = if let Some(launch) = hitl_launch.as_ref() {
+                runtime
                     .finish_hitl_stream(
                         input,
                         handle,
@@ -1133,14 +1293,22 @@ impl RpcRuntimeCoordinator {
                         &launch.results,
                         launch.claim_id.clone(),
                     )
-                    .await;
+                    .await
+                    .err()
             } else {
                 let _ = runtime.finish_stream(input, handle).await;
+                None
+            };
+            supervisor.end_parent_run(&run_id);
+            if let Some(hitl_error) = hitl_completion_error {
+                return Err(RpcHostError::Runtime(format!(
+                    "{}; HITL stream completion requires atomic reconciliation: {hitl_error}",
+                    error.message
+                )));
             }
             let cleanup = self
                 .finalize_preworker_failure(&admission, "environment lease registration failed")
                 .await;
-            supervisor.end_parent_run(&run_id);
             if let Err(cleanup_error) = cleanup {
                 return Err(RpcHostError::Runtime(format!(
                     "{}; admission cleanup requires reconciliation: {cleanup_error}",
@@ -1155,6 +1323,7 @@ impl RpcRuntimeCoordinator {
             status: "running".to_string(),
             output_preview: None,
             error: None,
+            continuation_effect: None,
         };
         let (status_tx, _status_rx) = watch::channel(initial_status);
         let active_run = ActiveRun {
@@ -1192,8 +1361,8 @@ impl RpcRuntimeCoordinator {
                     .control
                     .interrupt(Some("durable running transition failed".to_string()));
             }
-            if let Some(launch) = hitl_launch.as_ref() {
-                let _ = runtime
+            let hitl_completion_error = if let Some(launch) = hitl_launch.as_ref() {
+                runtime
                     .finish_hitl_stream(
                         input,
                         handle,
@@ -1201,15 +1370,22 @@ impl RpcRuntimeCoordinator {
                         &launch.results,
                         launch.claim_id.clone(),
                     )
-                    .await;
+                    .await
+                    .err()
             } else {
                 let _ = runtime.finish_stream(input, handle).await;
-            }
+                None
+            };
             let _ = self.environment_manager.mark_run_finished(run_id.as_str());
+            supervisor.end_parent_run(&run_id);
+            if let Some(hitl_error) = hitl_completion_error {
+                return Err(RpcHostError::Runtime(format!(
+                    "{error}; HITL stream completion requires atomic reconciliation: {hitl_error}"
+                )));
+            }
             let cleanup = self
                 .finalize_preworker_failure(&admission, "durable running transition failed")
                 .await;
-            supervisor.end_parent_run(&run_id);
             let primary: RpcHostError = error.into();
             if let Err(cleanup_error) = cleanup {
                 return Err(RpcHostError::Runtime(format!(
@@ -1229,7 +1405,8 @@ impl RpcRuntimeCoordinator {
         let worker_target = target.clone();
         let admission_id = admission.lease.admission_id.clone();
         let fencing_generation = admission.lease.fencing_generation;
-        let mut worker_lease = admission.lease;
+        let mut worker_lease = admission.lease.clone();
+        let worker_admission = admission.clone();
         let worker_supervisor = supervisor.clone();
         let worker_hitl_launch = hitl_launch;
         let completion_coordinator = self.clone();
@@ -1292,7 +1469,7 @@ impl RpcRuntimeCoordinator {
                 .ok()
                 .and_then(|registry| registry.get(&worker_target)?.replay_error.clone());
             if let Some(replay_error) = replay_error {
-                if let Some(launch) = worker_hitl_launch.as_ref() {
+                let hitl_evidence_error = if let Some(launch) = worker_hitl_launch.as_ref() {
                     let _ = runtime
                         .finish_hitl_stream(
                             input,
@@ -1302,22 +1479,44 @@ impl RpcRuntimeCoordinator {
                             launch.claim_id.clone(),
                         )
                         .await;
+                    completion_coordinator
+                        .ensure_started_hitl_terminal_evidence(
+                            &worker_admission,
+                            launch,
+                            "live replay persistence failed",
+                        )
+                        .await
+                        .err()
                 } else {
                     let _ = handle.complete().await;
-                }
+                    None
+                };
                 let message = format!("live replay persistence failed: {replay_error}");
-                let terminal_durable = store
-                    .finalize_run_admission(&worker_lease, RunStatus::Failed, Some(message.clone()))
-                    .await
-                    .is_ok();
+                let terminal_durable = if hitl_evidence_error.is_some() {
+                    false
+                } else {
+                    store
+                        .finalize_run_admission(
+                            &worker_lease,
+                            RunStatus::Failed,
+                            Some(message.clone()),
+                        )
+                        .await
+                        .is_ok()
+                };
                 let mut final_status = RpcRunStatus {
                     session_id: worker_session_id.as_str().to_string(),
                     run_id: worker_run_id.as_str().to_string(),
                     status: "failed".to_string(),
                     output_preview: None,
-                    error: Some(message),
+                    error: Some(message.clone()),
+                    continuation_effect: None,
                 };
-                if !terminal_durable {
+                if let Some(hitl_error) = hitl_evidence_error {
+                    final_status.error = Some(format!(
+                        "{message}; atomic HITL terminal evidence requires reconciliation: {hitl_error}"
+                    ));
+                } else if !terminal_durable {
                     final_status.error = Some(
                         "failed to persist replay failure as the terminal durable status"
                             .to_string(),
@@ -1377,6 +1576,18 @@ impl RpcRuntimeCoordinator {
             } else {
                 runtime.finish_stream(input, handle).await
             };
+            let hitl_evidence_error = if let Some(launch) = worker_hitl_launch.as_ref() {
+                completion_coordinator
+                    .ensure_started_hitl_terminal_evidence(
+                        &worker_admission,
+                        launch,
+                        "continuation completion persistence failed",
+                    )
+                    .await
+                    .err()
+            } else {
+                None
+            };
             let (status, durable_status, output_preview, error) = match completion {
                 Ok(result) => (
                     run_status_name(result.result.state.status).to_string(),
@@ -1418,7 +1629,14 @@ impl RpcRuntimeCoordinator {
                 status,
                 output_preview: output_preview.clone(),
                 error,
+                continuation_effect: None,
             };
+            if let Some(hitl_error) = hitl_evidence_error.as_ref() {
+                final_status.status = "failed".to_string();
+                final_status.error = Some(format!(
+                    "atomic HITL terminal evidence requires reconciliation: {hitl_error}"
+                ));
+            }
             let finalized_status = durable_status;
             let finalized_output = output_preview;
             if let Err(persist_error) =
@@ -1429,32 +1647,38 @@ impl RpcRuntimeCoordinator {
                     format!("failed to load committed terminal replay events: {persist_error}")
                 });
             }
-            let terminal_durable = match store
-                .finalize_run_admission(&worker_lease, finalized_status, finalized_output)
-                .await
-            {
-                Ok(_) => true,
-                Err(finalize_error) => {
-                    // `finish_stream` commits terminal evidence before admission release. If that
-                    // evidence is present, it remains authoritative; lease cleanup is recovered by
-                    // reconciliation and must not rewrite a completed run as process-local failed.
-                    match store.load_run(&worker_session_id, &worker_run_id).await {
-                        Ok(run) if run.status == finalized_status && run.status.is_terminal() => {
-                            final_status.error.get_or_insert_with(|| {
+            let terminal_durable = if hitl_evidence_error.is_some() {
+                false
+            } else {
+                match store
+                    .finalize_run_admission(&worker_lease, finalized_status, finalized_output)
+                    .await
+                {
+                    Ok(_) => true,
+                    Err(finalize_error) => {
+                        // `finish_stream` commits terminal evidence before admission release. If that
+                        // evidence is present, it remains authoritative; lease cleanup is recovered by
+                        // reconciliation and must not rewrite a completed run as process-local failed.
+                        match store.load_run(&worker_session_id, &worker_run_id).await {
+                            Ok(run)
+                                if run.status == finalized_status && run.status.is_terminal() =>
+                            {
+                                final_status.error.get_or_insert_with(|| {
                                 format!(
                                     "terminal evidence committed but admission release requires reconciliation: {finalize_error}"
                                 )
                             });
-                            true
-                        }
-                        _ => {
-                            final_status.status = "failed".to_string();
-                            final_status.error.get_or_insert_with(|| {
+                                true
+                            }
+                            _ => {
+                                final_status.status = "failed".to_string();
+                                final_status.error.get_or_insert_with(|| {
                                 format!(
                                     "failed to persist terminal durable run status: {finalize_error}"
                                 )
                             });
-                            false
+                                false
+                            }
                         }
                     }
                 }
@@ -1501,6 +1725,8 @@ impl RpcRuntimeCoordinator {
                 .schedule_session_background_results(&worker_session_id)
                 .await;
         });
+        // The worker owns its heartbeat from the spawned task onward.
+        drop(preworker_heartbeat);
         self.tasks
             .lock()
             .map_err(active_registry_error)?
@@ -1568,6 +1794,17 @@ impl RpcRuntimeCoordinator {
         session_id: &SessionId,
         run_id: &RunId,
     ) -> RpcHostResult<RpcRunStatus> {
+        // Admission/reconciliation can terminalize a durable run inline while a previous host
+        // still has a local active or terminal-cache projection. Durable terminal evidence wins
+        // so callers can observe a fail-closed continuation effect immediately.
+        let durable = self
+            .storage
+            .session_store()
+            .load_run(session_id, run_id)
+            .await?;
+        if durable.status.is_terminal() {
+            return Ok(status_from_record(&durable));
+        }
         let target = Self::target(session_id, run_id);
         let active_status = {
             let registry = self.active.lock().map_err(active_registry_error)?;
@@ -1593,12 +1830,46 @@ impl RpcRuntimeCoordinator {
         if let Some(status) = terminal_status {
             return Ok(status);
         }
-        let run = self
-            .storage
-            .session_store()
-            .load_run(session_id, run_id)
-            .await?;
-        Ok(status_from_record(&run))
+        Ok(status_from_record(&durable))
+    }
+
+    fn durable_terminal_status(
+        durable: &RunRecord,
+        local_terminal: Option<&RpcRunStatus>,
+    ) -> RpcRunStatus {
+        let mut status = status_from_record(durable);
+        // The durable record is authoritative for the terminal outcome. When the matching local
+        // worker supplied a diagnostic before its final transaction committed, retain that
+        // diagnostic without allowing it to choose or override the durable terminal state.
+        if let Some(local) = local_terminal
+            && local.status == status.status
+            && status.error.is_none()
+        {
+            status.error.clone_from(&local.error);
+        }
+        status
+    }
+
+    async fn await_durable_terminal(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+        local_terminal: Option<RpcRunStatus>,
+    ) -> RpcHostResult<RpcRunStatus> {
+        loop {
+            let durable = self
+                .storage
+                .session_store()
+                .load_run(session_id, run_id)
+                .await?;
+            if durable.status.is_terminal() {
+                return Ok(Self::durable_terminal_status(
+                    &durable,
+                    local_terminal.as_ref(),
+                ));
+            }
+            tokio::time::sleep(DURABLE_TERMINAL_POLL_INTERVAL).await;
+        }
     }
 
     /// Wait on a state-carrying watch channel, avoiding the check/notification lost-wakeup race.
@@ -1621,15 +1892,54 @@ impl RpcRuntimeCoordinator {
             .map(|run| run.status_tx.subscribe());
         let wait = async {
             let Some(mut receiver) = receiver else {
-                return self.status(session_id, run_id).await;
+                // A remote owner or a restarted host has no process-local watch channel. It must
+                // still honor the `run.await` terminal-only contract, so read durable evidence
+                // until terminal rather than returning a queued/running status.
+                return self.await_durable_terminal(session_id, run_id, None).await;
             };
+            // A foreign host or inline lease reconciliation can terminalize durable evidence
+            // without publishing to this process-local watch channel. Poll independently from the
+            // lease heartbeat so short `run.await` deadlines can still observe remote completion.
+            let mut durable_poll = tokio::time::interval(DURABLE_TERMINAL_POLL_INTERVAL);
+            durable_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 let status = receiver.borrow().clone();
                 if status.terminal() {
-                    return Ok(status);
+                    // A worker can publish a process-local failure before its terminal evidence
+                    // transaction commits. `run.await` is durable-terminal-only, so never expose
+                    // that provisional projection as a completed await result.
+                    let durable = self
+                        .storage
+                        .session_store()
+                        .load_run(session_id, run_id)
+                        .await?;
+                    if durable.status.is_terminal() {
+                        return Ok(Self::durable_terminal_status(&durable, Some(&status)));
+                    }
+                    return self
+                        .await_durable_terminal(session_id, run_id, Some(status))
+                        .await;
                 }
-                if receiver.changed().await.is_err() {
-                    return self.status(session_id, run_id).await;
+                tokio::select! {
+                    changed = receiver.changed() => {
+                        if changed.is_err() {
+                            // The local worker can remove its active entry before durable failure
+                            // reconciliation commits. Once the sender closes, preserve await's
+                            // terminal-only contract by following durable evidence instead of the
+                            // general-purpose status projection.
+                            return self.await_durable_terminal(session_id, run_id, None).await;
+                        }
+                    }
+                    _ = durable_poll.tick() => {
+                        let durable = self
+                            .storage
+                            .session_store()
+                            .load_run(session_id, run_id)
+                            .await?;
+                        if durable.status.is_terminal() {
+                            return Ok(status_from_record(&durable));
+                        }
+                    }
                 }
             }
         };
@@ -1988,7 +2298,36 @@ impl RpcRuntimeCoordinator {
         if parent.status == RunStatus::Cancelled {
             return Ok(None);
         }
+        let source_run_id = session.head_run_id.clone().ok_or_else(|| {
+            RpcHostError::Invalid(
+                "async subagent continuation requires a current session head".to_string(),
+            )
+        })?;
+        let source = store
+            .load_run(&background.parent_session_id, &source_run_id)
+            .await?;
         self.catalog.profile(&background.profile)?;
+        let recorded_attachments = recorded_environment_attachments(&source);
+        let environment_attachments = self
+            .environment_manager
+            .materialize_run_attachments(
+                recorded_attachments,
+                Some(background.parent_session_id.as_str()),
+                None,
+            )
+            .await
+            .map_err(|error| RpcHostError::Invalid(error.message))?;
+        let (materialization, continuation) = self.materialization_plan(
+            &background.profile,
+            &environment_attachments,
+            Some(&source),
+            ContinuationMaterializationMode::Preserve,
+        )?;
+        let continuation = continuation.ok_or_else(|| {
+            RpcHostError::Runtime(
+                "missing async subagent continuation materialization plan".to_string(),
+            )
+        })?;
         let artifact_content = resolve_background_artifact_content(&store, &mut background).await?;
         let continuation_text = background.continuation_text(artifact_content.as_deref());
         let durable_input = background.continuation_input(artifact_content.as_deref());
@@ -2005,7 +2344,7 @@ impl RpcRuntimeCoordinator {
         );
         run.input.clone_from(&durable_input);
         run.profile = Some(background.profile.clone());
-        run.restore_from_run_id = Some(background.parent_run_id.clone());
+        run.restore_from_run_id = Some(source_run_id.clone());
         run.parent_run_id = Some(background.parent_run_id.clone());
         run.trace_context = background.trace_context.clone().unwrap_or_default();
         run.trigger_type = Some("async_subagent_result".to_string());
@@ -2014,6 +2353,16 @@ impl RpcRuntimeCoordinator {
             RPC_PROFILE_METADATA_KEY.to_string(),
             json!(background.profile),
         );
+        run.metadata.insert(
+            RPC_ENVIRONMENT_ATTACHMENTS_METADATA_KEY.to_string(),
+            json!(safe_rpc_environment_attachments(&environment_attachments)),
+        );
+        materialization
+            .insert_into(&mut run.metadata)
+            .map_err(|error| RpcHostError::Invalid(error.to_string()))?;
+        continuation
+            .insert_into(&mut run.metadata)
+            .map_err(|error| RpcHostError::Invalid(error.to_string()))?;
         run.metadata.insert(
             "starweaver.async_subagent.attempt_id".to_string(),
             json!(background.attempt_id.as_str()),
@@ -2043,6 +2392,8 @@ impl RpcRuntimeCoordinator {
                 background.child_run_id.as_ref().map(RunId::as_str),
                 continuation_text.as_str(),
                 background.profile.as_str(),
+                source_run_id.as_str(),
+                safe_rpc_environment_attachments(&environment_attachments),
             ),
         )
         .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
@@ -2085,9 +2436,10 @@ impl RpcRuntimeCoordinator {
                 session_id: Some(background.parent_session_id),
                 restore_from_run_id,
                 profile: background.profile,
-                environment_attachments: Vec::new(),
+                environment_attachments,
                 idempotency_key,
                 command_fingerprint,
+                continuation_mode: ContinuationMaterializationMode::Preserve,
                 install_session_management: true,
             },
             Some(receipt.admission),
@@ -3497,6 +3849,9 @@ fn status_from_record(run: &RunRecord) -> RpcRunStatus {
         status: durable_run_status_name(run.status).to_string(),
         output_preview: run.output_preview.clone(),
         error: None,
+        continuation_effect: ContinuationEffectState::from_metadata(&run.metadata)
+            .ok()
+            .flatten(),
     }
 }
 
@@ -3632,6 +3987,7 @@ mod tests {
             status: "running".to_string(),
             output_preview: None,
             error: None,
+            continuation_effect: None,
         };
         let (status_tx, _) = watch::channel(initial_status);
         coordinator.active.lock().unwrap().insert(
@@ -3707,8 +4063,236 @@ mod tests {
             environment_attachments: Vec::new(),
             idempotency_key: idempotency_key.to_string(),
             command_fingerprint: format!("hitl-resume:{idempotency_key}:v1"),
+            continuation_mode: ContinuationMaterializationMode::Switch,
             install_session_management: false,
         }
+    }
+
+    #[tokio::test]
+    async fn await_terminal_prefers_durable_terminal_state_over_stale_active_watch() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
+        let coordinator = RpcRuntimeCoordinator::new(
+            config,
+            catalog,
+            storage.clone(),
+            EnvironmentAttachmentManager::new(),
+        );
+        let (session_id, run_id, _handle) = insert_active_environment_fixture(
+            &coordinator,
+            vec![local_attachment(LOCAL_ENVIRONMENT_ATTACHMENT_ID, true)],
+        )
+        .await;
+        let target = RpcRuntimeCoordinator::target(&session_id, &run_id);
+        let lease = coordinator
+            .active
+            .lock()
+            .unwrap()
+            .get(&target)
+            .unwrap()
+            .lease
+            .clone();
+        storage
+            .session_store()
+            .finalize_run_admission(
+                &lease,
+                RunStatus::Cancelled,
+                Some("reconciled by another host".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let status = coordinator
+            .await_terminal(&session_id, &run_id, Some(Duration::from_secs(1)))
+            .await
+            .unwrap();
+        assert_eq!(status.status, "cancelled");
+        assert_eq!(
+            status.output_preview.as_deref(),
+            Some("reconciled by another host")
+        );
+    }
+
+    #[tokio::test]
+    async fn await_terminal_without_local_active_waits_for_durable_terminal_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let session = storage
+            .create_session(Some("default".to_string()), None)
+            .unwrap();
+        let run = RunRecord::new(
+            session.session_id.clone(),
+            RunId::new(),
+            ConversationId::new(),
+        );
+        let admission = storage
+            .session_store()
+            .acquire_run_admission(AcquireRunAdmission {
+                run,
+                namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+                host_instance_id: "foreign-host".to_string(),
+                admission_id: "foreign-admission".to_string(),
+                lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+                idempotency_key: "foreign-await".to_string(),
+                command_fingerprint: "foreign-await-v1".to_string(),
+                replaces_waiting_run_id: None,
+                hitl_resume_claim_id: None,
+            })
+            .await
+            .unwrap();
+        let session_id = admission.lease.target.session_id.clone();
+        let run_id = admission.lease.target.run_id.clone();
+        let coordinator = Arc::new(RpcRuntimeCoordinator::new(
+            config.clone(),
+            RpcAgentCatalog::new(config).unwrap(),
+            storage.clone(),
+            EnvironmentAttachmentManager::new(),
+        ));
+
+        let timeout = match coordinator
+            .await_terminal(&session_id, &run_id, Some(Duration::from_millis(20)))
+            .await
+        {
+            Ok(status) => {
+                panic!("a non-terminal foreign run must not be returned by run.await: {status:?}")
+            }
+            Err(error) => error,
+        };
+        assert!(timeout.to_string().contains("run.await timed out"));
+
+        let awaiting = {
+            let coordinator = Arc::clone(&coordinator);
+            let session_id = session_id.clone();
+            let run_id = run_id.clone();
+            tokio::spawn(async move {
+                coordinator
+                    .await_terminal(&session_id, &run_id, Some(Duration::from_millis(500)))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        storage
+            .session_store()
+            .finalize_run_admission(
+                &admission.lease,
+                RunStatus::Cancelled,
+                Some("foreign host completed cancellation".to_string()),
+            )
+            .await
+            .unwrap();
+        let terminal = tokio::time::timeout(Duration::from_secs(1), awaiting)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(terminal.status, "cancelled");
+        assert_eq!(
+            terminal.output_preview.as_deref(),
+            Some("foreign host completed cancellation")
+        );
+    }
+
+    #[tokio::test]
+    async fn await_terminal_after_local_watcher_closes_waits_for_durable_terminal_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let coordinator = Arc::new(RpcRuntimeCoordinator::new(
+            config.clone(),
+            RpcAgentCatalog::new(config).unwrap(),
+            storage,
+            EnvironmentAttachmentManager::new(),
+        ));
+        let (session_id, run_id, _handle) = insert_active_environment_fixture(
+            &coordinator,
+            vec![local_attachment(LOCAL_ENVIRONMENT_ATTACHMENT_ID, true)],
+        )
+        .await;
+        let target = RpcRuntimeCoordinator::target(&session_id, &run_id);
+        let awaiting = {
+            let coordinator = Arc::clone(&coordinator);
+            let session_id = session_id.clone();
+            let run_id = run_id.clone();
+            tokio::spawn(async move {
+                coordinator
+                    .await_terminal(&session_id, &run_id, Some(Duration::from_millis(50)))
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let subscribed = coordinator
+                    .active
+                    .lock()
+                    .unwrap()
+                    .get(&target)
+                    .is_some_and(|run| run.status_tx.receiver_count() > 0);
+                if subscribed {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        coordinator.active.lock().unwrap().remove(&target);
+
+        let timeout = match awaiting.await.unwrap() {
+            Ok(status) => panic!(
+                "a non-terminal run with a closed local watcher must not be returned by run.await: {status:?}"
+            ),
+            Err(error) => error,
+        };
+        assert!(timeout.to_string().contains("run.await timed out"));
+    }
+
+    #[tokio::test]
+    async fn await_terminal_requires_durable_evidence_for_local_terminal_projection() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let coordinator = RpcRuntimeCoordinator::new(
+            config.clone(),
+            RpcAgentCatalog::new(config).unwrap(),
+            storage,
+            EnvironmentAttachmentManager::new(),
+        );
+        let (session_id, run_id, _handle) = insert_active_environment_fixture(
+            &coordinator,
+            vec![local_attachment(LOCAL_ENVIRONMENT_ATTACHMENT_ID, true)],
+        )
+        .await;
+        let target = RpcRuntimeCoordinator::target(&session_id, &run_id);
+        let sender = coordinator
+            .active
+            .lock()
+            .unwrap()
+            .get(&target)
+            .unwrap()
+            .status_tx
+            .clone();
+        let mut provisional = sender.borrow().clone();
+        provisional.status = "failed".to_string();
+        provisional.error = Some("local finalizer has not committed durable evidence".to_string());
+        sender.send_replace(provisional);
+
+        let timeout = match coordinator
+            .await_terminal(&session_id, &run_id, Some(Duration::from_millis(50)))
+            .await
+        {
+            Ok(status) => panic!(
+                "a process-local terminal projection without durable evidence must not complete run.await: {status:?}"
+            ),
+            Err(error) => error,
+        };
+        assert!(timeout.to_string().contains("run.await timed out"));
     }
 
     #[tokio::test]
@@ -3735,12 +4319,39 @@ mod tests {
         let request =
             hitl_resume_request(session_id.clone(), source_run_id.clone(), "rpc-hitl-denied");
 
+        let mut preserve = request.clone();
+        preserve.continuation_mode = ContinuationMaterializationMode::Preserve;
+        let materialization_error = coordinator.resume_waiting(preserve).await.unwrap_err();
+        assert!(
+            materialization_error
+                .to_string()
+                .contains("missing terminal durable approval decision"),
+            "{materialization_error}"
+        );
+        let store = storage.session_store();
+        let preclaim_probe = "materialization-preflight-remained-unclaimed";
+        store
+            .claim_hitl_resume(HitlResumeClaim::new(
+                preclaim_probe.to_string(),
+                session_id.clone(),
+                source_run_id.clone(),
+                chrono::Utc::now(),
+            ))
+            .await
+            .unwrap();
+        store
+            .release_hitl_resume_claim(&session_id, &source_run_id, preclaim_probe)
+            .await
+            .unwrap();
+
         let error = coordinator
             .resume_waiting(request.clone())
             .await
             .unwrap_err();
         assert!(
-            error.to_string().contains("missing HITL decisions"),
+            error
+                .to_string()
+                .contains("missing terminal durable approval decision"),
             "{error}"
         );
         assert_eq!(executions.load(Ordering::SeqCst), 0);
@@ -3765,7 +4376,7 @@ mod tests {
             .decide_approval(
                 &approval_id,
                 ApprovalStatus::Denied,
-                Some("desktop-user".to_string()),
+                Some("rpc-user".to_string()),
                 Some("not authorized".to_string()),
             )
             .unwrap();
@@ -3813,7 +4424,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_admission_hitl_preparation_failure_terminalizes_related_evidence_once() {
+    async fn admitted_hitl_preparation_failure_aborts_only_replacement() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
         std::fs::create_dir_all(&config.workspace_root).unwrap();
@@ -3830,7 +4441,7 @@ mod tests {
             .decide_approval(
                 &approval_id,
                 ApprovalStatus::Approved,
-                Some("desktop-user".to_string()),
+                Some("rpc-user".to_string()),
                 None,
             )
             .unwrap();
@@ -3902,7 +4513,121 @@ mod tests {
                 .await
                 .unwrap()
                 .status,
+            RunStatus::Waiting
+        );
+        assert_eq!(
+            store
+                .load_run(&session_id, &receipt.run.run_id)
+                .await
+                .unwrap()
+                .status,
             RunStatus::Failed
+        );
+        assert_eq!(
+            store.load_session(&session_id).await.unwrap().active_run_id,
+            None,
+            "an aborted admitted replacement must not leave the session wedged on its failed run"
+        );
+        assert!(
+            store
+                .load_run_admission(&receipt.lease.target)
+                .await
+                .unwrap()
+                .is_none(),
+            "terminal failure evidence must release the active admission"
+        );
+    }
+
+    #[tokio::test]
+    async fn started_hitl_commit_failure_never_finalizes_continuation_without_source_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let session_id = SessionId::from_string("rpc-hitl-atomic-failure-session");
+        let executions = Arc::new(AtomicUsize::new(0));
+        let (source_run_id, approval_id) = Box::pin(seed_waiting_approval(
+            &storage,
+            session_id.clone(),
+            Arc::clone(&executions),
+        ))
+        .await;
+        storage
+            .decide_approval(
+                &approval_id,
+                ApprovalStatus::Approved,
+                Some("rpc-user".to_string()),
+                None,
+            )
+            .unwrap();
+
+        let materializations = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&materializations);
+        let factory: Arc<crate::agent_catalog::TestRuntimeFactory> = Arc::new(move |_profile| {
+            if calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Err(RpcHostError::Runtime(
+                    "injected post-admission materialization failure".to_string(),
+                ));
+            }
+            let tool = FunctionTool::new(
+                "effect_once",
+                Some("Test effect requiring approval".to_string()),
+                json!({"type": "object"}),
+                |_context: ToolContext, _arguments: Value| async move {
+                    Ok(ToolResult::new(json!({"executed": true})))
+                },
+            );
+            let toolset: DynToolset =
+                Arc::new(StaticToolset::new("hitl-atomic-failure").with_tool(Arc::new(tool)));
+            Ok(
+                AgentRuntimeBuilder::new(Arc::new(TestModel::with_text("unused")))
+                    .approval_required_tools(["effect_once"])
+                    .toolset(&toolset),
+            )
+        });
+        let catalog = RpcAgentCatalog::new(config.clone())
+            .unwrap()
+            .with_test_runtime_factory(factory);
+        let coordinator = RpcRuntimeCoordinator::new(
+            config,
+            catalog,
+            storage.clone(),
+            EnvironmentAttachmentManager::new(),
+        );
+        let request = hitl_resume_request(
+            session_id.clone(),
+            source_run_id.clone(),
+            "rpc-hitl-atomic-failure",
+        );
+        let error = coordinator
+            .resume_waiting(request.clone())
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("injected post-admission materialization failure"),
+            "{error}"
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        let store = storage.session_store();
+        let receipt = store
+            .load_run_admission_receipt(
+                LOCAL_SESSION_NAMESPACE,
+                &request.idempotency_key,
+                &request.command_fingerprint,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            store
+                .load_run(&session_id, &source_run_id)
+                .await
+                .unwrap()
+                .status,
+            RunStatus::Waiting,
+            "an admitted failure must leave the source retryable"
         );
         assert_eq!(
             store
@@ -3918,8 +4643,107 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none(),
-            "terminal failure evidence must release the active admission"
+            "the admitted-only failure must release its replacement lease"
         );
+    }
+
+    #[tokio::test]
+    async fn exact_hitl_retry_survives_profile_removal_after_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut initial_config = RpcConfig::for_tests(temp.path());
+        let mut retired = initial_config.profiles["default"].clone();
+        retired.model_id = "test:retired-hitl".to_string();
+        retired.test_response = Some("resumed".to_string());
+        initial_config
+            .profiles
+            .insert("retired".to_string(), retired);
+        let mut restarted_config = initial_config.clone();
+        restarted_config.profiles.remove("retired");
+        std::fs::create_dir_all(&initial_config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&initial_config.database_path).unwrap();
+        let session_id = SessionId::from_string("rpc-hitl-retired-profile-session");
+        let executions = Arc::new(AtomicUsize::new(0));
+        let (source_run_id, approval_id) = Box::pin(seed_waiting_approval(
+            &storage,
+            session_id.clone(),
+            Arc::clone(&executions),
+        ))
+        .await;
+        storage
+            .decide_approval(
+                &approval_id,
+                ApprovalStatus::Approved,
+                Some("rpc-user".to_string()),
+                None,
+            )
+            .unwrap();
+
+        let executions_for_factory = Arc::clone(&executions);
+        let factory: Arc<crate::agent_catalog::TestRuntimeFactory> = Arc::new(move |_profile| {
+            let executions_for_tool = Arc::clone(&executions_for_factory);
+            let tool = FunctionTool::new(
+                "effect_once",
+                Some("Test effect requiring approval".to_string()),
+                json!({"type": "object"}),
+                move |_context: ToolContext, _arguments: Value| {
+                    let executions = Arc::clone(&executions_for_tool);
+                    async move {
+                        executions.fetch_add(1, Ordering::SeqCst);
+                        Ok(ToolResult::new(json!({"executed": true})))
+                    }
+                },
+            );
+            let toolset: DynToolset =
+                Arc::new(StaticToolset::new("hitl-retired-profile").with_tool(Arc::new(tool)));
+            Ok(
+                AgentRuntimeBuilder::new(Arc::new(TestModel::with_text("resumed")))
+                    .approval_required_tools(["effect_once"])
+                    .toolset(&toolset),
+            )
+        });
+        let catalog = RpcAgentCatalog::new(initial_config.clone())
+            .unwrap()
+            .with_test_runtime_factory(factory);
+        let coordinator = RpcRuntimeCoordinator::new(
+            initial_config,
+            catalog,
+            storage.clone(),
+            EnvironmentAttachmentManager::new(),
+        );
+        let mut request = hitl_resume_request(
+            session_id.clone(),
+            source_run_id,
+            "rpc-hitl-retired-profile",
+        );
+        request.profile = "retired".to_string();
+        request.command_fingerprint = "hitl-resume:retired-profile:v1".to_string();
+        let first = coordinator.resume_waiting(request.clone()).await.unwrap();
+        let terminal = coordinator
+            .await_terminal(
+                &first.session_id,
+                &first.run_id,
+                Some(TEST_RUN_COMPLETION_TIMEOUT),
+            )
+            .await
+            .unwrap();
+        assert_eq!(terminal.status, "completed");
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        coordinator.shutdown(Duration::from_secs(5)).await.unwrap();
+        drop(coordinator);
+
+        let restarted_catalog = RpcAgentCatalog::new(restarted_config.clone()).unwrap();
+        assert!(restarted_catalog.profile("retired").is_err());
+        let restarted = RpcRuntimeCoordinator::new(
+            restarted_config,
+            restarted_catalog,
+            storage,
+            EnvironmentAttachmentManager::new(),
+        );
+        let replay = restarted.resume_waiting(request).await.unwrap();
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.run_id, first.run_id);
+        assert_eq!(replay.status, RunStatus::Completed);
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -3940,7 +4764,7 @@ mod tests {
             .decide_approval(
                 &approval_id,
                 ApprovalStatus::Approved,
-                Some("desktop-user".to_string()),
+                Some("rpc-user".to_string()),
                 None,
             )
             .unwrap();
@@ -4137,6 +4961,7 @@ mod tests {
             }],
             idempotency_key: "safe-environment-start".to_string(),
             command_fingerprint: "safe-environment-start-v1".to_string(),
+            continuation_mode: ContinuationMaterializationMode::Preserve,
             install_session_management: false,
         };
 
@@ -4209,6 +5034,7 @@ mod tests {
                 environment_attachments: Vec::new(),
                 idempotency_key: "test-start".to_string(),
                 command_fingerprint: "test-start-v1".to_string(),
+                continuation_mode: ContinuationMaterializationMode::Preserve,
                 install_session_management: false,
             })
             .await
@@ -4252,6 +5078,7 @@ mod tests {
             environment_attachments: vec![local_attachment("workspace", true)],
             idempotency_key: "same-start".to_string(),
             command_fingerprint: "same-fingerprint".to_string(),
+            continuation_mode: ContinuationMaterializationMode::Preserve,
             install_session_management: false,
         };
         let first = coordinator.start(request.clone()).await.unwrap();
@@ -4322,6 +5149,7 @@ mod tests {
                 environment_attachments: Vec::new(),
                 idempotency_key: "background-parent".to_string(),
                 command_fingerprint: "background-parent-v1".to_string(),
+                continuation_mode: ContinuationMaterializationMode::Preserve,
                 install_session_management: false,
             })
             .await
@@ -4347,9 +5175,10 @@ mod tests {
                 session_id: Some(parent.session_id.clone()),
                 restore_from_run_id: Some(parent.run_id.clone()),
                 profile: "default".to_string(),
-                environment_attachments: Vec::new(),
+                environment_attachments: vec![local_attachment("workspace", true)],
                 idempotency_key: "background-intervening".to_string(),
                 command_fingerprint: "background-intervening-v1".to_string(),
+                continuation_mode: ContinuationMaterializationMode::Preserve,
                 install_session_management: false,
             })
             .await
@@ -4506,6 +5335,11 @@ mod tests {
         assert_eq!(
             continuation_record.restore_from_run_id.as_ref(),
             Some(&intervening.run_id)
+        );
+        assert_eq!(continuation.environment_attachments[0].id, "workspace");
+        assert_eq!(
+            recorded_environment_attachments(&continuation_record)[0].id,
+            "workspace"
         );
         assert_eq!(
             continuation_record
@@ -4741,6 +5575,7 @@ mod tests {
                 environment_attachments: Vec::new(),
                 idempotency_key: "explicit-after-cancelled-parent".to_string(),
                 command_fingerprint: "explicit-after-cancelled-parent-v1".to_string(),
+                continuation_mode: ContinuationMaterializationMode::Preserve,
                 install_session_management: false,
             })
             .await
@@ -5349,6 +6184,7 @@ mod tests {
                 environment_attachments: Vec::new(),
                 idempotency_key: "replay-failure".to_string(),
                 command_fingerprint: "replay-failure-v1".to_string(),
+                continuation_mode: ContinuationMaterializationMode::Preserve,
                 install_session_management: false,
             })
             .await
@@ -5431,6 +6267,7 @@ mod tests {
                 environment_attachments: Vec::new(),
                 idempotency_key: "replay-restart".to_string(),
                 command_fingerprint: "replay-restart-v1".to_string(),
+                continuation_mode: ContinuationMaterializationMode::Preserve,
                 install_session_management: false,
             })
             .await

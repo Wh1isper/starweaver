@@ -54,7 +54,7 @@ Identity constants are owned by `starweaver-rpc-core`. Clients validate `name` a
 
 ## RPC-owned Configuration
 
-RPC resolves `$STARWEAVER_CONFIG_DIR/rpc.toml` (default `~/.starweaver/rpc.toml`) or `STARWEAVER_RPC_CONFIG`. It never reads CLI `config.toml` through CLI types. Unless explicitly overridden, RPC and CLI use one shared platform config-root resolver and open the same `starweaver.sqlite`: `$HOME/.starweaver` on Unix, and `USERPROFILE` (then `HOMEDRIVE` + `HOMEPATH`, with `HOME` compatibility fallback) on Windows. If the platform user profile is unavailable, resolution fails closed and requires `STARWEAVER_CONFIG_DIR`; it never falls back to the process working directory. This rule is required for a native Desktop host to discover terminal-created sessions. `STARWEAVER_SESSION_DB` is the shared override and `STARWEAVER_STORE` is retained as a compatibility alias. CLI sessions carry normalized workspace and source-product provenance. CLI default listing and implicit continuation stay workspace-scoped even though the durable database is machine-global. Legacy project databases are imported incrementally so evidence appended during a rolling upgrade is not stranded; process-control records are excluded, and source-specific import tombstones prevent physically deleted canonical sessions from being recreated by a later legacy import.
+RPC resolves `$STARWEAVER_CONFIG_DIR/rpc.toml` (default `~/.starweaver/rpc.toml`) or `STARWEAVER_RPC_CONFIG`. It never reads CLI `config.toml` through CLI types. Unless explicitly overridden, RPC and CLI use one shared platform config-root resolver and open the same `starweaver.sqlite`: `$HOME/.starweaver` on Unix, and `USERPROFILE` (then `HOMEDRIVE` + `HOMEPATH`, with `HOME` compatibility fallback) on Windows. If the platform user profile is unavailable, resolution fails closed and requires `STARWEAVER_CONFIG_DIR`; it never falls back to the process working directory. This rule is required for independent local hosts to discover terminal-created sessions. `STARWEAVER_SESSION_DB` is the shared override and `STARWEAVER_STORE` is retained as a compatibility alias. CLI sessions carry normalized workspace and source-product provenance. CLI default listing and implicit continuation stay workspace-scoped even though the durable database is machine-global. Legacy project databases are imported incrementally so evidence appended during a rolling upgrade is not stranded; process-control records are excluded, and source-specific import tombstones prevent physically deleted canonical sessions from being recreated by a later legacy import.
 
 ```toml
 [server]
@@ -77,7 +77,7 @@ scan_timeout_ms = 2000
 token_env = "STARWEAVER_RPC_TOKEN"
 # token_file = "secrets/rpc-token" # relative to rpc.toml; mode 0600 on Unix
 scopes = ["read", "run", "approval", "admin", "shutdown"]
-# allowed_origins = ["https://trusted-desktop.example"]
+# allowed_origins = ["https://trusted-host.example"]
 # allowed_hosts = ["rpc.internal.example:8765"]
 
 [profiles.default]

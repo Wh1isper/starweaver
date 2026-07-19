@@ -27,7 +27,9 @@ use crate::{
     ManagedSessionTarget, RunAdmissionLease, RunAdmissionReceipt, SessionContinuationFence,
     SessionDeletionFence, UpdateManagedSession,
     approval::{ApprovalRecord, ApprovalStatus, DeferredToolRecord},
-    claim::{HitlResumeClaim, HitlResumeClaimState},
+    claim::{
+        ContinuationEffectState, HitlResumeAbortOutcome, HitlResumeClaim, HitlResumeClaimState,
+    },
     error::{SessionStoreError, SessionStoreResult},
     evidence::RunEvidenceCommit,
     publication::{PendingStreamPublication, StreamPublicationTarget},
@@ -100,6 +102,7 @@ fn validate_approval_transition(
         && existing.action_id == resolved.action_id
         && existing.action_name == resolved.action_name
         && existing.request == resolved.request
+        && existing.reviewed_arguments == resolved.reviewed_arguments
         && existing.created_at == resolved.created_at
         && existing.trace_context == resolved.trace_context
         && existing.metadata == resolved.metadata;
@@ -226,6 +229,64 @@ fn apply_run_status_locked(
         session.updated_at = updated_at;
     }
     Ok(result)
+}
+
+fn terminalize_started_hitl_source_locked(
+    inner: &mut StoreInner,
+    replacement: &RunRecord,
+    now: chrono::DateTime<chrono::Utc>,
+) -> SessionStoreResult<bool> {
+    let Some(source_run_id) = replacement.restore_from_run_id.as_ref() else {
+        return Ok(false);
+    };
+    let source_key = run_key(&replacement.session_id, source_run_id);
+    let source = inner.runs.get(&source_key).ok_or_else(|| {
+        SessionStoreError::NotFound(run_key_label(&replacement.session_id, source_run_id))
+    })?;
+    if source.status != RunStatus::Waiting {
+        return Ok(false);
+    }
+    let claim = inner
+        .hitl_resume_claims
+        .get(&source_key)
+        .cloned()
+        .ok_or_else(|| {
+            SessionStoreError::Conflict(format!(
+                "waiting replacement source {} has no resume claim",
+                source_run_id.as_str()
+            ))
+        })?;
+    if claim.session_id != replacement.session_id || claim.run_id != *source_run_id {
+        return Err(SessionStoreError::Conflict(format!(
+            "waiting replacement source {} has a mismatched resume claim",
+            source_run_id.as_str()
+        )));
+    }
+    if claim.state == HitlResumeClaimState::Preflight {
+        return Err(SessionStoreError::Conflict(format!(
+            "waiting replacement source {} has an invalid preflight claim",
+            source_run_id.as_str()
+        )));
+    }
+    if claim.state == HitlResumeClaimState::Started {
+        let source = inner.runs.get_mut(&source_key).ok_or_else(|| {
+            SessionStoreError::NotFound(run_key_label(&replacement.session_id, source_run_id))
+        })?;
+        source.status = RunStatus::Cancelled;
+        source.output_preview = Some("interrupted after host lease expired".to_string());
+        source.updated_at = now;
+        ContinuationEffectState::indeterminate()
+            .insert_into(&mut source.metadata)
+            .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
+    }
+    let consumed = inner.hitl_resume_claims.remove(&source_key);
+    if consumed.as_ref() != Some(&claim) {
+        return Err(SessionStoreError::Conflict(format!(
+            "resume claim changed while terminalizing run {}",
+            source_run_id.as_str()
+        )));
+    }
+    Ok(claim.state == HitlResumeClaimState::Started)
 }
 
 fn resolve_evidence_retry(
@@ -503,12 +564,29 @@ fn acquire_run_admission_locked(
                 active.target.run_id.as_str()
             )));
         }
-        if let Some(run) = inner
-            .runs
-            .get_mut(&run_key(&active.target.session_id, &active.target.run_id))
-        {
+        let replacement_key = run_key(&active.target.session_id, &active.target.run_id);
+        let replacement = inner.runs.get(&replacement_key).cloned().ok_or_else(|| {
+            SessionStoreError::NotFound(run_key_label(
+                &active.target.session_id,
+                &active.target.run_id,
+            ))
+        })?;
+        if replacement.status.is_active() {
+            let effect_started = terminalize_started_hitl_source_locked(inner, &replacement, now)?;
+            let run = inner.runs.get_mut(&replacement_key).ok_or_else(|| {
+                SessionStoreError::NotFound(run_key_label(
+                    &active.target.session_id,
+                    &active.target.run_id,
+                ))
+            })?;
             run.status = RunStatus::Cancelled;
+            run.output_preview = Some("interrupted after host lease expired".to_string());
             run.updated_at = now;
+            if effect_started {
+                ContinuationEffectState::indeterminate()
+                    .insert_into(&mut run.metadata)
+                    .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
+            }
         }
         inner.run_admissions.remove(&session_target);
         if let Some(session) = inner.sessions.get_mut(&request.run.session_id)
@@ -546,10 +624,22 @@ fn acquire_run_admission_locked(
                     active_run_id.as_str()
                 )));
             }
-        } else if request.replaces_waiting_run_id.is_some() {
-            return Err(SessionStoreError::Conflict(
-                "waiting-run replacement has no parked active run".to_string(),
-            ));
+        } else if let Some(source_run_id) = request.replaces_waiting_run_id.as_ref() {
+            // A pre-effect replacement may have terminalized and cleared the session pointer
+            // while deliberately leaving its source Waiting. Permit exactly that source to claim
+            // a new replacement; no unrelated run can be revived because the source binding and
+            // status remain part of this atomic admission validation.
+            let valid_unparked_waiting_replacement = request.run.restore_from_run_id.as_ref()
+                == Some(source_run_id)
+                && inner
+                    .runs
+                    .get(&run_key(&request.run.session_id, source_run_id))
+                    .is_some_and(|source| source.status == RunStatus::Waiting);
+            if !valid_unparked_waiting_replacement {
+                return Err(SessionStoreError::Conflict(
+                    "waiting-run replacement has no retryable waiting source".to_string(),
+                ));
+            }
         }
     }
     let hitl_claim_key = match (
@@ -580,7 +670,7 @@ fn acquire_run_admission_locked(
         let claim = inner.hitl_resume_claims.get_mut(key).ok_or_else(|| {
             SessionStoreError::Conflict("validated preflight resume claim disappeared".to_string())
         })?;
-        claim.state = HitlResumeClaimState::Started;
+        claim.state = HitlResumeClaimState::Admitted;
     }
     let mut run = request.run;
     run.status = RunStatus::Queued;
@@ -1282,7 +1372,11 @@ impl SessionStore for InMemorySessionStore {
             )));
         }
         if let Some(existing) = inner.hitl_resume_claims.get(&key) {
-            if existing == &claim {
+            if existing.claim_id == claim.claim_id
+                && existing.session_id == claim.session_id
+                && existing.run_id == claim.run_id
+                && existing.state == HitlResumeClaimState::Preflight
+            {
                 return Ok(());
             }
             return Err(SessionStoreError::Failed(format!(
@@ -1292,6 +1386,132 @@ impl SessionStore for InMemorySessionStore {
         }
         inner.hitl_resume_claims.insert(key, claim);
         Ok(())
+    }
+
+    async fn start_hitl_resume_effect(
+        &self,
+        lease: &RunAdmissionLease,
+        source_run_id: &RunId,
+        claim_id: &str,
+    ) -> SessionStoreResult<()> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        ensure_active_admission_locked(&inner, lease, chrono::Utc::now())?;
+        let target = inner
+            .runs
+            .get(&run_key(&lease.target.session_id, &lease.target.run_id))
+            .ok_or_else(|| {
+                SessionStoreError::NotFound(run_key_label(
+                    &lease.target.session_id,
+                    &lease.target.run_id,
+                ))
+            })?;
+        if target.restore_from_run_id.as_ref() != Some(source_run_id) || !target.status.is_active()
+        {
+            return Err(SessionStoreError::Conflict(
+                "active admission is not bound to the HITL source run".to_string(),
+            ));
+        }
+        let source_key = run_key(&lease.target.session_id, source_run_id);
+        let source = inner.runs.get(&source_key).ok_or_else(|| {
+            SessionStoreError::NotFound(run_key_label(&lease.target.session_id, source_run_id))
+        })?;
+        if source.status != RunStatus::Waiting {
+            return Err(SessionStoreError::Conflict(
+                "HITL source run is not waiting".to_string(),
+            ));
+        }
+        let claim = inner
+            .hitl_resume_claims
+            .get_mut(&source_key)
+            .ok_or_else(|| {
+                SessionStoreError::NotFound(format!("resume claim for {}", source_run_id.as_str()))
+            })?;
+        if claim.claim_id != claim_id
+            || claim.session_id != lease.target.session_id
+            || claim.run_id != *source_run_id
+            || claim.state != HitlResumeClaimState::Admitted
+        {
+            return Err(SessionStoreError::Conflict(format!(
+                "invalid admitted resume claim for run {}",
+                source_run_id.as_str()
+            )));
+        }
+        claim.state = HitlResumeClaimState::Started;
+        Ok(())
+    }
+
+    async fn abort_admitted_hitl_resume(
+        &self,
+        lease: &RunAdmissionLease,
+        source_run_id: &RunId,
+        claim_id: &str,
+        output_preview: &str,
+    ) -> SessionStoreResult<HitlResumeAbortOutcome> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        ensure_active_admission_locked(&inner, lease, chrono::Utc::now())?;
+        let target_key = run_key(&lease.target.session_id, &lease.target.run_id);
+        let target = inner.runs.get(&target_key).ok_or_else(|| {
+            SessionStoreError::NotFound(run_key_label(
+                &lease.target.session_id,
+                &lease.target.run_id,
+            ))
+        })?;
+        if target.restore_from_run_id.as_ref() != Some(source_run_id) || !target.status.is_active()
+        {
+            return Err(SessionStoreError::Conflict(
+                "active admission is not bound to the HITL source run".to_string(),
+            ));
+        }
+        let source_key = run_key(&lease.target.session_id, source_run_id);
+        let source = inner.runs.get(&source_key).ok_or_else(|| {
+            SessionStoreError::NotFound(run_key_label(&lease.target.session_id, source_run_id))
+        })?;
+        if source.status != RunStatus::Waiting {
+            return Err(SessionStoreError::Conflict(
+                "HITL source run is not waiting".to_string(),
+            ));
+        }
+        let claim = inner
+            .hitl_resume_claims
+            .get(&source_key)
+            .cloned()
+            .ok_or_else(|| {
+                SessionStoreError::NotFound(format!("resume claim for {}", source_run_id.as_str()))
+            })?;
+        if claim.claim_id != claim_id
+            || claim.session_id != lease.target.session_id
+            || claim.run_id != *source_run_id
+        {
+            return Err(SessionStoreError::Conflict(format!(
+                "invalid resume claim for run {}",
+                source_run_id.as_str()
+            )));
+        }
+        if claim.state == HitlResumeClaimState::Started {
+            return Ok(HitlResumeAbortOutcome::EffectStarted);
+        }
+        if claim.state != HitlResumeClaimState::Admitted {
+            return Err(SessionStoreError::Conflict(format!(
+                "invalid admitted resume claim for run {}",
+                source_run_id.as_str()
+            )));
+        }
+        apply_run_status_locked(
+            &mut inner,
+            &lease.target.session_id,
+            &lease.target.run_id,
+            RunStatus::Failed,
+            Some(output_preview.to_string()),
+            chrono::Utc::now(),
+        )?;
+        let consumed = inner.hitl_resume_claims.remove(&source_key);
+        if consumed.as_ref() != Some(&claim) {
+            return Err(SessionStoreError::Conflict(format!(
+                "admitted resume claim changed while aborting run {}",
+                source_run_id.as_str()
+            )));
+        }
+        Ok(HitlResumeAbortOutcome::AbortedBeforeEffect)
     }
 
     async fn mark_hitl_resume_started(
@@ -1818,7 +2038,8 @@ impl SessionStore for InMemorySessionStore {
         now: chrono::DateTime<chrono::Utc>,
     ) -> SessionStoreResult<Vec<ManagedRunTarget>> {
         let mut inner = self.inner.lock().map_err(store_failed)?;
-        let expired = inner
+        let mut staged = inner.clone();
+        let expired = staged
             .run_admissions
             .iter()
             .filter(|(session, lease)| {
@@ -1827,24 +2048,35 @@ impl SessionStore for InMemorySessionStore {
             .map(|(session, lease)| (session.clone(), lease.target.clone()))
             .collect::<Vec<_>>();
         for (session_target, target) in &expired {
-            if let Some(run) = inner
-                .runs
-                .get_mut(&run_key(&target.session_id, &target.run_id))
-                && run.status.is_active()
-            {
+            let replacement_key = run_key(&target.session_id, &target.run_id);
+            let replacement = staged.runs.get(&replacement_key).cloned().ok_or_else(|| {
+                SessionStoreError::NotFound(run_key_label(&target.session_id, &target.run_id))
+            })?;
+            if replacement.status.is_active() {
+                let effect_started =
+                    terminalize_started_hitl_source_locked(&mut staged, &replacement, now)?;
+                let run = staged.runs.get_mut(&replacement_key).ok_or_else(|| {
+                    SessionStoreError::NotFound(run_key_label(&target.session_id, &target.run_id))
+                })?;
                 run.status = RunStatus::Cancelled;
                 run.output_preview = Some("interrupted after host lease expired".to_string());
                 run.updated_at = now;
+                if effect_started {
+                    ContinuationEffectState::indeterminate()
+                        .insert_into(&mut run.metadata)
+                        .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
+                }
             }
-            if let Some(session) = inner.sessions.get_mut(&target.session_id) {
+            if let Some(session) = staged.sessions.get_mut(&target.session_id) {
                 if session.active_run_id.as_ref() == Some(&target.run_id) {
                     session.active_run_id = None;
                 }
                 session.revision = session.revision.saturating_add(1);
                 session.updated_at = now;
             }
-            inner.run_admissions.remove(session_target);
+            staged.run_admissions.remove(session_target);
         }
+        *inner = staged;
         Ok(expired.into_iter().map(|(_, target)| target).collect())
     }
 
@@ -2387,7 +2619,7 @@ impl SessionStore for InMemorySessionStore {
 
     async fn acquire_background_subagent_continuation(
         &self,
-        mut request: AcquireBackgroundSubagentContinuation,
+        request: AcquireBackgroundSubagentContinuation,
     ) -> SessionStoreResult<BackgroundSubagentContinuationReceipt> {
         let mut inner = self.inner.lock().map_err(store_failed)?;
         let mut background = inner
@@ -2473,11 +2705,11 @@ impl SessionStore for InMemorySessionStore {
             .ok_or_else(|| {
                 SessionStoreError::NotFound(background.parent_session_id.as_str().to_string())
             })?;
-        request
-            .admission
-            .run
-            .restore_from_run_id
-            .clone_from(&session.head_run_id);
+        if request.admission.run.restore_from_run_id != session.head_run_id {
+            return Err(SessionStoreError::Conflict(
+                "background continuation source no longer matches the session head".to_string(),
+            ));
+        }
         let admission_request = request.clone();
         let mut staged = inner.clone();
         let admission = acquire_run_admission_locked(&mut staged, request.admission.clone())?;

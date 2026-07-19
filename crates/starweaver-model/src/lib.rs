@@ -28,8 +28,8 @@ pub use media::{
 };
 pub use message::{
     CachePointTtl, ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart,
-    ModelResponse, ModelResponsePart, ProviderInfo, ProviderPartInfo, ToolArguments, ToolCallPart,
-    ToolReturnPart,
+    ModelResponse, ModelResponsePart, ProviderInfo, ProviderPartInfo,
+    TOOL_RETURN_APPROVAL_ARGUMENTS_METADATA_KEY, ToolArguments, ToolCallPart, ToolReturnPart,
 };
 pub use oauth::{
     CODEX_ORIGINATOR, CodexOAuthResponsesModel, OAuthBearerHttpClient, build_codex_headers,

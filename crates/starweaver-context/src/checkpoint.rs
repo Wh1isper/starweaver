@@ -197,6 +197,16 @@ pub enum AgentExecutorError {
 /// Callback contract for persistence, interruption, and durable scheduling.
 #[async_trait]
 pub trait AgentExecutor: Send + Sync {
+    /// Return whether sessions using this executor must route HITL effects through durable
+    /// continuation preparation and exclusive started-claim authorization.
+    ///
+    /// This property is intentionally sticky when an agent replaces executors so a cloned or
+    /// restored store-backed agent cannot downgrade its effect boundary.
+    #[must_use]
+    fn requires_durable_hitl_preparation(&self) -> bool {
+        false
+    }
+
     /// Persist or inspect a checkpoint and decide whether execution should continue.
     async fn checkpoint(
         &self,

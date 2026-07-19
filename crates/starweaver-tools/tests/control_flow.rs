@@ -36,6 +36,10 @@ async fn approval_required_error_returns_structured_control_flow_metadata() {
     assert_eq!(result.content["kind"], "approval_required");
     assert_eq!(result.metadata["control_flow"], "approval_required");
     assert_eq!(result.metadata["approval"]["reason"], "delete");
+    assert_eq!(
+        result.metadata[starweaver_model::TOOL_RETURN_APPROVAL_ARGUMENTS_METADATA_KEY],
+        serde_json::json!({})
+    );
 }
 
 #[tokio::test]

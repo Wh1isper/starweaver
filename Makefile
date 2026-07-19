@@ -215,10 +215,20 @@ install-script-check: ## Validate GitHub install and update script semantics
 	@echo "Checking install script"
 	@$(XTASK) check-install-script
 
-.PHONY: desktop-rpc-e2e
-desktop-rpc-e2e: ## Run real CLI/RPC bidirectional subprocess interoperability
+.PHONY: rpc-contracts-check
+rpc-contracts-check: ## Validate RPC v1 corpus, schema, typed decode, stdio, and loopback HTTP
+	@echo "Checking RPC v1 wire contracts across transports"
+	@$(XTASK) check-rpc-contracts
+
+.PHONY: rpc-contracts-generate
+rpc-contracts-generate: ## Regenerate the deterministic RPC v1 corpus schema
+	@echo "Generating RPC v1 wire contract schema"
+	@$(XTASK) generate-rpc-contracts
+
+.PHONY: rpc-interop-e2e
+rpc-interop-e2e: ## Run real CLI/RPC bidirectional subprocess interoperability
 	@echo "Checking CLI/RPC bidirectional interoperability"
-	@$(XTASK) check-desktop-rpc-e2e
+	@$(XTASK) check-rpc-interop-e2e
 
 .PHONY: scripts-check
 scripts-check: architecture-check capability-check cli-examples-check install-script-check ## Validate repository automation scripts through xtask
@@ -271,7 +281,7 @@ lint: docs-check py-lint ## Run pre-commit hooks, Python lint, and docs example 
 	@pre-commit run -a
 
 .PHONY: ci
-ci: fmt-check check replay-check test desktop-rpc-e2e py-check scripts-check docs-check docs-build ## Run the same core checks as CI
+ci: fmt-check check replay-check test rpc-contracts-check rpc-interop-e2e py-check scripts-check docs-check docs-build ## Run the same core checks as CI
 
 .PHONY: ci-all
 ci-all: ci coverage-ci ## Run core CI plus coverage gates

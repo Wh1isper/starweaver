@@ -25,3 +25,4 @@ scripts/.venv/
 
 /refs/
 .starweaver-cache-dumps/
+/local-reference/

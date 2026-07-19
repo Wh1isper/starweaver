@@ -26,11 +26,9 @@ fn setup_creates_config_catalogs_and_directories() {
     assert!(global_gitignore.contains("worktrees/"));
     assert!(global_gitignore.contains("message_history/"));
     assert!(global_gitignore.contains("tui/state.json"));
-    assert!(global_gitignore.contains("desktop/state.json"));
     assert!(temp.path().join("global/skills").is_dir());
     assert!(temp.path().join("global/subagents").is_dir());
     assert!(temp.path().join("global/tui").is_dir());
-    assert!(temp.path().join("global/desktop").is_dir());
     assert!(!temp.path().join(".starweaver/config.toml").exists());
 
     let rows = String::from_utf8(output.stdout)

@@ -14,24 +14,27 @@ use starweaver_agent::{
     AgentStreamEvent, AgentStreamOptions, ApprovalRequiredToolset, DeferredToolResult,
     DeferredToolResults, DynToolset, FunctionModel, FunctionModelInfo, FunctionTool,
     HITL_DECISION_DIAGNOSTIC_EVENT_KIND, InMemoryReplayEventLog, InMemorySessionStore,
-    InMemoryStreamArchive, ModelConfig, ModelRequestParameters, ModelSettings, OutputPolicy,
-    PerThousandRatio, ReplayEventKind, ReplayEventLog, ReplayScope, ResumableState, RunRecord,
-    RunStatus, SessionRecord, SessionRunStatus, SessionStore, StaticToolset, StreamArchive,
-    TestModel, ToolApprovalDecision, ToolApprovalState, ToolContext, ToolError, ToolResult,
-    ToolUserInputPreprocessResult, TraceContext,
+    InMemoryStreamArchive, ManagedRunTarget, ModelConfig, ModelRequestParameters, ModelSettings,
+    OutputPolicy, PerThousandRatio, ReplayEventKind, ReplayEventLog, ReplayScope, ResumableState,
+    RunRecord, RunStatus, SessionRecord, SessionRunStatus, SessionStore, StaticToolset,
+    StreamArchive, TestModel, ToolApprovalDecision, ToolApprovalState, ToolContext, ToolError,
+    ToolResult, ToolUserInputPreprocessResult, TraceContext,
 };
 use starweaver_agent::{
     LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot, McpToolSpec, McpTransport,
     RmcpLiveMcpClient, live_mcp_toolset,
 };
-use starweaver_context::{AgentContextHandle, CONTEXT_HANDOFF_CAPABILITY, ContextHandoffHandle};
+use starweaver_context::{
+    AgentCheckpoint, AgentContextHandle, CONTEXT_HANDOFF_CAPABILITY, ContextHandoffHandle,
+};
 use starweaver_core::{AgentId, CancellationToken, ConversationId, Metadata, RunId, SessionId};
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequest, ModelRequestContext,
     ModelRequestPart, ModelResponse, ModelResponseEventStream, ModelResponsePart,
-    ModelResponseStreamEvent, PartDelta, PartEnd, PartStart, ProtocolFamily, ToolCallPart,
-    tool_call_response,
+    ModelResponseStreamEvent, PartDelta, PartEnd, PartStart, ProtocolFamily,
+    TOOL_RETURN_APPROVAL_ARGUMENTS_METADATA_KEY, ToolArguments, ToolCallPart, tool_call_response,
 };
+use starweaver_session::HitlResumeClaim;
 use starweaver_stream::{InMemoryReplayTransport, ReplayCursor, ReplayEnvelope, ReplayTransport};
 use starweaver_tools::{
     DynTool, TOOL_METADATA_DEPENDENCIES_KEY, ToolDependencyRequirements, Toolset,
@@ -824,12 +827,12 @@ async fn runtime_durable_store_resumes_hitl_and_replays_streams_by_id() {
     let model_calls = Arc::new(Mutex::new(0usize));
     let model_calls_for_model = model_calls.clone();
     let model = Arc::new(FunctionModel::new(move |messages, _settings, _info| {
-        let first_call = {
+        let call_number = {
             let mut calls = model_calls_for_model.lock().unwrap();
             *calls += 1;
-            *calls == 1
+            *calls
         };
-        if first_call {
+        if call_number == 1 {
             return Ok(ModelResponse {
                 parts: vec![
                     ModelResponsePart::ToolCall(ToolCallPart {
@@ -846,19 +849,21 @@ async fn runtime_durable_store_resumes_hitl_and_replays_streams_by_id() {
                 ..ModelResponse::text("")
             });
         }
-
-        let dangerous = latest_tool_return(&messages, "dangerous");
-        assert!(!dangerous.is_error);
-        assert_eq!(
-            dangerous.content["executed"]["path"],
-            serde_json::json!("target/durable.txt")
-        );
-        assert_eq!(dangerous.metadata["approval_state"], "approved");
-        let slow = latest_tool_return(&messages, "slow");
-        assert!(!slow.is_error);
-        assert_eq!(slow.content["answer"], "ready");
-        assert_eq!(slow.metadata["deferred_status"], "completed");
-        Ok(ModelResponse::text("durable resumed"))
+        if call_number == 2 {
+            let dangerous = latest_tool_return(&messages, "dangerous");
+            assert!(!dangerous.is_error);
+            assert_eq!(
+                dangerous.content["executed"]["path"],
+                serde_json::json!("target/durable.txt")
+            );
+            assert_eq!(dangerous.metadata["approval_state"], "approved");
+            let slow = latest_tool_return(&messages, "slow");
+            assert!(!slow.is_error);
+            assert_eq!(slow.content["answer"], "ready");
+            assert_eq!(slow.metadata["deferred_status"], "completed");
+            return Ok(ModelResponse::text("durable resumed"));
+        }
+        Ok(ModelResponse::text("ordinary turn completed"))
     }));
     let dangerous = FunctionTool::new(
         "dangerous",
@@ -896,6 +901,10 @@ async fn runtime_durable_store_resumes_hitl_and_replays_streams_by_id() {
         .approval_required_tools(["dangerous"])
         .toolset(&base)
         .build();
+    runtime.session_mut().context_mut().metadata.insert(
+        "cli.run_id".to_string(),
+        serde_json::json!("run_cli_source"),
+    );
 
     let waiting = runtime.run("try durable HITL").await.unwrap();
     assert_eq!(waiting.state.status, RunStatus::Waiting);
@@ -1028,6 +1037,135 @@ async fn runtime_durable_store_resumes_hitl_and_replays_streams_by_id() {
             }
         )
     }));
+
+    // A completed SDK-owned continuation releases its admission. The same reusable runtime must
+    // restore its ordinary executor so the next turn does not checkpoint through that stale lease.
+    let next = restored_runtime
+        .run("ordinary turn after HITL")
+        .await
+        .unwrap();
+    assert_eq!(next.output, "ordinary turn completed");
+    assert_ne!(next.state.run_id, waiting_run_id);
+    assert_ne!(next.state.run_id, resumed.state.run_id);
+    assert_eq!(
+        store
+            .load_run(&session_id, &next.state.run_id)
+            .await
+            .unwrap()
+            .status,
+        SessionRunStatus::Completed
+    );
+    assert_eq!(*model_calls.lock().unwrap(), 3);
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn store_backed_session_handles_cannot_bypass_durable_hitl_preparation() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let session_id = SessionId::from_string("session-durable-hitl-session-guard");
+    let executions = Arc::new(AtomicUsize::new(0));
+    let executions_for_tool = executions.clone();
+    let dangerous = FunctionTool::new(
+        "guarded_dangerous",
+        Some("Requires durable approval".to_string()),
+        serde_json::json!({"type": "object"}),
+        move |_context: ToolContext, _arguments| {
+            let executions = executions_for_tool.clone();
+            async move {
+                executions.fetch_add(1, Ordering::SeqCst);
+                Ok(ToolResult::new(serde_json::json!({"executed": true})))
+            }
+        },
+    );
+    let toolset: DynToolset =
+        Arc::new(StaticToolset::new("durable-session-guard-tools").with_tool(Arc::new(dangerous)));
+    let mut initial = AgentRuntimeBuilder::new(Arc::new(TestModel::with_responses(vec![
+        tool_call_response("guarded-call", "guarded_dangerous", serde_json::json!({})),
+    ])))
+    .durable_session_id(session_id.clone())
+    .session_store(store.clone())
+    .approval_required_tools(["guarded_dangerous"])
+    .toolset(&toolset)
+    .build();
+    let waiting = initial.run("request guarded execution").await.unwrap();
+    assert_eq!(waiting.state.status, RunStatus::Waiting);
+    let waiting_run_id = waiting.state.run_id.clone();
+    let approval_id = waiting.state.pending_approval_tool_returns[0]
+        .tool_call_id
+        .clone();
+    let results = AgentHitlResults::new().approval(approval_id, ToolApprovalDecision::approved());
+
+    let mutable_error = initial
+        .session_mut()
+        .resume_after_hitl(results.clone())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        mutable_error,
+        AgentHitlError::DurablePreparationRequired
+    ));
+
+    let extracted_runtime = AgentRuntimeBuilder::new(Arc::new(TestModel::with_text("unused")))
+        .durable_session_id(session_id.clone())
+        .session_store(store.clone())
+        .approval_required_tools(["guarded_dangerous"])
+        .toolset(&toolset)
+        .build();
+    let mut extracted_session = extracted_runtime.into_session();
+    let extracted_error = extracted_session
+        .resume_after_hitl_for_state(&waiting.state, results.clone())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        extracted_error,
+        AgentHitlError::DurablePreparationRequired
+    ));
+
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        store
+            .load_run(&session_id, &waiting_run_id)
+            .await
+            .unwrap()
+            .status,
+        SessionRunStatus::Waiting
+    );
+    let probe_claim_id = "durable-session-guard-probe";
+    store
+        .claim_hitl_resume(HitlResumeClaim::new(
+            probe_claim_id.to_string(),
+            session_id.clone(),
+            waiting_run_id.clone(),
+            chrono::Utc::now(),
+        ))
+        .await
+        .expect("guarded public APIs must not acquire a resume claim");
+    store
+        .release_hitl_resume_claim(&session_id, &waiting_run_id, probe_claim_id)
+        .await
+        .unwrap();
+
+    let mut resumed_runtime =
+        AgentRuntimeBuilder::new(Arc::new(TestModel::with_text("guarded resumed")))
+            .durable_session_id(session_id.clone())
+            .session_store(store.clone())
+            .approval_required_tools(["guarded_dangerous"])
+            .toolset(&toolset)
+            .build();
+    let resumed =
+        Box::pin(resumed_runtime.resume_after_hitl_by_id(&session_id, &waiting_run_id, results))
+            .await
+            .unwrap();
+    assert_eq!(resumed.output, "guarded resumed");
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        store
+            .load_run(&session_id, &waiting_run_id)
+            .await
+            .unwrap()
+            .status,
+        SessionRunStatus::Completed
+    );
 }
 
 #[tokio::test]
@@ -1161,6 +1299,116 @@ async fn invalid_durable_hitl_results_do_not_claim_and_can_be_retried() {
     .expect("valid retry must still acquire the claim");
     assert_eq!(resumed.output, "resumed");
     assert_eq!(executions.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn durable_hitl_resume_rejects_joint_argument_tampering_before_claim_and_effect() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let session_id = SessionId::from_string("session-tampered-hitl-binding");
+    let executions = Arc::new(AtomicUsize::new(0));
+    let executions_for_tool = executions.clone();
+    let dangerous = FunctionTool::new(
+        "bound_once",
+        Some("Requires approval".to_string()),
+        serde_json::json!({"type": "object"}),
+        move |_context: ToolContext, arguments| {
+            let executions = executions_for_tool.clone();
+            async move {
+                executions.fetch_add(1, Ordering::SeqCst);
+                Ok(ToolResult::new(arguments))
+            }
+        },
+    );
+    let toolset: DynToolset =
+        Arc::new(StaticToolset::new("binding-tools").with_tool(Arc::new(dangerous)));
+    let original_arguments = serde_json::json!({
+        "command": "echo safe",
+        "environment": {"MODE": "safe"},
+        "timeout_seconds": 10,
+    });
+    let mut initial = AgentRuntimeBuilder::new(Arc::new(TestModel::with_responses(vec![
+        tool_call_response("binding-call", "bound_once", original_arguments),
+    ])))
+    .durable_session_id(session_id.clone())
+    .session_store(store.clone())
+    .approval_required_tools(["bound_once"])
+    .toolset(&toolset)
+    .build();
+    let waiting = initial.run("request bound execution").await.unwrap();
+    let waiting_run_id = waiting.state.run_id.clone();
+    let approval_id = waiting.state.pending_approval_tool_returns[0]
+        .tool_call_id
+        .clone();
+
+    let mut checkpoint = store
+        .resume_snapshot(&session_id, &waiting_run_id)
+        .await
+        .unwrap()
+        .latest_checkpoint
+        .expect("waiting run checkpoint");
+    let tampered_arguments = serde_json::json!({
+        "command": "echo unsafe",
+        "environment": {"MODE": "unsafe"},
+        "timeout_seconds": 600,
+    });
+    checkpoint.state.pending_tool_calls[0].arguments =
+        ToolArguments::parsed(tampered_arguments.clone());
+    checkpoint.state.pending_approval_tool_returns[0]
+        .metadata
+        .insert(
+            TOOL_RETURN_APPROVAL_ARGUMENTS_METADATA_KEY.to_string(),
+            tampered_arguments,
+        );
+    let tampered_checkpoint = AgentCheckpoint::new(checkpoint.node, &checkpoint.state);
+    store
+        .commit_checkpoint(&session_id, tampered_checkpoint)
+        .await
+        .unwrap();
+
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(TestModel::with_text("resumed")))
+        .durable_session_id(session_id.clone())
+        .session_store(store.clone())
+        .approval_required_tools(["bound_once"])
+        .toolset(&toolset)
+        .build();
+    let error = Box::pin(runtime.resume_after_hitl_by_id(
+        &session_id,
+        &waiting_run_id,
+        AgentHitlResults::new().approval(approval_id, ToolApprovalDecision::approved()),
+    ))
+    .await
+    .expect_err("joint argument tampering must fail before effect execution");
+    assert!(
+        error
+            .to_string()
+            .contains("durable reviewed tool arguments"),
+        "{error}"
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+
+    let probe_claim_id = "tamper-preflight-remained-unclaimed";
+    store
+        .claim_hitl_resume(HitlResumeClaim::new(
+            probe_claim_id.to_string(),
+            session_id.clone(),
+            waiting_run_id.clone(),
+            chrono::Utc::now(),
+        ))
+        .await
+        .expect("failed validation must not acquire a resume claim");
+    store
+        .release_hitl_resume_claim(&session_id, &waiting_run_id, probe_claim_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .load_run(&session_id, &waiting_run_id)
+            .await
+            .unwrap()
+            .status,
+        SessionRunStatus::Waiting
+    );
 }
 
 #[tokio::test]
@@ -1320,6 +1568,92 @@ async fn failed_durable_hitl_continuation_seals_source_and_prevents_tool_reexecu
     .await
     .expect_err("terminal source cannot be resumed again");
     assert_eq!(executions.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn sdk_hitl_resume_rejects_checkpoints_after_its_admission_is_lost() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let session_id = SessionId::from_string("session-hitl-fenced-checkpoint");
+    let lease_released = Arc::new(AtomicBool::new(false));
+    let store_for_tool = Arc::clone(&store);
+    let session_id_for_tool = session_id.clone();
+    let lease_released_for_tool = Arc::clone(&lease_released);
+    let lease_revoker = FunctionTool::new(
+        "lease_revoker",
+        Some("Releases the continuation admission for fencing coverage".to_string()),
+        serde_json::json!({"type": "object"}),
+        move |_context: ToolContext, _arguments| {
+            let store = Arc::clone(&store_for_tool);
+            let session_id = session_id_for_tool.clone();
+            let lease_released = Arc::clone(&lease_released_for_tool);
+            async move {
+                let session = store.load_session(&session_id).await.unwrap();
+                let continuation = store
+                    .list_runs(&session_id)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|run| run.restore_from_run_id.is_some())
+                    .expect("HITL continuation must be admitted before its approved tool runs");
+                let target =
+                    ManagedRunTarget::new(session.namespace_id, session_id, continuation.run_id);
+                let lease = store
+                    .load_run_admission(&target)
+                    .await
+                    .unwrap()
+                    .expect("approved HITL tool must run under an active admission");
+                store.release_run_admission(&lease).await.unwrap();
+                lease_released.store(true, Ordering::SeqCst);
+                Ok(ToolResult::new(serde_json::json!({"released": true})))
+            }
+        },
+    );
+    let toolset: DynToolset =
+        Arc::new(StaticToolset::new("fenced-checkpoint-tools").with_tool(Arc::new(lease_revoker)));
+    let mut initial = AgentRuntimeBuilder::new(Arc::new(TestModel::with_responses(vec![
+        tool_call_response("lease-revoker-call", "lease_revoker", serde_json::json!({})),
+    ])))
+    .durable_session_id(session_id.clone())
+    .session_store(store.clone())
+    .approval_required_tools(["lease_revoker"])
+    .toolset(&toolset)
+    .build();
+    let waiting = initial.run("release the continuation lease").await.unwrap();
+    let waiting_run_id = waiting.state.run_id.clone();
+    let approval_id = waiting.state.pending_approval_tool_returns[0]
+        .tool_call_id
+        .clone();
+
+    let mut restored = AgentRuntimeBuilder::new(Arc::new(TestModel::with_text("unreachable")))
+        .durable_session_id(session_id.clone())
+        .session_store(store.clone())
+        .approval_required_tools(["lease_revoker"])
+        .toolset(&toolset)
+        .build();
+    Box::pin(restored.resume_after_hitl_by_id(
+        &session_id,
+        &waiting_run_id,
+        AgentHitlResults::new().approval(approval_id, ToolApprovalDecision::approved()),
+    ))
+    .await
+    .expect_err("a continuation whose lease is lost must reject its next checkpoint");
+
+    assert!(lease_released.load(Ordering::SeqCst));
+    let continuation = store
+        .list_runs(&session_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|run| run.restore_from_run_id.as_ref() == Some(&waiting_run_id))
+        .expect("admitted continuation record");
+    assert!(
+        store
+            .load_checkpoints(&session_id, &continuation.run_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the first resumed checkpoint must be fenced and rejected after lease loss"
+    );
 }
 
 #[tokio::test]

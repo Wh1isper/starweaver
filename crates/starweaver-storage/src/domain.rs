@@ -1585,6 +1585,7 @@ fn replace_resolved_approval(
         && existing.action_id == approval.action_id
         && existing.action_name == approval.action_name
         && existing.request == approval.request
+        && existing.reviewed_arguments == approval.reviewed_arguments
         && existing.created_at == approval.created_at
         && existing.trace_context == approval.trace_context
         && existing.metadata == approval.metadata;

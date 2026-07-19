@@ -49,10 +49,8 @@ pub struct CliConfig {
     pub global_dir: PathBuf,
     /// Project config root.
     pub project_dir: PathBuf,
-    /// TUI client state root.
+    /// TUI local state root.
     pub tui_state_dir: PathBuf,
-    /// Desktop client state root.
-    pub desktop_state_dir: PathBuf,
     /// `SQLite` database path.
     pub database_path: PathBuf,
     /// Local file store path.
@@ -529,7 +527,6 @@ impl ConfigResolver {
             global_dir: global_dir.clone(),
             project_dir: project_dir.clone(),
             tui_state_dir: global_dir.join("tui"),
-            desktop_state_dir: global_dir.join("desktop"),
             database_path: starweaver_storage::canonical_session_database_path(&global_dir),
             file_store_path: project_dir.join("store"),
             default_profile: "general".to_string(),
@@ -687,7 +684,7 @@ fn bootstrap_global_config_dir(global_dir: &Path) -> CliResult<()> {
             fs::write(&path, content).map_err(|error| io_error(&path, error))?;
         }
     }
-    for name in ["skills", "subagents", "tui", "desktop"] {
+    for name in ["skills", "subagents", "tui"] {
         let path = global_dir.join(name);
         fs::create_dir_all(&path).map_err(|error| io_error(path, error))?;
     }

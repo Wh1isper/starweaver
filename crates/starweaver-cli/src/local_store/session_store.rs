@@ -6,10 +6,11 @@ use starweaver_core::{RunId, SessionId};
 use starweaver_runtime::{AgentCheckpoint, AgentStreamRecord};
 use starweaver_session::{
     AcquireRunAdmission, ApprovalRecord, CompactRunTrace, CompactSessionTrace, DeferredToolRecord,
-    DurableControlReceipt, EnvironmentStateRef, HitlResumeClaim, ManagedRunTarget,
-    PendingStreamPublication, RunAdmissionLease, RunAdmissionReceipt, RunEvidenceCommit, RunRecord,
-    RunStatus, SessionContinuationFence, SessionFilter, SessionRecord, SessionStatus, SessionStore,
-    SessionStoreResult, StreamCursorRef, StreamPublicationTarget, UpdateManagedSession,
+    DurableControlReceipt, EnvironmentStateRef, HitlResumeAbortOutcome, HitlResumeClaim,
+    ManagedRunTarget, PendingStreamPublication, RunAdmissionLease, RunAdmissionReceipt,
+    RunEvidenceCommit, RunRecord, RunStatus, SessionContinuationFence, SessionFilter,
+    SessionRecord, SessionStatus, SessionStore, SessionStoreResult, StreamCursorRef,
+    StreamPublicationTarget, UpdateManagedSession,
 };
 use starweaver_storage::SqliteSessionStore;
 
@@ -52,6 +53,29 @@ impl SessionStore for LocalSessionStore {
 
     async fn claim_hitl_resume(&self, claim: HitlResumeClaim) -> SessionStoreResult<()> {
         self.store.claim_hitl_resume(claim).await
+    }
+
+    async fn start_hitl_resume_effect(
+        &self,
+        lease: &RunAdmissionLease,
+        source_run_id: &RunId,
+        claim_id: &str,
+    ) -> SessionStoreResult<()> {
+        self.store
+            .start_hitl_resume_effect(lease, source_run_id, claim_id)
+            .await
+    }
+
+    async fn abort_admitted_hitl_resume(
+        &self,
+        lease: &RunAdmissionLease,
+        source_run_id: &RunId,
+        claim_id: &str,
+        output_preview: &str,
+    ) -> SessionStoreResult<HitlResumeAbortOutcome> {
+        self.store
+            .abort_admitted_hitl_resume(lease, source_run_id, claim_id, output_preview)
+            .await
     }
 
     async fn mark_hitl_resume_started(

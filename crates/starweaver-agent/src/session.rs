@@ -10,8 +10,8 @@ use starweaver_environment::{DynEnvironmentProvider, EnvironmentError, Environme
 use starweaver_model::{ModelRequestParameters, ModelSettings, ToolCallPart, ToolReturnPart};
 use starweaver_session::{
     ApprovalStatus, DeferredToolRecord, DeferredToolResult, DeferredToolResults,
-    ExecutionStatus as SessionExecutionStatus, SessionResumeSnapshot, ToolApprovalDecision,
-    ToolReturnRecordInput,
+    ExecutionStatus as SessionExecutionStatus, PreparedContinuation, SessionResumeSnapshot,
+    ToolApprovalDecision, ToolReturnRecordInput,
 };
 use starweaver_tools::{
     DynTool, DynToolset, ToolApprovalState, ToolContext, ToolError, ToolRegistry,
@@ -41,6 +41,7 @@ pub struct AgentSession {
     agent: RuntimeAgent,
     context: AgentContext,
     last_run_state: Option<AgentRunState>,
+    durable_hitl_effects_require_preparation: bool,
 }
 
 /// Per-run SDK overrides composed over a reusable session agent.
@@ -318,6 +319,16 @@ impl AgentHitlResults {
         results
     }
 
+    /// Build host HITL results from one validated, host-neutral continuation package.
+    ///
+    /// The session layer has already checked durable identity, terminal decision coverage, and
+    /// checkpoint consistency. This conversion remains side-effect-free; approved tools execute
+    /// only when the result is injected after a started claim.
+    #[must_use]
+    pub fn from_prepared_continuation(prepared: &PreparedContinuation) -> Self {
+        Self::from_resume_snapshot(&prepared.snapshot)
+    }
+
     /// Return whether no decisions or deferred results are present.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -453,6 +464,8 @@ pub enum AgentHitlErrorCode {
     MissingToolCall,
     /// A deferred result was not terminal.
     DeferredResultNotTerminal,
+    /// Durable HITL effects must pass prepared continuation validation and a started claim.
+    DurablePreparationRequired,
     /// Runtime execution failed after HITL resolution.
     Agent,
 }
@@ -470,6 +483,7 @@ impl AgentHitlErrorCode {
             Self::MissingInteraction => "missing_interaction",
             Self::MissingToolCall => "missing_tool_call",
             Self::DeferredResultNotTerminal => "deferred_result_not_terminal",
+            Self::DurablePreparationRequired => "durable_preparation_required",
             Self::Agent => "agent_error",
         }
     }
@@ -520,6 +534,11 @@ pub enum AgentHitlError {
         /// Supplied non-terminal status.
         status: SessionExecutionStatus,
     },
+    /// Durable HITL effects must use the store-backed runtime continuation API.
+    #[error(
+        "durable HITL effects require prepared continuation validation and a started resume claim"
+    )]
+    DurablePreparationRequired,
     /// Runtime execution failed while executing an approved tool or resumed run.
     #[error(transparent)]
     Agent(#[from] AgentError),
@@ -540,6 +559,7 @@ impl AgentHitlError {
             Self::MissingDecisions { .. } => AgentHitlErrorCode::MissingInteraction,
             Self::MissingToolCall(_) => AgentHitlErrorCode::MissingToolCall,
             Self::DeferredResultNotTerminal { .. } => AgentHitlErrorCode::DeferredResultNotTerminal,
+            Self::DurablePreparationRequired => AgentHitlErrorCode::DurablePreparationRequired,
             Self::Agent(_) => AgentHitlErrorCode::Agent,
         }
     }
@@ -563,10 +583,12 @@ impl AgentSession {
     /// Create a session from a runtime agent and caller-provided context.
     #[must_use]
     pub const fn with_context(agent: RuntimeAgent, context: AgentContext) -> Self {
+        let durable_hitl_effects_require_preparation = agent.requires_durable_hitl_preparation();
         Self {
             agent,
             context,
             last_run_state: None,
+            durable_hitl_effects_require_preparation,
         }
     }
 
@@ -574,6 +596,21 @@ impl AgentSession {
     #[must_use]
     pub fn from_state(agent: RuntimeAgent, state: ResumableState) -> Self {
         Self::with_context(agent, AgentContext::from_state(state))
+    }
+
+    /// Replace the runtime agent while retaining the session's context and local run state.
+    #[must_use]
+    pub(crate) fn rebind_agent(mut self, agent: RuntimeAgent) -> Self {
+        self.durable_hitl_effects_require_preparation = agent.requires_durable_hitl_preparation();
+        self.agent = agent;
+        self
+    }
+
+    const fn ensure_hitl_effects_may_execute(&self) -> Result<(), AgentHitlError> {
+        if self.durable_hitl_effects_require_preparation {
+            return Err(AgentHitlError::DurablePreparationRequired);
+        }
+        Ok(())
     }
 
     /// Return the underlying runtime agent.
@@ -878,6 +915,7 @@ impl AgentSession {
         &mut self,
         results: AgentHitlResults,
     ) -> Result<ResolvedHitlToolReturns, AgentHitlError> {
+        self.ensure_hitl_effects_may_execute()?;
         let state = self
             .last_run_state
             .clone()
@@ -982,6 +1020,17 @@ impl AgentSession {
         state: &AgentRunState,
         results: AgentHitlResults,
     ) -> Result<ResolvedHitlToolReturns, AgentHitlError> {
+        self.ensure_hitl_effects_may_execute()?;
+        self.inject_hitl_results_for_state_after_durable_preparation(state, results)
+            .await
+    }
+
+    /// Inject fully prepared durable HITL decisions after the resume claim is started.
+    pub(crate) async fn inject_hitl_results_for_state_after_durable_preparation(
+        &mut self,
+        state: &AgentRunState,
+        results: AgentHitlResults,
+    ) -> Result<ResolvedHitlToolReturns, AgentHitlError> {
         let resolved = match self.resolve_hitl_results(state, results).await {
             Ok(resolved) => resolved,
             Err(error) => {
@@ -1021,6 +1070,7 @@ impl AgentSession {
         &mut self,
         results: AgentHitlResults,
     ) -> Result<AgentResult, AgentHitlError> {
+        self.ensure_hitl_effects_may_execute()?;
         if results.is_empty() {
             if self.context.pending_tool_returns.is_empty() {
                 return Err(AgentHitlError::NoWaitingRun);
@@ -1041,6 +1091,7 @@ impl AgentSession {
         state: &AgentRunState,
         results: AgentHitlResults,
     ) -> Result<AgentResult, AgentHitlError> {
+        self.ensure_hitl_effects_may_execute()?;
         if results.is_empty() {
             if self.context.pending_tool_returns.is_empty() {
                 return Err(AgentHitlError::NoWaitingRun);
@@ -1753,6 +1804,12 @@ fn hitl_decision_diagnostic_payload(state: &AgentRunState, error: &AgentHitlErro
             payload.insert(
                 "status".to_string(),
                 serde_json::json!(format!("{status:?}")),
+            );
+        }
+        AgentHitlError::DurablePreparationRequired => {
+            payload.insert(
+                "error_kind".to_string(),
+                serde_json::json!("durable_preparation_required"),
             );
         }
         AgentHitlError::Agent(error) => {

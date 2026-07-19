@@ -67,7 +67,10 @@ pub fn conformance_vectors() -> Vec<ConformanceVector> {
         ConformanceVector {
             group: "unsupported feature error",
             method: "stream.subscribe",
-            params: json!({}),
+            params: json!({
+                "sessionId": "session-conformance",
+                "runId": "run-conformance"
+            }),
             expected_error: Some(UNSUPPORTED_FEATURE),
         },
         ConformanceVector {

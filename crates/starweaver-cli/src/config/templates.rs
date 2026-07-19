@@ -606,8 +606,6 @@ message_history/
 worktrees/
 tui/state.json
 tui/state.*.json.tmp
-desktop/state.json
-desktop/state.*.json.tmp
 state.json
 state.*.json.tmp
 ";

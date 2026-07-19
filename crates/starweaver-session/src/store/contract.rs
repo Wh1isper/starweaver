@@ -111,7 +111,35 @@ pub trait SessionStore: Send + Sync {
         ))
     }
 
-    /// Mark a claim started immediately before the first continuation hook or tool executes.
+    /// Atomically authorize the first HITL continuation effect under a live admission lease.
+    ///
+    /// Stores must verify the exact current lease, its expiry, the target run's source binding,
+    /// and the matching `Admitted` claim in one operation before advancing the claim to `Started`.
+    async fn start_hitl_resume_effect(
+        &self,
+        _lease: &RunAdmissionLease,
+        _source_run_id: &RunId,
+        _claim_id: &str,
+    ) -> SessionStoreResult<()> {
+        management_unsupported()
+    }
+
+    /// Atomically abort a pre-worker waiting-run replacement under its live admission lease.
+    ///
+    /// An `Admitted` claim proves no approved effect can have run, so this terminalizes only the
+    /// replacement and consumes the claim while leaving the source waiting. `Started` is reported
+    /// without mutation: callers must instead persist fail-closed related-run evidence.
+    async fn abort_admitted_hitl_resume(
+        &self,
+        _lease: &RunAdmissionLease,
+        _source_run_id: &RunId,
+        _claim_id: &str,
+        _output_preview: &str,
+    ) -> SessionStoreResult<crate::HitlResumeAbortOutcome> {
+        management_unsupported()
+    }
+
+    /// Mark a non-admitted claim started immediately before the first continuation hook or tool executes.
     async fn mark_hitl_resume_started(
         &self,
         _session_id: &SessionId,
@@ -272,6 +300,12 @@ pub trait SessionStore: Send + Sync {
     }
 
     /// Deterministically terminalize expired active leases owned by prior host instances.
+    ///
+    /// When an expired lease belongs to a waiting-HITL replacement whose source still waits, the
+    /// replacement and source must both become cancelled, the exact started source claim must be
+    /// validated and consumed, the admission must be removed, and session active-run state must
+    /// be cleared as one atomic operation. Any mismatch fails closed without exposing a partial
+    /// transition. Ordinary expired admissions retain the same replacement-only terminalization.
     async fn reconcile_expired_run_admissions(
         &self,
         _namespace_id: &str,
@@ -598,6 +632,28 @@ pub trait SessionStore: Send + Sync {
         Err(SessionStoreError::Failed(
             "session store does not support per-run resume snapshots".to_string(),
         ))
+    }
+
+    /// Load and side-effect-free prepare one host-neutral continuation package.
+    ///
+    /// Implementations should normally rely on this default so every product applies the same
+    /// snapshot identity and waiting-HITL evidence validation before admission or claim changes.
+    async fn prepare_continuation(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+        mode: crate::ContinuationPreparationMode,
+    ) -> SessionStoreResult<crate::PreparedContinuation> {
+        let snapshot = self.resume_snapshot(session_id, run_id).await?;
+        match mode {
+            crate::ContinuationPreparationMode::Ordinary => {
+                crate::PreparedContinuation::ordinary(snapshot)
+            }
+            crate::ContinuationPreparationMode::WaitingHitl => {
+                crate::PreparedContinuation::waiting_hitl(snapshot)
+            }
+        }
+        .map_err(|error| SessionStoreError::Conflict(error.to_string()))
     }
 
     /// Return compact run trace projection.

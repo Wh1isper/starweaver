@@ -1,6 +1,6 @@
 #![allow(missing_docs)]
 
-use std::path::PathBuf;
+use std::{collections::BTreeSet, path::PathBuf};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,7 @@ use crate::{EnvironmentAttachmentRef, RunOutputItem, StreamPayloadFormat};
 pub struct EmptyParams {}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServerInfo {
     pub name: String,
     pub version: String,
@@ -27,7 +27,7 @@ pub struct ServerInfo {
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostCapabilities {
     pub sessions: bool,
     pub runs: bool,
@@ -53,7 +53,7 @@ pub struct HostCapabilities {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostInitializeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub global_dir: Option<PathBuf>,
@@ -62,7 +62,7 @@ pub struct HostInitializeConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostInitializeResult {
     pub protocol: ProtocolIdentity,
     pub server_info: ServerInfo,
@@ -71,12 +71,13 @@ pub struct HostInitializeResult {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ShutdownResult {
     pub status: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DiagnosticsGetResult {
     pub sdk: String,
     pub version: String,
@@ -95,7 +96,7 @@ pub struct ClientStateParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileSummary {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,7 +106,7 @@ pub struct ProfileSummary {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -123,7 +124,7 @@ pub struct ProfileConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelSelection {
     pub client_state_scope: String,
     pub selected_profile: String,
@@ -131,17 +132,20 @@ pub struct ModelSelection {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProfileListResult {
     pub profiles: Vec<ProfileSummary>,
     pub current: ModelSelection,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProfileGetParams {
     pub name: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProfileGetResult {
     pub name: String,
     pub profile: ProfileConfig,
@@ -160,11 +164,13 @@ pub type ModelSelectResult = ModelSelection;
 pub type ModelListResult = ProfileListResult;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigGetParams {
     pub key: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigGetResult {
     pub key: String,
     pub value: String,
@@ -180,6 +186,7 @@ pub struct SessionCreateParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionCreateResult {
     pub session: SessionRecord,
 }
@@ -192,6 +199,7 @@ pub struct SessionListParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionListResult {
     pub sessions: Vec<SessionRecord>,
 }
@@ -205,6 +213,7 @@ pub struct SessionGetParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionGetResult {
     pub session: SessionRecord,
     pub runs: Vec<RunRecord>,
@@ -217,7 +226,7 @@ pub struct SessionCurrentSetParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionCurrentResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
@@ -230,7 +239,7 @@ pub struct SessionDeleteParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionDeleteResult {
     pub session_id: SessionId,
     pub deleted: bool,
@@ -238,6 +247,7 @@ pub struct SessionDeleteResult {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunInputDto {
     pub parts: Vec<InputPart>,
 }
@@ -263,6 +273,8 @@ pub struct RunStartParams {
     pub restore_from_run_id: Option<RunId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environment_attachments: Vec<EnvironmentAttachmentRef>,
+    #[serde(default)]
+    pub continuation_mode: crate::ContinuationMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
 }
@@ -270,7 +282,7 @@ pub struct RunStartParams {
 pub type RunPromptParams = RunStartParams;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunStartResult {
     pub session_id: SessionId,
     pub run_id: RunId,
@@ -279,10 +291,14 @@ pub struct RunStartResult {
     pub payload_format: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environment_attachments: Vec<EnvironmentAttachmentRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialization: Option<crate::AgentMaterialization>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<crate::ContinuationAssessment>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunPromptResult {
     pub session_id: SessionId,
     pub run_id: RunId,
@@ -293,6 +309,10 @@ pub struct RunPromptResult {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environment_attachments: Vec<EnvironmentAttachmentRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialization: Option<crate::AgentMaterialization>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<crate::ContinuationAssessment>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -312,7 +332,7 @@ pub struct RunAwaitParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostRunStatus {
     pub session_id: SessionId,
     pub run_id: RunId,
@@ -321,6 +341,9 @@ pub struct HostRunStatus {
     pub output_preview: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Fail-closed effect recovery projection when a started continuation lost its host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_effect: Option<starweaver_session::ContinuationEffectState>,
 }
 
 impl HostRunStatus {
@@ -331,6 +354,7 @@ impl HostRunStatus {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunStatusResult {
     pub status: HostRunStatus,
 }
@@ -347,7 +371,7 @@ pub struct RunCancelParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunCancelResult {
     pub session_id: SessionId,
     pub run_id: RunId,
@@ -369,7 +393,7 @@ pub struct RunSteerParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunSteerResult {
     pub session_id: SessionId,
     pub run_id: RunId,
@@ -409,7 +433,7 @@ pub type SessionOutputParams = StreamReplayParams;
 pub type SessionReplayParams = StreamReplayParams;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunAttachmentResult {
     pub session_id: SessionId,
     #[serde(default)]
@@ -422,7 +446,7 @@ pub struct RunAttachmentResult {
 pub type SessionOutputResult = RunAttachmentResult;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StreamReplayResult {
     pub session_id: SessionId,
     #[serde(default)]
@@ -455,7 +479,7 @@ pub struct StreamSubscribeParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StreamSubscribeResult {
     pub subscription_id: String,
     pub session_id: SessionId,
@@ -472,7 +496,7 @@ pub struct StreamUnsubscribeParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StreamUnsubscribeResult {
     pub subscription_id: String,
     pub closed: bool,
@@ -492,6 +516,7 @@ pub type ApprovalListParams = HitlListParams;
 pub type DeferredListParams = HitlListParams;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApprovalListResult {
     pub approvals: Vec<ApprovalRecord>,
 }
@@ -503,6 +528,7 @@ pub struct ApprovalShowParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApprovalResult {
     pub approval: ApprovalRecord,
 }
@@ -540,6 +566,7 @@ pub struct ApprovalDecideParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeferredListResult {
     pub deferred: Vec<DeferredToolRecord>,
 }
@@ -551,6 +578,7 @@ pub struct DeferredShowParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeferredResult {
     pub deferred: DeferredToolRecord,
 }
@@ -575,7 +603,7 @@ pub struct DeferredFailParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubscriptionReadyParams {
     pub subscription_id: String,
     pub scope: ReplayScope,
@@ -592,7 +620,7 @@ pub enum SubscriptionClosedReason {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubscriptionClosedParams {
     pub subscription_id: String,
     pub scope: ReplayScope,
@@ -600,7 +628,7 @@ pub struct SubscriptionClosedParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StreamEventParams {
     pub subscription_id: String,
     pub scope: ReplayScope,
@@ -618,7 +646,7 @@ pub enum DiagnosticLevel {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DiagnosticNotificationParams {
     pub level: DiagnosticLevel,
     pub message: String,
@@ -666,6 +694,75 @@ impl HostNotification {
 #[must_use]
 pub fn typed_notification(notification: HostNotificationKind) -> Value {
     serde_json::json!(HostNotification::new(notification))
+}
+
+/// Strictly decode one canonical v1 notification frame.
+///
+/// # Errors
+///
+/// Returns an error for envelope fields outside `jsonrpc`, `method`, and `params`, a non-2.0
+/// version, an unknown notification method, or a payload that does not match its concrete DTO.
+pub fn validate_v1_notification(value: &Value) -> Result<(), String> {
+    validate_exact_object_fields(value, &["jsonrpc", "method", "params"], "notification")?;
+    if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Err("invalid notification: jsonrpc must be 2.0".to_string());
+    }
+    serde_json::from_value::<HostNotification>(value.clone())
+        .map(|_| ())
+        .map_err(|error| format!("invalid notification: {error}"))
+}
+
+/// Strictly decode one v1 JSON-RPC error response for the expected stable code.
+///
+/// # Errors
+///
+/// Returns an error for a malformed envelope, invalid id, unknown fields, or a code mismatch.
+pub fn validate_v1_error_response(expected_code: i64, value: &Value) -> Result<(), String> {
+    validate_exact_object_fields(value, &["jsonrpc", "id", "error"], "error response")?;
+    if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Err("invalid error response: jsonrpc must be 2.0".to_string());
+    }
+    match value.get("id") {
+        Some(Value::Null | Value::String(_)) => {}
+        Some(Value::Number(number)) if number.as_i64().is_some() || number.as_u64().is_some() => {}
+        _ => {
+            return Err(
+                "invalid error response: id must be a string, integer, or null".to_string(),
+            );
+        }
+    }
+    let error = value
+        .get("error")
+        .ok_or_else(|| "invalid error response: missing error".to_string())?;
+    validate_exact_object_fields(error, &["code", "message"], "error object")?;
+    if error.get("code").and_then(Value::as_i64) != Some(expected_code) {
+        return Err(format!(
+            "invalid error response: expected code {expected_code}"
+        ));
+    }
+    if error.get("message").and_then(Value::as_str).is_none() {
+        return Err("invalid error response: message must be a string".to_string());
+    }
+    Ok(())
+}
+
+fn validate_exact_object_fields(
+    value: &Value,
+    expected: &[&str],
+    context: &str,
+) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("invalid {context}: expected object"))?;
+    let expected = expected.iter().copied().collect::<BTreeSet<_>>();
+    let actual = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid {context}: expected fields {expected:?}, got {actual:?}"
+        ))
+    }
 }
 
 /// One method entry in the machine-readable v1 conformance catalog.
@@ -939,7 +1036,12 @@ pub fn validate_v1_method_params(method: &str, value: &Value) -> Result<(), Stri
         };
     }
     match method {
-        "initialize" => params!(crate::HostInitializeParams),
+        "initialize" => {
+            let params = serde_json::from_value::<crate::HostInitializeParams>(value.clone())
+                .map_err(|error| format!("invalid {method} params: {error}"))?;
+            crate::validate_host_initialize(&params)
+                .map_err(|error| format!("invalid {method} params: {}", error.message))
+        }
         "shutdown" | "diagnostics.get" | "session.current.get" => params!(EmptyParams),
         "profile.list" | "model.list" | "model.current" => params!(ClientStateParams),
         "profile.get" => params!(ProfileGetParams),

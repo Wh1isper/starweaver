@@ -15,4 +15,6 @@ pub use history::{ModelMessage, ModelRequest, ModelResponse};
 pub use provider::{FinishReason, ProviderInfo, ProviderPartInfo};
 pub use request_parts::{CachePointTtl, ContentPart, ModelRequestPart};
 pub use response_parts::ModelResponsePart;
-pub use tool::{ToolArguments, ToolCallPart, ToolReturnPart};
+pub use tool::{
+    TOOL_RETURN_APPROVAL_ARGUMENTS_METADATA_KEY, ToolArguments, ToolCallPart, ToolReturnPart,
+};

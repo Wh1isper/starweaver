@@ -146,10 +146,10 @@ impl AgentOverride {
         self
     }
 
-    /// Override durable executor.
+    /// Override durable executor without weakening a sticky durable HITL effect boundary.
     #[must_use]
     pub fn executor(mut self, executor: DynAgentExecutor) -> Self {
-        self.agent.executor = executor;
+        self.agent = self.agent.with_executor(executor);
         self
     }
 
