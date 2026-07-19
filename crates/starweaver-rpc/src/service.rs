@@ -2027,6 +2027,33 @@ mod tests {
         .to_string()
     }
 
+    fn await_run_admission_release(service: &RpcService, session_id: &str, run_id: &str) {
+        let target = starweaver_session::ManagedRunTarget::new(
+            starweaver_session::LOCAL_SESSION_NAMESPACE,
+            SessionId::from_string(session_id),
+            RunId::from_string(run_id),
+        );
+        let released = service.runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    if service
+                        .storage
+                        .session_store()
+                        .load_run_admission(&target)
+                        .await
+                        .unwrap()
+                        .is_none()
+                    {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+        });
+        assert!(released.is_ok(), "run admission was not released");
+    }
+
     #[test]
     fn run_start_restore_aliases_must_match() {
         let matching = decode_run_start_params(
@@ -3070,6 +3097,7 @@ mod tests {
             .unwrap();
         assert_eq!(awaited["result"]["status"]["status"], "completed");
 
+        await_run_admission_release(&service, session_id, source_run_id);
         let exact = service
             .handle_text(&request(
                 3,
@@ -3127,6 +3155,7 @@ mod tests {
                 .contains("modelProfileId")
         );
 
+        await_run_admission_release(&service, session_id, exact_run_id);
         let switched = service
             .handle_text(&request(
                 6,
