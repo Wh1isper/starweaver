@@ -9,7 +9,7 @@ use crate::{
     config::{
         CliConfig, ConfigScope, DEFAULT_GLOBAL_GITIGNORE_TEMPLATE, DEFAULT_MCP_TEMPLATE,
         DEFAULT_PROJECT_GITIGNORE_TEMPLATE, DEFAULT_TOOLS_TEMPLATE, init_config_file,
-        write_default_subagent_presets,
+        remove_project_state, write_default_subagent_presets,
     },
 };
 
@@ -23,7 +23,7 @@ impl CliService {
                 command.force,
             )?);
             setup_catalog_files(&self.config.global_dir, command.force, &mut rows)?;
-            rows.push(write_template_if_missing(
+            rows.push(write_gitignore_template(
                 &self.config.global_dir.join(".gitignore"),
                 DEFAULT_GLOBAL_GITIGNORE_TEMPLATE,
                 command.force,
@@ -37,7 +37,7 @@ impl CliService {
                 command.force,
             )?);
             setup_catalog_files(&self.config.project_dir, command.force, &mut rows)?;
-            rows.push(write_template_if_missing(
+            rows.push(write_gitignore_template(
                 &self.config.project_dir.join(".gitignore"),
                 DEFAULT_PROJECT_GITIGNORE_TEMPLATE,
                 command.force,
@@ -62,7 +62,7 @@ impl CliService {
         }
         self.store = None;
         let removed_database = false;
-        let removed_state = remove_file_if_exists(&self.config.project_dir.join("state.json"))?;
+        let removed_state = remove_project_state(&self.config)?;
         let removed_store = remove_dir_if_exists(&self.config.file_store_path)?;
         match command.output {
             OutputMode::Text => Ok(format!(
@@ -81,14 +81,6 @@ impl CliService {
             OutputMode::Silent => Ok("status=reset\n".to_string()),
         }
     }
-}
-
-pub(super) fn remove_file_if_exists(path: &Path) -> CliResult<bool> {
-    if path.exists() {
-        fs::remove_file(path).map_err(|error| crate::error::io_error(path, error))?;
-        return Ok(true);
-    }
-    Ok(false)
 }
 
 fn remove_dir_if_exists(path: &Path) -> CliResult<bool> {
@@ -143,6 +135,30 @@ const fn scope_name(scope: ConfigScope) -> &'static str {
         ConfigScope::Global => "global",
         ConfigScope::Project => "project",
     }
+}
+
+fn write_gitignore_template(
+    path: &Path,
+    content: &str,
+    force: bool,
+    kind: &str,
+) -> CliResult<Value> {
+    let row = write_template_if_missing(path, content, force, kind)?;
+    if row["status"] != "exists" {
+        return Ok(row);
+    }
+    let existing = fs::read_to_string(path).map_err(|error| crate::error::io_error(path, error))?;
+    if existing.lines().any(|line| line == "state.lock") {
+        return Ok(row);
+    }
+    let separator = if existing.is_empty() || existing.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    fs::write(path, format!("{existing}{separator}state.lock\n"))
+        .map_err(|error| crate::error::io_error(path, error))?;
+    Ok(json!({"kind": kind, "path": path, "status": "updated"}))
 }
 
 fn write_template_if_missing(

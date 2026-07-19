@@ -33,7 +33,8 @@ pub use metadata::{mcp_servers, tool_need_approval};
 use metadata::{merge_json_value, read_mcp_config, read_tools_config};
 pub use state::{
     clear_current_session, ensure_config_dirs, read_current_session,
-    read_last_retention_maintenance, write_current_session, write_last_retention_maintenance,
+    read_last_retention_maintenance, remove_project_state, remove_project_state_if_current_session,
+    write_current_session, write_last_retention_maintenance,
 };
 use templates::default_config_template;
 pub use templates::{

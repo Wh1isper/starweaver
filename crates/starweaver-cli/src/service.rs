@@ -42,7 +42,8 @@ use crate::{
         StorageCommand, StorageImportLegacyCommand, TuiCommand,
     },
     config::{
-        CliConfig, read_current_session, read_last_retention_maintenance, write_current_session,
+        CliConfig, read_current_session, read_last_retention_maintenance,
+        remove_project_state_if_current_session, write_current_session,
         write_last_retention_maintenance,
     },
     environment::{
@@ -76,7 +77,6 @@ use rendering::{
     render_session_delete, render_session_search, render_session_show, render_sessions,
     render_trim_report, session_value,
 };
-use setup::remove_file_if_exists;
 #[cfg(test)]
 use tui::model_choices;
 use worktree::apply_starweaver_run_metadata;
@@ -1287,10 +1287,7 @@ impl CliService {
                 }
                 let session_id = self.store()?.resolve_session_prefix(&command.session_id)?;
                 let deleted = self.store()?.delete_session(&session_id)?;
-                if read_current_session(&self.config)?.as_deref() == Some(session_id.as_str()) {
-                    let _removed =
-                        remove_file_if_exists(&self.config.project_dir.join("state.json"))?;
-                }
+                let _removed = remove_project_state_if_current_session(&self.config, &session_id)?;
                 render_session_delete(&session_id, deleted, command.output)
             }
             SessionCommand::Trim(command) => {
