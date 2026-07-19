@@ -49,7 +49,7 @@ fn check_native_default_paths(cli: &Path, rpc: &Path, root: &Path) -> Result<(),
     let workspace = root.join("native-workspace");
     fs::create_dir_all(&home).map_err(|error| error.to_string())?;
     fs::create_dir_all(&workspace).map_err(|error| error.to_string())?;
-    let expected = home.join(".starweaver/starweaver.sqlite");
+    let expected = home.join(".starweaver").join("starweaver.sqlite");
     let mut cli_command = Command::new(cli);
     cli_command
         .current_dir(&workspace)
