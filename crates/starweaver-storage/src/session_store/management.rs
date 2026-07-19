@@ -4,8 +4,9 @@ use starweaver_core::SessionId;
 use starweaver_session::{
     AcquireRunAdmission, ContinuationEffectState, DurableControlReceipt, HitlResumeClaim,
     HitlResumeClaimState, ManagedRunTarget, ManagedSessionTarget, RunAdmissionLease,
-    RunAdmissionReceipt, RunRecord, RunStatus, SessionContinuationFence, SessionDeletionFence,
-    SessionRecord, SessionStatus, SessionStoreError, SessionStoreResult, UpdateManagedSession,
+    RunAdmissionReceipt, RunRecord, RunStatus, RunTerminalError, RunTerminalProjection,
+    SessionContinuationFence, SessionDeletionFence, SessionRecord, SessionStatus,
+    SessionStoreError, SessionStoreResult, UpdateManagedSession,
 };
 
 use crate::sqlite::{deserialize_json_record, map_sqlite_session_error, serialize_json_record};
@@ -374,6 +375,11 @@ impl SqliteSessionStore {
         status: RunStatus,
         output_preview: Option<String>,
     ) -> SessionStoreResult<starweaver_session::RunRecord> {
+        if !status.is_active() {
+            return Err(SessionStoreError::Conflict(
+                "fenced status updates are non-terminal; use finalize_run_admission".to_string(),
+            ));
+        }
         let mut connection = self.lock()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -383,6 +389,7 @@ impl SqliteSessionStore {
             load_run_record(&transaction, &lease.target.session_id, &lease.target.run_id)?;
         run.status = status;
         run.output_preview = output_preview;
+        run.terminal_error = None;
         run.updated_at = Utc::now();
         save_run_record(&transaction, &run)?;
         let mut session = load_session_record(&transaction, &lease.target.session_id)?;
@@ -395,10 +402,9 @@ impl SqliteSessionStore {
     pub(crate) fn finalize_run_admission_sync(
         &self,
         lease: &RunAdmissionLease,
-        status: RunStatus,
-        output_preview: Option<String>,
+        terminal: RunTerminalProjection,
     ) -> SessionStoreResult<starweaver_session::RunRecord> {
-        if status.is_active() {
+        if terminal.status.is_active() {
             return Err(SessionStoreError::Conflict(
                 "run admission can only finalize to a non-active status".to_string(),
             ));
@@ -415,7 +421,7 @@ impl SqliteSessionStore {
             &lease.target.session_id,
         )?;
         if current.is_none() {
-            if run.status == status && run.output_preview == output_preview {
+            if terminal.matches(&run) {
                 transaction.commit().map_err(map_sqlite_session_error)?;
                 return Ok(run);
             }
@@ -429,8 +435,10 @@ impl SqliteSessionStore {
             Utc::now(),
         )?;
         if !run.status.is_terminal() {
-            run.status = status;
-            run.output_preview = output_preview;
+            terminal
+                .validate()
+                .map_err(|error| SessionStoreError::Conflict(error.to_string()))?;
+            terminal.apply_to(&mut run);
             run.updated_at = Utc::now();
             save_run_record(&transaction, &run)?;
             let mut session = load_session_record(&transaction, &lease.target.session_id)?;
@@ -747,7 +755,13 @@ pub(super) fn acquire_run_admission_in_transaction(
     };
     let generation = next_generation(transaction, &request.namespace_id, &request.run.session_id)?;
     let mut run = request.run;
-    run.status = RunStatus::Queued;
+    run.normalize_for_admission();
+    run.validate_new_write().map_err(|error| {
+        SessionStoreError::Failed(format!(
+            "invalid admitted run state for {}: {error}",
+            run.run_id.as_str()
+        ))
+    })?;
     run.updated_at = Utc::now();
     allocate_or_reuse_run_sequence(transaction, &mut run)?;
     save_run_record(transaction, &run)?;
@@ -1024,6 +1038,10 @@ fn terminalize_orphan(
         let effect_started = reconcile_hitl_source_for_orphan(transaction, &run, now)?;
         run.status = RunStatus::Cancelled;
         run.output_preview = Some("interrupted after host lease expired".to_string());
+        run.terminal_error = Some(RunTerminalError::new(
+            "admission_lease_expired",
+            "interrupted after host lease expired",
+        ));
         run.updated_at = now;
         if effect_started {
             ContinuationEffectState::indeterminate()
@@ -1077,6 +1095,10 @@ fn reconcile_hitl_source_for_orphan(
         HitlResumeClaimState::Started => {
             source.status = RunStatus::Cancelled;
             source.output_preview = Some("interrupted after host lease expired".to_string());
+            source.terminal_error = Some(RunTerminalError::new(
+                "admission_lease_expired",
+                "interrupted after host lease expired",
+            ));
             source.updated_at = now;
             ContinuationEffectState::indeterminate()
                 .insert_into(&mut source.metadata)

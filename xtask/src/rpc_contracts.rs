@@ -12,7 +12,7 @@ use std::{
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use crate::common::{root, run_command};
+use crate::common::{binary_name, root, run_command, target_dir};
 
 const CORPUS: &str = "crates/starweaver-rpc-core/tests/fixtures/contracts/rpc-wire-v1.json";
 const CATALOG: &str =
@@ -84,14 +84,25 @@ pub fn generate(args: &[String]) -> Result<(), String> {
 pub fn check(args: &[String]) -> Result<(), String> {
     let corpus = checked_corpus(args, "check-rpc-contracts")?;
     check_in_process_corpus()?;
-    check_wire_runtime(&corpus)?;
+    let repository = root()?;
+    let rpc = build_rpc_binary(&repository)?;
+    check_wire_runtime(&corpus, &rpc)?;
     println!("RPC v1 corpus validated through in-process, stdio, and loopback HTTP gates");
     Ok(())
 }
 
 pub fn check_transports(args: &[String]) -> Result<(), String> {
     let corpus = checked_corpus(args, "check-rpc-transports")?;
-    check_wire_runtime(&corpus)?;
+    let repository = root()?;
+    let rpc = build_rpc_binary(&repository)?;
+    check_wire_runtime(&corpus, &rpc)?;
+    println!("RPC v1 corpus validated through stdio and loopback HTTP gates");
+    Ok(())
+}
+
+pub fn check_transports_with_rpc(rpc: &Path) -> Result<(), String> {
+    let corpus = checked_corpus(&[], "check-rpc-integration")?;
+    check_wire_runtime(&corpus, rpc)?;
     println!("RPC v1 corpus validated through stdio and loopback HTTP gates");
     Ok(())
 }
@@ -331,27 +342,28 @@ fn check_in_process_corpus() -> Result<(), String> {
     ]))
 }
 
-fn check_wire_runtime(corpus: &Corpus) -> Result<(), String> {
-    let repository = root()?;
-    // `cargo build` still produces a normal executable without `cfg(test)`.
-    // Matching the test profile lets aggregate CI reuse preceding test artifacts.
-    run_command(Command::new("cargo").current_dir(&repository).args([
+fn build_rpc_binary(repository: &Path) -> Result<PathBuf, String> {
+    run_command(Command::new("cargo").current_dir(repository).args([
         "build",
         "-p",
         "starweaver-rpc",
         "--bin",
         "starweaver-rpc",
-        "--profile",
-        "test",
         "--locked",
     ]))?;
-    let rpc = target_dir(&repository)
+    let rpc = target_dir(repository)
         .join("debug")
         .join(binary_name("starweaver-rpc"));
     if !rpc.is_file() {
         return Err(format!("missing RPC contract binary: {}", rpc.display()));
     }
+    Ok(rpc)
+}
 
+fn check_wire_runtime(corpus: &Corpus, rpc: &Path) -> Result<(), String> {
+    if !rpc.is_file() {
+        return Err(format!("missing RPC contract binary: {}", rpc.display()));
+    }
     let temp = env::temp_dir().join(format!("starweaver-rpc-contracts-{}", std::process::id()));
     if temp.exists() {
         fs::remove_dir_all(&temp).map_err(|error| error.to_string())?;
@@ -370,14 +382,8 @@ fn check_wire_runtime(corpus: &Corpus) -> Result<(), String> {
     .map_err(|error| error.to_string())?;
 
     let result = (|| {
-        check_stdio_corpus(
-            corpus,
-            &rpc,
-            &workspace,
-            &config,
-            &temp.join("stdio.sqlite"),
-        )?;
-        check_http_corpus(corpus, &rpc, &workspace, &config, &temp.join("http.sqlite"))
+        check_stdio_corpus(corpus, rpc, &workspace, &config, &temp.join("stdio.sqlite"))?;
+        check_http_corpus(corpus, rpc, &workspace, &config, &temp.join("http.sqlite"))
     })();
     let _ = fs::remove_dir_all(&temp);
     result
@@ -693,24 +699,6 @@ fn http_rpc_request(
     }
     serde_json::from_str(body)
         .map_err(|error| format!("invalid RPC HTTP JSON response for {method}: {error}: {body}"))
-}
-
-fn target_dir(repository: &Path) -> PathBuf {
-    env::var_os("CARGO_TARGET_DIR").map_or_else(
-        || repository.join("target"),
-        |path| {
-            let path = PathBuf::from(path);
-            if path.is_absolute() {
-                path
-            } else {
-                repository.join(path)
-            }
-        },
-    )
-}
-
-fn binary_name(name: &str) -> String {
-    format!("{name}{}", env::consts::EXE_SUFFIX)
 }
 
 fn write_generated(path: &str, contents: &str) -> Result<(), String> {

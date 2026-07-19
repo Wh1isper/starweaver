@@ -1826,6 +1826,7 @@ mod tests {
                             approvals: Vec::new(),
                             deferred_tools: Vec::new(),
                             status: RunStatus::Completed,
+                            terminal_error: None,
                         },
                     )
                     .unwrap();
@@ -2005,6 +2006,7 @@ mod tests {
                         approvals: vec![approval],
                         deferred_tools: Vec::new(),
                         status: RunStatus::Waiting,
+                        terminal_error: None,
                     },
                 )
                 .unwrap();
@@ -2094,6 +2096,7 @@ mod tests {
                         approvals: Vec::new(),
                         deferred_tools: Vec::new(),
                         status: RunStatus::Completed,
+                        terminal_error: None,
                     },
                 )
                 .unwrap();

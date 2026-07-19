@@ -12,9 +12,10 @@ use starweaver_runtime::AgentStreamRecord;
 use starweaver_session::{
     AcquireRunAdmission, ApprovalRecord, ApprovalStatus, ContinuationPreparationMode,
     DeferredToolRecord, EnvironmentStateRef, ExecutionStatus, InputPart, LOCAL_SESSION_NAMESPACE,
-    PreparedContinuation, RelatedRunUpdate, RunAdmissionLease, RunRecord, RunStatus, SessionRecord,
-    SessionSearchError, SessionSearchPage, SessionSearchProvider, SessionSearchQuery,
-    SessionSearchScope, SessionStatus, SessionStore, SessionStoreError, StreamCursorRef,
+    PreparedContinuation, RelatedRunUpdate, RunAdmissionLease, RunRecord, RunStatus,
+    RunTerminalError, SessionRecord, SessionSearchError, SessionSearchPage, SessionSearchProvider,
+    SessionSearchQuery, SessionSearchScope, SessionStatus, SessionStore, SessionStoreError,
+    StreamCursorRef,
 };
 use starweaver_storage::{
     LocalSessionSearchProvider, LocalStoreImportReport, RunEvidenceCommit, SqliteStorage,
@@ -65,6 +66,8 @@ pub struct RunArtifacts {
     pub deferred_tools: Vec<DeferredToolRecord>,
     /// Terminal status selected by HITL and runtime policy.
     pub status: RunStatus,
+    /// Safe diagnostic when the selected terminal status failed or was cancelled.
+    pub terminal_error: Option<RunTerminalError>,
 }
 
 /// Session summary row.
@@ -387,7 +390,14 @@ impl LocalStore {
                     metadata: state.metadata.clone(),
                 });
         run.status = artifacts.status;
-        run.output_preview = Some(output);
+        run.terminal_error = artifacts.terminal_error.or_else(|| {
+            (run.status == RunStatus::Failed)
+                .then(|| RunTerminalError::new("cli_run_failed", output.clone()))
+        });
+        run.output_preview = match run.status {
+            RunStatus::Failed | RunStatus::Cancelled => None,
+            _ => Some(output),
+        };
         run.updated_at = Utc::now();
         run.environment_state.clone_from(&environment_ref);
         run.stream_cursors = raw_cursor.into_iter().chain(display_cursor).collect();
@@ -469,7 +479,8 @@ impl LocalStore {
     ) -> CliResult<()> {
         let session = self.load_session(run.session_id.as_str())?;
         run.status = RunStatus::Failed;
-        run.output_preview = Some(message);
+        run.output_preview = None;
+        run.terminal_error = Some(RunTerminalError::new("cli_run_failed", message));
         run.updated_at = Utc::now();
         let mut state = session.state;
         state.run_id = Some(run.run_id.clone());
@@ -892,6 +903,11 @@ fn attach_hitl_resume_update(
                 source_status,
             );
             update.resume_claim_id = Some(claim_id.to_string());
+            update.terminal_error = (source_status == RunStatus::Failed).then(|| {
+                run.terminal_error.clone().unwrap_or_else(|| {
+                    RunTerminalError::new("cli_continuation_failed", "continuation failed")
+                })
+            });
             commit.related_run_updates.push(update);
             Ok(())
         }

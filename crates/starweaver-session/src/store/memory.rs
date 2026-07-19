@@ -34,8 +34,8 @@ use crate::{
     evidence::RunEvidenceCommit,
     publication::{PendingStreamPublication, StreamPublicationTarget},
     records::{
-        EnvironmentStateRef, ExecutionStatus, RunRecord, RunStatus, SessionRecord, SessionStatus,
-        StreamCursorRef,
+        EnvironmentStateRef, ExecutionStatus, RunRecord, RunStatus, RunTerminalError,
+        RunTerminalProjection, SessionRecord, SessionStatus, StreamCursorRef,
     },
     resume::SessionResumeSnapshot,
     trace::{CompactRunTrace, CompactSessionTrace},
@@ -129,6 +129,23 @@ const fn checkpoint_run_status(status: RunLifecycle) -> RunStatus {
     }
 }
 
+fn checkpoint_terminal_error(status: RunLifecycle) -> Option<RunTerminalError> {
+    match status {
+        RunLifecycle::Failed => Some(RunTerminalError::new(
+            "checkpoint_run_failed",
+            "run failed while checkpointing",
+        )),
+        RunLifecycle::Cancelled => Some(RunTerminalError::new(
+            "checkpoint_run_cancelled",
+            "run was cancelled while checkpointing",
+        )),
+        RunLifecycle::Starting
+        | RunLifecycle::Running
+        | RunLifecycle::Waiting
+        | RunLifecycle::Completed => None,
+    }
+}
+
 fn validate_deferred_transition(
     existing: &DeferredToolRecord,
     resolved: &DeferredToolRecord,
@@ -202,6 +219,7 @@ fn apply_run_status_locked(
     run_id: &RunId,
     status: RunStatus,
     output_preview: Option<String>,
+    terminal_error: Option<RunTerminalError>,
     updated_at: chrono::DateTime<chrono::Utc>,
 ) -> SessionStoreResult<RunRecord> {
     let key = run_key(session_id, run_id);
@@ -211,6 +229,7 @@ fn apply_run_status_locked(
         .ok_or_else(|| SessionStoreError::NotFound(run_key_label(session_id, run_id)))?;
     run.status = status;
     run.output_preview = output_preview;
+    run.terminal_error = terminal_error;
     run.updated_at = updated_at;
     let result = run.clone();
     if let Some(session) = inner.sessions.get_mut(session_id) {
@@ -274,6 +293,10 @@ fn terminalize_started_hitl_source_locked(
         })?;
         source.status = RunStatus::Cancelled;
         source.output_preview = Some("interrupted after host lease expired".to_string());
+        source.terminal_error = Some(RunTerminalError::new(
+            "admission_lease_expired",
+            "interrupted after host lease expired",
+        ));
         source.updated_at = now;
         ContinuationEffectState::indeterminate()
             .insert_into(&mut source.metadata)
@@ -430,6 +453,7 @@ fn apply_related_evidence(
             &update.run_id,
             update.status,
             update.output_preview.clone(),
+            update.terminal_error.clone(),
         )?;
         for approval in update.approvals.clone() {
             staged.append_approval_record(approval)?;
@@ -581,6 +605,10 @@ fn acquire_run_admission_locked(
             })?;
             run.status = RunStatus::Cancelled;
             run.output_preview = Some("interrupted after host lease expired".to_string());
+            run.terminal_error = Some(RunTerminalError::new(
+                "admission_lease_expired",
+                "interrupted after host lease expired",
+            ));
             run.updated_at = now;
             if effect_started {
                 ContinuationEffectState::indeterminate()
@@ -673,7 +701,13 @@ fn acquire_run_admission_locked(
         claim.state = HitlResumeClaimState::Admitted;
     }
     let mut run = request.run;
-    run.status = RunStatus::Queued;
+    run.normalize_for_admission();
+    run.validate_new_write().map_err(|error| {
+        SessionStoreError::Failed(format!(
+            "invalid admitted run state for {}: {error}",
+            run.run_id.as_str()
+        ))
+    })?;
     if run.sequence_no == 0 {
         run.sequence_no = inner
             .runs
@@ -1165,13 +1199,14 @@ impl SessionStore for InMemorySessionStore {
         mut commit: RunEvidenceCommit,
     ) -> SessionStoreResult<RunRecord> {
         commit.run.stream_cursors.clone_from(&commit.stream_cursors);
-        commit.validate()?;
+        commit.validate_structure()?;
         let digest = commit.digest()?;
         let key = run_key(&commit.run.session_id, &commit.run.run_id);
         let mut original = self.inner.lock().map_err(store_failed)?;
         if let Some(existing) = resolve_evidence_retry(&original, &key, &commit, &digest)? {
             return Ok(existing);
         }
+        commit.validate_terminal_projections()?;
         validate_existing_evidence(&original, &key, &commit)?;
         let staged = Self {
             inner: Arc::new(Mutex::new(original.clone())),
@@ -1197,13 +1232,14 @@ impl SessionStore for InMemorySessionStore {
             ));
         }
         commit.run.stream_cursors.clone_from(&commit.stream_cursors);
-        commit.validate()?;
+        commit.validate_structure()?;
         let digest = commit.digest()?;
         let key = run_key(&commit.run.session_id, &commit.run.run_id);
         let mut original = self.inner.lock().map_err(store_failed)?;
         if let Some(existing) = resolve_evidence_retry(&original, &key, &commit, &digest)? {
             return Ok(existing);
         }
+        commit.validate_terminal_projections()?;
         ensure_active_admission_locked(&original, lease, chrono::Utc::now())?;
         validate_existing_evidence(&original, &key, &commit)?;
         let staged = Self {
@@ -1279,6 +1315,7 @@ impl SessionStore for InMemorySessionStore {
                 checkpoint.conversation_id.clone(),
             );
             run.status = checkpoint_run_status(checkpoint.resume.status);
+            run.terminal_error = checkpoint_terminal_error(checkpoint.resume.status);
             run.trace_context = checkpoint.resume.trace_context.clone();
             run.parent_run_id
                 .clone_from(&checkpoint.state.parent_run_id);
@@ -1341,6 +1378,7 @@ impl SessionStore for InMemorySessionStore {
                 checkpoint.conversation_id.clone(),
             );
             run.status = checkpoint_run_status(checkpoint.resume.status);
+            run.terminal_error = checkpoint_terminal_error(checkpoint.resume.status);
             run.trace_context = checkpoint.resume.trace_context.clone();
             run.parent_run_id
                 .clone_from(&checkpoint.state.parent_run_id);
@@ -1502,6 +1540,10 @@ impl SessionStore for InMemorySessionStore {
             &lease.target.run_id,
             RunStatus::Failed,
             Some(output_preview.to_string()),
+            Some(RunTerminalError::new(
+                "hitl_resume_preparation_failed",
+                output_preview,
+            )),
             chrono::Utc::now(),
         )?;
         let consumed = inner.hitl_resume_claims.remove(&source_key);
@@ -1944,6 +1986,11 @@ impl SessionStore for InMemorySessionStore {
         status: RunStatus,
         output_preview: Option<String>,
     ) -> SessionStoreResult<RunRecord> {
+        if !status.is_active() {
+            return Err(SessionStoreError::Conflict(
+                "fenced status updates are non-terminal; use finalize_run_admission".to_string(),
+            ));
+        }
         let mut inner = self.inner.lock().map_err(store_failed)?;
         ensure_active_admission_locked(&inner, lease, chrono::Utc::now())?;
         apply_run_status_locked(
@@ -1952,6 +1999,7 @@ impl SessionStore for InMemorySessionStore {
             &lease.target.run_id,
             status,
             output_preview,
+            None,
             chrono::Utc::now(),
         )
     }
@@ -1959,10 +2007,9 @@ impl SessionStore for InMemorySessionStore {
     async fn finalize_run_admission(
         &self,
         lease: &RunAdmissionLease,
-        status: RunStatus,
-        output_preview: Option<String>,
+        terminal: RunTerminalProjection,
     ) -> SessionStoreResult<RunRecord> {
-        if status.is_active() {
+        if terminal.status.is_active() {
             return Err(SessionStoreError::Conflict(
                 "run admission can only finalize to a non-active status".to_string(),
             ));
@@ -1983,7 +2030,7 @@ impl SessionStore for InMemorySessionStore {
                         &lease.target.run_id,
                     ))
                 })?;
-            if run.status == status && run.output_preview == output_preview {
+            if terminal.matches(&run) {
                 return Ok(run);
             }
             return Err(SessionStoreError::Conflict(
@@ -2004,12 +2051,16 @@ impl SessionStore for InMemorySessionStore {
             // process-local fallback outcome.
             committed
         } else {
+            terminal
+                .validate()
+                .map_err(|error| SessionStoreError::Conflict(error.to_string()))?;
             apply_run_status_locked(
                 &mut inner,
                 &lease.target.session_id,
                 &lease.target.run_id,
-                status,
-                output_preview,
+                terminal.status,
+                terminal.output_preview,
+                terminal.error,
                 chrono::Utc::now(),
             )?
         };
@@ -2060,6 +2111,10 @@ impl SessionStore for InMemorySessionStore {
                 })?;
                 run.status = RunStatus::Cancelled;
                 run.output_preview = Some("interrupted after host lease expired".to_string());
+                run.terminal_error = Some(RunTerminalError::new(
+                    "admission_lease_expired",
+                    "interrupted after host lease expired",
+                ));
                 run.updated_at = now;
                 if effect_started {
                     ContinuationEffectState::indeterminate()
@@ -2898,7 +2953,7 @@ impl SessionStore for InMemorySessionStore {
         status: RunStatus,
         output_preview: Option<String>,
     ) -> SessionStoreResult<()> {
-        self.set_run_status(session_id, run_id, status, output_preview)
+        self.set_legacy_run_status(session_id, run_id, status, output_preview)
     }
 
     async fn append_checkpoint(

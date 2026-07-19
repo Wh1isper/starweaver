@@ -36,8 +36,9 @@ use starweaver_session::{
     ContinuationEffectState, DurableBackgroundSubagentDeliveryStatus,
     DurableBackgroundSubagentRetentionStatus, DurableControlReceipt, HitlResumeAbortOutcome,
     HitlResumeClaim, InputPart, LOCAL_SESSION_NAMESPACE, ManagedRunTarget, PreparedContinuation,
-    RunAdmissionLease, RunAdmissionReceipt, RunRecord, RunStatus, SessionDeletionFence,
-    SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError,
+    RunAdmissionLease, RunAdmissionReceipt, RunRecord, RunStatus, RunTerminalError,
+    RunTerminalProjection, SessionDeletionFence, SessionResumeSnapshot, SessionStatus,
+    SessionStore, SessionStoreError,
 };
 use starweaver_storage::{DurableReplaySource, SqliteStorage};
 use starweaver_stream::{
@@ -764,11 +765,7 @@ impl RpcRuntimeCoordinator {
                 Ok(HitlResumeAbortOutcome::AbortedBeforeEffect) => {}
                 Ok(HitlResumeAbortOutcome::EffectStarted) => {
                     if let Err(persist_error) = self
-                        .persist_started_hitl_launch_failure(
-                            &admission,
-                            &launch,
-                            "runtime preparation failed",
-                        )
+                        .persist_started_hitl_launch_failure(&admission, &launch)
                         .await
                     {
                         return Err(RpcHostError::Runtime(format!(
@@ -787,11 +784,7 @@ impl RpcRuntimeCoordinator {
                 .await?;
         }
         if let Err(finalize_error) = store
-            .finalize_run_admission(
-                &admission.lease,
-                durable.status,
-                durable.output_preview.clone(),
-            )
+            .finalize_run_admission(&admission.lease, terminal_projection_from_record(&durable)?)
             .await
         {
             return Err(RpcHostError::Runtime(format!(
@@ -805,11 +798,14 @@ impl RpcRuntimeCoordinator {
         &self,
         admission: &RunAdmissionReceipt,
         launch: &HitlLaunch,
-        message: &str,
     ) -> RpcHostResult<()> {
         let mut run = admission.run.clone();
         run.status = RunStatus::Failed;
-        run.output_preview = Some(message.to_string());
+        run.output_preview = None;
+        run.terminal_error = Some(RunTerminalError::new(
+            "continuation_launch_failed",
+            "continuation launch failed",
+        ));
         run.updated_at = chrono::Utc::now();
         let mut state = launch.snapshot.state.clone();
         state.session_id = Some(run.session_id.clone());
@@ -828,7 +824,11 @@ impl RpcRuntimeCoordinator {
             RunStatus::Failed,
         );
         source_update.resume_claim_id = Some(launch.claim_id.clone());
-        source_update.output_preview = Some("continuation launch failed".to_string());
+        source_update.output_preview = None;
+        source_update.terminal_error = Some(RunTerminalError::new(
+            "continuation_launch_failed",
+            "continuation launch failed",
+        ));
         source_update
             .approvals
             .clone_from(&launch.snapshot.approvals);
@@ -847,21 +847,22 @@ impl RpcRuntimeCoordinator {
     async fn finalize_preworker_failure(
         &self,
         admission: &RunAdmissionReceipt,
+        code: &str,
         fallback: &str,
     ) -> RpcHostResult<RunRecord> {
         let store = self.storage.session_store();
         let durable = store
             .load_run(&admission.run.session_id, &admission.run.run_id)
             .await?;
-        let (status, output_preview) = if durable.status.is_terminal() {
+        let terminal = if durable.status.is_terminal() {
             // Stream draining commits complete evidence before admission release. That durable
             // result is authoritative even when the surrounding startup path also failed.
-            (durable.status, durable.output_preview)
+            terminal_projection_from_record(&durable)?
         } else {
-            (RunStatus::Failed, Some(fallback.to_string()))
+            RunTerminalProjection::failed(RunTerminalError::new(code, fallback))
         };
         Ok(store
-            .finalize_run_admission(&admission.lease, status, output_preview)
+            .finalize_run_admission(&admission.lease, terminal)
             .await?)
     }
 
@@ -869,7 +870,6 @@ impl RpcRuntimeCoordinator {
         &self,
         admission: &RunAdmissionReceipt,
         launch: &HitlLaunch,
-        fallback: &str,
     ) -> RpcHostResult<RunRecord> {
         let store = self.storage.session_store();
         let durable = store
@@ -878,7 +878,7 @@ impl RpcRuntimeCoordinator {
         if durable.status.is_terminal() {
             return Ok(durable);
         }
-        self.persist_started_hitl_launch_failure(admission, launch, fallback)
+        self.persist_started_hitl_launch_failure(admission, launch)
             .await?;
         let durable = store
             .load_run(&admission.run.session_id, &admission.run.run_id)
@@ -1270,8 +1270,10 @@ impl RpcRuntimeCoordinator {
                         .session_store()
                         .finalize_run_admission(
                             &admission.lease,
-                            RunStatus::Failed,
-                            Some("runtime preparation failed".to_string()),
+                            RunTerminalProjection::failed(RunTerminalError::new(
+                                "runtime_preparation_failed",
+                                "runtime preparation failed",
+                            )),
                         )
                         .await;
                     return Err(error);
@@ -1307,7 +1309,11 @@ impl RpcRuntimeCoordinator {
                 )));
             }
             let cleanup = self
-                .finalize_preworker_failure(&admission, "environment lease registration failed")
+                .finalize_preworker_failure(
+                    &admission,
+                    "environment_lease_registration_failed",
+                    "environment lease registration failed",
+                )
                 .await;
             if let Err(cleanup_error) = cleanup {
                 return Err(RpcHostError::Runtime(format!(
@@ -1384,7 +1390,11 @@ impl RpcRuntimeCoordinator {
                 )));
             }
             let cleanup = self
-                .finalize_preworker_failure(&admission, "durable running transition failed")
+                .finalize_preworker_failure(
+                    &admission,
+                    "durable_running_transition_failed",
+                    "durable running transition failed",
+                )
                 .await;
             let primary: RpcHostError = error.into();
             if let Err(cleanup_error) = cleanup {
@@ -1468,7 +1478,7 @@ impl RpcRuntimeCoordinator {
                 .lock()
                 .ok()
                 .and_then(|registry| registry.get(&worker_target)?.replay_error.clone());
-            if let Some(replay_error) = replay_error {
+            if replay_error.is_some() {
                 let hitl_evidence_error = if let Some(launch) = worker_hitl_launch.as_ref() {
                     let _ = runtime
                         .finish_hitl_stream(
@@ -1480,26 +1490,24 @@ impl RpcRuntimeCoordinator {
                         )
                         .await;
                     completion_coordinator
-                        .ensure_started_hitl_terminal_evidence(
-                            &worker_admission,
-                            launch,
-                            "live replay persistence failed",
-                        )
+                        .ensure_started_hitl_terminal_evidence(&worker_admission, launch)
                         .await
                         .err()
                 } else {
                     let _ = handle.complete().await;
                     None
                 };
-                let message = format!("live replay persistence failed: {replay_error}");
+                let message = "live replay persistence failed".to_string();
                 let terminal_durable = if hitl_evidence_error.is_some() {
                     false
                 } else {
                     store
                         .finalize_run_admission(
                             &worker_lease,
-                            RunStatus::Failed,
-                            Some(message.clone()),
+                            RunTerminalProjection::failed(RunTerminalError::new(
+                                "replay_persistence_failed",
+                                message.clone(),
+                            )),
                         )
                         .await
                         .is_ok()
@@ -1512,22 +1520,21 @@ impl RpcRuntimeCoordinator {
                     error: Some(message.clone()),
                     continuation_effect: None,
                 };
-                if let Some(hitl_error) = hitl_evidence_error {
-                    final_status.error = Some(format!(
-                        "{message}; atomic HITL terminal evidence requires reconciliation: {hitl_error}"
-                    ));
+                if hitl_evidence_error.is_some() {
+                    final_status.error =
+                        Some("atomic HITL terminal evidence requires reconciliation".to_string());
                 } else if !terminal_durable {
                     final_status.error = Some(
                         "failed to persist replay failure as the terminal durable status"
                             .to_string(),
                     );
                 }
-                if let Err(delivery_error) =
-                    finalize_parent_deliveries_with_retry(&worker_supervisor, &worker_run_id, false)
-                        .await
+                if finalize_parent_deliveries_with_retry(&worker_supervisor, &worker_run_id, false)
+                    .await
+                    .is_err()
                 {
                     final_status.error.get_or_insert_with(|| {
-                        format!("failed to roll back background result delivery: {delivery_error}")
+                        "failed to roll back background result delivery".to_string()
                     });
                 }
                 worker_supervisor.end_parent_run(&worker_run_id);
@@ -1536,11 +1543,13 @@ impl RpcRuntimeCoordinator {
                 {
                     let _ = active_run.status_tx.send(final_status.clone());
                 }
-                if let Err(cleanup) = environment_manager.mark_run_finished(worker_run_id.as_str())
+                if environment_manager
+                    .mark_run_finished(worker_run_id.as_str())
+                    .is_err()
                 {
-                    final_status.error.get_or_insert_with(|| {
-                        format!("environment lease cleanup failed: {}", cleanup.message)
-                    });
+                    final_status
+                        .error
+                        .get_or_insert_with(|| "environment lease cleanup failed".to_string());
                 }
                 let removed = active
                     .lock()
@@ -1578,11 +1587,7 @@ impl RpcRuntimeCoordinator {
             };
             let hitl_evidence_error = if let Some(launch) = worker_hitl_launch.as_ref() {
                 completion_coordinator
-                    .ensure_started_hitl_terminal_evidence(
-                        &worker_admission,
-                        launch,
-                        "continuation completion persistence failed",
-                    )
+                    .ensure_started_hitl_terminal_evidence(&worker_admission, launch)
                     .await
                     .err()
             } else {
@@ -1605,7 +1610,7 @@ impl RpcRuntimeCoordinator {
                             RunStatus::Failed
                         },
                         None,
-                        Some(error.to_string()),
+                        Some(error.public_message()),
                     )
                 }
             };
@@ -1623,75 +1628,86 @@ impl RpcRuntimeCoordinator {
                         .unwrap_or_else(|| "agent run failed".to_string()),
                 },
             };
+            let terminal_error = error.as_ref().map(|message| {
+                RunTerminalError::new(
+                    if durable_status == RunStatus::Cancelled {
+                        "agent_cancelled"
+                    } else {
+                        "agent_failed"
+                    },
+                    message.clone(),
+                )
+            });
+            let finalized_terminal = RunTerminalProjection {
+                status: durable_status,
+                output_preview: output_preview.clone(),
+                error: terminal_error,
+            };
             let mut final_status = RpcRunStatus {
                 session_id: worker_session_id.as_str().to_string(),
                 run_id: worker_run_id.as_str().to_string(),
                 status,
                 output_preview: output_preview.clone(),
-                error,
+                error: error.clone(),
                 continuation_effect: None,
             };
-            if let Some(hitl_error) = hitl_evidence_error.as_ref() {
+            if hitl_evidence_error.is_some() {
                 final_status.status = "failed".to_string();
-                final_status.error = Some(format!(
-                    "atomic HITL terminal evidence requires reconciliation: {hitl_error}"
-                ));
+                final_status.error =
+                    Some("atomic HITL terminal evidence requires reconciliation".to_string());
             }
-            let finalized_status = durable_status;
-            let finalized_output = output_preview;
-            if let Err(persist_error) =
-                publish_committed_terminal_events(&active, &replay_log, &worker_target, marker)
-                    .await
+            if publish_committed_terminal_events(&active, &replay_log, &worker_target, marker)
+                .await
+                .is_err()
             {
                 final_status.error.get_or_insert_with(|| {
-                    format!("failed to load committed terminal replay events: {persist_error}")
+                    "failed to load committed terminal replay events".to_string()
                 });
             }
             let terminal_durable = if hitl_evidence_error.is_some() {
                 false
             } else {
                 match store
-                    .finalize_run_admission(&worker_lease, finalized_status, finalized_output)
+                    .finalize_run_admission(&worker_lease, finalized_terminal.clone())
                     .await
                 {
                     Ok(_) => true,
-                    Err(finalize_error) => {
+                    Err(_finalize_error) => {
                         // `finish_stream` commits terminal evidence before admission release. If that
                         // evidence is present, it remains authoritative; lease cleanup is recovered by
                         // reconciliation and must not rewrite a completed run as process-local failed.
                         match store.load_run(&worker_session_id, &worker_run_id).await {
                             Ok(run)
-                                if run.status == finalized_status && run.status.is_terminal() =>
+                                if run.status == finalized_terminal.status
+                                    && run.status.is_terminal() =>
                             {
                                 final_status.error.get_or_insert_with(|| {
-                                format!(
-                                    "terminal evidence committed but admission release requires reconciliation: {finalize_error}"
-                                )
-                            });
+                                    "terminal evidence committed but admission release requires reconciliation"
+                                        .to_string()
+                                });
                                 true
                             }
                             _ => {
                                 final_status.status = "failed".to_string();
                                 final_status.error.get_or_insert_with(|| {
-                                format!(
-                                    "failed to persist terminal durable run status: {finalize_error}"
-                                )
-                            });
+                                    "failed to persist terminal durable run status".to_string()
+                                });
                                 false
                             }
                         }
                     }
                 }
             };
-            if let Err(delivery_error) = finalize_parent_deliveries_with_retry(
+            if finalize_parent_deliveries_with_retry(
                 &worker_supervisor,
                 &worker_run_id,
-                terminal_durable && finalized_status == RunStatus::Completed,
+                terminal_durable && finalized_terminal.status == RunStatus::Completed,
             )
             .await
+            .is_err()
             {
                 final_status.error.get_or_insert_with(|| {
-                    format!("failed to finalize background result delivery: {delivery_error}")
+                    "failed to finalize background result delivery".to_string()
                 });
             }
             worker_supervisor.end_parent_run(&worker_run_id);
@@ -1700,10 +1716,13 @@ impl RpcRuntimeCoordinator {
             {
                 let _ = active_run.status_tx.send(final_status.clone());
             }
-            if let Err(cleanup) = environment_manager.mark_run_finished(worker_run_id.as_str()) {
-                final_status.error.get_or_insert_with(|| {
-                    format!("environment lease cleanup failed: {}", cleanup.message)
-                });
+            if environment_manager
+                .mark_run_finished(worker_run_id.as_str())
+                .is_err()
+            {
+                final_status
+                    .error
+                    .get_or_insert_with(|| "environment lease cleanup failed".to_string());
             }
             let removed = active
                 .lock()
@@ -1833,28 +1852,16 @@ impl RpcRuntimeCoordinator {
         Ok(status_from_record(&durable))
     }
 
-    fn durable_terminal_status(
-        durable: &RunRecord,
-        local_terminal: Option<&RpcRunStatus>,
-    ) -> RpcRunStatus {
-        let mut status = status_from_record(durable);
-        // The durable record is authoritative for the terminal outcome. When the matching local
-        // worker supplied a diagnostic before its final transaction committed, retain that
-        // diagnostic without allowing it to choose or override the durable terminal state.
-        if let Some(local) = local_terminal
-            && local.status == status.status
-            && status.error.is_none()
-        {
-            status.error.clone_from(&local.error);
-        }
-        status
+    fn durable_terminal_status(durable: &RunRecord) -> RpcRunStatus {
+        // Terminal status, output, and diagnostics share one durable source of truth. Local watch
+        // state remains a latency optimization and must not change a terminal RPC projection.
+        status_from_record(durable)
     }
 
     async fn await_durable_terminal(
         &self,
         session_id: &SessionId,
         run_id: &RunId,
-        local_terminal: Option<RpcRunStatus>,
     ) -> RpcHostResult<RpcRunStatus> {
         loop {
             let durable = self
@@ -1863,10 +1870,7 @@ impl RpcRuntimeCoordinator {
                 .load_run(session_id, run_id)
                 .await?;
             if durable.status.is_terminal() {
-                return Ok(Self::durable_terminal_status(
-                    &durable,
-                    local_terminal.as_ref(),
-                ));
+                return Ok(Self::durable_terminal_status(&durable));
             }
             tokio::time::sleep(DURABLE_TERMINAL_POLL_INTERVAL).await;
         }
@@ -1895,7 +1899,7 @@ impl RpcRuntimeCoordinator {
                 // A remote owner or a restarted host has no process-local watch channel. It must
                 // still honor the `run.await` terminal-only contract, so read durable evidence
                 // until terminal rather than returning a queued/running status.
-                return self.await_durable_terminal(session_id, run_id, None).await;
+                return self.await_durable_terminal(session_id, run_id).await;
             };
             // A foreign host or inline lease reconciliation can terminalize durable evidence
             // without publishing to this process-local watch channel. Poll independently from the
@@ -1914,11 +1918,9 @@ impl RpcRuntimeCoordinator {
                         .load_run(session_id, run_id)
                         .await?;
                     if durable.status.is_terminal() {
-                        return Ok(Self::durable_terminal_status(&durable, Some(&status)));
+                        return Ok(Self::durable_terminal_status(&durable));
                     }
-                    return self
-                        .await_durable_terminal(session_id, run_id, Some(status))
-                        .await;
+                    return self.await_durable_terminal(session_id, run_id).await;
                 }
                 tokio::select! {
                     changed = receiver.changed() => {
@@ -1927,7 +1929,7 @@ impl RpcRuntimeCoordinator {
                             // reconciliation commits. Once the sender closes, preserve await's
                             // terminal-only contract by following durable evidence instead of the
                             // general-purpose status projection.
-                            return self.await_durable_terminal(session_id, run_id, None).await;
+                            return self.await_durable_terminal(session_id, run_id).await;
                         }
                     }
                     _ = durable_poll.tick() => {
@@ -3842,13 +3844,25 @@ fn recorded_environment_attachments(run: &RunRecord) -> Vec<EnvironmentAttachmen
     safe_rpc_environment_attachments(&recorded)
 }
 
+fn terminal_projection_from_record(run: &RunRecord) -> RpcHostResult<RunTerminalProjection> {
+    run.terminal_projection().ok_or_else(|| {
+        RpcHostError::Runtime(format!(
+            "run {} has no terminal projection",
+            run.run_id.as_str()
+        ))
+    })
+}
+
 fn status_from_record(run: &RunRecord) -> RpcRunStatus {
     RpcRunStatus {
         session_id: run.session_id.as_str().to_string(),
         run_id: run.run_id.as_str().to_string(),
         status: durable_run_status_name(run.status).to_string(),
         output_preview: run.output_preview.clone(),
-        error: None,
+        error: run
+            .terminal_error
+            .as_ref()
+            .map(|error| error.message.clone()),
         continuation_effect: ContinuationEffectState::from_metadata(&run.metadata)
             .ok()
             .flatten(),
@@ -4137,8 +4151,14 @@ mod tests {
             .session_store()
             .finalize_run_admission(
                 &lease,
-                RunStatus::Cancelled,
-                Some("reconciled by another host".to_string()),
+                RunTerminalProjection {
+                    status: RunStatus::Cancelled,
+                    output_preview: Some("reconciled by another host".to_string()),
+                    error: Some(RunTerminalError::new(
+                        "foreign_host_reconciled",
+                        "reconciled by another host",
+                    )),
+                },
             )
             .await
             .unwrap();
@@ -4218,8 +4238,14 @@ mod tests {
             .session_store()
             .finalize_run_admission(
                 &admission.lease,
-                RunStatus::Cancelled,
-                Some("foreign host completed cancellation".to_string()),
+                RunTerminalProjection {
+                    status: RunStatus::Cancelled,
+                    output_preview: Some("foreign host completed cancellation".to_string()),
+                    error: Some(RunTerminalError::new(
+                        "foreign_host_cancelled",
+                        "foreign host completed cancellation",
+                    )),
+                },
             )
             .await
             .unwrap();
@@ -6238,11 +6264,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status.status, "failed", "{status:?}");
+        assert_eq!(
+            status.error.as_deref(),
+            Some("live replay persistence failed")
+        );
         assert!(
-            status
+            !status
                 .error
                 .as_deref()
-                .is_some_and(|error| error.contains("replay")),
+                .unwrap_or_default()
+                .contains("injected RPC replay append failure"),
             "{status:?}"
         );
         assert!(
@@ -6259,6 +6290,29 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(durable.status, RunStatus::Failed);
+        assert_eq!(
+            durable
+                .terminal_error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("replay_persistence_failed")
+        );
+        assert_eq!(
+            durable
+                .terminal_error
+                .as_ref()
+                .map(|error| error.message.as_str()),
+            Some("live replay persistence failed")
+        );
+        assert!(
+            !durable
+                .terminal_error
+                .as_ref()
+                .is_some_and(|error| error.message.contains("injected RPC replay append failure")),
+            "durable diagnostics must not expose storage internals: {:?}",
+            durable.terminal_error
+        );
+        assert_eq!(durable.output_preview, None);
 
         coordinator.shutdown(Duration::from_secs(5)).await.unwrap();
         drop(coordinator);
@@ -6283,6 +6337,21 @@ mod tests {
                 .is_empty(),
             "restart must not reveal a cursor that was never durably appended"
         );
+        let reopened_status = reopened
+            .status(&started.session_id, &started.run_id)
+            .await
+            .unwrap();
+        let reopened_await = reopened
+            .await_terminal(
+                &started.session_id,
+                &started.run_id,
+                Some(Duration::from_millis(500)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reopened_status.status, "failed");
+        assert_eq!(reopened_status.error, status.error);
+        assert_eq!(reopened_await.error, status.error);
     }
 
     #[tokio::test]

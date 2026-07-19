@@ -59,7 +59,8 @@ pub use publication::{
 };
 pub use records::{
     CheckpointRef, DurableRunStatus, EnvironmentStateRef, ExecutionStatus, QueuedRunStatus,
-    RunRecord, RunStatus, SessionRecord, SessionStatus, StreamCursorRef, StreamCursorRefError,
+    RunRecord, RunStatus, RunTerminalError, RunTerminalProjection, RunTerminalProjectionError,
+    SessionRecord, SessionStatus, StreamCursorRef, StreamCursorRefError,
 };
 pub use resume::SessionResumeSnapshot;
 pub use search::{

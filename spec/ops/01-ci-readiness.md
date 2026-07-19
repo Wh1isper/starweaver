@@ -34,8 +34,7 @@ cargo check --workspace --all-targets --all-features --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test -p starweaver-model --test fixture_schema --test replay --test replay_tooling --test request_parameters --test stream_replay --locked
 cargo test --workspace --all-targets --all-features --locked
-make rpc-transports-check
-make rpc-interop-e2e
+make rpc-integration-check
 make coverage-ci
 make scripts-check
 make docs-check
@@ -54,6 +53,7 @@ Focused gates:
 make replay-check
 make coverage-ci
 make rpc-contracts-check
+make rpc-integration-check
 make rpc-interop-e2e
 make scripts-check
 make docs-check

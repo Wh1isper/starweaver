@@ -622,6 +622,7 @@ fn hitl_resume_preflight_rejects_invalid_evidence_before_claim_or_run_allocation
                     approvals: Vec::new(),
                     deferred_tools: Vec::new(),
                     status: RunStatus::Completed,
+                    terminal_error: None,
                 },
             )
             .unwrap();
@@ -643,6 +644,7 @@ fn hitl_resume_preflight_rejects_invalid_evidence_before_claim_or_run_allocation
                     approvals: Vec::new(),
                     deferred_tools: Vec::new(),
                     status: RunStatus::Waiting,
+                    terminal_error: None,
                 },
             )
             .unwrap();
@@ -745,6 +747,7 @@ fn hitl_resume_preflight_reconciles_expired_started_orphan_before_new_claim() {
                     approvals: Vec::new(),
                     deferred_tools: Vec::new(),
                     status: RunStatus::Waiting,
+                    terminal_error: None,
                 },
             )
             .unwrap();
@@ -884,6 +887,7 @@ fn resume_terminal_head_continues_without_hitl_claim_or_orphan_run() {
                     approvals: Vec::new(),
                     deferred_tools: Vec::new(),
                     status: RunStatus::Completed,
+                    terminal_error: None,
                 },
             )
             .unwrap();
@@ -947,6 +951,7 @@ fn hitl_resume_claim_allows_only_one_continuation_and_consumes_source_atomically
                 approvals: Vec::new(),
                 deferred_tools: Vec::new(),
                 status: RunStatus::Waiting,
+                terminal_error: None,
             },
         )
         .unwrap();
@@ -1015,6 +1020,7 @@ fn hitl_resume_claim_allows_only_one_continuation_and_consumes_source_atomically
                 approvals: Vec::new(),
                 deferred_tools: Vec::new(),
                 status: RunStatus::Completed,
+                terminal_error: None,
             },
             &admission,
         )
@@ -1089,12 +1095,21 @@ fn failed_run_complete_persists_restore_state_for_continuation() {
                 approvals: Vec::new(),
                 deferred_tools: Vec::new(),
                 status: RunStatus::Failed,
+                terminal_error: None,
             },
         )
         .unwrap();
 
     let saved_run = store.load_run(&session_id, run.run_id.as_str()).unwrap();
     assert_eq!(saved_run.status, RunStatus::Failed);
+    assert_eq!(saved_run.output_preview, None);
+    assert_eq!(
+        saved_run
+            .terminal_error
+            .as_ref()
+            .map(|error| error.message.as_str()),
+        Some("step limit exceeded after 1 steps")
+    );
     let saved_session = store.load_session(&session_id).unwrap();
     assert_eq!(saved_session.head_run_id.as_ref(), Some(&run.run_id));
     assert_eq!(saved_session.active_run_id, None);
@@ -1149,6 +1164,7 @@ fn compatibility_mirror_failure_does_not_reclassify_canonical_completion() {
                 approvals: Vec::new(),
                 deferred_tools: Vec::new(),
                 status: RunStatus::Completed,
+                terminal_error: None,
             },
         )
         .expect("canonical completion must not fail with its optional mirror");
@@ -1208,6 +1224,7 @@ fn complete_run_stores_source_attributed_display_messages_under_parent_run() {
                 approvals: Vec::new(),
                 deferred_tools: Vec::new(),
                 status: RunStatus::Completed,
+                terminal_error: None,
             },
         )
         .unwrap();
@@ -1279,6 +1296,7 @@ fn complete_run_persists_default_projector_source_records_under_parent_run() {
                 approvals: Vec::new(),
                 deferred_tools: Vec::new(),
                 status: RunStatus::Completed,
+                terminal_error: None,
             },
         )
         .unwrap();
@@ -1543,6 +1561,7 @@ fn tui_session_reload_resolves_prefix_restores_snapshot_and_current_pointer() {
                     approvals: Vec::new(),
                     deferred_tools: Vec::new(),
                     status: RunStatus::Completed,
+                    terminal_error: None,
                 },
             )
             .unwrap();

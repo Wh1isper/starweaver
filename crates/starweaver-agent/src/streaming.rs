@@ -894,6 +894,30 @@ pub enum AgentStreamError {
     Agent(#[from] AgentError),
 }
 
+impl AgentStreamError {
+    /// Return the stable category safe for durable and client-visible surfaces.
+    #[must_use]
+    pub const fn public_code(&self) -> &'static str {
+        match self {
+            Self::RuntimeUnavailable(_) => "stream_runtime_unavailable",
+            Self::Interrupted { .. } => "agent_cancelled",
+            Self::Join(_) => "stream_worker_failed",
+            Self::Agent(error) => error.public_code(),
+        }
+    }
+
+    /// Return a diagnostic safe for durable and client-visible surfaces.
+    #[must_use]
+    pub fn public_message(&self) -> String {
+        match self {
+            Self::RuntimeUnavailable(_) => "live stream runtime is unavailable".to_string(),
+            Self::Interrupted { .. } => "agent run cancelled".to_string(),
+            Self::Join(_) => "live stream worker failed".to_string(),
+            Self::Agent(error) => error.public_message(),
+        }
+    }
+}
+
 /// Handle for a live SDK stream run.
 pub struct AgentStreamHandle {
     receiver: mpsc::Receiver<AgentStreamRecord>,
@@ -1313,16 +1337,13 @@ pub(crate) fn try_start_session_stream_with_options(
             Err(error) => {
                 let current_error = Some(match &error {
                     AgentError::Cancelled { .. } => AgentStreamCurrentError::Interrupted,
-                    _ => AgentStreamCurrentError::Agent(error.to_string()),
+                    _ => AgentStreamCurrentError::Agent(error.public_message()),
                 });
                 match join_current_error.lock() {
                     Ok(mut error) => *error = current_error,
                     Err(error) => *error.into_inner() = current_error,
                 }
-                let repair_reason = match &error {
-                    AgentError::Cancelled { reason } => reason.clone(),
-                    _ => error.to_string(),
-                };
+                let repair_reason = error.public_message();
                 let repaired_tool_calls = context.repair_dangling_tool_calls(repair_reason);
                 if repaired_tool_calls > 0 {
                     context.publish_event(AgentEvent::new(
@@ -1333,12 +1354,12 @@ pub(crate) fn try_start_session_stream_with_options(
                         }),
                     ));
                 }
-                if let AgentError::Cancelled { reason } = &error {
+                if let AgentError::Cancelled { .. } = &error {
                     context.publish_event(AgentEvent::new(
                         "run_cancelled",
                         serde_json::json!({
                             "run_id": context.run_id.as_ref().map(starweaver_core::RunId::as_str),
-                            "reason": reason,
+                            "reason": error.public_message(),
                         }),
                     ));
                     context.finish_run();

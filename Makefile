@@ -235,10 +235,14 @@ rpc-interop-e2e: ## Run real CLI/RPC bidirectional subprocess interoperability
 	@echo "Checking CLI/RPC bidirectional interoperability"
 	@$(XTASK) check-rpc-interop-e2e
 
+.PHONY: rpc-integration-check
+rpc-integration-check: ## Validate RPC transports and CLI interoperability with shared binaries
+	@echo "Checking RPC transports and CLI interoperability"
+	@$(XTASK) check-rpc-integration
+
 .PHONY: rpc-ci-check
-rpc-ci-check: test ## Run ordered workspace, RPC transport, and interoperability tests
-	@$(MAKE) --no-print-directory rpc-transports-check
-	@$(MAKE) --no-print-directory rpc-interop-e2e
+rpc-ci-check: test ## Run ordered workspace and shared-binary RPC integration tests
+	@$(MAKE) --no-print-directory rpc-integration-check
 
 .PHONY: scripts-check
 scripts-check: architecture-check capability-check cli-examples-check install-script-check ## Validate repository automation scripts through xtask

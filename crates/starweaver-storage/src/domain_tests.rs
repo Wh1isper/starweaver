@@ -5,8 +5,8 @@ use starweaver_core::{AgentExecutionNode, AgentId, CheckpointId, ConversationId,
 use starweaver_session::{
     AcquireRunAdmission, ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord,
     ExecutionStatus, HitlResumeClaim, InMemorySessionStore, LOCAL_SESSION_NAMESPACE,
-    RelatedRunUpdate, RunRecord, RunStatus, SessionRecord, SessionStore, SessionStoreError,
-    StreamCursorRef, StreamPublicationTarget, StreamPublicationTargets,
+    RelatedRunUpdate, RunRecord, RunStatus, RunTerminalError, SessionRecord, SessionStore,
+    SessionStoreError, StreamCursorRef, StreamPublicationTarget, StreamPublicationTargets,
 };
 use starweaver_stream::{AgentStreamEvent, AgentStreamRecord};
 use starweaver_stream::{
@@ -14,7 +14,10 @@ use starweaver_stream::{
     ReplayScope, ReplaySnapshot, StreamArchive,
 };
 
-use crate::{RunEvidenceCommit, SqliteStorage, domain::EvidenceWritePoint};
+use crate::{
+    RunEvidenceCommit, SqliteStorage, domain::EvidenceWritePoint,
+    session_store::records::save_run_record,
+};
 
 fn evidence_state(run: &RunRecord) -> ResumableState {
     ResumableState {
@@ -140,6 +143,20 @@ fn begin_run_assigns_unique_sequences_and_rejects_conflicting_retries() {
             .to_string()
             .contains("run conflict")
     );
+
+    let mut non_queued = RunRecord::new(
+        first.session_id,
+        RunId::from_string("run-non-queued"),
+        ConversationId::new(),
+    );
+    non_queued.status = RunStatus::Completed;
+    assert!(
+        storage
+            .begin_run(non_queued)
+            .expect_err("begin_run only creates queued runs")
+            .to_string()
+            .contains("requires queued status")
+    );
 }
 
 #[test]
@@ -243,6 +260,8 @@ fn sqlite_store_clears_active_run_for_every_terminal_status() {
 
         let mut terminal = run;
         terminal.status = status;
+        terminal.terminal_error = (status == RunStatus::Failed)
+            .then(|| RunTerminalError::new("test_failure", "test failure"));
         store
             .append_run_allocated(terminal)
             .expect("append terminal run");
@@ -364,6 +383,54 @@ async fn commit_run_evidence_is_atomic_and_resume_uses_run_context() {
             "version": 1,
             "payload": {"provider_id": "test"}
         }))
+    );
+}
+
+#[test]
+fn legacy_failed_evidence_exact_retry_remains_idempotent_after_upgrade() {
+    let storage = SqliteStorage::in_memory().expect("storage");
+    let mut run = begun_run(&storage, "legacy-failed-retry");
+    let source_run_id = RunId::from_string("legacy-related-source");
+    run.status = RunStatus::Failed;
+    run.restore_from_run_id = Some(source_run_id.clone());
+    let mut commit = RunEvidenceCommit::new(run.clone(), evidence_state(&run));
+    let mut related = RelatedRunUpdate::new(source_run_id, RunStatus::Waiting, RunStatus::Failed);
+    related.resume_claim_id = Some("legacy-resume-claim".to_string());
+    commit.related_run_updates.push(related);
+    let digest = commit.digest().expect("legacy evidence digest");
+
+    {
+        let connection = storage.lock().expect("connection");
+        save_run_record(&connection, &run).expect("persist legacy failed run");
+        connection
+            .execute(
+                "INSERT INTO run_evidence_commits
+                 (session_id, run_id, digest, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    run.session_id.as_str(),
+                    run.run_id.as_str(),
+                    digest,
+                    run.updated_at.to_rfc3339(),
+                ],
+            )
+            .expect("seal legacy evidence");
+    }
+
+    assert_eq!(
+        storage
+            .commit_run_evidence(commit.clone())
+            .expect("legacy exact retry"),
+        run
+    );
+
+    let mut conflicting = commit;
+    conflicting.run.output_preview = Some("different legacy payload".to_string());
+    assert!(
+        storage
+            .commit_run_evidence(conflicting)
+            .expect_err("different legacy payload must conflict")
+            .to_string()
+            .contains("evidence conflict")
     );
 }
 

@@ -225,8 +225,9 @@ queued, starting, running, waiting, completed, failed, cancelled
 
 - `run.start` returns after durable creation and active registration.
 - A non-empty `idempotencyKey` identifies the normalized ordinary start command, including its input, profile, continuation target, and environment attachments. An exact retry returns the original `sessionId`, `runId`, admission receipt, and currently durable status with `idempotentReplay: true`; it does not launch the runtime again. Reusing the key with a different fingerprint or attachment set fails with `-32012`.
-- `run.status` prefers active state and falls back to durable state.
-- `run.await` uses one absolute deadline and returns only terminal state or timeout.
+- `run.status` prefers active state and falls back to durable state. Once terminal, the durable run record is authoritative for status, output preview, and the safe error diagnostic; local watch/cache state cannot override it.
+- `run.await` uses one absolute deadline and returns only terminal state or timeout. Restarted hosts and remote owners project the same durable terminal diagnostic as the completing host.
+- Client-visible terminal and JSON-RPC errors use typed public projections. Raw provider responses, stream/join details, SQLite/replay failures, host paths, and cleanup errors remain local diagnostics and are never copied into wire `message`/`error` fields.
 - Client disconnect cancels the await request, not the run.
 - `run.cancel` requests cooperative cancellation.
 - `run.steer` accepts active-run steering text and returns its steering id.

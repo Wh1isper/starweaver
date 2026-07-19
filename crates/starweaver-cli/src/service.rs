@@ -1045,7 +1045,7 @@ impl CliService {
     pub(super) fn fail_prepared_prompt_run(
         &mut self,
         mut run: RunRecord,
-        error: &CliError,
+        _error: &CliError,
         admission: &CliRunAdmission,
     ) -> CliResult<()> {
         // `abort_admitted_hitl_resume` has already terminalized an admitted replacement in the
@@ -1062,13 +1062,10 @@ impl CliService {
         }
         admission.refresh()?;
         let lease = admission.current_lease()?;
-        let messages = failed_display_message(&run, &error.to_string());
-        self.store()?.fail_run_with_messages_fenced(
-            &mut run,
-            error.to_string(),
-            &messages,
-            &lease,
-        )?;
+        let message = "CLI run failed".to_string();
+        let messages = failed_display_message(&run, &message);
+        self.store()?
+            .fail_run_with_messages_fenced(&mut run, message, &messages, &lease)?;
         admission.release(self.store()?)
     }
 

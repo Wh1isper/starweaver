@@ -125,6 +125,8 @@ The CLI and RPC products resolve the same canonical database location and storag
 
 Real-process interoperability builds both binaries, verifies their native default database resolution, explicitly imports legacy data through each product, and exercises CLI-to-RPC and RPC-to-CLI completed-run continuation against one database. The validation runs on Linux, macOS, and Windows.
 
+Terminal RPC projection is durable-first. `starweaver-session` owns the typed status/output/diagnostic projection, admission finalization persists it atomically, and RPC status/await responses project the diagnostic from `RunRecord`. This keeps live completion, cache eviction, remote ownership, and restart behavior identical; `output_preview` is not used as an error transport. Runtime, stream, CLI, and RPC boundaries project typed errors into stable public codes and redacted messages before persistence or wire delivery, while legacy exact evidence retries remain valid through digest-first compatibility handling.
+
 ## Validation Surface
 
 The host architecture is covered by the repository gates below:
@@ -141,4 +143,4 @@ make docs-check
 git diff --check
 ```
 
-`make check` includes the CLI/RPC dependency-isolation and capability-registry gates. `rpc-contracts-check` is the complete standalone contract gate: it verifies deterministic schema generation and the v1 corpus across typed in-process, stdio, and HTTP dispatch. Aggregate `make ci` uses the ordered `rpc-ci-check` composition instead: workspace tests first provide the same typed in-process coverage, then `rpc-transports-check` exercises stdio and HTTP, and finally `rpc-interop-e2e` verifies bidirectional CLI/RPC subprocess interoperability using shared durable storage. The subprocess gates build normal, non-test-harness binaries with Cargo's test profile so they can reuse preceding test-profile artifacts without removing any platform or transport coverage.
+`make check` includes the CLI/RPC dependency-isolation and capability-registry gates. `rpc-contracts-check` is the complete standalone contract gate: it verifies deterministic schema generation and the v1 corpus across typed in-process, stdio, and HTTP dispatch. Aggregate `make ci` uses the ordered `rpc-ci-check` composition instead: workspace tests first provide the same typed in-process coverage, then `rpc-integration-check` builds the CLI and RPC together once with Cargo's normal dev profile. That command reuses the exact same binaries while exercising stdio and HTTP transport contracts followed by bidirectional CLI/RPC subprocess interoperability against shared durable storage. The standalone transport and interoperability targets remain available and self-contained.

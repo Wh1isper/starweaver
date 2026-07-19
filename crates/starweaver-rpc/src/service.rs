@@ -2307,7 +2307,11 @@ mod tests {
         source_materialization
             .insert_into(&mut source.metadata)
             .unwrap();
-        service.storage.begin_run(source).unwrap();
+        service
+            .storage
+            .session_store()
+            .append_run_allocated(source)
+            .unwrap();
 
         let target_materialization = ResolvedAgentMaterialization::new(
             "spec-target",
@@ -2418,7 +2422,11 @@ mod tests {
         source_run.profile = Some("general".to_string());
         source_run.status = RunStatus::Completed;
         source_run.output_preview = Some("CLI source output".to_string());
-        let source_run = service.storage.begin_run(source_run).unwrap();
+        let source_run = service
+            .storage
+            .session_store()
+            .append_run_allocated(source_run)
+            .unwrap();
         let mut source_state = ResumableState {
             session_id: Some(session.session_id.clone()),
             run_id: Some(source_run_id.clone()),
@@ -2675,7 +2683,11 @@ mod tests {
         );
         run.trigger_type = Some("cli".to_string());
         run.status = RunStatus::Completed;
-        service.storage.begin_run(run).unwrap();
+        service
+            .storage
+            .session_store()
+            .append_run_allocated(run)
+            .unwrap();
         let messages = (0..300)
             .map(|sequence| {
                 DisplayMessage::new(
@@ -3048,7 +3060,11 @@ mod tests {
         );
         source.profile = Some("default".to_string());
         source.status = RunStatus::Completed;
-        service.storage.begin_run(source).unwrap();
+        service
+            .storage
+            .session_store()
+            .append_run_allocated(source)
+            .unwrap();
 
         let refs = effective_rpc_environment_attachments(&[]);
         let legacy_fingerprint = command_fingerprint(

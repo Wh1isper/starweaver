@@ -2106,6 +2106,41 @@ async fn runtime_completion_preserves_preallocated_run_identity_metadata() {
 }
 
 #[tokio::test]
+async fn runtime_persists_only_public_model_failure_diagnostics() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let session_id = starweaver_agent::SessionId::from_string("session-durable-public-model-error");
+    let model = FunctionModel::new(|_messages, _settings, _info| {
+        Err(ModelError::ProviderStatus {
+            status: 401,
+            body: serde_json::json!({
+                "error": "unauthorized",
+                "echoed_token": "provider-secret",
+            }),
+            retryable: false,
+        })
+    });
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(model))
+        .durable_session_id(session_id.clone())
+        .session_store(store.clone())
+        .build();
+
+    runtime.run_stream("fail safely").await.unwrap_err();
+
+    let run_id = runtime.export_full_state().run_id.unwrap();
+    let run = store.load_run(&session_id, &run_id).await.unwrap();
+    assert_eq!(run.status, SessionRunStatus::Failed);
+    assert_eq!(run.output_preview, None);
+    assert_eq!(
+        run.terminal_error
+            .as_ref()
+            .map(|error| (error.code.as_str(), error.message.as_str(),)),
+        Some(("model_error", "provider status 401"))
+    );
+    let persisted = serde_json::to_string(&run).unwrap();
+    assert!(!persisted.contains("provider-secret"));
+}
+
+#[tokio::test]
 async fn runtime_finish_stream_persists_interrupted_live_stream_recovery() {
     let store = Arc::new(InMemorySessionStore::new());
     let archive = Arc::new(InMemoryStreamArchive::new());
@@ -2147,9 +2182,13 @@ async fn runtime_finish_stream_persists_interrupted_live_stream_recovery() {
     let run = store.load_run(&session_id, &run_id).await.unwrap();
     assert_eq!(run.status, SessionRunStatus::Cancelled);
     assert_eq!(run.input.len(), 1);
+    assert_eq!(run.metadata["live_stream_error"], "agent run cancelled");
+    assert_eq!(run.metadata["live_stream_error_code"], "agent_cancelled");
     assert_eq!(
-        run.metadata["live_stream_error"],
-        "agent stream interrupted: agent stream interruption requested"
+        run.terminal_error
+            .as_ref()
+            .map(|error| (error.code.as_str(), error.message.as_str(),)),
+        Some(("agent_cancelled", "agent run cancelled"))
     );
 
     let stored_records = store

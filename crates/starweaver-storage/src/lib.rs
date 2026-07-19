@@ -60,7 +60,7 @@ mod tests {
     };
     use starweaver_session::{
         AcquireRunAdmission, HitlResumeClaim, LOCAL_SESSION_NAMESPACE, RunRecord, RunStatus,
-        SessionRecord, SessionStore,
+        RunTerminalProjection, SessionRecord, SessionStore,
     };
     use starweaver_stream::{
         AgentStreamEvent, AgentStreamRecord, ReplayEventKind, ReplayEventLog, ReplayScope,
@@ -547,7 +547,7 @@ mod tests {
         );
         assert!(
             first
-                .finalize_run_admission(&old.lease, RunStatus::Completed, None)
+                .finalize_run_admission(&old.lease, RunTerminalProjection::completed(None))
                 .await
                 .is_err(),
             "stale finalization must be fenced"
@@ -570,7 +570,10 @@ mod tests {
             .await
             .expect("new owner checkpoint");
         second
-            .finalize_run_admission(&new.lease, RunStatus::Completed, Some("done".to_string()))
+            .finalize_run_admission(
+                &new.lease,
+                RunTerminalProjection::completed(Some("done".to_string())),
+            )
             .await
             .expect("new owner finalization");
         assert!(

@@ -16,6 +16,7 @@ mod docs;
 mod fixtures;
 mod release;
 mod rpc_contracts;
+mod rpc_integration;
 mod rpc_interop_e2e;
 mod smoke;
 
@@ -40,6 +41,7 @@ fn run() -> Result<(), String> {
         "check-cli-examples" => smoke::check_cli_examples(),
         "check-docs-examples" => docs::check_docs_examples(&args),
         "check-rpc-contracts" => rpc_contracts::check(&args),
+        "check-rpc-integration" => rpc_integration::check(&args),
         "check-rpc-transports" => rpc_contracts::check_transports(&args),
         "check-rpc-interop-e2e" => rpc_interop_e2e::check(),
         "generate-rpc-contracts" => rpc_contracts::generate(&args),

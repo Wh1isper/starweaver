@@ -76,11 +76,13 @@ impl From<RpcHostError> for RpcError {
             RpcHostError::IdempotencyConflict(message) => Self::new(IDEMPOTENCY_CONFLICT, message),
             RpcHostError::RunConflict(message) => Self::new(RUN_CONFLICT, message),
             RpcHostError::StaleFence(message) => Self::new(STALE_FENCE, message),
-            RpcHostError::RetryableStorage(message) => Self::new(STORAGE_UNAVAILABLE, message),
-            RpcHostError::Storage(message) | RpcHostError::Runtime(message) => {
-                Self::new(SERVER_ERROR, message)
-            }
-            RpcHostError::Io(error) => Self::new(SERVER_ERROR, error.to_string()),
+            RpcHostError::RetryableStorage(_) => Self::new(
+                STORAGE_UNAVAILABLE,
+                "durable storage is temporarily unavailable",
+            ),
+            RpcHostError::Storage(_) => Self::new(SERVER_ERROR, "durable storage operation failed"),
+            RpcHostError::Runtime(_) => Self::new(SERVER_ERROR, "runtime operation failed"),
+            RpcHostError::Io(_) => Self::new(SERVER_ERROR, "host I/O operation failed"),
         }
     }
 }
@@ -112,6 +114,23 @@ mod tests {
         for (error, expected) in cases {
             let rpc = RpcError::from(RpcHostError::from(error));
             assert_eq!(rpc.code, expected);
+        }
+    }
+
+    #[test]
+    fn internal_errors_are_redacted_from_rpc_messages() {
+        let secret = "sqlite:///private/path?token=provider-secret";
+        let cases = [
+            RpcHostError::from(SessionStoreError::Failed(secret.to_string())),
+            RpcHostError::from(SessionStoreError::RetryableStorage(secret.to_string())),
+            RpcHostError::from(starweaver_stream::ReplayError::Failed(secret.to_string())),
+            RpcHostError::Runtime(secret.to_string()),
+            RpcHostError::Io(std::io::Error::other(secret)),
+        ];
+
+        for error in cases {
+            let rpc = RpcError::from(error);
+            assert!(!rpc.message.contains(secret));
         }
     }
 }

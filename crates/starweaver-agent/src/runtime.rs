@@ -24,9 +24,10 @@ use starweaver_runtime::{
 use starweaver_session::{
     AcquireRunAdmission, EnvironmentStateRef, HitlResumeAbortOutcome, HitlResumeClaim, InputPart,
     PendingStreamPublication, PreparedContinuation, RelatedRunUpdate, RunAdmissionLease,
-    RunEvidenceCommit, RunRecord, RunStatus as SessionRunStatus, SessionRecord,
-    SessionResumeSnapshot, SessionStore, SessionStoreError, SessionStoreExecutor, StreamCursorRef,
-    StreamPublicationTarget, StreamPublicationTargets, ToolReturnRecordInput,
+    RunEvidenceCommit, RunRecord, RunStatus as SessionRunStatus, RunTerminalError,
+    RunTerminalProjection, SessionRecord, SessionResumeSnapshot, SessionStore, SessionStoreError,
+    SessionStoreExecutor, StreamCursorRef, StreamPublicationTarget, StreamPublicationTargets,
+    ToolReturnRecordInput,
 };
 use starweaver_stream::{
     DefaultDisplayMessageProjector, DisplayMessage, DisplayMessageProjector,
@@ -173,6 +174,34 @@ pub enum AgentDurabilityError {
     /// Live stream failed before it could be persisted.
     #[error(transparent)]
     Stream(#[from] AgentStreamError),
+}
+
+impl AgentDurabilityError {
+    /// Return a diagnostic safe for durable and client-visible surfaces.
+    #[must_use]
+    pub fn public_message(&self) -> String {
+        match self {
+            Self::MissingSessionStore => "durable session store is unavailable".to_string(),
+            Self::SessionMismatch { .. } => "durable session identity mismatch".to_string(),
+            Self::MissingCheckpointState { .. } => {
+                "durable checkpoint state is unavailable".to_string()
+            }
+            Self::InvalidContinuationEvidence(_) => {
+                "durable continuation evidence is invalid".to_string()
+            }
+            Self::SessionStore(SessionStoreError::RetryableStorage(_)) => {
+                "durable storage is temporarily unavailable".to_string()
+            }
+            Self::SessionStore(_) => "durable storage operation failed".to_string(),
+            Self::Replay(_) => "replay persistence failed".to_string(),
+            Self::MissingPublicationSink { .. } => {
+                "required stream publication sink is unavailable".to_string()
+            }
+            Self::Hitl(_) => "human-in-the-loop resolution failed".to_string(),
+            Self::Agent(error) => error.public_message(),
+            Self::Stream(error) => error.public_message(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1164,8 +1193,7 @@ impl AgentRuntime {
                         .session_store
                         .finalize_run_admission(
                             &admission.lease,
-                            target.status,
-                            target.output_preview,
+                            terminal_projection_from_record(&target)?,
                         )
                         .await?;
                 }
@@ -1190,8 +1218,7 @@ impl AgentRuntime {
                         .session_store
                         .finalize_run_admission(
                             &admission.lease,
-                            target.status,
-                            target.output_preview,
+                            terminal_projection_from_record(&target)?,
                         )
                         .await?;
                     self.durability
@@ -1244,8 +1271,7 @@ impl AgentRuntime {
                 .session_store
                 .finalize_run_admission(
                     &admission_lease,
-                    durable_run.status,
-                    durable_run.output_preview.clone(),
+                    terminal_projection_from_record(&durable_run)?,
                 )
                 .await?;
             self.durability
@@ -1285,8 +1311,7 @@ impl AgentRuntime {
                 .session_store
                 .finalize_run_admission(
                     &admission_lease,
-                    durable_run.status,
-                    durable_run.output_preview.clone(),
+                    terminal_projection_from_record(&durable_run)?,
                 )
                 .await?;
             self.durability
@@ -1308,6 +1333,15 @@ impl AgentRuntime {
             RelatedRunUpdate::new(run_id.clone(), SessionRunStatus::Waiting, source_status);
         source_update.resume_claim_id = Some(claim_id);
         source_update.output_preview = Some("continuation failed".to_string());
+        if source_status == SessionRunStatus::Failed {
+            source_update.terminal_error = Some(RunTerminalError::new(
+                "continuation_failed",
+                completion.error.as_ref().map_or_else(
+                    || "stream completed without result".to_string(),
+                    AgentStreamError::public_message,
+                ),
+            ));
+        }
         source_update.approvals = approvals;
         source_update.deferred_tools = deferred_tools;
         self.persist_stream_failure(
@@ -1326,8 +1360,7 @@ impl AgentRuntime {
             .session_store
             .finalize_run_admission(
                 &admission_lease,
-                durable_run.status,
-                durable_run.output_preview.clone(),
+                terminal_projection_from_record(&durable_run)?,
             )
             .await?;
         self.durability
@@ -1506,6 +1539,15 @@ impl AgentRuntime {
         );
         source_update.resume_claim_id = Some(claim_id);
         source_update.output_preview = Some("continuation failed".to_string());
+        if source_status == SessionRunStatus::Failed {
+            source_update.terminal_error = Some(RunTerminalError::new(
+                "continuation_failed",
+                completion.error.as_ref().map_or_else(
+                    || "stream completed without result".to_string(),
+                    AgentStreamError::public_message,
+                ),
+            ));
+        }
         source_update.approvals = approvals;
         source_update.deferred_tools = deferred_tools;
         self.persist_stream_failure(
@@ -1548,6 +1590,10 @@ impl AgentRuntime {
         );
         source_update.resume_claim_id = Some(claim_id);
         source_update.output_preview = Some("continuation injection failed".to_string());
+        source_update.terminal_error = Some(RunTerminalError::new(
+            "continuation_injection_failed",
+            "continuation injection failed",
+        ));
         source_update.approvals = approvals;
         source_update.deferred_tools = deferred_tools;
         let completion = AgentStreamCompletion {
@@ -1833,6 +1879,7 @@ impl AgentRuntime {
         let mut run = completion_run_record(&durability, &run_id, &conversation_id).await?;
         run.input = input_parts_from_agent_input(input);
         run.status = session_run_status(status);
+        run.terminal_error = Some(terminal_error_from_stream(stream_error));
         run.structured_output = serde_json::Value::Null;
         run.trace_context = self.session.context().trace_context.clone();
         run.parent_run_id = completion.state.parent_run_id.clone();
@@ -1841,7 +1888,11 @@ impl AgentRuntime {
         if let Some(error) = completion.error.as_ref() {
             run.metadata.insert(
                 "live_stream_error".to_string(),
-                serde_json::json!(error.to_string()),
+                serde_json::json!(error.public_message()),
+            );
+            run.metadata.insert(
+                "live_stream_error_code".to_string(),
+                serde_json::json!(error.public_code()),
             );
         }
         let environment_state = self
@@ -1940,6 +1991,26 @@ async fn completion_run_record(
     }
 }
 
+fn terminal_projection_from_record(
+    run: &RunRecord,
+) -> Result<RunTerminalProjection, AgentDurabilityError> {
+    run.terminal_projection().ok_or_else(|| {
+        AgentDurabilityError::InvalidContinuationEvidence(format!(
+            "run {} has no terminal projection",
+            run.run_id.as_str()
+        ))
+    })
+}
+
+fn terminal_error_from_stream(error: &AgentStreamError) -> RunTerminalError {
+    let code = if live_stream_error_run_status(error) == RunStatus::Cancelled {
+        "agent_cancelled"
+    } else {
+        error.public_code()
+    };
+    RunTerminalError::new(code, error.public_message())
+}
+
 fn agent_error_from_session_store(error: &SessionStoreError) -> AgentError {
     AgentError::Executor(AgentExecutorError::Failed(error.to_string()))
 }
@@ -1956,12 +2027,10 @@ fn session_run_status(status: RunStatus) -> SessionRunStatus {
 }
 
 fn live_stream_cancellation_reason(error: &AgentStreamError) -> String {
-    match error {
-        AgentStreamError::Interrupted { reason }
-        | AgentStreamError::Agent(AgentError::Cancelled { reason }) => reason.clone(),
-        AgentStreamError::RuntimeUnavailable(_)
-        | AgentStreamError::Join(_)
-        | AgentStreamError::Agent(_) => "agent run cancelled".to_string(),
+    if live_stream_error_run_status(error) == RunStatus::Cancelled {
+        "agent run cancelled".to_string()
+    } else {
+        error.public_message()
     }
 }
 

@@ -10,10 +10,10 @@ use starweaver_session::{
     DurableBackgroundSubagentDeliveryClaim, DurableBackgroundSubagentDeliveryRelease,
     DurableControlReceipt, EnvironmentStateRef, HitlResumeAbortOutcome, HitlResumeClaim,
     HitlResumeClaimState, ManagedRunTarget, PendingStreamPublication, RunAdmissionLease,
-    RunAdmissionReceipt, RunEvidenceCommit, RunRecord, RunStatus, SessionContinuationFence,
-    SessionFilter, SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore,
-    SessionStoreError, SessionStoreResult, StreamCursorRef, StreamPublicationTarget,
-    UpdateManagedSession,
+    RunAdmissionReceipt, RunEvidenceCommit, RunRecord, RunStatus, RunTerminalError,
+    RunTerminalProjection, SessionContinuationFence, SessionFilter, SessionRecord,
+    SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError, SessionStoreResult,
+    StreamCursorRef, StreamPublicationTarget, UpdateManagedSession,
 };
 use starweaver_stream::{
     AgentStreamRecord, InMemoryReplayEventLog, ReplayCursor, ReplayEvent, ReplayScope,
@@ -49,6 +49,23 @@ const fn checkpoint_run_status(status: RunLifecycle) -> RunStatus {
     }
 }
 
+fn checkpoint_terminal_error(status: RunLifecycle) -> Option<RunTerminalError> {
+    match status {
+        RunLifecycle::Failed => Some(RunTerminalError::new(
+            "checkpoint_run_failed",
+            "run failed while checkpointing",
+        )),
+        RunLifecycle::Cancelled => Some(RunTerminalError::new(
+            "checkpoint_run_cancelled",
+            "run was cancelled while checkpointing",
+        )),
+        RunLifecycle::Starting
+        | RunLifecycle::Running
+        | RunLifecycle::Waiting
+        | RunLifecycle::Completed => None,
+    }
+}
+
 impl SqliteSessionStore {
     /// Atomically allocate or preserve a run sequence and persist the run.
     ///
@@ -60,6 +77,12 @@ impl SqliteSessionStore {
     /// Returns a store error for missing sessions, immutable-sequence violations, sequence
     /// collisions, serialization failures, or SQLite failures.
     pub fn append_run_allocated(&self, mut run: RunRecord) -> SessionStoreResult<RunRecord> {
+        run.validate_new_write().map_err(|error| {
+            SessionStoreError::Failed(format!(
+                "invalid run state for {}: {error}",
+                run.run_id.as_str()
+            ))
+        })?;
         run.updated_at = Utc::now();
         let mut connection = self.lock()?;
         let transaction = connection
@@ -108,6 +131,7 @@ impl SqliteSessionStore {
                     checkpoint.conversation_id.clone(),
                 );
                 run.status = checkpoint_run_status(checkpoint.resume.status);
+                run.terminal_error = checkpoint_terminal_error(checkpoint.resume.status);
                 run.trace_context = checkpoint.resume.trace_context.clone();
                 run.parent_run_id
                     .clone_from(&checkpoint.state.parent_run_id);
@@ -510,7 +534,11 @@ impl SessionStore for SqliteSessionStore {
                 )));
             }
             target.status = RunStatus::Failed;
-            target.output_preview = Some(output_preview);
+            target.output_preview = Some(output_preview.clone());
+            target.terminal_error = Some(RunTerminalError::new(
+                "hitl_resume_preparation_failed",
+                output_preview,
+            ));
             target.updated_at = Utc::now();
             save_run_record(&transaction, &target)?;
             // This is a terminal target transition performed before the generic admission
@@ -910,16 +938,13 @@ impl SessionStore for SqliteSessionStore {
     async fn finalize_run_admission(
         &self,
         lease: &RunAdmissionLease,
-        status: RunStatus,
-        output_preview: Option<String>,
+        terminal: RunTerminalProjection,
     ) -> SessionStoreResult<RunRecord> {
         let store = self.clone();
         let lease = lease.clone();
-        crate::blocking::run(move || {
-            store.finalize_run_admission_sync(&lease, status, output_preview)
-        })
-        .await
-        .map_err(SessionStoreError::Failed)?
+        crate::blocking::run(move || store.finalize_run_admission_sync(&lease, terminal))
+            .await
+            .map_err(SessionStoreError::Failed)?
     }
 
     async fn load_run_admission(
@@ -1385,8 +1410,13 @@ impl SessionStore for SqliteSessionStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(map_sqlite_session_error)?;
             let mut run = load_run_record(&transaction, session_id, run_id)?;
-            run.status = status;
-            run.output_preview = output_preview;
+            run.apply_legacy_status_update(status, output_preview);
+            run.validate_new_write().map_err(|error| {
+                SessionStoreError::Failed(format!(
+                    "invalid run state for {}: {error}",
+                    run.run_id.as_str()
+                ))
+            })?;
             run.updated_at = Utc::now();
             save_run_record(&transaction, &run)?;
             let mut session = load_session_record(&transaction, session_id)?;

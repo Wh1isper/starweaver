@@ -85,39 +85,11 @@ impl Agent {
 }
 
 pub(in crate::agent) fn agent_error_public_message(error: &AgentError) -> String {
-    match error {
-        AgentError::Model(error) => error.public_message(),
-        AgentError::Capability(_)
-        | AgentError::Cancelled { .. }
-        | AgentError::CapabilityOrder(_)
-        | AgentError::StructuredOutput(_)
-        | AgentError::DynamicInstruction(_)
-        | AgentError::OutputRetryLimitExceeded { .. }
-        | AgentError::ToolRetryLimitExceeded { .. }
-        | AgentError::StepLimitExceeded { .. }
-        | AgentError::UsageLimit(_)
-        | AgentError::ExecutionSuspended { .. }
-        | AgentError::Executor(_)
-        | AgentError::ToolCallsRequireTools => error.to_string(),
-    }
+    error.public_message()
 }
 
 pub(in crate::agent) const fn agent_error_kind(error: &AgentError) -> &'static str {
-    match error {
-        AgentError::Model(_) => "model_error",
-        AgentError::Capability(_) => "capability_error",
-        AgentError::Cancelled { .. } => "cancelled",
-        AgentError::CapabilityOrder(_) => "capability_order_error",
-        AgentError::StructuredOutput(_) => "structured_output_error",
-        AgentError::DynamicInstruction(_) => "dynamic_instruction_error",
-        AgentError::OutputRetryLimitExceeded { .. } => "output_retry_limit_exceeded",
-        AgentError::ToolRetryLimitExceeded { .. } => "tool_retry_limit_exceeded",
-        AgentError::StepLimitExceeded { .. } => "step_limit_exceeded",
-        AgentError::UsageLimit(_) => "usage_limit_exceeded",
-        AgentError::ExecutionSuspended { .. } => "execution_suspended",
-        AgentError::Executor(_) => "executor_error",
-        AgentError::ToolCallsRequireTools => "tool_calls_require_tools",
-    }
+    error.public_code()
 }
 
 pub(in crate::agent) fn preserve_pending_tool_returns_for_resume(state: &mut AgentRunState) {
@@ -202,5 +174,29 @@ mod tests {
         let message = agent_error_public_message(&error);
         assert_eq!(message, "provider status 403");
         assert!(!message.contains("provider-secret"));
+    }
+
+    #[test]
+    fn agent_error_public_messages_redact_free_form_runtime_details() {
+        let secret = "provider-secret";
+        let cases = [
+            AgentError::Capability(secret.to_string()),
+            AgentError::Cancelled {
+                reason: secret.to_string(),
+            },
+            AgentError::StructuredOutput(secret.to_string()),
+            AgentError::DynamicInstruction(secret.to_string()),
+            AgentError::ExecutionSuspended {
+                node: starweaver_core::AgentExecutionNode::ModelResponse,
+                reason: secret.to_string(),
+            },
+            AgentError::Executor(starweaver_context::AgentExecutorError::Failed(
+                secret.to_string(),
+            )),
+        ];
+
+        for error in cases {
+            assert!(!error.public_message().contains(secret));
+        }
     }
 }

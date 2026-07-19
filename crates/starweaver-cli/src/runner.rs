@@ -31,7 +31,7 @@ use starweaver_runtime::{
 };
 use starweaver_session::{
     ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, PreparedContinuation,
-    RunRecord, RunStatus, ToolReturnRecordInput,
+    RunRecord, RunStatus, RunTerminalError, ToolReturnRecordInput,
 };
 use starweaver_stream::{
     DefaultDisplayMessageProjector, DisplayMessage, DisplayMessageKind, DisplayMessageProjector,
@@ -444,14 +444,15 @@ pub fn execute_agent_session_with_host(
                         .message_history
                         .push(ModelMessage::Response(partial));
                 }
+                let public_error = error.public_message();
                 let projection =
-                    failed_display_projection(run, &raw_records, &error, policy, &runtime);
+                    failed_display_projection(run, &raw_records, &public_error, policy, &runtime);
                 (
-                    error.clone(),
+                    public_error.clone(),
                     raw_records,
                     projection,
                     saved_partial,
-                    Some(error),
+                    Some(public_error),
                 )
             }
         };
@@ -495,6 +496,17 @@ pub fn execute_agent_session_with_host(
             json!(saved_interrupted_partial),
         );
     }
+    let terminal_error = match projection.status {
+        RunStatus::Failed => Some(RunTerminalError::new(
+            "cli_run_failed",
+            failure_error.unwrap_or_else(|| "CLI run failed".to_string()),
+        )),
+        RunStatus::Cancelled => Some(RunTerminalError::new(
+            "cli_run_cancelled",
+            "CLI run cancelled by user",
+        )),
+        _ => None,
+    };
     let artifacts = RunArtifacts {
         state,
         environment_state,
@@ -505,6 +517,7 @@ pub fn execute_agent_session_with_host(
         approvals: projection.approvals,
         deferred_tools: projection.deferred_tools,
         status: projection.status,
+        terminal_error,
     };
     Ok(CliRunExecution { output, artifacts })
 }
@@ -515,13 +528,13 @@ fn preserve_environment_export_evidence(
 ) -> Option<EnvironmentState> {
     match environment_state {
         Ok(environment_state) => Some(environment_state),
-        Err(error) => {
+        Err(_error) => {
             state
                 .metadata
                 .insert("cli.environment_export_failed".to_string(), json!(true));
             state.metadata.insert(
                 "cli.environment_export_error".to_string(),
-                json!(error.to_string()),
+                json!("environment state export failed"),
             );
             None
         }
@@ -531,7 +544,7 @@ fn preserve_environment_export_evidence(
 enum SessionRunOutcome {
     Completed(Box<starweaver_agent::AgentStreamResult>),
     Cancelled,
-    Failed(String),
+    Failed(AgentError),
 }
 
 fn session_run_outcome(
@@ -540,7 +553,7 @@ fn session_run_outcome(
     match result {
         Ok(stream) => SessionRunOutcome::Completed(Box::new(stream)),
         Err(AgentError::Cancelled { .. }) => SessionRunOutcome::Cancelled,
-        Err(error) => SessionRunOutcome::Failed(error.to_string()),
+        Err(error) => SessionRunOutcome::Failed(error),
     }
 }
 
@@ -973,9 +986,27 @@ mod tests {
         CliPromptContentAdapter, CliRunPolicy, CliSteeringAdapter, CliSteeringChannel,
         CliSteeringMessage, SessionRunOutcome, cancelled_display_projection, cli_guidance_key,
         interrupted_partial_response, preserve_environment_export_evidence, run_session_stream,
-        sync_run_execution_identity, sync_run_request_metadata, sync_run_session_affinity,
+        session_run_outcome, sync_run_execution_identity, sync_run_request_metadata,
+        sync_run_session_affinity,
     };
     use crate::{args::HitlPolicy, prompt_input::PromptAttachment};
+
+    #[test]
+    fn session_run_failure_retains_typed_error_for_safe_public_projection() {
+        let outcome = session_run_outcome(Err(starweaver_agent::AgentError::Model(
+            ModelError::ProviderStatus {
+                status: 401,
+                body: serde_json::json!({"echoed_token": "provider-secret"}),
+                retryable: false,
+            },
+        )));
+
+        let SessionRunOutcome::Failed(error) = outcome else {
+            panic!("expected failed run outcome");
+        };
+        assert_eq!(error.public_message(), "provider status 401");
+        assert!(!error.public_message().contains("provider-secret"));
+    }
 
     #[test]
     fn environment_export_failure_is_recorded_without_discarding_session_state() {
@@ -996,10 +1027,9 @@ mod tests {
         assert!(environment_state.is_none());
         assert_eq!(state.message_history.len(), 1);
         assert_eq!(state.metadata["cli.environment_export_failed"], true);
-        assert!(
-            state.metadata["cli.environment_export_error"]
-                .as_str()
-                .is_some_and(|error| error.contains("snapshot unavailable"))
+        assert_eq!(
+            state.metadata["cli.environment_export_error"],
+            "environment state export failed"
         );
     }
 

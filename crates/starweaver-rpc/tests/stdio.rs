@@ -109,7 +109,10 @@ fn standalone_rpc_reads_cli_style_session_from_shared_database() {
     run.trigger_type = Some("cli".to_string());
     run.status = RunStatus::Completed;
     run.output_preview = Some("persisted CLI output".to_string());
-    storage.begin_run(run).expect("CLI-style run");
+    storage
+        .session_store()
+        .append_run_allocated(run)
+        .expect("CLI-style run");
     let display = DisplayMessage::new(
         1,
         session.session_id.clone(),

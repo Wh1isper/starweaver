@@ -538,8 +538,8 @@ impl Agent {
         context.message_history.clone_from(&state.message_history);
         context.usage.clone_from(&state.usage);
         match error {
-            AgentError::Cancelled { reason } => FailOrCancelTransition::Cancelled {
-                reason: reason.clone(),
+            AgentError::Cancelled { .. } => FailOrCancelTransition::Cancelled {
+                reason: error.public_message(),
             },
             error => FailOrCancelTransition::Failed {
                 error_kind: agent_error_kind(error).to_string(),
@@ -691,19 +691,19 @@ impl Agent {
                 context.runtime.run_toolsets_closed = true;
             }
             context.finish_run();
-            if let AgentError::Cancelled { reason } = error {
+            if let AgentError::Cancelled { .. } = error {
                 context.publish_event(AgentEvent::new(
                     "run_cancelled",
                     serde_json::json!({
                         "run_id": run_id.as_str(),
-                        "reason": reason,
+                        "reason": message.clone(),
                     }),
                 ));
                 push_stream_event(
                     &mut stream_events,
                     AgentStreamEvent::RunCancelled {
                         run_id,
-                        reason: reason.clone(),
+                        reason: message,
                     },
                 );
             } else {
@@ -2185,7 +2185,7 @@ mod tests {
         );
         assert!(matches!(
             cancelled,
-            FailOrCancelTransition::Cancelled { reason } if reason == "stop"
+            FailOrCancelTransition::Cancelled { reason } if reason == "agent run cancelled"
         ));
         assert_eq!(state.status, RunStatus::Cancelled);
 

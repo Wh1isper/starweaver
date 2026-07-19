@@ -17,7 +17,8 @@ use crate::{
     evidence::RunEvidenceCommit,
     publication::{PendingStreamPublication, StreamPublicationTarget},
     records::{
-        EnvironmentStateRef, RunRecord, RunStatus, SessionRecord, SessionStatus, StreamCursorRef,
+        EnvironmentStateRef, RunRecord, RunStatus, RunTerminalProjection, SessionRecord,
+        SessionStatus, StreamCursorRef,
     },
     resume::SessionResumeSnapshot,
     trace::{CompactRunTrace, CompactSessionTrace},
@@ -266,7 +267,10 @@ pub trait SessionStore: Send + Sync {
         management_unsupported()
     }
 
-    /// Update one admitted run while validating its active lease in the same transaction.
+    /// Update one admitted run to an active status while validating its lease atomically.
+    ///
+    /// Terminal transitions must use [`Self::finalize_run_admission`] so status, output, and
+    /// diagnostics cannot be persisted independently.
     async fn update_run_status_fenced(
         &self,
         _lease: &RunAdmissionLease,
@@ -285,8 +289,7 @@ pub trait SessionStore: Send + Sync {
     async fn finalize_run_admission(
         &self,
         _lease: &RunAdmissionLease,
-        _status: RunStatus,
-        _output_preview: Option<String>,
+        _terminal: RunTerminalProjection,
     ) -> SessionStoreResult<RunRecord> {
         management_unsupported()
     }
@@ -533,7 +536,10 @@ pub trait SessionStore: Send + Sync {
     /// List runs for a session.
     async fn list_runs(&self, session_id: &SessionId) -> SessionStoreResult<Vec<RunRecord>>;
 
-    /// Update run status and optional output preview.
+    /// Update run status and optional output preview through the legacy low-level path.
+    ///
+    /// Implementations synthesize a generic durable diagnostic for failed and cancelled writes.
+    /// Admission-owned terminal transitions must use [`Self::finalize_run_admission`].
     async fn update_run_status(
         &self,
         session_id: &SessionId,

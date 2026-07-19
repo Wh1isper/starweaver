@@ -7,13 +7,16 @@ use std::{
 
 use serde_json::{Value, json};
 
-use crate::common::{root, run_capture, run_command};
+use crate::common::{binary_name, root, run_capture, run_command, target_dir};
 
 pub fn check() -> Result<(), String> {
-    let root = root()?;
-    // `cargo build` still produces normal executables without `cfg(test)`.
-    // Matching the test profile lets aggregate CI reuse preceding test artifacts.
-    run_command(Command::new("cargo").current_dir(&root).args([
+    let repository = root()?;
+    let (cli, rpc) = build_binaries(&repository)?;
+    check_with_binaries(&cli, &rpc)
+}
+
+pub fn build_binaries(repository: &Path) -> Result<(PathBuf, PathBuf), String> {
+    run_command(Command::new("cargo").current_dir(repository).args([
         "build",
         "-p",
         "starweaver-cli",
@@ -23,11 +26,9 @@ pub fn check() -> Result<(), String> {
         "starweaver-rpc",
         "--bin",
         "starweaver-rpc",
-        "--profile",
-        "test",
         "--locked",
     ]))?;
-    let bin_dir = target_dir(&root).join("debug");
+    let bin_dir = target_dir(repository).join("debug");
     let cli = bin_dir.join(binary_name("starweaver-cli"));
     let rpc = bin_dir.join(binary_name("starweaver-rpc"));
     for binary in [&cli, &rpc] {
@@ -35,15 +36,23 @@ pub fn check() -> Result<(), String> {
             return Err(format!("missing E2E binary: {}", binary.display()));
         }
     }
+    Ok((cli, rpc))
+}
 
+pub fn check_with_binaries(cli: &Path, rpc: &Path) -> Result<(), String> {
+    for binary in [cli, rpc] {
+        if !binary.is_file() {
+            return Err(format!("missing E2E binary: {}", binary.display()));
+        }
+    }
     let temp = env::temp_dir().join(format!("starweaver-rpc-interop-e2e-{}", std::process::id()));
     if temp.exists() {
         fs::remove_dir_all(&temp).map_err(|error| error.to_string())?;
     }
     fs::create_dir_all(&temp).map_err(|error| error.to_string())?;
     let result = (|| {
-        check_native_default_paths(&cli, &rpc, &temp)?;
-        run_e2e(&cli, &rpc, &temp.join("interop"))
+        check_native_default_paths(cli, rpc, &temp)?;
+        run_e2e(cli, rpc, &temp.join("interop"))
     })();
     let _ = fs::remove_dir_all(&temp);
     result?;
@@ -510,22 +519,4 @@ fn required_json_string(value: &Value, key: &str) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(ToString::to_string)
         .ok_or_else(|| format!("missing {key} in {value}"))
-}
-
-fn target_dir(root: &Path) -> PathBuf {
-    env::var_os("CARGO_TARGET_DIR").map_or_else(
-        || root.join("target"),
-        |path| {
-            let path = PathBuf::from(path);
-            if path.is_absolute() {
-                path
-            } else {
-                root.join(path)
-            }
-        },
-    )
-}
-
-fn binary_name(name: &str) -> String {
-    format!("{name}{}", env::consts::EXE_SUFFIX)
 }

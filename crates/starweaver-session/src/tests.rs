@@ -13,6 +13,52 @@ use starweaver_stream::{
 
 use super::*;
 
+#[test]
+fn terminal_projection_is_typed_atomic_and_backward_compatible() {
+    let mut run = RunRecord::new(
+        starweaver_core::SessionId::from_string("session-terminal-projection"),
+        RunId::from_string("run-terminal-projection"),
+        ConversationId::from_string("conversation-terminal-projection"),
+    );
+    let legacy = serde_json::to_value(&run).unwrap();
+    assert!(legacy.get("terminal_error").is_none());
+    assert_eq!(
+        serde_json::from_value::<RunRecord>(legacy)
+            .unwrap()
+            .terminal_error,
+        None
+    );
+
+    let projection = RunTerminalProjection::failed(RunTerminalError::new(
+        "replay_persistence_failed",
+        "durable replay append failed",
+    ));
+    projection.apply_to(&mut run);
+    assert_eq!(run.terminal_projection(), Some(projection.clone()));
+    let round_trip = serde_json::from_value::<RunRecord>(serde_json::to_value(&run).unwrap())
+        .expect("terminal record round trip");
+    assert_eq!(round_trip.terminal_projection(), Some(projection));
+
+    assert_eq!(
+        RunTerminalProjection::try_new(RunStatus::Failed, None, None),
+        Err(RunTerminalProjectionError::MissingFailureDiagnostic)
+    );
+    assert_eq!(
+        RunTerminalProjection::try_new(
+            RunStatus::Completed,
+            None,
+            Some(RunTerminalError::new("unexpected", "unexpected")),
+        ),
+        Err(RunTerminalProjectionError::UnexpectedSuccessDiagnostic)
+    );
+    assert!(matches!(
+        RunTerminalProjection::try_new(RunStatus::Running, None, None),
+        Err(RunTerminalProjectionError::NonTerminalStatus(
+            RunStatus::Running
+        ))
+    ));
+}
+
 #[tokio::test]
 async fn input_parts_are_stable_json_contracts() {
     let input = vec![
@@ -166,6 +212,8 @@ async fn in_memory_store_clears_active_run_for_every_terminal_status() {
         );
 
         run.status = status;
+        run.terminal_error = (status == RunStatus::Failed)
+            .then(|| RunTerminalError::new("test_failure", "test failure"));
         store.append_run(run).await.unwrap();
         let session = store.load_session(&session_id).await.unwrap();
         assert_eq!(session.active_run_id, None);

@@ -17,8 +17,9 @@ use starweaver_session::{
     DurableBackgroundSubagentOwnerLease, DurableBackgroundSubagentResultRef,
     DurableBackgroundSubagentRetentionStatus, HitlResumeAbortOutcome, HitlResumeClaim, InputPart,
     LOCAL_SESSION_NAMESPACE, RelatedRunUpdate, RunEvidenceCommit, RunRecord, RunStatus,
-    SessionDeletionFence, SessionRecord, SessionStatus, SessionStore, SessionStoreError,
-    StreamPublicationTarget, StreamPublicationTargets, ToolApprovalDecision,
+    RunTerminalError, RunTerminalProjection, SessionDeletionFence, SessionRecord, SessionStatus,
+    SessionStore, SessionStoreError, StreamPublicationTarget, StreamPublicationTargets,
+    ToolApprovalDecision,
 };
 use starweaver_stream::{ReplayEvent, ReplayEventKind, ReplayScope};
 
@@ -69,6 +70,147 @@ pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix:
         .commit_run_evidence(source_commit)
         .await
         .expect("exact source evidence retry");
+
+    for (label, status, terminal_error) in [
+        ("failed-without-diagnostic", RunStatus::Failed, None),
+        (
+            "completed-with-diagnostic",
+            RunStatus::Completed,
+            Some(RunTerminalError::new("unexpected", "unexpected")),
+        ),
+        (
+            "active-with-diagnostic",
+            RunStatus::Running,
+            Some(RunTerminalError::new("stale", "stale")),
+        ),
+    ] {
+        let mut invalid = RunRecord::new(
+            session_id.clone(),
+            RunId::from_string(format!("contract-{label}-{suffix}")),
+            ConversationId::new(),
+        );
+        invalid.status = status;
+        invalid.terminal_error = terminal_error;
+        store
+            .append_run(invalid)
+            .await
+            .expect_err("invalid new run state must be rejected");
+    }
+    let mut valid_failure = RunRecord::new(
+        session_id.clone(),
+        RunId::from_string(format!("contract-valid-failure-{suffix}")),
+        ConversationId::new(),
+    );
+    valid_failure.status = RunStatus::Failed;
+    valid_failure.terminal_error = Some(RunTerminalError::new(
+        "contract_failure",
+        "contract failure",
+    ));
+    store
+        .append_run(valid_failure)
+        .await
+        .expect("complete terminal projection must be accepted");
+
+    let admission_session_id =
+        SessionId::from_string(format!("contract-admission-normalization-{suffix}"));
+    let admission_run_id =
+        RunId::from_string(format!("contract-admission-normalization-run-{suffix}"));
+    store
+        .save_session(SessionRecord::new(admission_session_id.clone()))
+        .await
+        .expect("save admission normalization session");
+    let mut stale_terminal_run = RunRecord::new(
+        admission_session_id.clone(),
+        admission_run_id.clone(),
+        ConversationId::new(),
+    );
+    stale_terminal_run.status = RunStatus::Failed;
+    stale_terminal_run.output_preview = Some("secret stale output".to_string());
+    stale_terminal_run.terminal_error = Some(RunTerminalError::new(
+        "stale_failure",
+        "secret stale diagnostic",
+    ));
+    let admission_request = AcquireRunAdmission {
+        run: stale_terminal_run,
+        namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+        host_instance_id: format!("contract-admission-normalization-host-{suffix}"),
+        admission_id: format!("contract-admission-normalization-admission-{suffix}"),
+        lease_expires_at: Utc::now() + chrono::Duration::minutes(1),
+        idempotency_key: format!("contract-admission-normalization-key-{suffix}"),
+        command_fingerprint: format!("contract-admission-normalization-fingerprint-{suffix}"),
+        replaces_waiting_run_id: None,
+        hitl_resume_claim_id: None,
+    };
+    let admitted = store
+        .acquire_run_admission(admission_request.clone())
+        .await
+        .expect("normalize stale terminal projection during admission");
+    assert_eq!(admitted.run.status, RunStatus::Queued);
+    assert_eq!(admitted.run.output_preview, None);
+    assert_eq!(admitted.run.terminal_error, None);
+    assert_eq!(
+        store
+            .load_run(&admission_session_id, &admission_run_id)
+            .await
+            .expect("load normalized admitted run"),
+        admitted.run
+    );
+    let admission_replay = store
+        .acquire_run_admission(admission_request)
+        .await
+        .expect("exact admission retry returns normalized durable receipt");
+    assert!(admission_replay.idempotent_replay);
+    assert_eq!(admission_replay.run, admitted.run);
+
+    for (label, status, code, message) in [
+        (
+            "failed",
+            RunStatus::Failed,
+            "legacy_status_update_failed",
+            "run failed",
+        ),
+        (
+            "cancelled",
+            RunStatus::Cancelled,
+            "legacy_status_update_cancelled",
+            "run cancelled",
+        ),
+    ] {
+        let legacy_session_id =
+            SessionId::from_string(format!("contract-legacy-{label}-session-{suffix}"));
+        let legacy_run_id = RunId::from_string(format!("contract-legacy-{label}-run-{suffix}"));
+        store
+            .save_session(SessionRecord::new(legacy_session_id.clone()))
+            .await
+            .expect("save legacy status session");
+        store
+            .append_run(RunRecord::new(
+                legacy_session_id.clone(),
+                legacy_run_id.clone(),
+                ConversationId::new(),
+            ))
+            .await
+            .expect("append legacy status run");
+        store
+            .update_run_status(
+                &legacy_session_id,
+                &legacy_run_id,
+                status,
+                Some("secret caller-provided failure text".to_string()),
+            )
+            .await
+            .expect("apply safe legacy status update");
+        let updated = store
+            .load_run(&legacy_session_id, &legacy_run_id)
+            .await
+            .expect("load safely updated legacy run");
+        assert_eq!(updated.status, status);
+        assert_eq!(updated.output_preview, None);
+        assert_eq!(
+            updated.terminal_error,
+            Some(RunTerminalError::new(code, message))
+        );
+    }
 
     let pending = store
         .pending_stream_publications(&session_id)
@@ -543,7 +685,10 @@ pub async fn assert_atomic_hitl_replacement_admission_contract(
         None
     );
     store
-        .finalize_run_admission(&receipt.lease, RunStatus::Failed, None)
+        .finalize_run_admission(
+            &receipt.lease,
+            RunTerminalProjection::failed(RunTerminalError::new("test_failure", "test failure")),
+        )
         .await
         .expect("release aborted replacement admission");
     assert!(
@@ -900,8 +1045,10 @@ pub async fn assert_terminal_evidence_admission_cleanup_contract(
     let finalized = store
         .finalize_run_admission(
             &receipt.lease,
-            RunStatus::Failed,
-            Some("process-local cleanup failure".to_string()),
+            RunTerminalProjection::failed(RunTerminalError::new(
+                "process_local_cleanup_failed",
+                "process-local cleanup failure",
+            )),
         )
         .await
         .expect("cleanup must release the matching lease without replacing terminal evidence");
@@ -920,8 +1067,7 @@ pub async fn assert_terminal_evidence_admission_cleanup_contract(
     let exact_retry = store
         .finalize_run_admission(
             &receipt.lease,
-            RunStatus::Completed,
-            Some("authoritative result".to_string()),
+            RunTerminalProjection::completed(Some("authoritative result".to_string())),
         )
         .await
         .expect("exact terminal cleanup retry is idempotent");
@@ -929,11 +1075,68 @@ pub async fn assert_terminal_evidence_admission_cleanup_contract(
     store
         .finalize_run_admission(
             &receipt.lease,
-            RunStatus::Failed,
-            Some("process-local cleanup failure".to_string()),
+            RunTerminalProjection::failed(RunTerminalError::new(
+                "process_local_cleanup_failed",
+                "process-local cleanup failure",
+            )),
         )
         .await
         .expect_err("released admission cannot rewrite authoritative terminal evidence");
+
+    let failed_session_id = SessionId::from_string(format!("terminal-error-session-{suffix}"));
+    let failed_run_id = RunId::from_string(format!("terminal-error-run-{suffix}"));
+    store
+        .save_session(SessionRecord::new(failed_session_id.clone()))
+        .await
+        .expect("save terminal error session");
+    let failed_receipt = store
+        .acquire_run_admission(AcquireRunAdmission {
+            run: RunRecord::new(
+                failed_session_id,
+                failed_run_id,
+                ConversationId::from_string(format!("terminal-error-conversation-{suffix}")),
+            ),
+            namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+            host_instance_id: format!("terminal-error-host-{suffix}"),
+            admission_id: format!("terminal-error-admission-{suffix}"),
+            lease_expires_at: Utc::now() + chrono::Duration::minutes(1),
+            idempotency_key: format!("terminal-error-key-{suffix}"),
+            command_fingerprint: format!("terminal-error-fingerprint-{suffix}"),
+            replaces_waiting_run_id: None,
+            hitl_resume_claim_id: None,
+        })
+        .await
+        .expect("acquire terminal error admission");
+    let failed_projection = RunTerminalProjection::failed(RunTerminalError::new(
+        "replay_persistence_failed",
+        "durable replay append failed",
+    ));
+    let failed = store
+        .finalize_run_admission(&failed_receipt.lease, failed_projection.clone())
+        .await
+        .expect("persist complete failed terminal projection");
+    assert_eq!(
+        failed.terminal_projection(),
+        Some(failed_projection.clone())
+    );
+    assert_eq!(failed.output_preview, None);
+    assert_eq!(
+        store
+            .finalize_run_admission(&failed_receipt.lease, failed_projection)
+            .await
+            .expect("exact failed projection retry is idempotent"),
+        failed
+    );
+    store
+        .finalize_run_admission(
+            &failed_receipt.lease,
+            RunTerminalProjection::failed(RunTerminalError::new(
+                "different_failure",
+                "different failure",
+            )),
+        )
+        .await
+        .expect_err("a conflicting failed projection cannot rewrite durable evidence");
 }
 
 async fn assert_waiting_source_is_still_active(

@@ -227,7 +227,10 @@ all_sessions_interval_hours = 1
                 .remove(starweaver_storage::RunEvidenceCommit::DIGEST_METADATA_KEY);
             run.created_at = old;
             run.updated_at = old;
-            storage.begin_run(run.clone()).unwrap();
+            storage
+                .session_store()
+                .append_run_allocated(run.clone())
+                .unwrap();
             storage
                 .commit_run_evidence(starweaver_storage::RunEvidenceCommit::new(
                     run,

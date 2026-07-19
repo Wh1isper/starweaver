@@ -1245,7 +1245,7 @@ async fn builder_fallback_cleanup_closes_toolsets_after_run_complete_hook_failur
     assert!(context.events.events().iter().any(|event| {
         event.kind == "run_failed"
             && event.payload["error_kind"] == "capability_error"
-            && event.payload["message"] == "capability error: run-complete hook failed"
+            && event.payload["message"] == "agent capability failed"
     }));
 }
 
