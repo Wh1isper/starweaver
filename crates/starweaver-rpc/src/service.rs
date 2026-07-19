@@ -2652,14 +2652,30 @@ mod tests {
             .response
             .unwrap();
         assert_eq!(awaited["result"]["status"]["status"], "completed");
-        let detached = connection
-            .handle_text(&request(
-                4,
-                "environment.detach",
-                json!({"attachmentLeaseId": lease_id}),
-            ))
-            .response
-            .unwrap();
+        let detach_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let detached = loop {
+            let detached = connection
+                .handle_text(&request(
+                    4,
+                    "environment.detach",
+                    json!({"attachmentLeaseId": lease_id}),
+                ))
+                .response
+                .unwrap();
+            if detached.get("error").is_none() {
+                break detached;
+            }
+            assert_eq!(
+                detached["error"]["code"],
+                starweaver_rpc_core::RUN_CONFLICT,
+                "detach failed for an unexpected reason: {detached}"
+            );
+            assert!(
+                std::time::Instant::now() < detach_deadline,
+                "lease remained active after terminal run cleanup: {detached}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
         assert_eq!(detached["result"]["detached"], true);
 
         let replay = connection

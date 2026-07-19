@@ -3919,6 +3919,25 @@ mod tests {
     // run-await limits remain owned by the RPC service policy.
     const TEST_RUN_COMPLETION_TIMEOUT: Duration = Duration::from_secs(30);
 
+    async fn await_run_worker_finalized(
+        coordinator: &RpcRuntimeCoordinator,
+        session_id: &SessionId,
+        run_id: &RunId,
+    ) {
+        let target = RpcRuntimeCoordinator::target(session_id, run_id);
+        let completed = tokio::time::timeout(TEST_RUN_COMPLETION_TIMEOUT, async {
+            loop {
+                coordinator.reap_finished_tasks().await.unwrap();
+                if !coordinator.tasks.lock().unwrap().contains_key(&target) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await;
+        assert!(completed.is_ok(), "run worker finalizer did not complete");
+    }
+
     fn local_attachment(id: &str, is_default: bool) -> EnvironmentAttachmentRef {
         EnvironmentAttachmentRef {
             id: id.to_string(),
@@ -5168,6 +5187,7 @@ mod tests {
             .load_run(&parent.session_id, &parent.run_id)
             .await
             .unwrap();
+        await_run_worker_finalized(&coordinator, &parent.session_id, &parent.run_id).await;
         let intervening = coordinator
             .start(RpcRunRequest {
                 durable_input: vec![InputPart::text("intervening input")],
@@ -5191,6 +5211,8 @@ mod tests {
             )
             .await
             .unwrap();
+        await_run_worker_finalized(&coordinator, &intervening.session_id, &intervening.run_id)
+            .await;
         let now = chrono::Utc::now();
         let attempt_id = SubagentAttemptId::from_string("rpc-background-attempt");
         let child_run_id = RunId::from_string("rpc-background-child");
