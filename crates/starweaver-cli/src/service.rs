@@ -16,7 +16,10 @@ use std::{
 
 use chrono::Utc;
 use serde_json::{Value, json};
-use starweaver_agent::ResumableState;
+use starweaver_agent::{
+    ContinuationMaterialization, ResolvedAgentMaterialization, ResumableState,
+    environment_binding_class,
+};
 use starweaver_core::{RunId, SessionId, sdk_name};
 use starweaver_oauth_provider::create_oauth_refresh_supervisor_for_models_with_options;
 use starweaver_runtime::AgentStreamRecord;
@@ -32,7 +35,8 @@ use crate::{
         ApprovalCommand, ApprovalDecisionCommand, ApprovalListCommand, Cli, CliCommand,
         DeferredCommand, DeferredCompleteCommand, DeferredFailCommand, DeferredListCommand,
         OutputMode, ResumeCommand, RunCommand, SessionCommand, SessionSearchCommand,
-        SessionSearchGranularityArg, SessionSearchSourceArg, SessionSearchStatusArg, TuiCommand,
+        SessionSearchGranularityArg, SessionSearchSourceArg, SessionSearchStatusArg,
+        StorageCommand, StorageImportLegacyCommand, TuiCommand,
     },
     config::{
         CliConfig, read_current_session, read_last_retention_maintenance, write_current_session,
@@ -80,6 +84,7 @@ pub(super) struct PromptRunExecution {
     pub(super) status: String,
     pub(super) output_mode: OutputMode,
     pub(super) messages: Vec<DisplayMessage>,
+    pub(super) continuation: Option<ContinuationMaterialization>,
 }
 
 pub(super) struct PreparedPromptRun {
@@ -127,6 +132,7 @@ enum HitlResumeClaimOperation {
 
 const PROJECT_GUIDANCE_TAG: &str = "project-guidance";
 const USER_RULES_TAG: &str = "user-rules";
+const CLI_AGENT_POLICY_VERSION: &str = "cli-agent-policy-v1";
 
 fn restore_requires_hitl_claim(status: RunStatus, hitl_resume: bool, branch_from: bool) -> bool {
     status == RunStatus::Waiting && !hitl_resume && !branch_from
@@ -358,6 +364,18 @@ impl CliRunAdmission {
         Ok(())
     }
 
+    fn current_lease(&self) -> CliResult<RunAdmissionLease> {
+        if self.lost.load(Ordering::Acquire) {
+            return Err(CliError::Run(
+                "run admission lease was lost before evidence commit".to_string(),
+            ));
+        }
+        self.lease
+            .lock()
+            .map_err(|error| CliError::Storage(error.to_string()))
+            .map(|lease| lease.clone())
+    }
+
     fn release(&self, store: &LocalStore) -> CliResult<()> {
         if self.released.swap(true, Ordering::AcqRel) {
             return Ok(());
@@ -415,6 +433,7 @@ impl CliService {
                 run: cli.run.clone(),
                 branch_from: cli.branch_from.clone(),
                 profile: cli.profile.clone(),
+                continuation_mode: cli.continuation_mode,
                 output: cli.output,
                 hitl: cli.hitl,
                 goal: None,
@@ -447,6 +466,7 @@ impl CliService {
             CliCommand::Update(command) => Self::update(&command),
             CliCommand::Run(command) => self.run_prompt(&command),
             CliCommand::Session { command } => self.session(command),
+            CliCommand::Storage { command } => self.storage(command),
             CliCommand::Profile { command } => self.profile(command),
             CliCommand::Setup(command) => self.setup(&command),
             CliCommand::Auth { command } => Self::auth(command),
@@ -467,13 +487,19 @@ impl CliService {
     pub(crate) fn run_prompt(&mut self, command: &RunCommand) -> CliResult<String> {
         let execution = self.execute_prompt_run(command, None)?;
         match execution.output_mode {
-            OutputMode::Text => Ok(render_display_text(&execution.messages)),
+            OutputMode::Text => {
+                let output = render_display_text(&execution.messages);
+                Ok(continuation_drift_prefix(execution.continuation.as_ref()) + &output)
+            }
             OutputMode::DisplayJsonl => render_display_jsonl(&execution.messages),
             OutputMode::AguiJsonl => render_agui_jsonl(&execution.messages),
             OutputMode::Json => render_prompt_run_json(&execution),
             OutputMode::Silent => Ok(format!(
-                "session_id={}\nrun_id={}\nstatus={}\n",
-                execution.session_id, execution.run_id, execution.status
+                "{}session_id={}\nrun_id={}\nstatus={}\n",
+                continuation_drift_prefix(execution.continuation.as_ref()),
+                execution.session_id,
+                execution.run_id,
+                execution.status
             )),
         }
     }
@@ -668,6 +694,55 @@ impl CliService {
                 "run {source_run_id} is waiting and requires an explicit HITL resume"
             )));
         }
+        let binding_class = environment_binding_class(environment.attachments.iter().map(|item| {
+            (
+                item.kind.clone(),
+                match item.resolved_mode() {
+                    starweaver_rpc_core::EnvironmentAttachmentAccessMode::ReadOnly => "read_only",
+                    starweaver_rpc_core::EnvironmentAttachmentAccessMode::ReadWrite => "read_write",
+                }
+                .to_string(),
+            )
+        }));
+        let materialization = resolved_profile
+            .spec
+            .resolved_materialization(
+                &resolved_profile.registry,
+                CLI_AGENT_POLICY_VERSION,
+                binding_class,
+            )
+            .map_err(|error| CliError::Config(error.to_string()))?;
+        let continuation = restore_from
+            .as_deref()
+            .map(|source_run_id| {
+                let source = self.store()?.load_run(&session_id, source_run_id)?;
+                let source_materialization =
+                    ResolvedAgentMaterialization::from_metadata(&source.metadata)
+                        .map_err(|error| CliError::Run(error.to_string()))?;
+                let assessment = ContinuationMaterialization::assess(
+                    source_materialization.as_ref(),
+                    &materialization,
+                    command.continuation_mode.into(),
+                );
+                if !assessment.allowed {
+                    return Err(CliError::Run(format!(
+                        "continuation materialization mode {} rejected drift: {}; retry with --continuation-mode compatible or switch after review",
+                        assessment.mode.as_str(),
+                        assessment.drift_summary()
+                    )));
+                }
+                Ok(assessment)
+            })
+            .transpose()?;
+        let mut admission_metadata = serde_json::Map::new();
+        materialization
+            .insert_into(&mut admission_metadata)
+            .map_err(CliError::from)?;
+        if let Some(continuation) = continuation.as_ref() {
+            continuation
+                .insert_into(&mut admission_metadata)
+                .map_err(CliError::from)?;
+        }
         write_current_session(&self.config, &session_id)?;
         self.reject_ordinary_admission_during_waiting_continuation(
             &session_id,
@@ -693,8 +768,12 @@ impl CliService {
             prompt,
             restore_from,
             &resolved_profile.name,
+            admission_metadata,
             &host_instance_id,
             hitl_resume_source_run_id,
+            hitl_resume_claim
+                .as_ref()
+                .map(|claim| claim.claim_id.clone()),
         ) {
             Ok(admitted) => admitted,
             Err(error) => {
@@ -892,9 +971,14 @@ impl CliService {
         admission: &CliRunAdmission,
     ) -> CliResult<()> {
         admission.refresh()?;
+        let lease = admission.current_lease()?;
         let messages = failed_display_message(&run, &error.to_string());
-        self.store()?
-            .fail_run_with_messages(&mut run, error.to_string(), &messages)?;
+        self.store()?.fail_run_with_messages_fenced(
+            &mut run,
+            error.to_string(),
+            &messages,
+            &lease,
+        )?;
         admission.release(self.store()?)
     }
 
@@ -911,9 +995,19 @@ impl CliService {
         admission.refresh()?;
         let execution_failed = execution.artifacts.status == RunStatus::Failed;
         let output = execution.output;
-        let messages = self
-            .store()?
-            .complete_run(&mut run, output.clone(), execution.artifacts)?;
+        let continuation = run
+            .metadata
+            .get(starweaver_agent::AGENT_CONTINUATION_METADATA_KEY)
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?;
+        let lease = admission.current_lease()?;
+        let messages = self.store()?.complete_run_fenced(
+            &mut run,
+            output.clone(),
+            execution.artifacts,
+            &lease,
+        )?;
         admission.release(self.store()?)?;
         if execution_failed && matches!(output_mode, OutputMode::Text | OutputMode::Silent) {
             return Err(CliError::Run(output));
@@ -925,6 +1019,7 @@ impl CliService {
             status: run_status_name(run.status).to_string(),
             output_mode,
             messages,
+            continuation,
         })
     }
 
@@ -999,6 +1094,56 @@ impl CliService {
             .store()?
             .create_session(profile, Some("CLI session".to_string()))?;
         Ok((session.session_id.as_str().to_string(), true))
+    }
+
+    fn storage(&mut self, command: StorageCommand) -> CliResult<String> {
+        match command {
+            StorageCommand::ImportLegacy(command) => self.import_legacy_database(command),
+        }
+    }
+
+    fn import_legacy_database(&mut self, command: StorageImportLegacyCommand) -> CliResult<String> {
+        let source = command
+            .source
+            .unwrap_or_else(|| self.config.project_dir.join("starweaver.sqlite"));
+        let workspace = command
+            .workspace
+            .unwrap_or_else(|| self.config.workspace_root.clone());
+        let report = self.store()?.import_legacy_database(&source, &workspace)?;
+        match command.output {
+            OutputMode::Text => Ok(format!(
+                "source={}\nworkspace={}\nsessions_imported={}\nrows_imported={}\nstatus={}\n",
+                report.source_path.display(),
+                report.workspace,
+                report.sessions_imported,
+                report.rows_imported,
+                if report.imported {
+                    "imported"
+                } else {
+                    "unchanged"
+                }
+            )),
+            OutputMode::DisplayJsonl | OutputMode::AguiJsonl | OutputMode::Json => Ok(format!(
+                "{}\n",
+                serde_json::to_string(&json!({
+                    "sourcePath": report.source_path,
+                    "workspace": report.workspace,
+                    "sessionsImported": report.sessions_imported,
+                    "rowsImported": report.rows_imported,
+                    "imported": report.imported,
+                }))?
+            )),
+            OutputMode::Silent => Ok(format!(
+                "sessions_imported={}\nrows_imported={}\nstatus={}\n",
+                report.sessions_imported,
+                report.rows_imported,
+                if report.imported {
+                    "imported"
+                } else {
+                    "unchanged"
+                }
+            )),
+        }
     }
 
     fn session(&mut self, command: SessionCommand) -> CliResult<String> {
@@ -1189,6 +1334,7 @@ impl CliService {
             run: Some(source_run.run_id.as_str().to_string()),
             branch_from: None,
             profile: source_run.profile.clone(),
+            continuation_mode: command.continuation_mode,
             output: command.output,
             hitl: command.hitl,
             goal: None,
@@ -1236,6 +1382,18 @@ impl CliService {
             .ok_or_else(|| CliError::NotFound("run".to_string()))?;
         self.store()?.load_run(session_id, run_id.as_str())
     }
+}
+
+fn continuation_drift_prefix(continuation: Option<&ContinuationMaterialization>) -> String {
+    continuation
+        .filter(|item| !item.drift.is_empty())
+        .map_or_else(String::new, |item| {
+            format!(
+                "materialization_drift mode={} fields={}\n",
+                item.mode.as_str(),
+                item.drift_summary()
+            )
+        })
 }
 
 fn run_hitl_resume_claim_operation(

@@ -11,6 +11,8 @@ use starweaver_context::{
 };
 use starweaver_core::SessionId;
 
+use crate::RunAdmissionLease;
+
 pub use contract::{SessionFilter, SessionStore};
 pub use memory::InMemorySessionStore;
 
@@ -19,13 +21,32 @@ pub use memory::InMemorySessionStore;
 pub struct SessionStoreExecutor {
     store: Arc<dyn SessionStore>,
     session_id: SessionId,
+    admission_lease: Option<RunAdmissionLease>,
 }
 
 impl SessionStoreExecutor {
     /// Create a checkpoint executor for one session.
     #[must_use]
     pub fn new(store: Arc<dyn SessionStore>, session_id: SessionId) -> Self {
-        Self { store, session_id }
+        Self {
+            store,
+            session_id,
+            admission_lease: None,
+        }
+    }
+
+    /// Create a checkpoint executor fenced to one active run admission.
+    #[must_use]
+    pub fn new_fenced(
+        store: Arc<dyn SessionStore>,
+        session_id: SessionId,
+        admission_lease: RunAdmissionLease,
+    ) -> Self {
+        Self {
+            store,
+            session_id,
+            admission_lease: Some(admission_lease),
+        }
     }
 
     /// Return the session id associated with this executor.
@@ -41,9 +62,15 @@ impl AgentExecutor for SessionStoreExecutor {
         &self,
         checkpoint: AgentCheckpoint,
     ) -> Result<AgentExecutionDecision, AgentExecutorError> {
-        self.store
-            .commit_checkpoint(&self.session_id, checkpoint)
-            .await?;
+        if let Some(lease) = self.admission_lease.as_ref() {
+            self.store
+                .commit_checkpoint_fenced(lease, checkpoint)
+                .await?;
+        } else {
+            self.store
+                .commit_checkpoint(&self.session_id, checkpoint)
+                .await?;
+        }
         Ok(AgentExecutionDecision::Continue)
     }
 }

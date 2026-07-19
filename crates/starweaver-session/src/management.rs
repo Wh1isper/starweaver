@@ -573,6 +573,12 @@ pub struct AcquireRunAdmission {
     /// and must also restore from that same waiting run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaces_waiting_run_id: Option<RunId>,
+    /// Preflight HITL claim transitioned to `Started` atomically with waiting replacement.
+    ///
+    /// This must be present exactly when `replaces_waiting_run_id` is present. Ordinary
+    /// admissions leave both fields unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hitl_resume_claim_id: Option<String>,
 }
 
 /// Result of admission or an exact retry.

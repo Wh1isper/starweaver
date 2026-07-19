@@ -54,6 +54,7 @@ starweaver-stream.workspace = true
 starweaver-rpc-core.workspace = true
 starweaver-tools.workspace = true
 thiserror.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 toml.workspace = true
 uuid.workspace = true

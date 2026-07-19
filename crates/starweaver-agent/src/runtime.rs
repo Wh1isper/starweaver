@@ -1,6 +1,9 @@
 //! SDK runtime builder and owned runtime facade.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use chrono::Utc;
 use starweaver_context::{AgentContext, ModelConfig, ResumableState, SecurityConfig, ToolConfig};
@@ -17,7 +20,7 @@ use starweaver_runtime::{
 };
 use starweaver_session::{
     EnvironmentStateRef, HitlResumeClaim, InputPart, PendingStreamPublication, RelatedRunUpdate,
-    RunEvidenceCommit, RunRecord, RunStatus as SessionRunStatus, SessionRecord,
+    RunAdmissionLease, RunEvidenceCommit, RunRecord, RunStatus as SessionRunStatus, SessionRecord,
     SessionResumeSnapshot, SessionStore, SessionStoreError, SessionStoreExecutor, StreamCursorRef,
     StreamPublicationTarget, StreamPublicationTargets, ToolReturnRecordInput,
 };
@@ -112,8 +115,11 @@ pub enum AgentDurabilityError {
 struct AgentDurability {
     session_id: SessionId,
     session_store: Arc<dyn SessionStore>,
+    admission_lease: Option<RunAdmissionLease>,
     stream_archive: Option<Arc<dyn StreamArchive>>,
     replay_event_log: Option<Arc<dyn ReplayEventLog>>,
+    retain_terminal_replay_evidence: bool,
+    terminal_replay_sequence: Option<Arc<AtomicUsize>>,
     projector: Arc<dyn DisplayMessageProjector>,
 }
 
@@ -122,8 +128,11 @@ impl AgentDurability {
         Self {
             session_id,
             session_store,
+            admission_lease: None,
             stream_archive: None,
             replay_event_log: None,
+            retain_terminal_replay_evidence: false,
+            terminal_replay_sequence: None,
             projector: Arc::new(DefaultDisplayMessageProjector),
         }
     }
@@ -133,8 +142,23 @@ impl AgentDurability {
         self
     }
 
+    fn admission_lease(mut self, lease: RunAdmissionLease) -> Self {
+        self.admission_lease = Some(lease);
+        self
+    }
+
     fn replay_event_log(mut self, replay_event_log: Arc<dyn ReplayEventLog>) -> Self {
         self.replay_event_log = Some(replay_event_log);
+        self
+    }
+
+    const fn retain_terminal_replay_evidence(mut self) -> Self {
+        self.retain_terminal_replay_evidence = true;
+        self
+    }
+
+    fn terminal_replay_sequence(mut self, sequence: Arc<AtomicUsize>) -> Self {
+        self.terminal_replay_sequence = Some(sequence);
         self
     }
 }
@@ -148,8 +172,11 @@ pub struct AgentRuntimeBuilder {
     security: Option<SecurityConfig>,
     durable_session_id: Option<SessionId>,
     session_store: Option<Arc<dyn SessionStore>>,
+    admission_lease: Option<RunAdmissionLease>,
     stream_archive: Option<Arc<dyn StreamArchive>>,
     replay_event_log: Option<Arc<dyn ReplayEventLog>>,
+    retain_terminal_replay_evidence: bool,
+    terminal_replay_sequence: Option<Arc<AtomicUsize>>,
 }
 
 impl AgentRuntimeBuilder {
@@ -164,8 +191,11 @@ impl AgentRuntimeBuilder {
             security: None,
             durable_session_id: None,
             session_store: None,
+            admission_lease: None,
             stream_archive: None,
             replay_event_log: None,
+            retain_terminal_replay_evidence: false,
+            terminal_replay_sequence: None,
         }
     }
 
@@ -180,8 +210,11 @@ impl AgentRuntimeBuilder {
             security: None,
             durable_session_id: None,
             session_store: None,
+            admission_lease: None,
             stream_archive: None,
             replay_event_log: None,
+            retain_terminal_replay_evidence: false,
+            terminal_replay_sequence: None,
         }
     }
 
@@ -447,6 +480,13 @@ impl AgentRuntimeBuilder {
         self
     }
 
+    /// Fence durable checkpoint, evidence, and finalization writes to one run admission lease.
+    #[must_use]
+    pub fn admission_lease(mut self, lease: RunAdmissionLease) -> Self {
+        self.admission_lease = Some(lease);
+        self
+    }
+
     /// Bind a stream archive for raw runtime records and projected display messages.
     #[must_use]
     pub fn stream_archive(mut self, archive: Arc<dyn StreamArchive>) -> Self {
@@ -458,6 +498,27 @@ impl AgentRuntimeBuilder {
     #[must_use]
     pub fn replay_event_log(mut self, log: Arc<dyn ReplayEventLog>) -> Self {
         self.replay_event_log = Some(log);
+        self
+    }
+
+    /// Retain only terminal display and typed replay events in the final evidence transaction.
+    ///
+    /// This is intended for hosts that durably publish non-terminal replay events while a run is
+    /// active. It lets the terminal cursor and final run status share one atomic commit without
+    /// creating a second replay sink or publication outbox.
+    #[must_use]
+    pub const fn retain_terminal_replay_evidence(mut self) -> Self {
+        self.retain_terminal_replay_evidence = true;
+        self
+    }
+
+    /// Use a host-owned next replay sequence for atomically retained terminal evidence.
+    ///
+    /// Hosts that interleave lifecycle events with display events must provide their shared next
+    /// event sequence so terminal evidence follows every event already committed for the run.
+    #[must_use]
+    pub fn terminal_replay_sequence(mut self, sequence: Arc<AtomicUsize>) -> Self {
+        self.terminal_replay_sequence = Some(sequence);
         self
     }
 
@@ -508,16 +569,34 @@ impl AgentRuntimeBuilder {
                         .and_then(|state| durable_session_id_from_metadata(&state.metadata))
                 })
                 .unwrap_or_default();
-            self.builder = self.builder.executor(Arc::new(SessionStoreExecutor::new(
-                store.clone(),
-                session_id.clone(),
-            )));
+            self.builder = if let Some(lease) = self.admission_lease.clone() {
+                self.builder
+                    .executor(Arc::new(SessionStoreExecutor::new_fenced(
+                        store.clone(),
+                        session_id.clone(),
+                        lease,
+                    )))
+            } else {
+                self.builder.executor(Arc::new(SessionStoreExecutor::new(
+                    store.clone(),
+                    session_id.clone(),
+                )))
+            };
             let mut durability = AgentDurability::new(session_id, store);
+            if let Some(lease) = self.admission_lease {
+                durability = durability.admission_lease(lease);
+            }
             if let Some(stream_archive) = self.stream_archive.clone() {
                 durability = durability.stream_archive(stream_archive);
             }
             if let Some(replay_event_log) = self.replay_event_log.clone() {
                 durability = durability.replay_event_log(replay_event_log);
+            }
+            if self.retain_terminal_replay_evidence {
+                durability = durability.retain_terminal_replay_evidence();
+            }
+            if let Some(sequence) = self.terminal_replay_sequence {
+                durability = durability.terminal_replay_sequence(sequence);
             }
             Some(durability)
         } else {
@@ -967,6 +1046,131 @@ impl AgentRuntime {
             .try_stream_with_run_and_stream_options(prompt, options, stream_options)
     }
 
+    /// Wait for a HITL continuation stream and atomically consume its source claim.
+    ///
+    /// The source waiting run, resolved approval/deferred records, and continuation
+    /// evidence are committed in one fenced transaction. A failed persistence leaves
+    /// the started claim fail-closed so approved tool effects cannot be repeated.
+    ///
+    /// # Errors
+    ///
+    /// Returns stream errors from the live handle or durable persistence errors.
+    pub async fn finish_hitl_stream(
+        &mut self,
+        input: impl Into<starweaver_runtime::AgentInput>,
+        handle: AgentStreamHandle,
+        snapshot: &SessionResumeSnapshot,
+        results: &AgentHitlResults,
+        claim_id: String,
+    ) -> Result<crate::AgentLiveStreamResult, AgentDurabilityError> {
+        let input = input.into();
+        self.ensure_durable_session().await?;
+        let fallback_pending_tool_returns = self.session.pending_hitl_tool_returns();
+        let completion = handle.complete().await;
+        let (approvals, deferred_tools) = resolved_hitl_records(snapshot, results);
+        if let Some(result) = completion.result {
+            self.session.replace_context(result.context.clone());
+            self.session.record_result(&result.result);
+            let stream = result.into_stream_result();
+            let mut source_update = RelatedRunUpdate::new(
+                snapshot.run.run_id.clone(),
+                SessionRunStatus::Waiting,
+                SessionRunStatus::Completed,
+            );
+            source_update.resume_claim_id = Some(claim_id);
+            source_update.output_preview = Some(format!(
+                "resumed in {}",
+                stream.result.state.run_id.as_str()
+            ));
+            source_update.approvals = approvals;
+            source_update.deferred_tools = deferred_tools;
+            self.persist_stream_result(
+                &input,
+                &stream,
+                Some(snapshot.run.run_id.clone()),
+                Some(source_update),
+            )
+            .await?;
+            return Ok(crate::AgentLiveStreamResult {
+                result: stream.result,
+                context: self.session.context().clone(),
+                events: stream.events,
+            });
+        }
+        let source_status = completion
+            .error
+            .as_ref()
+            .map_or(SessionRunStatus::Failed, |error| {
+                session_run_status(live_stream_error_run_status(error))
+            });
+        let mut source_update = RelatedRunUpdate::new(
+            snapshot.run.run_id.clone(),
+            SessionRunStatus::Waiting,
+            source_status,
+        );
+        source_update.resume_claim_id = Some(claim_id);
+        source_update.output_preview = Some("continuation failed".to_string());
+        source_update.approvals = approvals;
+        source_update.deferred_tools = deferred_tools;
+        self.persist_stream_failure(
+            &input,
+            &completion,
+            &fallback_pending_tool_returns,
+            Some(snapshot.run.run_id.clone()),
+            Some(source_update),
+        )
+        .await?;
+        Err(AgentDurabilityError::Stream(
+            completion.error.unwrap_or_else(|| {
+                AgentStreamError::Join("stream completed without result".into())
+            }),
+        ))
+    }
+
+    /// Persist a pre-stream HITL injection failure and consume the started source claim.
+    ///
+    /// Use this only after the resume claim is marked started. The failure commit is
+    /// admission-fenced and terminalizes both the continuation and source waiting run.
+    ///
+    /// # Errors
+    ///
+    /// Returns durable persistence failures. On failure the source claim remains
+    /// fail-closed and must not be released or retried automatically.
+    pub async fn persist_hitl_injection_failure(
+        &mut self,
+        snapshot: &SessionResumeSnapshot,
+        results: &AgentHitlResults,
+        claim_id: String,
+        message: impl Into<String>,
+    ) -> Result<(), AgentDurabilityError> {
+        let message = message.into();
+        let (approvals, deferred_tools) = resolved_hitl_records(snapshot, results);
+        let mut source_update = RelatedRunUpdate::new(
+            snapshot.run.run_id.clone(),
+            SessionRunStatus::Waiting,
+            SessionRunStatus::Failed,
+        );
+        source_update.resume_claim_id = Some(claim_id);
+        source_update.output_preview = Some("continuation injection failed".to_string());
+        source_update.approvals = approvals;
+        source_update.deferred_tools = deferred_tools;
+        let completion = AgentStreamCompletion {
+            result: None,
+            error: Some(AgentStreamError::Join(message)),
+            state: self.session.export_full_state(),
+            events: Vec::new(),
+        };
+        let fallback_pending_tool_returns = self.session.pending_hitl_tool_returns();
+        self.persist_stream_failure(
+            &starweaver_runtime::AgentInput::text(""),
+            &completion,
+            &fallback_pending_tool_returns,
+            Some(snapshot.run.run_id.clone()),
+            Some(source_update),
+        )
+        .await
+    }
+
     /// Wait for a live stream to finish and persist its durable records.
     ///
     /// The `input` value must match the prompt used to start the handle. It is
@@ -1073,11 +1277,15 @@ impl AgentRuntime {
                 serde_json::json!(agent.agent_name),
             );
         }
-        durability
-            .session_store
-            .save_session(record)
-            .await
-            .map_err(|error| agent_error_from_session_store(&error))?;
+        if durability.admission_lease.is_none() {
+            durability
+                .session_store
+                .save_session(record)
+                .await
+                .map_err(|error| agent_error_from_session_store(&error))?;
+        }
+        // An admitted runtime must not perform an unfenced session snapshot write. Its complete
+        // state is persisted by the fenced evidence commit after execution.
         // Retry older publications before admitting another durable run. Sink outages do not
         // invalidate already committed evidence, so unresolved batches remain queued.
         let _ = flush_pending_stream_publications(durability).await;
@@ -1167,17 +1375,22 @@ impl AgentRuntime {
             durability.replay_event_log.is_some(),
         );
         commit.related_run_updates.extend(related_run_update);
-        durability
-            .session_store
-            .commit_run_evidence(commit)
-            .await
-            .map_err(|error| agent_error_from_session_store(&error))?;
+        let committed = if let Some(lease) = durability.admission_lease.as_ref() {
+            durability
+                .session_store
+                .commit_run_evidence_fenced(lease, commit)
+                .await
+        } else {
+            durability.session_store.commit_run_evidence(commit).await
+        };
+        committed.map_err(|error| agent_error_from_session_store(&error))?;
         // Evidence is complete once the transaction commits. External sink delivery is an
         // idempotent outbox concern and must not make callers repeat model or tool side effects.
         let _ = flush_pending_stream_publications(&durability).await;
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn persist_stream_failure(
         &mut self,
         input: &starweaver_runtime::AgentInput,
@@ -1280,7 +1493,14 @@ impl AgentRuntime {
             durability.replay_event_log.is_some(),
         );
         commit.related_run_updates.extend(related_run_update);
-        durability.session_store.commit_run_evidence(commit).await?;
+        if let Some(lease) = durability.admission_lease.as_ref() {
+            durability
+                .session_store
+                .commit_run_evidence_fenced(lease, commit)
+                .await?;
+        } else {
+            durability.session_store.commit_run_evidence(commit).await?;
+        }
         let _ = flush_pending_stream_publications(&durability).await;
         Ok(())
     }
@@ -1449,6 +1669,9 @@ fn resolved_hitl_records(
                 .approvals
                 .get(&record.action_id)
                 .or_else(|| results.approvals.get(&record.approval_id))?;
+            if record.status != starweaver_session::ApprovalStatus::Pending {
+                return Some(record.clone());
+            }
             let mut record = record.clone();
             let approval_decision = decision.clone().into_approval_decision();
             record.status = approval_decision.status;
@@ -1466,6 +1689,14 @@ fn resolved_hitl_records(
                 .results
                 .iter()
                 .find(|result| result.deferred_id == record.deferred_id)?;
+            if matches!(
+                record.status,
+                starweaver_session::ExecutionStatus::Completed
+                    | starweaver_session::ExecutionStatus::Failed
+                    | starweaver_session::ExecutionStatus::Cancelled
+            ) {
+                return Some(record.clone());
+            }
             let mut record = record.clone();
             record.status = result.status;
             record.response = result.response.clone();
@@ -1490,7 +1721,10 @@ async fn project_stream_evidence(
     status: RunStatus,
     records: &[AgentStreamRecord],
 ) -> DurableStreamEvidence {
-    if durability.stream_archive.is_none() && durability.replay_event_log.is_none() {
+    if durability.stream_archive.is_none()
+        && durability.replay_event_log.is_none()
+        && !durability.retain_terminal_replay_evidence
+    {
         return DurableStreamEvidence::default();
     }
     let scope = ReplayScope::run(run_id.as_str());
@@ -1519,9 +1753,54 @@ async fn project_stream_evidence(
                 .cloned()
                 .map(|message| ReplayEvent::display(scope.clone(), message)),
         );
-        let terminal_sequence = display_messages
-            .last()
-            .map_or(0, |message| message.sequence.saturating_add(1));
+    } else if durability.retain_terminal_replay_evidence {
+        let terminal_display_sequence = durability.terminal_replay_sequence.as_ref().map_or_else(
+            || {
+                display_messages
+                    .last()
+                    .map_or(0, |message| message.sequence.saturating_add(1))
+            },
+            |sequence| sequence.load(Ordering::Acquire),
+        );
+        replay_events.extend(
+            display_messages
+                .iter()
+                .filter(|message| message.is_terminal())
+                .cloned()
+                .enumerate()
+                .map(|(offset, message)| {
+                    ReplayEvent::display_at(
+                        scope.clone(),
+                        terminal_display_sequence.saturating_add(offset),
+                        message,
+                    )
+                }),
+        );
+    }
+    if durability.replay_event_log.is_some() || durability.retain_terminal_replay_evidence {
+        let terminal_sequence = if durability.replay_event_log.is_some() {
+            display_messages
+                .last()
+                .map_or(0, |message| message.sequence.saturating_add(1))
+        } else {
+            durability
+                .terminal_replay_sequence
+                .as_ref()
+                .map_or_else(
+                    || {
+                        display_messages
+                            .last()
+                            .map_or(0, |message| message.sequence.saturating_add(1))
+                    },
+                    |sequence| sequence.load(Ordering::Acquire),
+                )
+                .saturating_add(
+                    display_messages
+                        .iter()
+                        .filter(|message| message.is_terminal())
+                        .count(),
+                )
+        };
         if let Some(marker) = terminal_marker(status) {
             replay_events.push(ReplayEvent::new(
                 scope,

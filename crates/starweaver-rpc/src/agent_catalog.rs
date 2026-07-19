@@ -4,9 +4,9 @@ use std::{env, sync::Arc};
 
 use serde::Serialize;
 use starweaver_agent::{
-    AgentRuntimeBuilder, AgentSpec, AgentSpecRegistry, ModelPreset, SubagentConfig,
-    SubagentToolInheritancePolicy, agent_session_control_tools, agent_session_query_tools,
-    core_toolsets, user_input_tools,
+    AgentRuntimeBuilder, AgentSpec, AgentSpecRegistry, ModelPreset, ResolvedAgentMaterialization,
+    SubagentConfig, SubagentToolInheritancePolicy, agent_session_control_tools,
+    agent_session_query_tools, core_toolsets, user_input_tools,
 };
 use starweaver_model::{
     HttpModelConfig, ModelAdapter, ModelProfile, ProtocolFamily, ProtocolModelClient,
@@ -15,6 +15,10 @@ use starweaver_model::{
 };
 
 use crate::{RpcConfig, RpcHostError, RpcHostResult, RpcProfileConfig, RpcProviderConfig};
+
+#[cfg(test)]
+pub type TestRuntimeFactory =
+    dyn Fn(&str) -> RpcHostResult<AgentRuntimeBuilder> + Send + Sync + 'static;
 
 /// Stable RPC profile projection returned by management methods.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -35,6 +39,8 @@ pub struct RpcProfileSummary {
 #[derive(Clone)]
 pub struct RpcAgentCatalog {
     config: RpcConfig,
+    #[cfg(test)]
+    test_runtime_factory: Option<Arc<TestRuntimeFactory>>,
 }
 
 impl RpcAgentCatalog {
@@ -45,9 +51,19 @@ impl RpcAgentCatalog {
     /// Returns an error when the default profile is missing or a profile contains an unsupported
     /// model id or toolset.
     pub fn new(config: RpcConfig) -> RpcHostResult<Self> {
-        let catalog = Self { config };
+        let catalog = Self {
+            config,
+            #[cfg(test)]
+            test_runtime_factory: None,
+        };
         catalog.validate()?;
         Ok(catalog)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_runtime_factory(mut self, factory: Arc<TestRuntimeFactory>) -> Self {
+        self.test_runtime_factory = Some(factory);
+        self
     }
 
     /// Return the configured default profile.
@@ -96,6 +112,10 @@ impl RpcAgentCatalog {
     ///
     /// Returns an error when credentials are absent or the model/spec cannot be materialized.
     pub fn runtime_builder(&self, name: &str) -> RpcHostResult<AgentRuntimeBuilder> {
+        #[cfg(test)]
+        if let Some(factory) = self.test_runtime_factory.as_ref() {
+            return factory(name);
+        }
         let profile = self.profile(name)?;
         let model = self.materialize_model(profile)?;
         let spec = agent_spec(name, profile, self.clarifying_questions_enabled());
@@ -157,6 +177,26 @@ impl RpcAgentCatalog {
         self.config.client_capabilities.hitl && self.config.client_capabilities.clarifying_questions
     }
 
+    /// Resolve safe, credential-free materialization evidence for one profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the profile or its `AgentSpec` references cannot be resolved.
+    pub fn materialization(
+        &self,
+        name: &str,
+        environment_binding_class: impl Into<String>,
+    ) -> RpcHostResult<ResolvedAgentMaterialization> {
+        let profile = self.profile(name)?;
+        let spec = agent_spec(name, profile, self.clarifying_questions_enabled());
+        let registry = self.registry_with_model(
+            profile,
+            Arc::new(starweaver_model::TestModel::with_text("identity-only")),
+        );
+        spec.resolved_materialization(&registry, "rpc-agent-policy-v1", environment_binding_class)
+            .map_err(|error| RpcHostError::Invalid(error.to_string()))
+    }
+
     /// Return whether a profile explicitly grants one toolset.
     #[must_use]
     pub(crate) fn grants_toolset(&self, profile: &str, toolset: &str) -> bool {
@@ -195,7 +235,7 @@ impl RpcAgentCatalog {
                     "RPC profile {name} has an empty model_id"
                 )));
             }
-            if profile.test_response.is_none() {
+            if profile.test_response.is_none() && profile.model_id != "local_echo" {
                 let parsed = RpcModelId::parse(&profile.model_id)?;
                 self.provider_config(&parsed)?;
             }
@@ -239,6 +279,12 @@ impl RpcAgentCatalog {
         if profile.test_response.is_some() {
             return Err(RpcHostError::Invalid(
                 "deterministic RPC test models are not available in production builds".to_string(),
+            ));
+        }
+        if profile.model_id == "local_echo" {
+            return Ok(Arc::new(
+                starweaver_model::TestModel::with_text("rpc local echo")
+                    .with_model_name("local_echo"),
             ));
         }
 

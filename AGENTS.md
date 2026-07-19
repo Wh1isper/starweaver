@@ -147,6 +147,8 @@ Current specs:
 - `spec/ops/08-agent-session-management.md` — agent-facing session query/control tools, query-only CLI policy, grant-gated RPC mutations, and lifecycle-safe run creation/steering/interruption
 - `spec/alignment/09-architecture-review.md` — cross-workspace architecture, security, durability, API, and consolidation review baseline
 - `spec/alignment/10-session-search-evidence.md` — Phase 1 session-search implementation, conformance, and boundary evidence
+- `spec/alignment/11-tui-ui-ux-completion.md` — complete TUI interaction, status, task, history, and validation evidence
+- `spec/alignment/12-desktop-rpc-readiness.md` — CLI/RPC shared-storage interoperability review and Desktop design entry gates
 
 Use `spec/alignment/` for readiness notes, design comparisons, implementation evidence, and roadmap reminders. Keep unfinished work in the spec that owns the changed contract.
 

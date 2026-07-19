@@ -210,6 +210,7 @@ fn prompt_run_json_preview_skips_internal_compaction_messages() {
         run_id: run_id.as_str().to_string(),
         status: "completed".to_string(),
         output_mode: OutputMode::Json,
+        continuation: None,
         messages: vec![
             DisplayMessage::new(
                 0,
@@ -344,6 +345,7 @@ fn test_run_command(
         run: source_run_id.map(ToString::to_string),
         branch_from: None,
         profile: Some("general".to_string()),
+        continuation_mode: crate::args::ContinuationModeArg::Switch,
         output: Some(OutputMode::Silent),
         hitl: None,
         goal: None,
@@ -498,7 +500,9 @@ fn ordinary_active_run_rejects_cross_connection_admission() {
                 "first active run".to_string(),
                 None,
                 "general",
+                serde_json::Map::new(),
                 "cli-host-a",
+                None,
                 None,
             )
             .unwrap();
@@ -512,7 +516,9 @@ fn ordinary_active_run_rejects_cross_connection_admission() {
             "competing run".to_string(),
             None,
             "general",
+            serde_json::Map::new(),
             "rpc-host-b",
+            None,
             None,
         )
         .expect_err("a second host must not acquire the same session");
@@ -538,7 +544,9 @@ fn delete_session_is_fenced_by_active_work_and_tombstones_evidence() {
             "still running".to_string(),
             None,
             "general",
+            serde_json::Map::new(),
             "cli-delete-test-host",
+            None,
             None,
         )
         .unwrap();
@@ -733,6 +741,7 @@ fn resume_terminal_head_continues_without_hitl_claim_or_orphan_run() {
             prompt: "continue terminal head".to_string(),
             output: Some(OutputMode::Silent),
             hitl: None,
+            continuation_mode: crate::args::ContinuationModeArg::Switch,
         })
         .unwrap();
 

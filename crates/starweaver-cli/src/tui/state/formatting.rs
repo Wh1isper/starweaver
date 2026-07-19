@@ -168,6 +168,9 @@ pub(super) fn model_choice_config_suffix(choice: &ModelChoice) -> String {
 }
 
 pub(in crate::tui) fn display_lines_for_stream_record(record: &AgentStreamRecord) -> Vec<String> {
+    if record.is_subagent_steering_event() {
+        return Vec::new();
+    }
     match &record.event {
         AgentStreamEvent::ModelStream {
             event: ModelResponseStreamEvent::PartDelta(PartDelta { delta, .. }),

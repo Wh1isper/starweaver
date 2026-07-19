@@ -1,7 +1,7 @@
 use chrono::Utc;
 use rusqlite::{params, types::ValueRef};
 use starweaver_context::{AgentCheckpoint, AgentRunState, ResumableState};
-use starweaver_core::{AgentExecutionNode, AgentId, ConversationId, RunId};
+use starweaver_core::{AgentExecutionNode, AgentId, CheckpointId, ConversationId, RunId};
 use starweaver_session::{
     ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, ExecutionStatus,
     HitlResumeClaim, InMemorySessionStore, RelatedRunUpdate, RunRecord, RunStatus, SessionRecord,
@@ -416,6 +416,62 @@ fn commit_run_evidence_rolls_back_every_child_on_late_failure() {
             .expect("count rows");
         assert_eq!(count, 0, "{table} must roll back");
     }
+}
+
+#[tokio::test]
+async fn latest_checkpoint_uses_persistence_order_within_one_run_step() {
+    let storage = SqliteStorage::in_memory().expect("storage");
+    let mut run = begun_run(&storage, "checkpoint-order");
+    let mut runtime_state = AgentRunState::new(run.run_id.clone(), run.conversation_id.clone());
+    runtime_state.run_step = 1;
+
+    let mut earlier = AgentCheckpoint::new(AgentExecutionNode::ModelResponse, &runtime_state);
+    earlier.checkpoint_id = CheckpointId::from_string("checkpoint-zzzz-earlier");
+    storage
+        .session_store()
+        .commit_checkpoint(&run.session_id, earlier)
+        .await
+        .expect("persist earlier checkpoint");
+
+    let mut latest = AgentCheckpoint::new(AgentExecutionNode::ToolReturn, &runtime_state);
+    latest.checkpoint_id = CheckpointId::from_string("checkpoint-aaaa-latest");
+    storage
+        .session_store()
+        .commit_checkpoint(&run.session_id, latest.clone())
+        .await
+        .expect("persist latest checkpoint");
+
+    run = storage
+        .session_store()
+        .load_run(&run.session_id, &run.run_id)
+        .await
+        .expect("load run checkpoint reference");
+    run.status = RunStatus::Waiting;
+    let mut checkpoints = storage
+        .session_store()
+        .load_checkpoints(&run.session_id, &run.run_id)
+        .await
+        .expect("load checkpoints");
+    checkpoints.reverse();
+    let mut commit = RunEvidenceCommit::new(run.clone(), evidence_state(&run));
+    commit.checkpoints = checkpoints;
+    let committed = storage
+        .commit_run_evidence(commit)
+        .expect("commit complete evidence");
+    assert_eq!(
+        committed
+            .latest_checkpoint
+            .as_ref()
+            .map(|reference| &reference.checkpoint_id),
+        Some(&latest.checkpoint_id)
+    );
+
+    let snapshot = storage
+        .session_store()
+        .resume_snapshot(&run.session_id, &run.run_id)
+        .await
+        .expect("resume snapshot");
+    assert_eq!(snapshot.latest_checkpoint, Some(latest));
 }
 
 #[tokio::test]

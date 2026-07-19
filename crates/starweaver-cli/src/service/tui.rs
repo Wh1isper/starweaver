@@ -107,6 +107,20 @@ const TUI_SHELL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const TUI_STREAM_DRAIN_BUDGET: usize = 256;
 const TUI_STREAM_DRAIN_TIME_BUDGET: Duration = Duration::from_millis(4);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MainAgentInterruptAction {
+    RequestCancellation,
+    AlreadyPending,
+}
+
+const fn main_agent_interrupt_action(cancelling: bool) -> MainAgentInterruptAction {
+    if cancelling {
+        MainAgentInterruptAction::AlreadyPending
+    } else {
+        MainAgentInterruptAction::RequestCancellation
+    }
+}
+
 impl CliService {
     pub(super) fn tui(&mut self, command: &TuiCommand) -> CliResult<String> {
         if command.interactive
@@ -693,17 +707,21 @@ impl CliService {
                             )),
                         }
                     } else if let Some(run) = active_run.as_mut() {
-                        if run.cancelling {
-                            // A second interrupt is the escape hatch when cooperative
-                            // cancellation or durable cleanup cannot finish promptly.
-                            tui.restore()?;
-                            return shutdown_guard.shutdown();
-                        }
-                        match run.coordinator.cancel_run(&run.run_id) {
-                            Ok(()) => run.cancelling = true,
-                            Err(error) => state.push_transcript_notice(format!(
-                                "[SYS] Unable to request cancellation: {error}"
-                            )),
+                        match main_agent_interrupt_action(run.cancelling) {
+                            MainAgentInterruptAction::AlreadyPending => {
+                                state.push_transcript_notice(
+                                    "[SYS] Main-agent cancellation is already in progress; background subagents continue independently."
+                                        .to_string(),
+                                );
+                            }
+                            MainAgentInterruptAction::RequestCancellation => {
+                                match run.coordinator.cancel_run(&run.run_id) {
+                                    Ok(()) => run.cancelling = true,
+                                    Err(error) => state.push_transcript_notice(format!(
+                                        "[SYS] Unable to request cancellation: {error}"
+                                    )),
+                                }
+                            }
                         }
                     }
                     dirty = true;
@@ -1331,6 +1349,7 @@ const fn build_tui_run_command(
         run: restore_from_run_id,
         branch_from: None,
         profile,
+        continuation_mode: crate::args::ContinuationModeArg::Preserve,
         output: Some(OutputMode::Text),
         hitl: None,
         goal,
@@ -1690,6 +1709,18 @@ mod tests {
     use super::*;
     use crate::{ConfigResolver, args};
     use starweaver_rpc_core::EnvironmentAttachmentAccessMode;
+
+    #[test]
+    fn repeated_interrupt_keeps_main_cancellation_pending_without_host_shutdown() {
+        assert_eq!(
+            main_agent_interrupt_action(false),
+            MainAgentInterruptAction::RequestCancellation
+        );
+        assert_eq!(
+            main_agent_interrupt_action(true),
+            MainAgentInterruptAction::AlreadyPending
+        );
+    }
     use starweaver_session::RunStatus;
     use starweaver_stream::{DisplayMessage, DisplayMessageKind, ReplaySnapshot};
 
@@ -1900,6 +1931,10 @@ mod tests {
             Vec::new(),
         );
         assert!(fresh.session.is_none());
+        assert_eq!(
+            fresh.continuation_mode,
+            crate::args::ContinuationModeArg::Preserve
+        );
 
         let resumed = build_tui_run_command(
             "continued prompt".to_string(),
@@ -1911,6 +1946,10 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(resumed.session.as_deref(), Some("session-live"));
+        assert_eq!(
+            resumed.continuation_mode,
+            crate::args::ContinuationModeArg::Preserve
+        );
 
         let resumed_waiting = build_tui_run_command(
             "resume waiting run".to_string(),
@@ -1923,6 +1962,10 @@ mod tests {
         );
         assert_eq!(resumed_waiting.session.as_deref(), Some("session-live"));
         assert_eq!(resumed_waiting.run.as_deref(), Some("run-source"));
+        assert_eq!(
+            resumed_waiting.continuation_mode,
+            crate::args::ContinuationModeArg::Preserve
+        );
     }
 
     #[test]

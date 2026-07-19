@@ -1,6 +1,9 @@
 //! Agent spec registry resolution.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use starweaver_environment::DynEnvironmentProvider;
 use starweaver_model::ModelAdapter;
@@ -10,9 +13,9 @@ use starweaver_tools::DynToolset;
 use crate::{SkillRegistry, SubagentConfig};
 
 use super::types::{
-    AgentSpecError, ApprovalPolicyPreset, DurabilityPolicyPreset, EnvironmentPolicyPreset,
-    HostAdapterSpec, McpServerSpec, ObservabilityPolicyPreset, RetryPolicyPreset,
-    StreamingPolicyPreset, ToolsetWrapperSpec,
+    AgentSpec, AgentSpecError, ApprovalPolicyPreset, DurabilityPolicyPreset,
+    EnvironmentPolicyPreset, HostAdapterSpec, McpServerSpec, ObservabilityPolicyPreset,
+    RetryPolicyPreset, StreamingPolicyPreset, ToolsetWrapperSpec,
 };
 
 /// Host-provided materializer for custom `AgentSpec` toolset wrappers.
@@ -239,6 +242,50 @@ impl AgentSpecRegistry {
         self.toolset(key)
     }
 
+    /// Return credential-free ids for the toolsets this spec will materialize.
+    ///
+    /// Wrapper parameters are deliberately excluded because hosts may place sensitive values in
+    /// extension maps. The wrapper kind and stable inner toolset id still distinguish the runtime
+    /// surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the spec references an unknown toolset.
+    pub fn resolved_toolset_ids(&self, spec: &AgentSpec) -> Result<Vec<String>, AgentSpecError> {
+        let mut ids = BTreeSet::<String>::new();
+        if spec.all_toolsets {
+            for toolset in &self.toolsets {
+                ids.insert(toolset_identity(toolset));
+            }
+        } else {
+            for key in &spec.toolsets {
+                let toolset = self
+                    .toolset(key)
+                    .ok_or_else(|| AgentSpecError::UnknownToolset(key.clone()))?;
+                ids.insert(toolset_identity(&toolset));
+            }
+        }
+        for wrapper in &spec.toolset_wrappers {
+            let inner = wrapper
+                .toolset
+                .as_deref()
+                .map(|key| {
+                    self.toolset(key)
+                        .ok_or_else(|| AgentSpecError::UnknownToolset(key.to_string()))
+                })
+                .transpose()?;
+            let inner_id = inner.as_ref().map(toolset_identity);
+            if let Some(inner_id) = inner_id.as_ref() {
+                ids.remove(inner_id);
+            }
+            ids.insert(inner_id.map_or_else(
+                || format!("wrapper:{}", wrapper.kind),
+                |inner_id| format!("wrapper:{}:{inner_id}", wrapper.kind),
+            ));
+        }
+        Ok(ids.into_iter().collect())
+    }
+
     pub(super) fn subagent(&self, name: &str) -> Option<SubagentConfig> {
         self.subagents_by_name.get(name).cloned()
     }
@@ -250,6 +297,10 @@ impl AgentSpecRegistry {
             self.toolsets_by_key.insert(id.to_string(), toolset.clone());
         }
     }
+}
+
+fn toolset_identity(toolset: &DynToolset) -> String {
+    toolset.id().unwrap_or_else(|| toolset.name()).to_string()
 }
 
 fn infer_oauth_model_from_id(

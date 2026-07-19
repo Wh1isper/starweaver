@@ -4,6 +4,7 @@
 //! and transports. It intentionally does not depend on `starweaver-cli`.
 
 mod agent_catalog;
+mod atomic_file;
 mod auth;
 mod config;
 mod coordinator;
@@ -24,7 +25,9 @@ pub use config::{
     RpcClientCapabilitiesConfig, RpcConfig, RpcProfileConfig, RpcProviderConfig,
     RpcSessionSearchBackend, RpcSessionSearchConfig, RpcSubagentConfig,
 };
-pub use coordinator::{RpcRunRequest, RpcRunStatus, RpcRuntimeCoordinator, RpcStartedRun};
+pub use coordinator::{
+    RpcHitlResumeRequest, RpcRunRequest, RpcRunStatus, RpcRuntimeCoordinator, RpcStartedRun,
+};
 pub use error::{RpcHostError, RpcHostResult};
 pub use service::{RpcNotificationMode, RpcService};
 

@@ -402,8 +402,8 @@ pub fn environment_attachment_result(refs: &[EnvironmentAttachmentRef]) -> Value
 /// Build a serializable environment attachment lease result.
 #[must_use]
 pub fn environment_attachment_lease_result(lease: &EnvironmentAttachmentLease) -> Value {
-    json!({
-        "attachment": lease,
+    json!(EnvironmentAttachResult {
+        attachment: lease.clone(),
     })
 }
 
@@ -413,9 +413,9 @@ pub fn environment_attachment_list_result(
     leases: &[EnvironmentAttachmentLease],
     next_page_token: Option<&str>,
 ) -> Value {
-    json!({
-        "attachments": leases,
-        "nextPageToken": next_page_token,
+    json!(EnvironmentListResult {
+        attachments: leases.to_vec(),
+        next_page_token: next_page_token.map(ToString::to_string),
     })
 }
 
@@ -425,9 +425,9 @@ pub fn environment_health_result(
     status: EnvironmentAttachmentStatus,
     readiness: &EnvironmentReadiness,
 ) -> Value {
-    json!({
-        "status": status,
-        "readiness": readiness,
+    json!(EnvironmentHealthResult {
+        status,
+        readiness: readiness.clone(),
     })
 }
 
@@ -497,4 +497,151 @@ fn default_environment_attachment_kind() -> String {
 
 const fn default_true() -> bool {
     true
+}
+
+/// Typed result for `environment.attach`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct EnvironmentAttachResult {
+    /// Created or reused attachment lease.
+    pub attachment: EnvironmentAttachmentLease,
+}
+
+/// Typed result for `environment.detach`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentDetachResult {
+    /// Detached lease id.
+    pub attachment_lease_id: String,
+    /// Whether this call changed the lease state.
+    pub detached: bool,
+}
+
+/// Typed result for `environment.list`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentListResult {
+    /// Matching attachment leases.
+    pub attachments: Vec<EnvironmentAttachmentLease>,
+    /// Reserved next-page token.
+    #[serde(default)]
+    pub next_page_token: Option<String>,
+}
+
+/// Typed result for `environment.health`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct EnvironmentHealthResult {
+    /// Effective attachment status.
+    pub status: EnvironmentAttachmentStatus,
+    /// Readiness probe details.
+    pub readiness: EnvironmentReadiness,
+}
+
+/// Stable active-run mount projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentMountSummary {
+    /// Agent-facing mount id.
+    pub id: String,
+    /// Provider kind.
+    pub kind: String,
+    /// Agent-facing root.
+    pub root: String,
+    /// Effective access mode.
+    pub mode: EnvironmentAttachmentAccessMode,
+    /// Whether this is the default SDK mount.
+    #[serde(rename = "default")]
+    pub is_default: bool,
+    /// Whether this is the default shell mount.
+    #[serde(rename = "defaultForShell")]
+    pub is_default_for_shell: bool,
+    /// Mount lifecycle status.
+    pub status: String,
+    /// Concrete provider environment id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
+    /// Safe host metadata.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub metadata: serde_json::Map<String, Value>,
+}
+
+/// Stable active-run environment binding projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentBindingSummary {
+    /// Monotonic binding version.
+    pub binding_version: u64,
+    /// Default SDK mount id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_mount_id: Option<String>,
+    /// Default shell mount id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_shell_mount_id: Option<String>,
+    /// Effective mounts.
+    pub mounts: Vec<EnvironmentMountSummary>,
+}
+
+/// Typed result for `environment.active_mount`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentActiveMountResult {
+    /// Active run id.
+    pub run_id: String,
+    /// Durable environment operation id.
+    pub operation_id: String,
+    /// Mounted id.
+    pub mount_id: String,
+    /// Whether an existing mount was replaced.
+    pub replace: bool,
+    /// Mounted projection.
+    pub mount: EnvironmentMountSummary,
+    /// Binding version before the mutation.
+    pub previous_binding_version: u64,
+    /// Binding version after the mutation.
+    pub binding_version: u64,
+    /// Effective binding.
+    pub environment: EnvironmentBindingSummary,
+    /// Durable lifecycle cursor.
+    pub event_cursor: starweaver_stream::ReplayCursor,
+    /// Whether model-visible context was requested.
+    pub context_injection_requested: bool,
+    /// Whether context steering was accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_injected: Option<bool>,
+}
+
+/// Typed result for `environment.active_unmount`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentActiveUnmountResult {
+    /// Active run id.
+    pub run_id: String,
+    /// Durable environment operation id.
+    pub operation_id: String,
+    /// Removed mount id.
+    pub mount_id: String,
+    /// Removed projection.
+    pub removed_mount: EnvironmentMountSummary,
+    /// Binding version before the mutation.
+    pub previous_binding_version: u64,
+    /// Binding version after the mutation.
+    pub binding_version: u64,
+    /// Effective binding.
+    pub environment: EnvironmentBindingSummary,
+    /// Durable lifecycle cursor.
+    pub event_cursor: starweaver_stream::ReplayCursor,
+    /// Whether model-visible context was requested.
+    pub context_injection_requested: bool,
+    /// Whether context steering was accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_injected: Option<bool>,
+}
+
+/// Typed result for `environment.active_list`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentActiveListResult {
+    /// Active run id.
+    pub run_id: String,
+    /// Effective binding.
+    pub environment: EnvironmentBindingSummary,
 }

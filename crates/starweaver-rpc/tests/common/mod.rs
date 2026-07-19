@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use starweaver_rpc_core::{INVALID_PARAMS, METHOD_NOT_FOUND, UNSUPPORTED_FEATURE};
+use starweaver_rpc_core::{INVALID_PARAMS, METHOD_NOT_FOUND, NOT_FOUND, UNSUPPORTED_FEATURE};
 
 pub struct ConformanceVector {
     pub group: &'static str,
@@ -27,6 +27,12 @@ pub fn conformance_vectors() -> Vec<ConformanceVector> {
             method: "session.list",
             params: json!({"limit": 1}),
             expected_error: None,
+        },
+        ConformanceVector {
+            group: "stable session not-found error",
+            method: "session.get",
+            params: json!({"sessionId": "missing-conformance-session"}),
+            expected_error: Some(NOT_FOUND),
         },
         ConformanceVector {
             group: "runs",

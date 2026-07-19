@@ -1,6 +1,6 @@
 //! JSON-RPC host protocol helpers for Starweaver.
 
-use std::{collections::BTreeSet, future::Future};
+use std::{collections::BTreeSet, future::Future, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -9,19 +9,23 @@ use starweaver_stream::{
     DisplayMessage, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayScope, display_to_agui_event,
 };
 
+mod dto;
 mod environment;
 
+pub use dto::*;
 pub use environment::{
-    EnvironmentActiveListParams, EnvironmentActiveMountParams, EnvironmentActiveUnmountParams,
-    EnvironmentAttachParams, EnvironmentAttachmentAccessMode, EnvironmentAttachmentLease,
-    EnvironmentAttachmentRef, EnvironmentAttachmentScope, EnvironmentAttachmentScopeKind,
-    EnvironmentAttachmentStatus, EnvironmentDetachParams, EnvironmentHealthParams,
-    EnvironmentListParams, EnvironmentReadiness, EnvironmentReadinessCapabilities,
-    EnvironmentReadinessPhase, EnvironmentReadinessPolicy, EnvironmentReadinessRequest,
-    LOCAL_ENVIRONMENT_ATTACHMENT_ID, LOCAL_ENVIRONMENT_ATTACHMENT_KIND,
-    environment_attachment_lease_result, environment_attachment_list_result,
-    environment_attachment_refs, environment_attachment_result, environment_health_result,
-    is_valid_environment_attachment_id,
+    EnvironmentActiveListParams, EnvironmentActiveListResult, EnvironmentActiveMountParams,
+    EnvironmentActiveMountResult, EnvironmentActiveUnmountParams, EnvironmentActiveUnmountResult,
+    EnvironmentAttachParams, EnvironmentAttachResult, EnvironmentAttachmentAccessMode,
+    EnvironmentAttachmentLease, EnvironmentAttachmentRef, EnvironmentAttachmentScope,
+    EnvironmentAttachmentScopeKind, EnvironmentAttachmentStatus, EnvironmentBindingSummary,
+    EnvironmentDetachParams, EnvironmentDetachResult, EnvironmentHealthParams,
+    EnvironmentHealthResult, EnvironmentListParams, EnvironmentListResult, EnvironmentMountSummary,
+    EnvironmentReadiness, EnvironmentReadinessCapabilities, EnvironmentReadinessPhase,
+    EnvironmentReadinessPolicy, EnvironmentReadinessRequest, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
+    LOCAL_ENVIRONMENT_ATTACHMENT_KIND, environment_attachment_lease_result,
+    environment_attachment_list_result, environment_attachment_refs, environment_attachment_result,
+    environment_health_result, is_valid_environment_attachment_id,
 };
 
 /// JSON-RPC parse error code.
@@ -38,12 +42,18 @@ pub const SERVER_ERROR: i64 = -32_000;
 pub const NOT_INITIALIZED: i64 = -32_001;
 /// Starweaver host error code for a feature unavailable on this connection.
 pub const UNSUPPORTED_FEATURE: i64 = -32_002;
+/// Starweaver host error code for a missing durable or active resource.
+pub const NOT_FOUND: i64 = -32_010;
 /// Starweaver host error code for a create conflict with an existing record.
 pub const ALREADY_EXISTS: i64 = -32_011;
 /// Starweaver host error code for idempotency key reuse with different params.
 pub const IDEMPOTENCY_CONFLICT: i64 = -32_012;
 /// Starweaver host error code for a run-state conflict.
 pub const RUN_CONFLICT: i64 = -32_013;
+/// Starweaver host error code for an expired or superseded fencing owner.
+pub const STALE_FENCE: i64 = -32_014;
+/// Starweaver host error code for a retryable durable-storage failure.
+pub const STORAGE_UNAVAILABLE: i64 = -32_015;
 /// Starweaver host error code for an unavailable environment attachment.
 pub const ENVIRONMENT_UNAVAILABLE: i64 = -32_031;
 /// Starweaver host error code for an installed but unavailable session-search provider.
@@ -67,6 +77,7 @@ pub const HOST_PROTOCOL_FEATURES: &[&str] = &[
     "environment.attachments",
     "environment.active_mounts",
     "hitl",
+    "storage.legacy_import",
 ];
 
 /// Return the current typed host-control protocol identity.
@@ -97,6 +108,69 @@ pub struct HostInitializeParams {
     /// Requested host protocol identity. Omitted only by legacy clients.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<ProtocolIdentity>,
+}
+
+/// Typed parameters for `storage.importLegacy`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StorageImportLegacyParams {
+    /// Explicit legacy `SQLite` database path. The host never scans for sources.
+    pub source_path: PathBuf,
+    /// Workspace identity assigned to source sessions that do not already have one.
+    pub workspace: PathBuf,
+}
+
+/// Typed result for `storage.importLegacy`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageImportLegacyResult {
+    /// Normalized source database path.
+    pub source_path: PathBuf,
+    /// Normalized workspace display value.
+    pub workspace: String,
+    /// Number of newly imported sessions.
+    pub sessions_imported: usize,
+    /// Number of newly imported or synchronized durable rows.
+    pub rows_imported: usize,
+    /// Whether this invocation inserted or synchronized any row.
+    pub imported: bool,
+}
+
+/// Typed parameters for `run.resume` on a durable waiting HITL run.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunResumeParams {
+    /// Session containing the waiting run.
+    pub session_id: starweaver_core::SessionId,
+    /// Waiting source run to resume.
+    pub run_id: starweaver_core::RunId,
+    /// Optional profile override. Omission preserves the waiting run/session profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// Existing environment attachments to bind to the continuation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environment_attachments: Vec<EnvironmentAttachmentRef>,
+    /// Required key providing exactly-once resume admission semantics.
+    pub idempotency_key: String,
+}
+
+/// Typed result for `run.resume`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunResumeResult {
+    /// Durable session id.
+    pub session_id: starweaver_core::SessionId,
+    /// Newly admitted continuation run id.
+    pub run_id: starweaver_core::RunId,
+    /// Waiting source run consumed by the continuation.
+    pub source_run_id: starweaver_core::RunId,
+    /// Current durable run status.
+    pub status: starweaver_session::RunStatus,
+    /// Effective environment attachments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environment_attachments: Vec<EnvironmentAttachmentRef>,
+    /// True when this response replays an existing exact admission.
+    pub idempotent_replay: bool,
 }
 
 /// Structured durable input accepted by run-start methods.
@@ -498,28 +572,39 @@ impl StreamPayloadFormat {
 }
 
 /// Projected run output item carried by `run.output`.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunOutputItem {
-    session_id: String,
-    run_id: String,
-    cursor: ReplayCursor,
-    event: ReplayEvent,
-    projections: Vec<RunOutputProjection>,
-    payload_format: StreamPayloadFormat,
-    payload: Value,
+    /// Durable session id owning the projected event.
+    pub session_id: String,
+    /// Durable run id owning the projected event.
+    pub run_id: String,
+    /// Replay cursor for this item.
+    pub cursor: ReplayCursor,
+    /// Canonical retained replay event.
+    pub event: ReplayEvent,
+    /// Available client projections.
+    pub projections: Vec<RunOutputProjection>,
+    /// Selected top-level payload format.
+    pub payload_format: StreamPayloadFormat,
+    /// Selected projected payload.
+    pub payload: Value,
+    /// Native display message when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
-    display_message: Option<DisplayMessage>,
+    pub display_message: Option<DisplayMessage>,
 }
 
 /// Projection entry carried alongside the canonical stream event.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunOutputProjection {
-    payload_format: StreamPayloadFormat,
-    payload: Value,
+    /// Projection format.
+    pub payload_format: StreamPayloadFormat,
+    /// Projected payload.
+    pub payload: Value,
+    /// Native display message when this is a native projection.
     #[serde(skip_serializing_if = "Option::is_none")]
-    display_message: Option<DisplayMessage>,
+    pub display_message: Option<DisplayMessage>,
 }
 
 /// Build a JSON-RPC notification frame.
@@ -599,12 +684,12 @@ pub fn attachment_result(
         .iter()
         .filter_map(|event| output_item(event, format))
         .collect::<Vec<_>>();
-    json!({
-        "sessionId": session_id,
-        "runId": run_id,
-        "active": active,
-        "payloadFormat": format.as_str(),
-        "events": events,
+    json!(RunAttachmentResult {
+        session_id: starweaver_core::SessionId::from_string(session_id),
+        run_id: run_id.map(starweaver_core::RunId::from_string),
+        active,
+        payload_format: format,
+        events,
     })
 }
 
@@ -623,14 +708,14 @@ pub fn replay_result(
         .last()
         .map(|event| ReplayCursor::replay_event(event.scope.clone(), event.sequence))
         .or_else(|| requested_cursor.cloned());
-    json!({
-        "sessionId": session_id,
-        "runId": run_id,
-        "scope": scope,
-        "latestCursor": latest_cursor,
-        "nextSequence": next_sequence,
-        "events": events,
-        "messages": messages,
+    json!(StreamReplayResult {
+        session_id: starweaver_core::SessionId::from_string(session_id),
+        run_id: run_id.map(starweaver_core::RunId::from_string),
+        scope: scope.clone(),
+        latest_cursor,
+        next_sequence,
+        events: events.to_vec(),
+        messages,
     })
 }
 

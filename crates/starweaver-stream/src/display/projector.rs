@@ -23,6 +23,9 @@ impl DefaultDisplayMessageProjector {
         context: &DisplayProjectionContext,
         record: &AgentStreamRecord,
     ) -> Vec<DisplayMessage> {
+        if record.is_subagent_steering_event() {
+            return Vec::new();
+        }
         let source_context = record
             .source
             .as_ref()

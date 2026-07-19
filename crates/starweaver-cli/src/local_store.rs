@@ -18,7 +18,7 @@ use starweaver_session::{
     SessionStoreError, StreamCursorRef,
 };
 use starweaver_storage::{
-    LocalSessionSearchProvider, RunEvidenceCommit, SqliteStorage, canonical_session_database_path,
+    LocalSessionSearchProvider, LocalStoreImportReport, RunEvidenceCommit, SqliteStorage,
 };
 use starweaver_stream::{DisplayMessage, ReplayCursor, ReplayScope, ReplaySnapshot};
 use uuid::Uuid;
@@ -138,12 +138,6 @@ impl LocalStore {
     pub fn open(config: &CliConfig) -> CliResult<Self> {
         crate::config::ensure_config_dirs(config)?;
         let storage = SqliteStorage::open(&config.database_path).map_err(storage_error)?;
-        if config.database_path == canonical_session_database_path(&config.global_dir) {
-            let legacy_database = config.project_dir.join("starweaver.sqlite");
-            storage
-                .import_legacy_project_database(&legacy_database, &config.workspace_root)
-                .map_err(storage_error)?;
-        }
         let workspace = fs::canonicalize(&config.workspace_root)
             .unwrap_or_else(|_| config.workspace_root.clone())
             .to_string_lossy()
@@ -156,6 +150,17 @@ impl LocalStore {
                 config.database_path.to_string_lossy().into_owned(),
             ),
         })
+    }
+
+    /// Explicitly import a project-local legacy database into canonical shared storage.
+    pub fn import_legacy_database(
+        &self,
+        source_path: impl AsRef<Path>,
+        workspace: impl AsRef<Path>,
+    ) -> CliResult<LocalStoreImportReport> {
+        self.storage
+            .import_legacy_project_database(source_path, workspace)
+            .map_err(storage_error)
     }
 
     /// Create a session.
@@ -284,8 +289,10 @@ impl LocalStore {
         prompt: String,
         restore_from_run_id: Option<String>,
         profile: &str,
+        initial_metadata: serde_json::Map<String, Value>,
         host_instance_id: &str,
         replaces_waiting_run_id: Option<RunId>,
+        hitl_resume_claim_id: Option<String>,
     ) -> CliResult<(RunRecord, RunAdmissionLease)> {
         let session = self.load_session(session_id)?;
         let mut run = RunRecord::new(session.session_id, RunId::new(), ConversationId::new());
@@ -293,6 +300,7 @@ impl LocalStore {
         run.trigger_type = Some("cli".to_string());
         run.profile = Some(profile.to_string());
         run.input = vec![InputPart::text(prompt)];
+        run.metadata = initial_metadata;
         let run_id = run.run_id.clone();
         let receipt = self
             .storage
@@ -305,6 +313,7 @@ impl LocalStore {
                 idempotency_key: format!("cli-run-{}", run_id.as_str()),
                 command_fingerprint: format!("cli-run-v1:{}", run_id.as_str()),
                 replaces_waiting_run_id,
+                hitl_resume_claim_id,
             })
             .map_err(storage_error)?;
         Ok((receipt.run, receipt.lease))
@@ -328,12 +337,34 @@ impl LocalStore {
             .map_err(storage_error)
     }
 
-    /// Complete or pause a run and atomically commit shared durable evidence.
+    /// Complete or pause a fixture run without an admission lease.
+    #[cfg(test)]
     pub fn complete_run(
         &mut self,
         run: &mut RunRecord,
         output: String,
         artifacts: RunArtifacts,
+    ) -> CliResult<Vec<DisplayMessage>> {
+        self.complete_run_with_admission(run, output, artifacts, None)
+    }
+
+    /// Complete or pause an admitted product run while its lease remains current.
+    pub fn complete_run_fenced(
+        &mut self,
+        run: &mut RunRecord,
+        output: String,
+        artifacts: RunArtifacts,
+        admission_lease: &RunAdmissionLease,
+    ) -> CliResult<Vec<DisplayMessage>> {
+        self.complete_run_with_admission(run, output, artifacts, Some(admission_lease))
+    }
+
+    fn complete_run_with_admission(
+        &self,
+        run: &mut RunRecord,
+        output: String,
+        artifacts: RunArtifacts,
+        admission_lease: Option<&RunAdmissionLease>,
     ) -> CliResult<Vec<DisplayMessage>> {
         let scope = ReplayScope::run(run.run_id.as_str());
         let mut display_snapshot = artifacts.display_snapshot.clone();
@@ -385,10 +416,11 @@ impl LocalStore {
             RunStatus::Completed
         };
         attach_hitl_resume_update(run, &mut commit, source_status)?;
-        *run = self
-            .storage
-            .commit_run_evidence(commit)
-            .map_err(storage_error)?;
+        *run = match admission_lease {
+            Some(lease) => self.storage.commit_run_evidence_fenced(lease, commit),
+            None => self.storage.commit_run_evidence(commit),
+        }
+        .map_err(storage_error)?;
 
         // Compatibility mirrors are best-effort and are written only after the canonical SQLite
         // evidence commit. A mirror failure must not turn a durably completed run into a reported
@@ -404,17 +436,40 @@ impl LocalStore {
         Ok(artifacts.display_messages)
     }
 
-    /// Fail a run atomically.
+    /// Fail a fixture run atomically without an admission lease.
+    #[cfg(test)]
     pub fn fail_run(&mut self, run: &mut RunRecord, message: String) -> CliResult<()> {
         self.fail_run_with_messages(run, message, &[])
     }
 
-    /// Fail a run and persist terminal display evidence.
+    /// Fail a fixture run and persist terminal display evidence without an admission lease.
+    #[cfg(test)]
     pub fn fail_run_with_messages(
         &mut self,
         run: &mut RunRecord,
         message: String,
         messages: &[DisplayMessage],
+    ) -> CliResult<()> {
+        self.fail_run_with_messages_and_admission(run, message, messages, None)
+    }
+
+    /// Fail an admitted product run while its lease remains current.
+    pub fn fail_run_with_messages_fenced(
+        &mut self,
+        run: &mut RunRecord,
+        message: String,
+        messages: &[DisplayMessage],
+        admission_lease: &RunAdmissionLease,
+    ) -> CliResult<()> {
+        self.fail_run_with_messages_and_admission(run, message, messages, Some(admission_lease))
+    }
+
+    fn fail_run_with_messages_and_admission(
+        &self,
+        run: &mut RunRecord,
+        message: String,
+        messages: &[DisplayMessage],
+        admission_lease: Option<&RunAdmissionLease>,
     ) -> CliResult<()> {
         let session = self.load_session(run.session_id.as_str())?;
         run.status = RunStatus::Failed;
@@ -426,10 +481,11 @@ impl LocalStore {
         let mut commit = RunEvidenceCommit::new(run.clone(), state);
         commit.display_messages = messages.to_vec();
         attach_hitl_resume_update(run, &mut commit, RunStatus::Failed)?;
-        *run = self
-            .storage
-            .commit_run_evidence(commit)
-            .map_err(storage_error)?;
+        *run = match admission_lease {
+            Some(lease) => self.storage.commit_run_evidence_fenced(lease, commit),
+            None => self.storage.commit_run_evidence(commit),
+        }
+        .map_err(storage_error)?;
         self.write_run_blob(run, "display.compact.json", &messages)?;
         Ok(())
     }

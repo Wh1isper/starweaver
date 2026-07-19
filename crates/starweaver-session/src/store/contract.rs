@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use starweaver_context::{AgentCheckpoint, ResumableState};
 use starweaver_core::{RunId, SessionId};
-use starweaver_stream::AgentStreamRecord;
+use starweaver_stream::{AgentStreamRecord, ReplayEvent};
 
 use crate::{
     AcquireBackgroundSubagentContinuation, AcquireRunAdmission,
@@ -52,6 +52,33 @@ pub trait SessionStore: Send + Sync {
     async fn commit_run_evidence(&self, commit: RunEvidenceCommit)
     -> SessionStoreResult<RunRecord>;
 
+    /// Atomically persist a complete run evidence bundle under an active admission lease.
+    ///
+    /// Implementations must validate the admission identity and fencing generation in the same
+    /// transaction as the evidence write. Exact evidence retries may succeed after release, but
+    /// a new or conflicting write from an expired or stale owner must fail.
+    async fn commit_run_evidence_fenced(
+        &self,
+        _lease: &RunAdmissionLease,
+        _commit: RunEvidenceCommit,
+    ) -> SessionStoreResult<RunRecord> {
+        management_unsupported()
+    }
+
+    /// Atomically append a replay-event batch under an active admission lease.
+    ///
+    /// Every event must use the run-local scope for the admitted run. Implementations must
+    /// validate the active admission identity, host, target, generation, and expiry in the same
+    /// transaction as the inserts. Exact retries are idempotent; a different event at an occupied
+    /// sequence conflicts and leaves the entire batch unchanged.
+    async fn append_replay_events_fenced(
+        &self,
+        _lease: &RunAdmissionLease,
+        _events: Vec<ReplayEvent>,
+    ) -> SessionStoreResult<()> {
+        management_unsupported()
+    }
+
     /// Atomically bootstrap missing session/run records and persist one runtime checkpoint.
     ///
     /// This is the executor write path. Implementations must not expose a session or run without
@@ -62,6 +89,17 @@ pub trait SessionStore: Send + Sync {
         session_id: &SessionId,
         checkpoint: AgentCheckpoint,
     ) -> SessionStoreResult<()>;
+
+    /// Persist one runtime checkpoint under an active admission lease.
+    ///
+    /// The store must validate the lease in the same transaction as a new checkpoint write.
+    async fn commit_checkpoint_fenced(
+        &self,
+        _lease: &RunAdmissionLease,
+        _checkpoint: AgentCheckpoint,
+    ) -> SessionStoreResult<()> {
+        management_unsupported()
+    }
 
     /// Acquire exclusive ownership of a waiting run before any continuation side effect.
     ///
@@ -176,6 +214,16 @@ pub trait SessionStore: Send + Sync {
         management_unsupported()
     }
 
+    /// Read an admission idempotency receipt without creating or changing durable state.
+    async fn load_run_admission_receipt(
+        &self,
+        _namespace_id: &str,
+        _idempotency_key: &str,
+        _command_fingerprint: &str,
+    ) -> SessionStoreResult<Option<RunAdmissionReceipt>> {
+        management_unsupported()
+    }
+
     /// Extend a lease only for its current host and fencing generation.
     async fn heartbeat_run_admission(
         &self,
@@ -187,6 +235,31 @@ pub trait SessionStore: Send + Sync {
 
     /// Release a lease after terminal run durability; stale generations cannot release a new owner.
     async fn release_run_admission(&self, _lease: &RunAdmissionLease) -> SessionStoreResult<()> {
+        management_unsupported()
+    }
+
+    /// Update one admitted run while validating its active lease in the same transaction.
+    async fn update_run_status_fenced(
+        &self,
+        _lease: &RunAdmissionLease,
+        _status: RunStatus,
+        _output_preview: Option<String>,
+    ) -> SessionStoreResult<RunRecord> {
+        management_unsupported()
+    }
+
+    /// Atomically persist a non-active status and release its matching admission lease.
+    ///
+    /// If complete terminal evidence was already committed under the active lease, that evidence
+    /// is authoritative: finalization releases only the matching lease and ignores a differing
+    /// process-local fallback outcome. An exact retry after a successful commit is idempotent. A
+    /// stale owner cannot overwrite a different terminal result or release a newer generation.
+    async fn finalize_run_admission(
+        &self,
+        _lease: &RunAdmissionLease,
+        _status: RunStatus,
+        _output_preview: Option<String>,
+    ) -> SessionStoreResult<RunRecord> {
         management_unsupported()
     }
 

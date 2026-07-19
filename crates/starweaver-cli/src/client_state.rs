@@ -74,15 +74,14 @@ fn update_client_state(
     let dir = client_state_dir(config, client)?;
     std::fs::create_dir_all(&dir).map_err(|error| crate::error::io_error(&dir, error))?;
     let path = dir.join("state.json");
-    let temp = dir.join(format!("state.{}.json.tmp", std::process::id()));
     let mut value = read_client_state(config, client)?;
     if !value.is_object() {
         value = json!({});
     }
     update(&mut value);
-    std::fs::write(&temp, serde_json::to_vec_pretty(&value)?)
-        .map_err(|error| crate::error::io_error(&temp, error))?;
-    std::fs::rename(&temp, &path).map_err(|error| crate::error::io_error(&path, error))?;
+    let payload = serde_json::to_vec_pretty(&value)?;
+    crate::atomic_file::replace(&path, &payload)
+        .map_err(|error| crate::error::io_error(&path, error))?;
     Ok(())
 }
 

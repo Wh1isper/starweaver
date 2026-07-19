@@ -57,7 +57,14 @@ where
 }
 
 pub fn map_sqlite_session_error(error: rusqlite::Error) -> SessionStoreError {
-    SessionStoreError::Failed(error.to_string())
+    if matches!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    ) {
+        SessionStoreError::RetryableStorage(error.to_string())
+    } else {
+        SessionStoreError::Failed(error.to_string())
+    }
 }
 
 pub fn map_display_session_error(error: impl std::fmt::Display) -> SessionStoreError {

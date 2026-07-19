@@ -19,6 +19,7 @@ use starweaver_session::{
     SessionDeletionFence, SessionRecord, SessionStatus, SessionStore, SessionStoreError,
     StreamPublicationTarget, StreamPublicationTargets,
 };
+use starweaver_stream::{ReplayEvent, ReplayEventKind, ReplayScope};
 
 pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix: &str) {
     let session_id = SessionId::from_string(format!("contract-session-{suffix}"));
@@ -214,6 +215,438 @@ pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix:
         .commit_run_evidence(conflicting)
         .await
         .expect_err("conflicting evidence retry must fail");
+}
+
+pub async fn assert_atomic_hitl_replacement_admission_contract(
+    store: Arc<dyn SessionStore>,
+    suffix: &str,
+) {
+    let session_id = SessionId::from_string(format!("hitl-admission-session-{suffix}"));
+    let source_run_id = RunId::from_string(format!("hitl-admission-source-{suffix}"));
+    let continuation_run_id = RunId::from_string(format!("hitl-admission-continuation-{suffix}"));
+    let conversation_id =
+        ConversationId::from_string(format!("hitl-admission-conversation-{suffix}"));
+    store
+        .save_session(SessionRecord::new(session_id.clone()))
+        .await
+        .expect("save HITL admission session");
+    let mut source = RunRecord::new(
+        session_id.clone(),
+        source_run_id.clone(),
+        conversation_id.clone(),
+    );
+    source.status = RunStatus::Waiting;
+    source.sequence_no = 1;
+    store
+        .append_run(source)
+        .await
+        .expect("park HITL source run");
+
+    let claim_id = format!("hitl-admission-claim-{suffix}");
+    let mut continuation = RunRecord::new(
+        session_id.clone(),
+        continuation_run_id.clone(),
+        conversation_id,
+    );
+    continuation.restore_from_run_id = Some(source_run_id.clone());
+    let request = AcquireRunAdmission {
+        run: continuation,
+        namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+        host_instance_id: format!("hitl-admission-host-{suffix}"),
+        admission_id: format!("hitl-admission-lease-{suffix}"),
+        lease_expires_at: Utc::now() + chrono::Duration::minutes(1),
+        idempotency_key: format!("hitl-admission-key-{suffix}"),
+        command_fingerprint: format!("hitl-admission-fingerprint-{suffix}"),
+        replaces_waiting_run_id: Some(source_run_id.clone()),
+        hitl_resume_claim_id: Some(claim_id.clone()),
+    };
+
+    assert!(
+        store
+            .load_run_admission_receipt(
+                &request.namespace_id,
+                &request.idempotency_key,
+                &request.command_fingerprint,
+            )
+            .await
+            .expect("read-only receipt miss")
+            .is_none()
+    );
+    let mut missing_claim = request.clone();
+    missing_claim.hitl_resume_claim_id = None;
+    store
+        .acquire_run_admission(missing_claim)
+        .await
+        .expect_err("waiting replacement without a claim must fail");
+    assert_waiting_source_is_still_active(
+        store.as_ref(),
+        &session_id,
+        &source_run_id,
+        &continuation_run_id,
+    )
+    .await;
+
+    store
+        .claim_hitl_resume(HitlResumeClaim::new(
+            claim_id.clone(),
+            session_id.clone(),
+            source_run_id.clone(),
+            Utc::now(),
+        ))
+        .await
+        .expect("create replacement preflight claim");
+    let mut wrong_claim = request.clone();
+    wrong_claim.hitl_resume_claim_id = Some(format!("wrong-{suffix}"));
+    store
+        .acquire_run_admission(wrong_claim)
+        .await
+        .expect_err("waiting replacement with a foreign claim must fail");
+    assert_waiting_source_is_still_active(
+        store.as_ref(),
+        &session_id,
+        &source_run_id,
+        &continuation_run_id,
+    )
+    .await;
+    store
+        .release_hitl_resume_claim(&session_id, &source_run_id, &claim_id)
+        .await
+        .expect("failed admission must leave the claim releasable in preflight");
+    store
+        .claim_hitl_resume(HitlResumeClaim::new(
+            claim_id.clone(),
+            session_id.clone(),
+            source_run_id.clone(),
+            Utc::now(),
+        ))
+        .await
+        .expect("recreate replacement preflight claim");
+
+    let receipt = store
+        .acquire_run_admission(request.clone())
+        .await
+        .expect("atomically admit waiting replacement and start claim");
+    assert_eq!(receipt.run.run_id, continuation_run_id);
+    assert!(!receipt.idempotent_replay);
+    let replay = store
+        .acquire_run_admission(request.clone())
+        .await
+        .expect("exact admission retry must survive the started claim");
+    assert!(replay.idempotent_replay);
+    assert_eq!(replay.lease, receipt.lease);
+    let loaded = store
+        .load_run_admission_receipt(
+            &request.namespace_id,
+            &request.idempotency_key,
+            &request.command_fingerprint,
+        )
+        .await
+        .expect("load exact admission receipt")
+        .expect("admission receipt exists");
+    assert!(loaded.idempotent_replay);
+    assert_eq!(loaded.lease, receipt.lease);
+    store
+        .load_run_admission_receipt(
+            &request.namespace_id,
+            &request.idempotency_key,
+            &format!("different-{}", request.command_fingerprint),
+        )
+        .await
+        .expect_err("same admission key with another fingerprint must conflict");
+    store
+        .release_hitl_resume_claim(&session_id, &source_run_id, &claim_id)
+        .await
+        .expect_err("admitted replacement must atomically make the claim non-releasable");
+    assert_eq!(
+        store
+            .load_run(&session_id, &source_run_id)
+            .await
+            .expect("load waiting source after replacement")
+            .status,
+        RunStatus::Waiting,
+        "admission must preserve source evidence until continuation finalization"
+    );
+    assert_eq!(
+        store
+            .load_session(&session_id)
+            .await
+            .expect("load session after replacement")
+            .active_run_id,
+        Some(continuation_run_id)
+    );
+    store
+        .finalize_run_admission(&receipt.lease, RunStatus::Cancelled, None)
+        .await
+        .expect("terminalize replacement admission");
+    assert!(
+        store
+            .load_run_admission_receipt(
+                &request.namespace_id,
+                &request.idempotency_key,
+                &request.command_fingerprint,
+            )
+            .await
+            .expect("load receipt after lease finalization")
+            .is_some(),
+        "idempotency truth must outlive the active lease"
+    );
+}
+
+pub async fn assert_terminal_evidence_admission_cleanup_contract(
+    store: Arc<dyn SessionStore>,
+    suffix: &str,
+) {
+    let session_id = SessionId::from_string(format!("terminal-cleanup-session-{suffix}"));
+    let run_id = RunId::from_string(format!("terminal-cleanup-run-{suffix}"));
+    let conversation_id =
+        ConversationId::from_string(format!("terminal-cleanup-conversation-{suffix}"));
+    store
+        .save_session(SessionRecord::new(session_id.clone()))
+        .await
+        .expect("save terminal cleanup session");
+    let receipt = store
+        .acquire_run_admission(AcquireRunAdmission {
+            run: RunRecord::new(session_id.clone(), run_id.clone(), conversation_id.clone()),
+            namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+            host_instance_id: format!("terminal-cleanup-host-{suffix}"),
+            admission_id: format!("terminal-cleanup-admission-{suffix}"),
+            lease_expires_at: Utc::now() + chrono::Duration::minutes(1),
+            idempotency_key: format!("terminal-cleanup-key-{suffix}"),
+            command_fingerprint: format!("terminal-cleanup-fingerprint-{suffix}"),
+            replaces_waiting_run_id: None,
+            hitl_resume_claim_id: None,
+        })
+        .await
+        .expect("acquire terminal cleanup admission");
+
+    let mut terminal = receipt.run.clone();
+    terminal.status = RunStatus::Completed;
+    terminal.output_preview = Some("authoritative result".to_string());
+    terminal.updated_at = Utc::now();
+    let committed = store
+        .commit_run_evidence_fenced(
+            &receipt.lease,
+            RunEvidenceCommit::new(
+                terminal,
+                resumable_state(&session_id, &run_id, &conversation_id),
+            ),
+        )
+        .await
+        .expect("commit authoritative terminal evidence before lease release");
+    assert_eq!(committed.status, RunStatus::Completed);
+    assert!(
+        store
+            .load_run_admission(&receipt.lease.target)
+            .await
+            .expect("load active admission after evidence commit")
+            .is_some(),
+        "evidence commit and admission release are separate durability steps"
+    );
+
+    let finalized = store
+        .finalize_run_admission(
+            &receipt.lease,
+            RunStatus::Failed,
+            Some("process-local cleanup failure".to_string()),
+        )
+        .await
+        .expect("cleanup must release the matching lease without replacing terminal evidence");
+    assert_eq!(finalized.status, RunStatus::Completed);
+    assert_eq!(
+        finalized.output_preview.as_deref(),
+        Some("authoritative result")
+    );
+    assert!(
+        store
+            .load_run_admission(&receipt.lease.target)
+            .await
+            .expect("load admission after cleanup")
+            .is_none()
+    );
+    let exact_retry = store
+        .finalize_run_admission(
+            &receipt.lease,
+            RunStatus::Completed,
+            Some("authoritative result".to_string()),
+        )
+        .await
+        .expect("exact terminal cleanup retry is idempotent");
+    assert_eq!(exact_retry, finalized);
+    store
+        .finalize_run_admission(
+            &receipt.lease,
+            RunStatus::Failed,
+            Some("process-local cleanup failure".to_string()),
+        )
+        .await
+        .expect_err("released admission cannot rewrite authoritative terminal evidence");
+}
+
+async fn assert_waiting_source_is_still_active(
+    store: &dyn SessionStore,
+    session_id: &SessionId,
+    source_run_id: &RunId,
+    continuation_run_id: &RunId,
+) {
+    assert_eq!(
+        store
+            .load_run(session_id, source_run_id)
+            .await
+            .expect("load waiting source after rejected admission")
+            .status,
+        RunStatus::Waiting
+    );
+    assert_eq!(
+        store
+            .load_session(session_id)
+            .await
+            .expect("load session after rejected admission")
+            .active_run_id
+            .as_ref(),
+        Some(source_run_id)
+    );
+    assert!(matches!(
+        store.load_run(session_id, continuation_run_id).await,
+        Err(SessionStoreError::NotFound(_))
+    ));
+}
+
+pub async fn assert_fenced_replay_batch_contract(store: Arc<dyn SessionStore>, suffix: &str) {
+    let session_id = SessionId::from_string(format!("replay-batch-session-{suffix}"));
+    let run_id = RunId::from_string(format!("replay-batch-run-{suffix}"));
+    store
+        .save_session(SessionRecord::new(session_id.clone()))
+        .await
+        .expect("save replay batch session");
+    let receipt = store
+        .acquire_run_admission(AcquireRunAdmission {
+            run: RunRecord::new(session_id.clone(), run_id.clone(), ConversationId::new()),
+            namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+            host_instance_id: format!("replay-batch-host-{suffix}"),
+            admission_id: format!("replay-batch-admission-{suffix}"),
+            lease_expires_at: Utc::now() + chrono::Duration::minutes(1),
+            idempotency_key: format!("replay-batch-key-{suffix}"),
+            command_fingerprint: format!("replay-batch-fingerprint-{suffix}"),
+            replaces_waiting_run_id: None,
+            hitl_resume_claim_id: None,
+        })
+        .await
+        .expect("acquire replay batch admission");
+    let scope = ReplayScope::run(run_id.as_str());
+    let first = ReplayEvent::new(scope.clone(), 10, ReplayEventKind::Heartbeat);
+    let second = ReplayEvent::new(
+        scope.clone(),
+        11,
+        ReplayEventKind::Raw(serde_json::json!({"batch": 1})),
+    );
+    let initial_batch = vec![first.clone(), second.clone()];
+    store
+        .append_replay_events_fenced(&receipt.lease, initial_batch.clone())
+        .await
+        .expect("append replay batch");
+    store
+        .append_replay_events_fenced(&receipt.lease, initial_batch)
+        .await
+        .expect("exact replay batch retry");
+
+    let rolled_back = ReplayEvent::new(scope.clone(), 12, ReplayEventKind::Heartbeat);
+    let conflicting_second = ReplayEvent::new(
+        scope.clone(),
+        second.sequence,
+        ReplayEventKind::Raw(serde_json::json!({"batch": "conflict"})),
+    );
+    store
+        .append_replay_events_fenced(
+            &receipt.lease,
+            vec![rolled_back.clone(), conflicting_second],
+        )
+        .await
+        .expect_err("a second-event conflict must reject the whole replay batch");
+    let replacement = ReplayEvent::new(
+        scope.clone(),
+        rolled_back.sequence,
+        ReplayEventKind::Raw(serde_json::json!({"after": "rollback"})),
+    );
+    store
+        .append_replay_events_fenced(&receipt.lease, vec![replacement.clone()])
+        .await
+        .expect("the first event from a rejected batch must have rolled back");
+    store
+        .append_replay_events_fenced(&receipt.lease, vec![replacement])
+        .await
+        .expect("replacement exact retry");
+
+    let foreign_scope = ReplayEvent::new(
+        ReplayScope::run("another-run"),
+        13,
+        ReplayEventKind::Heartbeat,
+    );
+    store
+        .append_replay_events_fenced(&receipt.lease, vec![foreign_scope])
+        .await
+        .expect_err("replay event scope must match the admitted run");
+    store
+        .append_replay_events_fenced(
+            &receipt.lease,
+            vec![ReplayEvent::new(
+                scope.clone(),
+                13,
+                ReplayEventKind::Heartbeat,
+            )],
+        )
+        .await
+        .expect("scope rejection must not reserve the sequence");
+
+    let mut stale_admission = receipt.lease.clone();
+    stale_admission.admission_id.push_str("-stale");
+    store
+        .append_replay_events_fenced(&stale_admission, Vec::new())
+        .await
+        .expect_err("stale admission id must be fenced");
+    let mut stale_host = receipt.lease.clone();
+    stale_host.host_instance_id.push_str("-stale");
+    store
+        .append_replay_events_fenced(&stale_host, Vec::new())
+        .await
+        .expect_err("stale host must be fenced");
+    let mut stale_target = receipt.lease.clone();
+    stale_target.target.run_id = RunId::from_string(format!("replay-batch-foreign-{suffix}"));
+    store
+        .append_replay_events_fenced(&stale_target, Vec::new())
+        .await
+        .expect_err("stale target must be fenced");
+    let mut stale_generation = receipt.lease.clone();
+    stale_generation.fencing_generation = stale_generation.fencing_generation.saturating_add(1);
+    store
+        .append_replay_events_fenced(&stale_generation, Vec::new())
+        .await
+        .expect_err("stale generation must be fenced");
+
+    let expired_session_id =
+        SessionId::from_string(format!("replay-batch-expired-session-{suffix}"));
+    let expired_run_id = RunId::from_string(format!("replay-batch-expired-run-{suffix}"));
+    store
+        .save_session(SessionRecord::new(expired_session_id.clone()))
+        .await
+        .expect("save expired replay batch session");
+    let expired = store
+        .acquire_run_admission(AcquireRunAdmission {
+            run: RunRecord::new(expired_session_id, expired_run_id, ConversationId::new()),
+            namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+            host_instance_id: format!("replay-batch-expired-host-{suffix}"),
+            admission_id: format!("replay-batch-expired-admission-{suffix}"),
+            lease_expires_at: Utc::now() - chrono::Duration::seconds(1),
+            idempotency_key: format!("replay-batch-expired-key-{suffix}"),
+            command_fingerprint: format!("replay-batch-expired-fingerprint-{suffix}"),
+            replaces_waiting_run_id: None,
+            hitl_resume_claim_id: None,
+        })
+        .await
+        .expect("acquire already-expired replay batch admission");
+    store
+        .append_replay_events_fenced(&expired.lease, Vec::new())
+        .await
+        .expect_err("expired admission must be fenced");
 }
 
 #[allow(dead_code)]
@@ -451,6 +884,7 @@ pub async fn assert_background_subagent_contract(store: Arc<dyn SessionStore>, s
             idempotency_key: format!("background-idempotency-{suffix}"),
             command_fingerprint: format!("background-fingerprint-{suffix}"),
             replaces_waiting_run_id: None,
+            hitl_resume_claim_id: None,
         },
     };
     let mut forged_cause = request.clone();

@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, process, thread};
+use std::fs;
 
 use chrono::{DateTime, Utc};
 
@@ -93,23 +93,7 @@ fn update_project_state(
     let path = config.project_dir.join("state.json");
     let mut value = read_project_state(config)?;
     update(&mut value);
-    let temp = state_temp_path(config);
-    fs::write(&temp, serde_json::to_vec_pretty(&value)?).map_err(|error| io_error(&temp, error))?;
-    fs::rename(&temp, &path).map_err(|error| io_error(&path, error))?;
+    let payload = serde_json::to_vec_pretty(&value)?;
+    crate::atomic_file::replace(&path, &payload).map_err(|error| io_error(&path, error))?;
     Ok(())
-}
-
-fn state_temp_path(config: &CliConfig) -> PathBuf {
-    config.project_dir.join(format!(
-        "state.{}.{}.json.tmp",
-        process::id(),
-        format_thread_id(thread::current().id())
-    ))
-}
-
-fn format_thread_id(id: thread::ThreadId) -> String {
-    format!("{id:?}")
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .collect()
 }

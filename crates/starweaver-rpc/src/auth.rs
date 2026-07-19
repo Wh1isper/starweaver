@@ -152,10 +152,15 @@ pub fn required_scope(method: &str) -> Option<RpcHttpScope> {
         | "session.create"
         | "environment.attach"
         | "environment.detach"
+        | "environment.health"
         | "environment.active_mount"
         | "environment.active_unmount" => RpcHttpScope::Run,
-        "approval.decide" | "deferred.complete" | "deferred.fail" => RpcHttpScope::Approval,
-        "model.select" | "session.current.set" | "session.delete" => RpcHttpScope::Admin,
+        "approval.decide" | "deferred.complete" | "deferred.fail" | "run.resume" => {
+            RpcHttpScope::Approval
+        }
+        "model.select" | "session.current.set" | "session.delete" | "storage.importLegacy" => {
+            RpcHttpScope::Admin
+        }
         "initialize"
         | "diagnostics.get"
         | "profile.list"
@@ -178,7 +183,6 @@ pub fn required_scope(method: &str) -> Option<RpcHttpScope> {
         | "deferred.list"
         | "deferred.show"
         | "environment.list"
-        | "environment.health"
         | "environment.active_list"
         | "stream.subscribe"
         | "stream.unsubscribe" => RpcHttpScope::Read,
@@ -367,10 +371,19 @@ mod tests {
         assert_eq!(required_scope("session.search"), Some(RpcHttpScope::Read));
         assert_eq!(required_scope("run.start"), Some(RpcHttpScope::Run));
         assert_eq!(
+            required_scope("environment.health"),
+            Some(RpcHttpScope::Run),
+            "health probes may launch configured stdio envd processes"
+        );
+        assert_eq!(
             required_scope("approval.decide"),
             Some(RpcHttpScope::Approval)
         );
         assert_eq!(required_scope("session.delete"), Some(RpcHttpScope::Admin));
+        assert_eq!(
+            required_scope("storage.importLegacy"),
+            Some(RpcHttpScope::Admin)
+        );
         assert_eq!(required_scope("shutdown"), Some(RpcHttpScope::Shutdown));
         assert_eq!(required_scope("future.mutating_method"), None);
     }

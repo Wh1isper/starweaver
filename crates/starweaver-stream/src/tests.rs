@@ -478,6 +478,116 @@ async fn default_projector_maps_subagent_sideband_custom_events() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn steering_projection_shows_main_and_hides_all_subagent_steering_in_replay() {
+    let projector = DefaultDisplayMessageProjector;
+    let context = sideband_display_context();
+    let main = custom_stream_record(
+        20,
+        "steering_received",
+        &json!({"id": "steer-main", "text": "keep the main path"}),
+    );
+    let source = AgentStreamSource::subagent(
+        AgentId::from_string("child-agent"),
+        "child",
+        TaskId::from_string("child-task"),
+        Some(RunId::from_string("run-child")),
+        Some(context.run_id.clone()),
+        4,
+    );
+    let subagent = custom_stream_record(
+        21,
+        "steering_received",
+        &json!({"id": "steer-child", "text": "private child update"}),
+    )
+    .with_source(source.clone());
+    let subagent_submitted = custom_stream_record(
+        22,
+        "steering_submitted",
+        &json!({"id": "steer-child", "text": "private child submission"}),
+    )
+    .with_source(source.clone());
+    let subagent_guard = AgentStreamRecord::new(
+        23,
+        AgentStreamEvent::SteeringGuard {
+            step: 2,
+            prompt: "private child guard".to_string(),
+        },
+    )
+    .with_source(source.clone());
+    let namespaced_subagent = custom_stream_record(
+        24,
+        "runtime.steer_ack",
+        &json!({"id": "steer-child", "text": "private child acknowledgement"}),
+    )
+    .with_source(source.clone());
+    let unrelated_subagent = custom_stream_record(
+        25,
+        "task_steer_progress",
+        &json!({"text": "not a steering protocol event"}),
+    )
+    .with_source(source);
+
+    assert!(!main.is_subagent_steering_event());
+    assert!(subagent.is_subagent_steering_event());
+    assert!(subagent_submitted.is_subagent_steering_event());
+    assert!(subagent_guard.is_subagent_steering_event());
+    assert!(namespaced_subagent.is_subagent_steering_event());
+    assert!(!unrelated_subagent.is_subagent_steering_event());
+    let main_live = projector.project(&context, &main).await;
+    let subagent_live = projector.project(&context, &subagent).await;
+    let namespaced_subagent_live = projector.project(&context, &namespaced_subagent).await;
+    assert_eq!(main_live.len(), 1);
+    assert_eq!(main_live[0].kind, DisplayMessageKind::SteeringReceived);
+    assert_eq!(main_live[0].payload["text"], "keep the main path");
+    assert!(subagent_live.is_empty());
+    assert!(namespaced_subagent_live.is_empty());
+
+    let archive = InMemoryStreamArchive::new();
+    archive
+        .append_raw_records(
+            &context.session_id,
+            &context.run_id,
+            vec![
+                main.clone(),
+                subagent.clone(),
+                subagent_submitted.clone(),
+                subagent_guard.clone(),
+            ],
+        )
+        .await
+        .unwrap();
+    let projected = projector.project_records(
+        &context,
+        &[
+            main.clone(),
+            subagent.clone(),
+            subagent_submitted.clone(),
+            subagent_guard.clone(),
+        ],
+    );
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0].kind, DisplayMessageKind::SteeringReceived);
+    assert_eq!(projected[0].payload, main_live[0].payload);
+    let scope = ReplayScope::run(context.run_id.as_str());
+    archive
+        .append_display_messages(scope.clone(), projected.clone())
+        .await
+        .unwrap();
+
+    let raw_replay = archive
+        .replay_raw_after(&context.session_id, &context.run_id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        raw_replay,
+        vec![main, subagent, subagent_submitted, subagent_guard]
+    );
+    let display_replay = archive.replay_display_after(&scope, None).await.unwrap();
+    assert_eq!(display_replay, projected);
+}
+
+#[tokio::test]
 async fn default_projector_maps_generic_sideband_custom_events() {
     let projector = DefaultDisplayMessageProjector;
     let context = sideband_display_context();

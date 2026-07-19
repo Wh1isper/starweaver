@@ -6,6 +6,7 @@ use clap::Parser;
 use starweaver_cli::{Cli, ConfigResolver, LocalSessionStore};
 use starweaver_session::SessionStore;
 
+#[allow(dead_code)]
 #[path = "../../starweaver-session/tests/support/session_store_contract.rs"]
 mod contract;
 

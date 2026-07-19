@@ -405,6 +405,40 @@ impl AgentStreamRecord {
         }
     }
 
+    /// Returns true when this is a steering event emitted by a delegated subagent.
+    ///
+    /// Raw records retain these events for durable replay and trace evidence. Display projections
+    /// use source attribution to keep child steering internals out of user-facing streams without
+    /// discarding the canonical record. Main-agent steering remains visible.
+    #[must_use]
+    pub fn is_subagent_steering_event(&self) -> bool {
+        if !matches!(
+            self.source.as_ref().map(|source| &source.kind),
+            Some(AgentStreamSourceKind::Subagent)
+        ) {
+            return false;
+        }
+        match &self.event {
+            AgentStreamEvent::SteeringGuard { .. } => true,
+            AgentStreamEvent::Custom { event } => {
+                let normalized = event.kind.to_ascii_lowercase().replace(['.', '-'], "_");
+                [
+                    "steering_submitted",
+                    "steer_submitted",
+                    "steering_received",
+                    "steer_received",
+                    "steering_ack",
+                    "steer_ack",
+                ]
+                .iter()
+                .any(|candidate| {
+                    normalized == *candidate || normalized.ends_with(&format!("_{candidate}"))
+                })
+            }
+            _ => false,
+        }
+    }
+
     /// Attach source attribution.
     #[must_use]
     pub fn with_source(mut self, source: AgentStreamSource) -> Self {
