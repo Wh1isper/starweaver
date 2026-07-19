@@ -3938,6 +3938,25 @@ mod tests {
         assert!(completed.is_ok(), "run worker finalizer did not complete");
     }
 
+    async fn await_background_delivery(
+        coordinator: &RpcRuntimeCoordinator,
+        attempt_id: &SubagentAttemptId,
+    ) -> BackgroundSubagentRecord {
+        let completed = tokio::time::timeout(TEST_RUN_COMPLETION_TIMEOUT, async {
+            loop {
+                coordinator.reap_finished_background_tasks().await.unwrap();
+                let record = coordinator.background_attempt(attempt_id).await.unwrap();
+                if record.delivery_status == DurableBackgroundSubagentDeliveryStatus::Delivered {
+                    return record;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await;
+        assert!(completed.is_ok(), "background delivery did not complete");
+        completed.unwrap()
+    }
+
     fn local_attachment(id: &str, is_default: bool) -> EnvironmentAttachmentRef {
         EnvironmentAttachmentRef {
             id: id.to_string(),
@@ -5068,6 +5087,7 @@ mod tests {
             .unwrap();
         assert_eq!(status.status, "completed", "{status:?}");
         assert_eq!(status.output_preview.as_deref(), Some("ok"));
+        await_run_worker_finalized(&coordinator, &started.session_id, &started.run_id).await;
         assert!(!coordinator.is_controllable(&ManagedRunTarget::new(
             LOCAL_SESSION_NAMESPACE,
             started.session_id,
@@ -5610,10 +5630,8 @@ mod tests {
             )
             .await
             .unwrap();
-        let consumed = store
-            .load_background_subagent(&pending_attempt)
-            .await
-            .unwrap();
+        await_run_worker_finalized(&coordinator, &explicit.session_id, &explicit.run_id).await;
+        let consumed = await_background_delivery(&coordinator, &pending_attempt).await;
         assert_eq!(
             consumed.delivery_status,
             DurableBackgroundSubagentDeliveryStatus::Delivered
