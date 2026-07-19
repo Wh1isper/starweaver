@@ -201,6 +201,8 @@ For full local validation, run:
 make ci
 ```
 
+`make rpc-contracts-check` remains the complete standalone in-process/stdio/HTTP contract gate. The aggregate `make ci` uses the ordered `rpc-ci-check` composition so workspace tests provide typed in-process coverage before the stdio/HTTP and CLI/RPC subprocess gates run without repeating that test binary.
+
 Before a release, also run the Rust semver and classified Python API gate:
 
 ```bash

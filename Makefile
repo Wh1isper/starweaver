@@ -225,10 +225,20 @@ rpc-contracts-generate: ## Regenerate the deterministic RPC v1 corpus schema
 	@echo "Generating RPC v1 wire contract schema"
 	@$(XTASK) generate-rpc-contracts
 
+.PHONY: rpc-transports-check
+rpc-transports-check: ## Validate RPC v1 corpus/schema plus stdio and loopback HTTP
+	@echo "Checking RPC v1 wire contracts through stdio and loopback HTTP"
+	@$(XTASK) check-rpc-transports
+
 .PHONY: rpc-interop-e2e
 rpc-interop-e2e: ## Run real CLI/RPC bidirectional subprocess interoperability
 	@echo "Checking CLI/RPC bidirectional interoperability"
 	@$(XTASK) check-rpc-interop-e2e
+
+.PHONY: rpc-ci-check
+rpc-ci-check: test ## Run ordered workspace, RPC transport, and interoperability tests
+	@$(MAKE) --no-print-directory rpc-transports-check
+	@$(MAKE) --no-print-directory rpc-interop-e2e
 
 .PHONY: scripts-check
 scripts-check: architecture-check capability-check cli-examples-check install-script-check ## Validate repository automation scripts through xtask
@@ -281,7 +291,7 @@ lint: docs-check py-lint ## Run pre-commit hooks, Python lint, and docs example 
 	@pre-commit run -a
 
 .PHONY: ci
-ci: fmt-check check replay-check test rpc-contracts-check rpc-interop-e2e py-check scripts-check docs-check docs-build ## Run the same core checks as CI
+ci: fmt-check check replay-check rpc-ci-check py-check scripts-check docs-check docs-build ## Run the same core checks as CI
 
 .PHONY: ci-all
 ci-all: ci coverage-ci ## Run core CI plus coverage gates

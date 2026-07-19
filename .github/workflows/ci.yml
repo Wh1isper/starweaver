@@ -73,7 +73,7 @@ jobs:
         run: make test
 
       - name: Validate RPC v1 wire contracts across transports
-        run: make rpc-contracts-check
+        run: make rpc-transports-check
 
       - name: Run CLI/RPC subprocess interoperability
         run: make rpc-interop-e2e
@@ -100,7 +100,7 @@ jobs:
         run: cargo test --workspace --all-targets --all-features --locked
 
       - name: Validate RPC v1 wire contracts across transports
-        run: make rpc-contracts-check
+        run: make rpc-transports-check
 
       - name: Run CLI/RPC subprocess interoperability
         run: make rpc-interop-e2e

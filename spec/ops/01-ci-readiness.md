@@ -11,6 +11,7 @@ flowchart TD
     scripts[xtask automation validation]
     replay[model replay check]
     tests[workspace tests]
+    rpc[RPC transport and CLI interoperability]
     coverage[coverage gate]
     docs[docs examples and site]
     precommit[pre-commit]
@@ -19,6 +20,7 @@ flowchart TD
     fmt --> scripts
     fmt --> replay
     fmt --> tests
+    tests --> rpc
     fmt --> coverage
     fmt --> docs
     fmt --> precommit
@@ -32,6 +34,8 @@ cargo check --workspace --all-targets --all-features --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test -p starweaver-model --test fixture_schema --test replay --test replay_tooling --test request_parameters --test stream_replay --locked
 cargo test --workspace --all-targets --all-features --locked
+make rpc-transports-check
+make rpc-interop-e2e
 make coverage-ci
 make scripts-check
 make docs-check
@@ -49,6 +53,8 @@ Focused gates:
 ```bash
 make replay-check
 make coverage-ci
+make rpc-contracts-check
+make rpc-interop-e2e
 make scripts-check
 make docs-check
 ```

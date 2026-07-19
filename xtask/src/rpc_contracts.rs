@@ -82,16 +82,29 @@ pub fn generate(args: &[String]) -> Result<(), String> {
 }
 
 pub fn check(args: &[String]) -> Result<(), String> {
+    let corpus = checked_corpus(args, "check-rpc-contracts")?;
+    check_in_process_corpus()?;
+    check_wire_runtime(&corpus)?;
+    println!("RPC v1 corpus validated through in-process, stdio, and loopback HTTP gates");
+    Ok(())
+}
+
+pub fn check_transports(args: &[String]) -> Result<(), String> {
+    let corpus = checked_corpus(args, "check-rpc-transports")?;
+    check_wire_runtime(&corpus)?;
+    println!("RPC v1 corpus validated through stdio and loopback HTTP gates");
+    Ok(())
+}
+
+fn checked_corpus(args: &[String], command: &str) -> Result<Corpus, String> {
     if !args.is_empty() {
-        return Err("check-rpc-contracts takes no arguments".to_string());
+        return Err(format!("{command} takes no arguments"));
     }
     let corpus = load_corpus()?;
     let catalog = load_catalog()?;
     validate_corpus(&corpus, &catalog)?;
     check_generated(SCHEMA, &render_schema(&corpus)?)?;
-    check_in_process_corpus()?;
-    check_wire_runtime(&corpus)?;
-    Ok(())
+    Ok(corpus)
 }
 
 fn load_corpus() -> Result<Corpus, String> {
@@ -320,12 +333,16 @@ fn check_in_process_corpus() -> Result<(), String> {
 
 fn check_wire_runtime(corpus: &Corpus) -> Result<(), String> {
     let repository = root()?;
+    // `cargo build` still produces a normal executable without `cfg(test)`.
+    // Matching the test profile lets aggregate CI reuse preceding test artifacts.
     run_command(Command::new("cargo").current_dir(&repository).args([
         "build",
         "-p",
         "starweaver-rpc",
         "--bin",
         "starweaver-rpc",
+        "--profile",
+        "test",
         "--locked",
     ]))?;
     let rpc = target_dir(&repository)
@@ -363,9 +380,7 @@ fn check_wire_runtime(corpus: &Corpus) -> Result<(), String> {
         check_http_corpus(corpus, &rpc, &workspace, &config, &temp.join("http.sqlite"))
     })();
     let _ = fs::remove_dir_all(&temp);
-    result?;
-    println!("RPC v1 corpus validated through in-process, stdio, and loopback HTTP gates");
-    Ok(())
+    result
 }
 
 fn exercise_corpus(

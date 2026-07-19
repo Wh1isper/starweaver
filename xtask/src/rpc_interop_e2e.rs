@@ -11,13 +11,20 @@ use crate::common::{root, run_capture, run_command};
 
 pub fn check() -> Result<(), String> {
     let root = root()?;
+    // `cargo build` still produces normal executables without `cfg(test)`.
+    // Matching the test profile lets aggregate CI reuse preceding test artifacts.
     run_command(Command::new("cargo").current_dir(&root).args([
         "build",
         "-p",
         "starweaver-cli",
+        "--bin",
+        "starweaver-cli",
         "-p",
         "starweaver-rpc",
-        "--bins",
+        "--bin",
+        "starweaver-rpc",
+        "--profile",
+        "test",
         "--locked",
     ]))?;
     let bin_dir = target_dir(&root).join("debug");

@@ -134,11 +134,11 @@ make fmt-check
 make check
 make test
 make coverage-ci
+make rpc-contracts-check
 make rpc-interop-e2e
 make scripts-check
 make docs-check
-cargo run -p xtask --locked -- check-rpc-contracts
 git diff --check
 ```
 
-`make check` includes the CLI/RPC dependency-isolation and capability-registry gates. `check-rpc-contracts` verifies deterministic schema generation and the v1 corpus across in-process, stdio, and HTTP dispatch. `rpc-interop-e2e` verifies bidirectional CLI/RPC subprocess interoperability using shared durable storage.
+`make check` includes the CLI/RPC dependency-isolation and capability-registry gates. `rpc-contracts-check` is the complete standalone contract gate: it verifies deterministic schema generation and the v1 corpus across typed in-process, stdio, and HTTP dispatch. Aggregate `make ci` uses the ordered `rpc-ci-check` composition instead: workspace tests first provide the same typed in-process coverage, then `rpc-transports-check` exercises stdio and HTTP, and finally `rpc-interop-e2e` verifies bidirectional CLI/RPC subprocess interoperability using shared durable storage. The subprocess gates build normal, non-test-harness binaries with Cargo's test profile so they can reuse preceding test-profile artifacts without removing any platform or transport coverage.
