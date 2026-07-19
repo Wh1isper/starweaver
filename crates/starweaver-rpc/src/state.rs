@@ -3,7 +3,6 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::Write as _,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -11,7 +10,6 @@ use std::{
 use fs2::FileExt as _;
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::{RpcHostError, RpcHostResult};
 
@@ -113,23 +111,9 @@ fn read_state(state_dir: &Path) -> RpcHostResult<RpcClientState> {
 fn write_state(state_dir: &Path, state: &RpcClientState) -> RpcHostResult<()> {
     fs::create_dir_all(state_dir)?;
     let path = state_dir.join(STATE_FILE_NAME);
-    let temporary = state_dir.join(format!("{STATE_FILE_NAME}.{}.tmp", Uuid::new_v4()));
     let payload = serde_json::to_vec_pretty(state)
         .map_err(|error| RpcHostError::Invalid(error.to_string()))?;
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&temporary)?;
-    file.write_all(&payload)?;
-    file.sync_all()?;
-    drop(file);
-    if let Err(error) = fs::rename(&temporary, &path) {
-        let _ = fs::remove_file(&temporary);
-        return Err(RpcHostError::Io(error));
-    }
-    if let Ok(directory) = File::open(state_dir) {
-        let _ = directory.sync_all();
-    }
+    crate::atomic_file::replace(&path, &payload)?;
     Ok(())
 }
 

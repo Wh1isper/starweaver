@@ -2,6 +2,7 @@
 //! CLI-first local product surface for Starweaver.
 
 mod args;
+mod atomic_file;
 mod client_state;
 mod clipboard;
 mod command_catalog;
@@ -256,6 +257,7 @@ all_sessions_interval_hours = 1
             run: None,
             branch_from: None,
             profile: None,
+            continuation_mode: args::ContinuationModeArg::Preserve,
             output: None,
             hitl: None,
             goal: None,
@@ -279,6 +281,7 @@ all_sessions_interval_hours = 1
             run: None,
             branch_from: None,
             profile: None,
+            continuation_mode: args::ContinuationModeArg::Preserve,
             output: None,
             hitl: None,
             goal: None,
@@ -302,6 +305,7 @@ all_sessions_interval_hours = 1
             run: None,
             branch_from: None,
             profile: None,
+            continuation_mode: args::ContinuationModeArg::Preserve,
             output: None,
             hitl: None,
             goal: None,

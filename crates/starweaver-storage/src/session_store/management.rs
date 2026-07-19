@@ -2,10 +2,10 @@ use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use starweaver_core::SessionId;
 use starweaver_session::{
-    AcquireRunAdmission, DurableControlReceipt, ManagedRunTarget, ManagedSessionTarget,
-    RunAdmissionLease, RunAdmissionReceipt, RunStatus, SessionContinuationFence,
-    SessionDeletionFence, SessionRecord, SessionStatus, SessionStoreError, SessionStoreResult,
-    UpdateManagedSession,
+    AcquireRunAdmission, DurableControlReceipt, HitlResumeClaim, HitlResumeClaimState,
+    ManagedRunTarget, ManagedSessionTarget, RunAdmissionLease, RunAdmissionReceipt, RunStatus,
+    SessionContinuationFence, SessionDeletionFence, SessionRecord, SessionStatus,
+    SessionStoreError, SessionStoreResult, UpdateManagedSession,
 };
 
 use crate::sqlite::{deserialize_json_record, map_sqlite_session_error, serialize_json_record};
@@ -290,6 +290,25 @@ impl SqliteSessionStore {
         Ok(receipt)
     }
 
+    pub(crate) fn load_run_admission_receipt_sync(
+        &self,
+        namespace_id: &str,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<Option<RunAdmissionReceipt>> {
+        let connection = self.lock()?;
+        let mut receipt = load_admission_receipt(
+            &connection,
+            namespace_id,
+            idempotency_key,
+            command_fingerprint,
+        )?;
+        if let Some(receipt) = receipt.as_mut() {
+            receipt.idempotent_replay = true;
+        }
+        Ok(receipt)
+    }
+
     pub(crate) fn heartbeat_run_admission_sync(
         &self,
         lease: &RunAdmissionLease,
@@ -305,7 +324,7 @@ impl SqliteSessionStore {
             &lease.target.session_id,
         )?
         .ok_or_else(|| SessionStoreError::NotFound(lease.admission_id.clone()))?;
-        ensure_same_owner(&current, lease)?;
+        ensure_active_owner(&current, lease, Utc::now())?;
         current.heartbeat_at = Utc::now();
         current.lease_expires_at = lease_expires_at;
         transaction
@@ -338,7 +357,7 @@ impl SqliteSessionStore {
             &lease.target.namespace_id,
             &lease.target.session_id,
         )? {
-            ensure_same_owner(&current, lease)?;
+            ensure_active_owner(&current, lease, Utc::now())?;
             transaction
                 .execute(
                     "DELETE FROM run_admissions WHERE namespace_id = ?1 AND session_id = ?2 AND generation = ?3",
@@ -347,6 +366,101 @@ impl SqliteSessionStore {
                 .map_err(map_sqlite_session_error)?;
         }
         transaction.commit().map_err(map_sqlite_session_error)
+    }
+
+    pub(crate) fn update_run_status_fenced_sync(
+        &self,
+        lease: &RunAdmissionLease,
+        status: RunStatus,
+        output_preview: Option<String>,
+    ) -> SessionStoreResult<starweaver_session::RunRecord> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_sqlite_session_error)?;
+        ensure_run_admission_in_transaction(&transaction, lease, Utc::now())?;
+        let mut run =
+            load_run_record(&transaction, &lease.target.session_id, &lease.target.run_id)?;
+        run.status = status;
+        run.output_preview = output_preview;
+        run.updated_at = Utc::now();
+        save_run_record(&transaction, &run)?;
+        let mut session = load_session_record(&transaction, &lease.target.session_id)?;
+        apply_run_to_session(&mut session, &run);
+        save_session_record(&transaction, &session)?;
+        transaction.commit().map_err(map_sqlite_session_error)?;
+        Ok(run)
+    }
+
+    pub(crate) fn finalize_run_admission_sync(
+        &self,
+        lease: &RunAdmissionLease,
+        status: RunStatus,
+        output_preview: Option<String>,
+    ) -> SessionStoreResult<starweaver_session::RunRecord> {
+        if status.is_active() {
+            return Err(SessionStoreError::Conflict(
+                "run admission can only finalize to a non-active status".to_string(),
+            ));
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_sqlite_session_error)?;
+        let mut run =
+            load_run_record(&transaction, &lease.target.session_id, &lease.target.run_id)?;
+        let current = load_session_admission(
+            &transaction,
+            &lease.target.namespace_id,
+            &lease.target.session_id,
+        )?;
+        if current.is_none() {
+            if run.status == status && run.output_preview == output_preview {
+                transaction.commit().map_err(map_sqlite_session_error)?;
+                return Ok(run);
+            }
+            return Err(SessionStoreError::Conflict(
+                "stale admission owner".to_string(),
+            ));
+        }
+        ensure_active_owner(
+            current.as_ref().expect("checked active admission"),
+            lease,
+            Utc::now(),
+        )?;
+        if !run.status.is_terminal() {
+            run.status = status;
+            run.output_preview = output_preview;
+            run.updated_at = Utc::now();
+            save_run_record(&transaction, &run)?;
+            let mut session = load_session_record(&transaction, &lease.target.session_id)?;
+            apply_run_to_session(&mut session, &run);
+            save_session_record(&transaction, &session)?;
+        }
+        // Complete run evidence may be committed before its admission lease is released. In that
+        // case this transaction owns only matching-lease cleanup and preserves the committed run,
+        // even when a caller supplied a process-local fallback status.
+        let deleted = transaction
+            .execute(
+                "DELETE FROM run_admissions
+                 WHERE namespace_id = ?1 AND session_id = ?2 AND run_id = ?3
+                   AND generation = ?4 AND host_instance_id = ?5",
+                params![
+                    lease.target.namespace_id,
+                    lease.target.session_id.as_str(),
+                    lease.target.run_id.as_str(),
+                    i64::try_from(lease.fencing_generation).unwrap_or(i64::MAX),
+                    lease.host_instance_id,
+                ],
+            )
+            .map_err(map_sqlite_session_error)?;
+        if deleted != 1 {
+            return Err(SessionStoreError::Conflict(
+                "stale admission owner".to_string(),
+            ));
+        }
+        transaction.commit().map_err(map_sqlite_session_error)?;
+        Ok(run)
     }
 
     pub(crate) fn load_run_admission_sync(
@@ -535,6 +649,11 @@ pub(super) fn acquire_run_admission_in_transaction(
         existing.idempotent_replay = true;
         return Ok(existing);
     }
+    if request.replaces_waiting_run_id.is_some() != request.hitl_resume_claim_id.is_some() {
+        return Err(SessionStoreError::Conflict(
+            "waiting-run replacement requires exactly one preflight HITL claim".to_string(),
+        ));
+    }
     let mut session = load_session_record(transaction, &request.run.session_id)?;
     if session.namespace_id != request.namespace_id {
         return Err(SessionStoreError::NotFound(
@@ -582,6 +701,41 @@ pub(super) fn acquire_run_admission_in_transaction(
             "waiting-run replacement has no parked active run".to_string(),
         ));
     }
+    let mut hitl_claim = match (
+        request.replaces_waiting_run_id.as_ref(),
+        request.hitl_resume_claim_id.as_deref(),
+    ) {
+        (Some(source_run_id), Some(claim_id)) => {
+            let payload = transaction
+                .query_row(
+                    "SELECT record FROM hitl_resume_claims WHERE session_id = ?1 AND run_id = ?2",
+                    params![request.run.session_id.as_str(), source_run_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(map_sqlite_session_error)?
+                .ok_or_else(|| {
+                    SessionStoreError::NotFound(format!(
+                        "resume claim for {}",
+                        source_run_id.as_str()
+                    ))
+                })?;
+            let claim = deserialize_json_record::<HitlResumeClaim>(&payload)?;
+            if claim.claim_id != claim_id
+                || claim.session_id != request.run.session_id
+                || claim.run_id != *source_run_id
+                || claim.state != HitlResumeClaimState::Preflight
+            {
+                return Err(SessionStoreError::Conflict(format!(
+                    "invalid preflight resume claim for run {}",
+                    source_run_id.as_str()
+                )));
+            }
+            Some(claim)
+        }
+        (None, None) => None,
+        _ => unreachable!("replacement and claim presence checked above"),
+    };
     let generation = next_generation(transaction, &request.namespace_id, &request.run.session_id)?;
     let mut run = request.run;
     run.status = RunStatus::Queued;
@@ -591,6 +745,27 @@ pub(super) fn acquire_run_admission_in_transaction(
     apply_run_to_session(&mut session, &run);
     session.revision = session.revision.saturating_add(1);
     save_session_record(transaction, &session)?;
+    if let Some(claim) = hitl_claim.as_mut() {
+        claim.state = HitlResumeClaimState::Started;
+        let updated = transaction
+            .execute(
+                "UPDATE hitl_resume_claims SET record = ?3
+                 WHERE session_id = ?1 AND run_id = ?2 AND claim_id = ?4",
+                params![
+                    claim.session_id.as_str(),
+                    claim.run_id.as_str(),
+                    serialize_json_record(claim)?,
+                    claim.claim_id,
+                ],
+            )
+            .map_err(map_sqlite_session_error)?;
+        if updated != 1 {
+            return Err(SessionStoreError::Conflict(format!(
+                "resume claim changed during admission for run {}",
+                claim.run_id.as_str()
+            )));
+        }
+    }
     let lease = RunAdmissionLease {
         target: ManagedRunTarget::new(
             request.namespace_id.clone(),
@@ -718,12 +893,12 @@ fn save_session_mutation_receipt(
 }
 
 fn load_admission_receipt(
-    transaction: &Transaction<'_>,
+    connection: &rusqlite::Connection,
     namespace_id: &str,
     idempotency_key: &str,
     command_fingerprint: &str,
 ) -> SessionStoreResult<Option<RunAdmissionReceipt>> {
-    let existing = transaction
+    let existing = connection
         .query_row(
             "SELECT command_fingerprint, record FROM run_admission_receipts
              WHERE namespace_id = ?1 AND idempotency_key = ?2",
@@ -786,16 +961,45 @@ fn next_generation(
         .map_err(|error| SessionStoreError::Failed(format!("invalid fencing generation: {error}")))
 }
 
+pub fn ensure_run_admission_in_transaction(
+    transaction: &Transaction<'_>,
+    expected: &RunAdmissionLease,
+    now: DateTime<Utc>,
+) -> SessionStoreResult<()> {
+    let current = load_session_admission(
+        transaction,
+        &expected.target.namespace_id,
+        &expected.target.session_id,
+    )?
+    .ok_or_else(|| SessionStoreError::StaleFence("run has no active owner lease".to_string()))?;
+    ensure_active_owner(&current, expected, now)
+}
+
 fn ensure_same_owner(
     current: &RunAdmissionLease,
     expected: &RunAdmissionLease,
 ) -> SessionStoreResult<()> {
     if current.target != expected.target
+        || current.admission_id != expected.admission_id
         || current.host_instance_id != expected.host_instance_id
         || current.fencing_generation != expected.fencing_generation
     {
-        return Err(SessionStoreError::Conflict(
+        return Err(SessionStoreError::StaleFence(
             "stale admission owner".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_active_owner(
+    current: &RunAdmissionLease,
+    expected: &RunAdmissionLease,
+    now: DateTime<Utc>,
+) -> SessionStoreResult<()> {
+    ensure_same_owner(current, expected)?;
+    if current.expired_at(now) {
+        return Err(SessionStoreError::StaleFence(
+            "run admission lease expired".to_string(),
         ));
     }
     Ok(())

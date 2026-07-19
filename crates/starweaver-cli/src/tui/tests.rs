@@ -1118,6 +1118,109 @@ fn summarize_tool_return_renders_summary_handoff() {
 }
 
 #[test]
+fn tui_shows_main_steering_and_hides_all_subagent_steering() {
+    let mut state = test_tui_state();
+    let main = AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "steering_received",
+                json!({"id": "steer-main", "text": "keep the main path"}),
+            ),
+        },
+    );
+    let source = AgentStreamSource::subagent(
+        AgentId::from_string("child-agent"),
+        "child",
+        TaskId::from_string("child-task"),
+        Some(RunId::from_string("run-child")),
+        Some(RunId::from_string("run-main")),
+        1,
+    );
+    let subagent = AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "steering_received",
+                json!({"id": "steer-child", "text": "private child update"}),
+            ),
+        },
+    )
+    .with_source(source.clone());
+    let subagent_submitted = AgentStreamRecord::new(
+        3,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "steering_submitted",
+                json!({"id": "steer-child", "text": "private child submission"}),
+            ),
+        },
+    )
+    .with_source(source.clone());
+    let subagent_guard = AgentStreamRecord::new(
+        4,
+        AgentStreamEvent::SteeringGuard {
+            step: 1,
+            prompt: "private child guard".to_string(),
+        },
+    )
+    .with_source(source);
+
+    state.apply_stream_record(&main);
+    state.apply_stream_record(&subagent);
+    state.apply_stream_record(&subagent_submitted);
+    state.apply_stream_record(&subagent_guard);
+
+    assert!(body_has_line(
+        &state,
+        "Steering received: keep the main path"
+    ));
+    assert!(!state.body.iter().any(|line| line.contains("private child")));
+    assert!(display_lines_for_stream_record(&subagent).is_empty());
+    assert!(display_lines_for_stream_record(&subagent_submitted).is_empty());
+    assert!(display_lines_for_stream_record(&subagent_guard).is_empty());
+    assert_eq!(
+        display_lines_for_stream_record(&main),
+        vec!["Steering received: keep the main path".to_string()]
+    );
+}
+
+#[test]
+fn tui_snapshot_hides_legacy_persisted_subagent_steering() {
+    let session_id = SessionId::from_string("session-legacy-steering");
+    let run_id = RunId::from_string("run-legacy-steering");
+    let main = DisplayMessage::new(
+        1,
+        session_id.clone(),
+        run_id.clone(),
+        DisplayMessageKind::SteeringReceived,
+    )
+    .with_payload(json!({"text": "main update"}));
+    let mut subagent =
+        DisplayMessage::new(2, session_id, run_id, DisplayMessageKind::SteeringReceived)
+            .with_payload(json!({"text": "private legacy child update"}));
+    subagent
+        .metadata
+        .insert("source_kind".to_string(), json!("subagent"));
+
+    let snapshot = TuiSnapshot::from_parts(
+        "session-legacy-steering".to_string(),
+        vec![main, subagent],
+        &[],
+        &[],
+    );
+
+    assert_eq!(snapshot.messages, 1);
+    assert_eq!(snapshot.steering, vec!["received:main update"]);
+    assert!(
+        snapshot
+            .transcript_lines
+            .iter()
+            .all(|line| !line.contains("private legacy child update"))
+    );
+}
+
+#[test]
 fn compact_custom_events_render_status_lines() {
     let mut state = test_tui_state();
     state.apply_stream_record(&AgentStreamRecord::new(

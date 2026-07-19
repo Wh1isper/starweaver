@@ -15,6 +15,20 @@ async fn in_memory_store_satisfies_shared_session_store_contract() {
         "memory",
     ))
     .await;
+    Box::pin(contract::assert_atomic_hitl_replacement_admission_contract(
+        store.clone(),
+        "memory",
+    ))
+    .await;
+    Box::pin(contract::assert_fenced_replay_batch_contract(
+        store.clone(),
+        "memory",
+    ))
+    .await;
+    Box::pin(
+        contract::assert_terminal_evidence_admission_cleanup_contract(store.clone(), "memory"),
+    )
+    .await;
     Box::pin(contract::assert_background_subagent_contract(
         store, "memory",
     ))

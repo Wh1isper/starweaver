@@ -38,11 +38,13 @@ starweaver-session.workspace = true
 starweaver-storage.workspace = true
 starweaver-stream.workspace = true
 thiserror.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 toml.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+rusqlite.workspace = true
 tempfile.workspace = true
 
 [lints]

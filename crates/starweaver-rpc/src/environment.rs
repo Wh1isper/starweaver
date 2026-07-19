@@ -58,20 +58,7 @@ pub fn resolve_rpc_environment_target(
     session_id: &str,
     attachments: &[EnvironmentAttachmentRef],
 ) -> RpcHostResult<ResolvedRpcEnvironmentTarget> {
-    let mut effective = if attachments.is_empty() {
-        vec![default_local_attachment()]
-    } else {
-        attachments.to_vec()
-    };
-    let default_id = default_attachment_id(&effective).map(ToString::to_string);
-    let default_shell_id =
-        default_shell_attachment_id(&effective, default_id.as_deref()).map(ToString::to_string);
-    for attachment in &mut effective {
-        attachment.is_default = default_id.as_deref() == Some(attachment.id.as_str());
-        attachment.is_default_for_shell =
-            default_shell_id.as_deref() == Some(attachment.id.as_str());
-    }
-
+    let effective = effective_rpc_environment_attachments(attachments);
     let mut mounts = Vec::with_capacity(effective.len());
     for attachment in &effective {
         let provider = resolve_attachment(workspace_root, session_id, attachment)?;
@@ -138,6 +125,47 @@ fn resolve_attachment(
             "unsupported environment attachment kind: {other}"
         ))),
     }
+}
+
+/// Normalize the credential-free attachment identities that define an RPC run binding.
+pub fn effective_rpc_environment_attachments(
+    attachments: &[EnvironmentAttachmentRef],
+) -> Vec<EnvironmentAttachmentRef> {
+    let mut effective = if attachments.is_empty() {
+        vec![default_local_attachment()]
+    } else {
+        attachments.to_vec()
+    };
+    let default_id = default_attachment_id(&effective).map(ToString::to_string);
+    let default_shell_id =
+        default_shell_attachment_id(&effective, default_id.as_deref()).map(ToString::to_string);
+    for attachment in &mut effective {
+        attachment.mode = Some(attachment.resolved_mode());
+        attachment.is_default = default_id.as_deref() == Some(attachment.id.as_str());
+        attachment.is_default_for_shell =
+            default_shell_id.as_deref() == Some(attachment.id.as_str());
+    }
+    effective
+}
+
+/// Project provider-private attachments into credential-free durable and host-visible evidence.
+pub fn safe_rpc_environment_attachments(
+    attachments: &[EnvironmentAttachmentRef],
+) -> Vec<EnvironmentAttachmentRef> {
+    attachments
+        .iter()
+        .cloned()
+        .map(|mut attachment| {
+            attachment.auth_token = None;
+            attachment.endpoint_ref = attachment
+                .requested_endpoint_ref()
+                .and_then(starweaver_envd_client::redacted_endpoint_ref);
+            // Attachment metadata is an extension map with no reviewed safe keys. Keep it only in
+            // the process-private provider binding until a typed allowlist exists.
+            attachment.metadata.clear();
+            attachment
+        })
+        .collect()
 }
 
 fn default_attachment_id(attachments: &[EnvironmentAttachmentRef]) -> Option<&str> {
@@ -210,5 +238,40 @@ mod tests {
         assert_eq!(resolved.attachments.len(), 1);
         assert_eq!(resolved.attachments[0].id, LOCAL_ENVIRONMENT_ATTACHMENT_ID);
         assert_eq!(resolved.provider.id(), "rpc-active-environment");
+    }
+
+    #[test]
+    fn safe_attachment_projection_redacts_provider_private_values() {
+        let source = EnvironmentAttachmentRef {
+            id: "workspace".to_string(),
+            kind: "envd".to_string(),
+            mode: Some(EnvironmentAttachmentAccessMode::ReadWrite),
+            is_default: true,
+            is_default_for_shell: true,
+            attachment_lease_id: Some("lease-safe-id".to_string()),
+            endpoint_ref: Some("stdio:///private/envd?arg=--token&arg=private-value".to_string()),
+            environment_id: Some("environment-safe-id".to_string()),
+            auth_token: Some("private-bearer".to_string()),
+            metadata: serde_json::Map::from_iter([(
+                "private".to_string(),
+                serde_json::json!("metadata-value"),
+            )]),
+        };
+
+        let projected = safe_rpc_environment_attachments(&[source]);
+        assert_eq!(
+            projected[0].endpoint_ref.as_deref(),
+            Some("stdio://<redacted>")
+        );
+        assert_eq!(
+            projected[0].attachment_lease_id.as_deref(),
+            Some("lease-safe-id")
+        );
+        assert_eq!(
+            projected[0].environment_id.as_deref(),
+            Some("environment-safe-id")
+        );
+        assert!(projected[0].auth_token.is_none());
+        assert!(projected[0].metadata.is_empty());
     }
 }

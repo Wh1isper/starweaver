@@ -14,6 +14,9 @@ pub enum SessionStoreError {
     /// Optimistic revision or lifecycle conflict.
     #[error("session record conflict: {0}")]
     Conflict(String),
+    /// The caller no longer owns the admission or fencing generation.
+    #[error("session stale fence: {0}")]
+    StaleFence(String),
     /// One idempotency key was reused for a different normalized command.
     #[error("session idempotency conflict: {0}")]
     IdempotencyConflict(String),
@@ -23,6 +26,9 @@ pub enum SessionStoreError {
     /// The session already owns a live run admission.
     #[error("session run conflict: {0}")]
     RunConflict(String),
+    /// Store operation failed transiently and may be retried with the same command identity.
+    #[error("session store temporarily unavailable: {0}")]
+    RetryableStorage(String),
     /// Store failed.
     #[error("session store failed: {0}")]
     Failed(String),

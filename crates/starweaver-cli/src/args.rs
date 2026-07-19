@@ -1,6 +1,6 @@
 //! CLI argument parsing.
 
-use std::ffi::OsString;
+use std::{ffi::OsString, path::PathBuf};
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
@@ -38,6 +38,9 @@ pub struct Cli {
     /// Agent profile name or YAML path.
     #[arg(long, global = false)]
     pub profile: Option<String>,
+    /// Agent materialization semantics for a restored run.
+    #[arg(long, global = false, default_value = "preserve")]
+    pub continuation_mode: ContinuationModeArg,
     /// Enable worker mode or set an optional worker label.
     #[arg(long, global = false, num_args = 0..=1, default_missing_value = "true")]
     pub worker: Option<String>,
@@ -86,6 +89,12 @@ pub enum CliCommand {
         /// Session subcommand.
         #[command(subcommand)]
         command: SessionCommand,
+    },
+    /// Manage canonical storage migrations and imports.
+    Storage {
+        /// Storage subcommand.
+        #[command(subcommand)]
+        command: StorageCommand,
     },
     /// Manage agent profiles.
     Profile {
@@ -188,6 +197,9 @@ pub struct RunCommand {
     /// Agent profile name or YAML path.
     #[arg(long)]
     pub profile: Option<String>,
+    /// Agent materialization semantics for a restored run.
+    #[arg(long, default_value = "preserve")]
+    pub continuation_mode: ContinuationModeArg,
     /// Enable worker mode or set an optional worker label.
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub worker: Option<String>,
@@ -247,6 +259,27 @@ impl RunCommand {
             Ok(prompt)
         }
     }
+}
+
+/// Canonical storage administration commands.
+#[derive(Clone, Debug, Subcommand)]
+pub enum StorageCommand {
+    /// Import a legacy project-local database incrementally and idempotently.
+    ImportLegacy(StorageImportLegacyCommand),
+}
+
+/// Explicit legacy project database import.
+#[derive(Clone, Debug, Args)]
+pub struct StorageImportLegacyCommand {
+    /// Legacy `SQLite` database to import. Defaults to the current project's legacy location.
+    #[arg(long)]
+    pub source: Option<PathBuf>,
+    /// Workspace identity assigned to imported sessions that do not already have one.
+    #[arg(long)]
+    pub workspace: Option<PathBuf>,
+    /// Output mode.
+    #[arg(long, default_value = "text")]
+    pub output: OutputMode,
 }
 
 /// Compact session commands.
@@ -657,6 +690,32 @@ pub struct ResumeCommand {
     /// Headless human-in-the-loop policy.
     #[arg(long)]
     pub hitl: Option<HitlPolicy>,
+    /// Agent materialization semantics for the continuation.
+    #[arg(long, default_value = "preserve")]
+    pub continuation_mode: ContinuationModeArg,
+}
+
+/// Explicit continuation materialization mode.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuationModeArg {
+    /// Require the exact source materialization fingerprint.
+    #[default]
+    Preserve,
+    /// Permit only an `AgentSpec` revision with otherwise equivalent bindings.
+    Compatible,
+    /// Deliberately accept and report all materialization drift.
+    Switch,
+}
+
+impl From<ContinuationModeArg> for starweaver_agent::ContinuationMaterializationMode {
+    fn from(value: ContinuationModeArg) -> Self {
+        match value {
+            ContinuationModeArg::Preserve => Self::Preserve,
+            ContinuationModeArg::Compatible => Self::Compatible,
+            ContinuationModeArg::Switch => Self::Switch,
+        }
+    }
 }
 
 /// Reset command.

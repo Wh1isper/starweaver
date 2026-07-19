@@ -15,7 +15,7 @@ use std::{
 use async_trait::async_trait;
 use starweaver_context::{AgentCheckpoint, ResumableState};
 use starweaver_core::{RunId, RunLifecycle, SessionId};
-use starweaver_stream::AgentStreamRecord;
+use starweaver_stream::{AgentStreamRecord, ReplayEvent, ReplayScope};
 
 use crate::{
     AcquireBackgroundSubagentContinuation, AcquireRunAdmission, BackgroundSubagentArtifact,
@@ -53,6 +53,7 @@ struct StoreInner {
     runs: BTreeMap<(SessionId, RunId), RunRecord>,
     checkpoints: BTreeMap<(SessionId, RunId), Vec<AgentCheckpoint>>,
     streams: BTreeMap<(SessionId, RunId), Vec<AgentStreamRecord>>,
+    replay_events: BTreeMap<(ReplayScope, usize), ReplayEvent>,
     approvals: BTreeMap<(SessionId, RunId), Vec<ApprovalRecord>>,
     deferred_tools: BTreeMap<(SessionId, RunId), Vec<DeferredToolRecord>>,
     evidence_commits: BTreeMap<(SessionId, RunId), RunEvidenceCommit>,
@@ -90,6 +91,9 @@ fn validate_approval_transition(
     existing: &ApprovalRecord,
     resolved: &ApprovalRecord,
 ) -> SessionStoreResult<()> {
+    if existing == resolved {
+        return Ok(());
+    }
     let same_request = existing.approval_id == resolved.approval_id
         && existing.session_id == resolved.session_id
         && existing.run_id == resolved.run_id
@@ -126,6 +130,9 @@ fn validate_deferred_transition(
     existing: &DeferredToolRecord,
     resolved: &DeferredToolRecord,
 ) -> SessionStoreResult<()> {
+    if existing == resolved {
+        return Ok(());
+    }
     let same_request = existing.deferred_id == resolved.deferred_id
         && existing.session_id == resolved.session_id
         && existing.run_id == resolved.run_id
@@ -155,6 +162,70 @@ fn store_failed(
     error: std::sync::PoisonError<std::sync::MutexGuard<'_, StoreInner>>,
 ) -> SessionStoreError {
     SessionStoreError::Failed(error.to_string())
+}
+
+fn ensure_active_admission_locked(
+    inner: &StoreInner,
+    lease: &RunAdmissionLease,
+    now: chrono::DateTime<chrono::Utc>,
+) -> SessionStoreResult<()> {
+    let key = ManagedSessionTarget::new(
+        lease.target.namespace_id.clone(),
+        lease.target.session_id.clone(),
+    );
+    let current = inner.run_admissions.get(&key).ok_or_else(|| {
+        SessionStoreError::StaleFence("run has no active owner lease".to_string())
+    })?;
+    if current.target != lease.target
+        || current.admission_id != lease.admission_id
+        || current.host_instance_id != lease.host_instance_id
+        || current.fencing_generation != lease.fencing_generation
+    {
+        return Err(SessionStoreError::StaleFence(
+            "stale admission owner".to_string(),
+        ));
+    }
+    if current.expired_at(now) {
+        return Err(SessionStoreError::StaleFence(
+            "run admission lease expired".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn apply_run_status_locked(
+    inner: &mut StoreInner,
+    session_id: &SessionId,
+    run_id: &RunId,
+    status: RunStatus,
+    output_preview: Option<String>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+) -> SessionStoreResult<RunRecord> {
+    let key = run_key(session_id, run_id);
+    let run = inner
+        .runs
+        .get_mut(&key)
+        .ok_or_else(|| SessionStoreError::NotFound(run_key_label(session_id, run_id)))?;
+    run.status = status;
+    run.output_preview = output_preview;
+    run.updated_at = updated_at;
+    let result = run.clone();
+    if let Some(session) = inner.sessions.get_mut(session_id) {
+        session.head_run_id = Some(run_id.clone());
+        if status.is_active() {
+            session.active_run_id = Some(run_id.clone());
+        } else {
+            if status == RunStatus::Completed {
+                session.head_success_run_id = Some(run_id.clone());
+            }
+            if session.active_run_id.as_ref() == Some(run_id) {
+                session.active_run_id = None;
+            }
+        }
+        session.revision = session.revision.saturating_add(1);
+        session.updated_at = updated_at;
+    }
+    Ok(result)
 }
 
 fn resolve_evidence_retry(
@@ -416,6 +487,11 @@ fn acquire_run_admission_locked(
             request.idempotency_key,
         ));
     }
+    if request.replaces_waiting_run_id.is_some() != request.hitl_resume_claim_id.is_some() {
+        return Err(SessionStoreError::Conflict(
+            "waiting-run replacement requires exactly one preflight HITL claim".to_string(),
+        ));
+    }
     let session_target =
         ManagedSessionTarget::new(request.namespace_id.clone(), request.run.session_id.clone());
     let now = chrono::Utc::now();
@@ -475,6 +551,36 @@ fn acquire_run_admission_locked(
                 "waiting-run replacement has no parked active run".to_string(),
             ));
         }
+    }
+    let hitl_claim_key = match (
+        request.replaces_waiting_run_id.as_ref(),
+        request.hitl_resume_claim_id.as_deref(),
+    ) {
+        (Some(source_run_id), Some(claim_id)) => {
+            let key = run_key(&request.run.session_id, source_run_id);
+            let claim = inner.hitl_resume_claims.get(&key).ok_or_else(|| {
+                SessionStoreError::NotFound(format!("resume claim for {}", source_run_id.as_str()))
+            })?;
+            if claim.claim_id != claim_id
+                || claim.session_id != request.run.session_id
+                || claim.run_id != *source_run_id
+                || claim.state != HitlResumeClaimState::Preflight
+            {
+                return Err(SessionStoreError::Conflict(format!(
+                    "invalid preflight resume claim for run {}",
+                    source_run_id.as_str()
+                )));
+            }
+            Some(key)
+        }
+        (None, None) => None,
+        _ => unreachable!("replacement and claim presence checked above"),
+    };
+    if let Some(key) = hitl_claim_key.as_ref() {
+        let claim = inner.hitl_resume_claims.get_mut(key).ok_or_else(|| {
+            SessionStoreError::Conflict("validated preflight resume claim disappeared".to_string())
+        })?;
+        claim.state = HitlResumeClaimState::Started;
     }
     let mut run = request.run;
     run.status = RunStatus::Queued;
@@ -988,6 +1094,79 @@ impl SessionStore for InMemorySessionStore {
         Ok(committed_run)
     }
 
+    async fn commit_run_evidence_fenced(
+        &self,
+        lease: &RunAdmissionLease,
+        mut commit: RunEvidenceCommit,
+    ) -> SessionStoreResult<RunRecord> {
+        if lease.target.session_id != commit.run.session_id
+            || lease.target.run_id != commit.run.run_id
+        {
+            return Err(SessionStoreError::Conflict(
+                "run evidence does not match admission target".to_string(),
+            ));
+        }
+        commit.run.stream_cursors.clone_from(&commit.stream_cursors);
+        commit.validate()?;
+        let digest = commit.digest()?;
+        let key = run_key(&commit.run.session_id, &commit.run.run_id);
+        let mut original = self.inner.lock().map_err(store_failed)?;
+        if let Some(existing) = resolve_evidence_retry(&original, &key, &commit, &digest)? {
+            return Ok(existing);
+        }
+        ensure_active_admission_locked(&original, lease, chrono::Utc::now())?;
+        validate_existing_evidence(&original, &key, &commit)?;
+        let staged = Self {
+            inner: Arc::new(Mutex::new(original.clone())),
+        };
+        apply_related_evidence(&staged, &commit)?;
+        apply_primary_evidence(&staged, &commit)?;
+        let (committed_inner, committed_run) =
+            finalize_staged_evidence(&staged, commit, key, digest)?;
+        *original = committed_inner;
+        Ok(committed_run)
+    }
+
+    async fn append_replay_events_fenced(
+        &self,
+        lease: &RunAdmissionLease,
+        events: Vec<ReplayEvent>,
+    ) -> SessionStoreResult<()> {
+        let expected_scope = ReplayScope::run(lease.target.run_id.as_str());
+        for event in &events {
+            if event.scope != expected_scope {
+                return Err(SessionStoreError::Conflict(format!(
+                    "replay event scope {} does not match admission run {}",
+                    event.scope.as_str(),
+                    lease.target.run_id.as_str()
+                )));
+            }
+            i64::try_from(event.sequence).map_err(|error| {
+                SessionStoreError::Failed(format!("invalid replay event sequence: {error}"))
+            })?;
+        }
+
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        ensure_active_admission_locked(&inner, lease, chrono::Utc::now())?;
+        let mut staged = inner.replay_events.clone();
+        for event in events {
+            let key = (expected_scope.clone(), event.sequence);
+            if let Some(persisted) = staged.get(&key) {
+                if persisted != &event {
+                    return Err(SessionStoreError::Failed(format!(
+                        "replay event conflict for scope {} at sequence {}",
+                        expected_scope.as_str(),
+                        event.sequence
+                    )));
+                }
+            } else {
+                staged.insert(key, event);
+            }
+        }
+        inner.replay_events = staged;
+        Ok(())
+    }
+
     async fn commit_checkpoint(
         &self,
         session_id: &SessionId,
@@ -1018,6 +1197,68 @@ impl SessionStore for InMemorySessionStore {
             staged.append_run_record(run)?;
         }
         staged.append_checkpoint_record(session_id, checkpoint)?;
+        let staged_inner = staged.inner.lock().map_err(store_failed)?;
+        *original = staged_inner.clone();
+        Ok(())
+    }
+
+    async fn commit_checkpoint_fenced(
+        &self,
+        lease: &RunAdmissionLease,
+        checkpoint: AgentCheckpoint,
+    ) -> SessionStoreResult<()> {
+        if lease.target.run_id != checkpoint.run_id {
+            return Err(SessionStoreError::Conflict(
+                "checkpoint does not match admission target".to_string(),
+            ));
+        }
+        let key = run_key(&lease.target.session_id, &checkpoint.run_id);
+        let mut original = self.inner.lock().map_err(store_failed)?;
+        if let Some(existing) = original
+            .checkpoints
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .find(|existing| existing.checkpoint_id == checkpoint.checkpoint_id)
+        {
+            if existing == &checkpoint {
+                return Ok(());
+            }
+            return Err(SessionStoreError::Failed(format!(
+                "checkpoint conflict for session {} run {} checkpoint {}",
+                lease.target.session_id.as_str(),
+                checkpoint.run_id.as_str(),
+                checkpoint.checkpoint_id.as_str()
+            )));
+        }
+        ensure_active_admission_locked(&original, lease, chrono::Utc::now())?;
+        let staged = Self {
+            inner: Arc::new(Mutex::new(original.clone())),
+        };
+        if staged
+            .load_session_record(&lease.target.session_id)
+            .is_err()
+        {
+            staged.save_session_record(SessionRecord::new(lease.target.session_id.clone()))?;
+        }
+        if staged
+            .load_run_record(&lease.target.session_id, &checkpoint.run_id)
+            .is_err()
+        {
+            let mut run = RunRecord::new(
+                lease.target.session_id.clone(),
+                checkpoint.run_id.clone(),
+                checkpoint.conversation_id.clone(),
+            );
+            run.status = checkpoint_run_status(checkpoint.resume.status);
+            run.trace_context = checkpoint.resume.trace_context.clone();
+            run.parent_run_id
+                .clone_from(&checkpoint.state.parent_run_id);
+            run.parent_task_id
+                .clone_from(&checkpoint.state.parent_task_id);
+            staged.append_run_record(run)?;
+        }
+        staged.append_checkpoint_record(&lease.target.session_id, checkpoint)?;
         let staged_inner = staged.inner.lock().map_err(store_failed)?;
         *original = staged_inner.clone();
         Ok(())
@@ -1397,7 +1638,33 @@ impl SessionStore for InMemorySessionStore {
         request: AcquireRunAdmission,
     ) -> SessionStoreResult<RunAdmissionReceipt> {
         let mut inner = self.inner.lock().map_err(store_failed)?;
-        acquire_run_admission_locked(&mut inner, request)
+        let mut staged = inner.clone();
+        let receipt = acquire_run_admission_locked(&mut staged, request)?;
+        *inner = staged;
+        Ok(receipt)
+    }
+
+    async fn load_run_admission_receipt(
+        &self,
+        namespace_id: &str,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<Option<RunAdmissionReceipt>> {
+        let inner = self.inner.lock().map_err(store_failed)?;
+        let Some((fingerprint, receipt)) = inner
+            .run_admission_idempotency
+            .get(&(namespace_id.to_string(), idempotency_key.to_string()))
+        else {
+            return Ok(None);
+        };
+        if fingerprint != command_fingerprint {
+            return Err(SessionStoreError::IdempotencyConflict(
+                idempotency_key.to_string(),
+            ));
+        }
+        let mut receipt = receipt.clone();
+        receipt.idempotent_replay = true;
+        Ok(Some(receipt))
     }
 
     async fn heartbeat_run_admission(
@@ -1414,9 +1681,11 @@ impl SessionStore for InMemorySessionStore {
             .run_admissions
             .get_mut(&key)
             .ok_or_else(|| SessionStoreError::NotFound(lease.admission_id.clone()))?;
-        if current.host_instance_id != lease.host_instance_id
+        if current.admission_id != lease.admission_id
+            || current.host_instance_id != lease.host_instance_id
             || current.fencing_generation != lease.fencing_generation
             || current.target != lease.target
+            || current.expired_at(chrono::Utc::now())
         {
             return Err(SessionStoreError::Conflict(
                 "stale admission owner".to_string(),
@@ -1434,9 +1703,11 @@ impl SessionStore for InMemorySessionStore {
             lease.target.session_id.clone(),
         );
         if let Some(current) = inner.run_admissions.get(&key) {
-            if current.host_instance_id != lease.host_instance_id
+            if current.admission_id != lease.admission_id
+                || current.host_instance_id != lease.host_instance_id
                 || current.fencing_generation != lease.fencing_generation
                 || current.target != lease.target
+                || current.expired_at(chrono::Utc::now())
             {
                 return Err(SessionStoreError::Conflict(
                     "stale admission owner".to_string(),
@@ -1445,6 +1716,85 @@ impl SessionStore for InMemorySessionStore {
             inner.run_admissions.remove(&key);
         }
         Ok(())
+    }
+
+    async fn update_run_status_fenced(
+        &self,
+        lease: &RunAdmissionLease,
+        status: RunStatus,
+        output_preview: Option<String>,
+    ) -> SessionStoreResult<RunRecord> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        ensure_active_admission_locked(&inner, lease, chrono::Utc::now())?;
+        apply_run_status_locked(
+            &mut inner,
+            &lease.target.session_id,
+            &lease.target.run_id,
+            status,
+            output_preview,
+            chrono::Utc::now(),
+        )
+    }
+
+    async fn finalize_run_admission(
+        &self,
+        lease: &RunAdmissionLease,
+        status: RunStatus,
+        output_preview: Option<String>,
+    ) -> SessionStoreResult<RunRecord> {
+        if status.is_active() {
+            return Err(SessionStoreError::Conflict(
+                "run admission can only finalize to a non-active status".to_string(),
+            ));
+        }
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        let session_key = ManagedSessionTarget::new(
+            lease.target.namespace_id.clone(),
+            lease.target.session_id.clone(),
+        );
+        if !inner.run_admissions.contains_key(&session_key) {
+            let run = inner
+                .runs
+                .get(&run_key(&lease.target.session_id, &lease.target.run_id))
+                .cloned()
+                .ok_or_else(|| {
+                    SessionStoreError::NotFound(run_key_label(
+                        &lease.target.session_id,
+                        &lease.target.run_id,
+                    ))
+                })?;
+            if run.status == status && run.output_preview == output_preview {
+                return Ok(run);
+            }
+            return Err(SessionStoreError::Conflict(
+                "stale admission owner".to_string(),
+            ));
+        }
+        ensure_active_admission_locked(&inner, lease, chrono::Utc::now())?;
+        let target_key = run_key(&lease.target.session_id, &lease.target.run_id);
+        let committed = inner.runs.get(&target_key).cloned().ok_or_else(|| {
+            SessionStoreError::NotFound(run_key_label(
+                &lease.target.session_id,
+                &lease.target.run_id,
+            ))
+        })?;
+        let run = if committed.status.is_terminal() {
+            // Complete run evidence may be committed before its admission lease is released.
+            // Cleanup owns only the matching lease and must never replace that evidence with a
+            // process-local fallback outcome.
+            committed
+        } else {
+            apply_run_status_locked(
+                &mut inner,
+                &lease.target.session_id,
+                &lease.target.run_id,
+                status,
+                output_preview,
+                chrono::Utc::now(),
+            )?
+        };
+        inner.run_admissions.remove(&session_key);
+        Ok(run)
     }
 
     async fn load_run_admission(

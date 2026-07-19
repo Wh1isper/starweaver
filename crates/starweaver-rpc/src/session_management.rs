@@ -882,12 +882,15 @@ fn map_control_store(error: starweaver_session::SessionStoreError) -> AgentSessi
         SessionStoreError::NotFound(_) => AgentSessionControlErrorCode::NotFound,
         SessionStoreError::AlreadyExists(_)
         | SessionStoreError::Conflict(_)
+        | SessionStoreError::StaleFence(_)
         | SessionStoreError::QuotaExceeded(_) => AgentSessionControlErrorCode::Conflict,
         SessionStoreError::IdempotencyConflict(_) => {
             AgentSessionControlErrorCode::IdempotencyConflict
         }
         SessionStoreError::RunConflict(_) => AgentSessionControlErrorCode::RunConflict,
-        SessionStoreError::Failed(_) => AgentSessionControlErrorCode::Unavailable,
+        SessionStoreError::Failed(_) | SessionStoreError::RetryableStorage(_) => {
+            AgentSessionControlErrorCode::Unavailable
+        }
     };
     control_error(code, "session operation was not accepted")
 }

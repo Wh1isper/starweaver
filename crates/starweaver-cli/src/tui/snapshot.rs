@@ -67,7 +67,11 @@ impl TuiSnapshot {
         approvals: &[ApprovalRecord],
         deferred: &[DeferredToolRecord],
     ) -> Self {
-        let message_count = runs.iter().map(|(_, messages)| messages.len()).sum();
+        let message_count = runs
+            .iter()
+            .flat_map(|(_, messages)| messages)
+            .filter(|message| !is_subagent_steering_message(message))
+            .count();
         let mut snapshot = Self {
             session_id,
             messages: message_count,
@@ -110,6 +114,9 @@ impl TuiSnapshot {
 
     /// Apply one display message to the retained view snapshot.
     pub fn apply_message(&mut self, message: &DisplayMessage) {
+        if is_subagent_steering_message(message) {
+            return;
+        }
         match message.kind {
             DisplayMessageKind::AssistantTextDelta => self.apply_assistant_delta(message),
             DisplayMessageKind::ToolCallStart | DisplayMessageKind::ToolCallDelta => {
@@ -369,11 +376,25 @@ fn is_thinking_quote_line(line: &str) -> bool {
         .starts_with('>')
 }
 
+fn is_subagent_steering_message(message: &DisplayMessage) -> bool {
+    matches!(
+        message.kind,
+        DisplayMessageKind::SteeringSubmitted | DisplayMessageKind::SteeringReceived
+    ) && message
+        .metadata
+        .get("source_kind")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("subagent"))
+}
+
 #[allow(clippy::too_many_lines)]
 fn display_message_to_stream_record(
     message: &DisplayMessage,
     sequence: usize,
 ) -> Option<AgentStreamRecord> {
+    if is_subagent_steering_message(message) {
+        return None;
+    }
     let event = match message.kind {
         DisplayMessageKind::AssistantTextDelta => {
             let delta = message_delta(message)?;

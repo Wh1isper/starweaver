@@ -13,6 +13,7 @@ use crate::{SqliteStorage, blocking::BlockingOperationTracker, sqlite::SharedSql
 mod background;
 mod impl_store;
 mod management;
+pub use management::ensure_run_admission_in_transaction;
 pub mod records;
 mod trace_helpers;
 

@@ -2,6 +2,7 @@
 
 pub mod bundles;
 pub mod filters;
+pub mod materialization;
 pub mod mcp_live;
 pub mod mcp_rmcp;
 pub(crate) mod media_compression;
@@ -65,6 +66,12 @@ pub use filters::{
     CacheFriendlyCompactCapability, DEFAULT_FILTER_ORDER, MediaUploadRequest, MediaUploader,
     NamedFilterCapability, default_filter_bundle, default_filter_capabilities,
     default_filter_capabilities_with_config,
+};
+pub use materialization::{
+    AGENT_CONTINUATION_METADATA_KEY, AGENT_MATERIALIZATION_METADATA_KEY,
+    AGENT_MATERIALIZATION_VERSION, ContinuationMaterialization, ContinuationMaterializationMode,
+    MaterializationDrift, MaterializationEvidenceError, ResolvedAgentMaterialization,
+    environment_binding_class, safe_agent_spec_digest,
 };
 pub use mcp_live::{
     DynLiveMcpClient, LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot, LiveMcpToolset,

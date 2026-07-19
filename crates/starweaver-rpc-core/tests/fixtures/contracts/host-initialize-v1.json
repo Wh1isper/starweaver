@@ -9,7 +9,8 @@
       "stream.replay",
       "environment.attachments",
       "environment.active_mounts",
-      "hitl"
+      "hitl",
+      "storage.legacy_import"
     ]
   },
   "legacy": {},

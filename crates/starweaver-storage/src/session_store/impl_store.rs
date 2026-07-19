@@ -14,15 +14,21 @@ use starweaver_session::{
     SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError,
     SessionStoreResult, StreamCursorRef, StreamPublicationTarget, UpdateManagedSession,
 };
-use starweaver_stream::{AgentStreamRecord, InMemoryReplayEventLog, ReplayCursor, ReplayScope};
+use starweaver_stream::{
+    AgentStreamRecord, InMemoryReplayEventLog, ReplayCursor, ReplayEvent, ReplayScope,
+};
 
-use crate::sqlite::{
-    collect_json_record_rows, deserialize_json_record, format_run_key, map_display_session_error,
-    map_sqlite_session_error, serialize_json_record,
+use crate::{
+    domain::insert_exact_replay_event,
+    sqlite::{
+        collect_json_record_rows, deserialize_json_record, format_run_key,
+        map_display_session_error, map_sqlite_session_error, serialize_json_record,
+    },
 };
 
 use super::{
     SqliteSessionStore,
+    management::ensure_run_admission_in_transaction,
     records::{
         allocate_or_reuse_run_sequence, apply_run_to_session, list_run_records, load_run_record,
         load_session_record, save_run_record, save_session_record,
@@ -66,6 +72,155 @@ impl SqliteSessionStore {
         transaction.commit().map_err(map_sqlite_session_error)?;
         Ok(run)
     }
+
+    fn commit_checkpoint_sync(
+        &self,
+        session_id: &SessionId,
+        checkpoint: AgentCheckpoint,
+        admission_lease: Option<&RunAdmissionLease>,
+    ) -> SessionStoreResult<()> {
+        if let Some(lease) = admission_lease
+            && (lease.target.session_id != *session_id || lease.target.run_id != checkpoint.run_id)
+        {
+            return Err(SessionStoreError::Conflict(
+                "checkpoint does not match admission target".to_string(),
+            ));
+        }
+        let created_at = Utc::now();
+        let payload = serialize_json_record(&checkpoint)?;
+        let sequence = i64::try_from(checkpoint.run_step).map_err(map_display_session_error)?;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_sqlite_session_error)?;
+        let mut session = match load_session_record(&transaction, session_id) {
+            Ok(session) => session,
+            Err(SessionStoreError::NotFound(_)) => SessionRecord::new(session_id.clone()),
+            Err(error) => return Err(error),
+        };
+        let mut run = match load_run_record(&transaction, session_id, &checkpoint.run_id) {
+            Ok(run) => run,
+            Err(SessionStoreError::NotFound(_)) => {
+                let mut run = RunRecord::new(
+                    session_id.clone(),
+                    checkpoint.run_id.clone(),
+                    checkpoint.conversation_id.clone(),
+                );
+                run.status = checkpoint_run_status(checkpoint.resume.status);
+                run.trace_context = checkpoint.resume.trace_context.clone();
+                run.parent_run_id
+                    .clone_from(&checkpoint.state.parent_run_id);
+                run.parent_task_id
+                    .clone_from(&checkpoint.state.parent_task_id);
+                allocate_or_reuse_run_sequence(&transaction, &mut run)?;
+                save_run_record(&transaction, &run)?;
+                run
+            }
+            Err(error) => return Err(error),
+        };
+        let inserted = transaction
+            .execute(
+                "INSERT OR IGNORE INTO checkpoint_records
+                 (session_id, run_id, sequence_no, checkpoint_id, record, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    session_id.as_str(),
+                    checkpoint.run_id.as_str(),
+                    sequence,
+                    checkpoint.checkpoint_id.as_str(),
+                    payload,
+                    created_at.to_rfc3339(),
+                ],
+            )
+            .map_err(map_sqlite_session_error)?;
+        if inserted == 0 {
+            let persisted = transaction
+                .query_row(
+                    "SELECT record FROM checkpoint_records
+                     WHERE session_id = ?1 AND run_id = ?2 AND checkpoint_id = ?3",
+                    params![
+                        session_id.as_str(),
+                        checkpoint.run_id.as_str(),
+                        checkpoint.checkpoint_id.as_str(),
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(map_sqlite_session_error)?;
+            if deserialize_json_record::<AgentCheckpoint>(&persisted)? != checkpoint {
+                return Err(SessionStoreError::Failed(format!(
+                    "checkpoint conflict for session {} run {} at sequence {sequence} checkpoint {}",
+                    session_id.as_str(),
+                    checkpoint.run_id.as_str(),
+                    checkpoint.checkpoint_id.as_str()
+                )));
+            }
+            transaction.commit().map_err(map_sqlite_session_error)?;
+            return Ok(());
+        }
+        if let Some(lease) = admission_lease {
+            ensure_run_admission_in_transaction(&transaction, lease, Utc::now())?;
+        }
+        run.latest_checkpoint = Some(starweaver_session::CheckpointRef {
+            checkpoint_id: checkpoint.checkpoint_id,
+            run_id: checkpoint.run_id,
+            sequence: checkpoint.run_step,
+            node: format!("{:?}", checkpoint.node),
+            storage_ref: None,
+            stream_cursor: checkpoint.resume.cursor.stream_cursor,
+            created_at,
+            metadata: checkpoint.metadata,
+        });
+        run.updated_at = created_at;
+        save_run_record(&transaction, &run)?;
+        apply_run_to_session(&mut session, &run);
+        save_session_record(&transaction, &session)?;
+        transaction.commit().map_err(map_sqlite_session_error)
+    }
+
+    fn append_replay_events_fenced_sync(
+        &self,
+        lease: &RunAdmissionLease,
+        events: Vec<ReplayEvent>,
+    ) -> SessionStoreResult<()> {
+        let expected_scope = ReplayScope::run(lease.target.run_id.as_str());
+        let encoded = events
+            .into_iter()
+            .map(|event| {
+                if event.scope != expected_scope {
+                    return Err(SessionStoreError::Conflict(format!(
+                        "replay event scope {} does not match admission run {}",
+                        event.scope.as_str(),
+                        lease.target.run_id.as_str()
+                    )));
+                }
+                Ok((
+                    i64::try_from(event.sequence).map_err(map_display_session_error)?,
+                    serialize_json_record(&event)?,
+                    event.timestamp.to_rfc3339(),
+                    event,
+                ))
+            })
+            .collect::<SessionStoreResult<Vec<_>>>()?;
+
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_sqlite_session_error)?;
+        ensure_run_admission_in_transaction(&transaction, lease, Utc::now())?;
+        for (sequence, payload, created_at, event) in encoded {
+            insert_exact_replay_event(
+                &transaction,
+                "replay_events",
+                "replay",
+                &expected_scope,
+                sequence,
+                &payload,
+                &event,
+                &created_at,
+            )?;
+        }
+        transaction.commit().map_err(map_sqlite_session_error)
+    }
 }
 
 #[async_trait]
@@ -86,6 +241,36 @@ impl SessionStore for SqliteSessionStore {
         .map_err(SessionStoreError::Failed)?
     }
 
+    async fn commit_run_evidence_fenced(
+        &self,
+        lease: &RunAdmissionLease,
+        commit: RunEvidenceCommit,
+    ) -> SessionStoreResult<RunRecord> {
+        let store = self.clone();
+        let lease = lease.clone();
+        crate::blocking::run(move || {
+            crate::SqliteStorage {
+                connection: store.connection.clone(),
+                live_replay: InMemoryReplayEventLog::new(),
+            }
+            .commit_run_evidence_fenced(&lease, commit)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn append_replay_events_fenced(
+        &self,
+        lease: &RunAdmissionLease,
+        events: Vec<ReplayEvent>,
+    ) -> SessionStoreResult<()> {
+        let store = self.clone();
+        let lease = lease.clone();
+        crate::blocking::run(move || store.append_replay_events_fenced_sync(&lease, events))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
     async fn commit_checkpoint(
         &self,
         session_id: &SessionId,
@@ -93,94 +278,21 @@ impl SessionStore for SqliteSessionStore {
     ) -> SessionStoreResult<()> {
         let store = self.clone();
         let session_id = session_id.clone();
+        crate::blocking::run(move || store.commit_checkpoint_sync(&session_id, checkpoint, None))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn commit_checkpoint_fenced(
+        &self,
+        lease: &RunAdmissionLease,
+        checkpoint: AgentCheckpoint,
+    ) -> SessionStoreResult<()> {
+        let store = self.clone();
+        let lease = lease.clone();
+        let session_id = lease.target.session_id.clone();
         crate::blocking::run(move || {
-            let session_id = &session_id;
-            let created_at = Utc::now();
-            let payload = serialize_json_record(&checkpoint)?;
-            let sequence = i64::try_from(checkpoint.run_step).map_err(map_display_session_error)?;
-            let mut connection = store.lock()?;
-            let transaction = connection
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(map_sqlite_session_error)?;
-            let mut session = match load_session_record(&transaction, session_id) {
-                Ok(session) => session,
-                Err(SessionStoreError::NotFound(_)) => SessionRecord::new(session_id.clone()),
-                Err(error) => return Err(error),
-            };
-            let mut run = match load_run_record(&transaction, session_id, &checkpoint.run_id) {
-                Ok(run) => run,
-                Err(SessionStoreError::NotFound(_)) => {
-                    let mut run = RunRecord::new(
-                        session_id.clone(),
-                        checkpoint.run_id.clone(),
-                        checkpoint.conversation_id.clone(),
-                    );
-                    run.status = checkpoint_run_status(checkpoint.resume.status);
-                    run.trace_context = checkpoint.resume.trace_context.clone();
-                    run.parent_run_id
-                        .clone_from(&checkpoint.state.parent_run_id);
-                    run.parent_task_id
-                        .clone_from(&checkpoint.state.parent_task_id);
-                    allocate_or_reuse_run_sequence(&transaction, &mut run)?;
-                    save_run_record(&transaction, &run)?;
-                    run
-                }
-                Err(error) => return Err(error),
-            };
-            let inserted = transaction
-                .execute(
-                    "INSERT OR IGNORE INTO checkpoint_records
-                 (session_id, run_id, sequence_no, checkpoint_id, record, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![
-                        session_id.as_str(),
-                        checkpoint.run_id.as_str(),
-                        sequence,
-                        checkpoint.checkpoint_id.as_str(),
-                        payload,
-                        created_at.to_rfc3339(),
-                    ],
-                )
-                .map_err(map_sqlite_session_error)?;
-            if inserted == 0 {
-                let persisted = transaction
-                    .query_row(
-                        "SELECT record FROM checkpoint_records
-                     WHERE session_id = ?1 AND run_id = ?2 AND checkpoint_id = ?3",
-                        params![
-                            session_id.as_str(),
-                            checkpoint.run_id.as_str(),
-                            checkpoint.checkpoint_id.as_str(),
-                        ],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .map_err(map_sqlite_session_error)?;
-                if deserialize_json_record::<AgentCheckpoint>(&persisted)? != checkpoint {
-                    return Err(SessionStoreError::Failed(format!(
-                        "checkpoint conflict for session {} run {} at sequence {sequence} checkpoint {}",
-                        session_id.as_str(),
-                        checkpoint.run_id.as_str(),
-                        checkpoint.checkpoint_id.as_str()
-                    )));
-                }
-                transaction.commit().map_err(map_sqlite_session_error)?;
-                return Ok(());
-            }
-            run.latest_checkpoint = Some(starweaver_session::CheckpointRef {
-                checkpoint_id: checkpoint.checkpoint_id,
-                run_id: checkpoint.run_id,
-                sequence: checkpoint.run_step,
-                node: format!("{:?}", checkpoint.node),
-                storage_ref: None,
-                stream_cursor: checkpoint.resume.cursor.stream_cursor,
-                created_at,
-                metadata: checkpoint.metadata,
-            });
-            run.updated_at = created_at;
-            save_run_record(&transaction, &run)?;
-            apply_run_to_session(&mut session, &run);
-            save_session_record(&transaction, &session)?;
-            transaction.commit().map_err(map_sqlite_session_error)
+            store.commit_checkpoint_sync(&session_id, checkpoint, Some(&lease))
         })
         .await
         .map_err(SessionStoreError::Failed)?
@@ -548,6 +660,27 @@ impl SessionStore for SqliteSessionStore {
             .map_err(SessionStoreError::Failed)?
     }
 
+    async fn load_run_admission_receipt(
+        &self,
+        namespace_id: &str,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<Option<RunAdmissionReceipt>> {
+        let store = self.clone();
+        let namespace_id = namespace_id.to_string();
+        let idempotency_key = idempotency_key.to_string();
+        let command_fingerprint = command_fingerprint.to_string();
+        crate::blocking::run(move || {
+            store.load_run_admission_receipt_sync(
+                &namespace_id,
+                &idempotency_key,
+                &command_fingerprint,
+            )
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
     async fn heartbeat_run_admission(
         &self,
         lease: &RunAdmissionLease,
@@ -566,6 +699,36 @@ impl SessionStore for SqliteSessionStore {
         crate::blocking::run(move || store.release_run_admission_sync(&lease))
             .await
             .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn update_run_status_fenced(
+        &self,
+        lease: &RunAdmissionLease,
+        status: RunStatus,
+        output_preview: Option<String>,
+    ) -> SessionStoreResult<RunRecord> {
+        let store = self.clone();
+        let lease = lease.clone();
+        crate::blocking::run(move || {
+            store.update_run_status_fenced_sync(&lease, status, output_preview)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn finalize_run_admission(
+        &self,
+        lease: &RunAdmissionLease,
+        status: RunStatus,
+        output_preview: Option<String>,
+    ) -> SessionStoreResult<RunRecord> {
+        let store = self.clone();
+        let lease = lease.clone();
+        crate::blocking::run(move || {
+            store.finalize_run_admission_sync(&lease, status, output_preview)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
     }
 
     async fn load_run_admission(
@@ -1137,7 +1300,7 @@ impl SessionStore for SqliteSessionStore {
                 .prepare(
                     "SELECT record FROM checkpoint_records
                  WHERE session_id = ?1 AND run_id = ?2
-                 ORDER BY sequence_no ASC, checkpoint_id ASC",
+                 ORDER BY sequence_no ASC, created_at ASC, rowid ASC",
                 )
                 .map_err(map_sqlite_session_error)?;
             let rows = statement
@@ -1149,6 +1312,29 @@ impl SessionStore for SqliteSessionStore {
         })
         .await
         .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn latest_checkpoint(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+    ) -> SessionStoreResult<Option<AgentCheckpoint>> {
+        let run = self.load_run(session_id, run_id).await?;
+        let Some(reference) = run.latest_checkpoint else {
+            return Ok(None);
+        };
+        self.load_checkpoints(session_id, run_id)
+            .await?
+            .into_iter()
+            .find(|checkpoint| checkpoint.checkpoint_id == reference.checkpoint_id)
+            .map(Some)
+            .ok_or_else(|| {
+                SessionStoreError::NotFound(format!(
+                    "checkpoint {} referenced by run {}",
+                    reference.checkpoint_id.as_str(),
+                    run_id.as_str()
+                ))
+            })
     }
 
     async fn append_stream_records(

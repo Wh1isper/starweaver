@@ -9,8 +9,9 @@ use starweaver_core::{Metadata, SessionId, TraceContext};
 use starweaver_environment::{DynEnvironmentProvider, EnvironmentError, EnvironmentState};
 use starweaver_model::{ModelRequestParameters, ModelSettings, ToolCallPart, ToolReturnPart};
 use starweaver_session::{
-    DeferredToolRecord, DeferredToolResult, DeferredToolResults,
-    ExecutionStatus as SessionExecutionStatus, ToolApprovalDecision, ToolReturnRecordInput,
+    ApprovalStatus, DeferredToolRecord, DeferredToolResult, DeferredToolResults,
+    ExecutionStatus as SessionExecutionStatus, SessionResumeSnapshot, ToolApprovalDecision,
+    ToolReturnRecordInput,
 };
 use starweaver_tools::{
     DynTool, DynToolset, ToolApprovalState, ToolContext, ToolError, ToolRegistry,
@@ -254,6 +255,67 @@ impl AgentHitlResults {
     pub fn deferred_results(mut self, results: DeferredToolResults) -> Self {
         self.deferred_results = results;
         self
+    }
+
+    /// Build host HITL results from already-decided durable records.
+    ///
+    /// Pending records are omitted so the normal validation boundary reports the
+    /// complete missing-decision set. Terminal approval and deferred evidence is
+    /// converted without executing tools or mutating the snapshot.
+    #[must_use]
+    pub fn from_resume_snapshot(snapshot: &SessionResumeSnapshot) -> Self {
+        let mut results = Self::new();
+        for record in &snapshot.approvals {
+            let Some(decision) = record.decision.as_ref() else {
+                continue;
+            };
+            let mut metadata = decision.metadata.clone();
+            let override_arguments = metadata.remove("override_arguments");
+            let decision = match record.status {
+                ApprovalStatus::Approved => ToolApprovalDecision::Approved {
+                    decided_by: decision.decided_by.clone(),
+                    reason: decision.reason.clone(),
+                    override_arguments,
+                    metadata,
+                },
+                ApprovalStatus::Denied | ApprovalStatus::Expired | ApprovalStatus::Cancelled => {
+                    ToolApprovalDecision::Denied {
+                        decided_by: decision.decided_by.clone(),
+                        reason: decision.reason.clone().or_else(|| {
+                            matches!(record.status, ApprovalStatus::Expired)
+                                .then_some("approval expired".to_string())
+                                .or_else(|| {
+                                    matches!(record.status, ApprovalStatus::Cancelled)
+                                        .then_some("approval cancelled".to_string())
+                                })
+                        }),
+                        metadata,
+                    }
+                }
+                ApprovalStatus::Pending => continue,
+            };
+            results.approvals.insert(record.action_id.clone(), decision);
+        }
+        results.deferred_results = DeferredToolResults::new(
+            snapshot
+                .deferred_tools
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record.status,
+                        SessionExecutionStatus::Completed
+                            | SessionExecutionStatus::Failed
+                            | SessionExecutionStatus::Cancelled
+                    )
+                })
+                .map(|record| DeferredToolResult {
+                    deferred_id: record.deferred_id.clone(),
+                    status: record.status,
+                    response: record.response.clone(),
+                    metadata: record.metadata.clone(),
+                }),
+        );
+        results
     }
 
     /// Return whether no decisions or deferred results are present.
@@ -826,7 +888,12 @@ impl AgentSession {
     /// Validate HITL decisions without invoking preprocessing hooks or executing tools.
     ///
     /// This is the durable preflight boundary used before a resume claim is marked started.
-    pub(crate) fn validate_hitl_results_for_state(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state is not waiting, has no pending HITL work, supplied
+    /// decisions are incomplete or invalid, or deferred results do not match pending records.
+    pub fn validate_hitl_results_for_state(
         &self,
         state: &AgentRunState,
         results: &AgentHitlResults,

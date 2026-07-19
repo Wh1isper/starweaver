@@ -54,11 +54,13 @@ mod domain_tests;
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
-    use starweaver_context::{AgentCheckpoint, AgentRunState};
-    use starweaver_core::{AgentExecutionNode, ConversationId, Metadata, RunId, SessionId};
+    use starweaver_context::{AgentCheckpoint, AgentRunState, ResumableState};
+    use starweaver_core::{
+        AgentExecutionNode, AgentId, CheckpointId, ConversationId, Metadata, RunId, SessionId,
+    };
     use starweaver_session::{
-        AcquireRunAdmission, LOCAL_SESSION_NAMESPACE, RunRecord, RunStatus, SessionRecord,
-        SessionStore,
+        AcquireRunAdmission, HitlResumeClaim, LOCAL_SESSION_NAMESPACE, RunRecord, RunStatus,
+        SessionRecord, SessionStore,
     };
     use starweaver_stream::{
         AgentStreamEvent, AgentStreamRecord, ReplayEventKind, ReplayEventLog, ReplayScope,
@@ -352,6 +354,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn latest_checkpoint_follows_run_reference_when_run_steps_tie() {
+        let store = SqliteSessionStore::in_memory().expect("sqlite store");
+        let session_id = SessionId::from_string("session_checkpoint_tie");
+        let run_id = RunId::from_string("run_checkpoint_tie");
+        store
+            .save_session(SessionRecord::new(session_id.clone()))
+            .await
+            .expect("save session");
+        let mut run = RunRecord::new(session_id.clone(), run_id.clone(), ConversationId::new());
+        run.sequence_no = 1;
+        store.append_run(run).await.expect("append run");
+
+        let state = AgentRunState::new(run_id.clone(), ConversationId::new());
+        let mut first = AgentCheckpoint::new(AgentExecutionNode::ToolCall, &state);
+        first.checkpoint_id = CheckpointId::from_string("checkpoint-z-first");
+        let mut second = AgentCheckpoint::new(AgentExecutionNode::ToolReturn, &state);
+        second.checkpoint_id = CheckpointId::from_string("checkpoint-a-second");
+        assert_eq!(first.run_step, second.run_step);
+
+        store
+            .append_checkpoint(&session_id, first)
+            .await
+            .expect("append first checkpoint");
+        store
+            .append_checkpoint(&session_id, second.clone())
+            .await
+            .expect("append second checkpoint");
+
+        assert_eq!(
+            store
+                .latest_checkpoint(&session_id, &run_id)
+                .await
+                .expect("load latest checkpoint"),
+            Some(second)
+        );
+    }
+
+    #[tokio::test]
     async fn append_stream_batch_rolls_back_when_cursor_update_fails() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let database_path = tempdir.path().join("stream_atomic.sqlite3");
@@ -412,6 +452,137 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_admission_cannot_commit_checkpoint_evidence_or_final_status() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let database_path = tempdir.path().join("fenced-evidence.sqlite3");
+        let first = SqliteSessionStore::open(&database_path).expect("first coordinator store");
+        let second = SqliteSessionStore::open(&database_path).expect("second coordinator store");
+        let session_id = SessionId::from_string("session-fenced-evidence");
+        first
+            .save_session(SessionRecord::new(session_id.clone()))
+            .await
+            .expect("save session");
+
+        let old_run = RunRecord::new(
+            session_id.clone(),
+            RunId::from_string("run-stale-owner"),
+            ConversationId::from_string("conversation-stale-owner"),
+        );
+        let now = chrono::Utc::now();
+        let old = first
+            .acquire_run_admission(AcquireRunAdmission {
+                run: old_run,
+                namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+                host_instance_id: "rpc-coordinator-old".to_string(),
+                admission_id: "admission-old".to_string(),
+                lease_expires_at: now + chrono::Duration::seconds(1),
+                idempotency_key: "start-old".to_string(),
+                command_fingerprint: "start-old-fingerprint".to_string(),
+                replaces_waiting_run_id: None,
+                hitl_resume_claim_id: None,
+            })
+            .await
+            .expect("old admission");
+        let old_state = AgentRunState::new(old.run.run_id.clone(), old.run.conversation_id.clone());
+        let old_checkpoint = AgentCheckpoint::new(AgentExecutionNode::RunStart, &old_state);
+        first
+            .commit_checkpoint_fenced(&old.lease, old_checkpoint.clone())
+            .await
+            .expect("old owner checkpoint before expiry");
+
+        second
+            .reconcile_expired_run_admissions(
+                LOCAL_SESSION_NAMESPACE,
+                now + chrono::Duration::seconds(2),
+            )
+            .await
+            .expect("second coordinator reconciliation");
+        let new_run = RunRecord::new(
+            session_id.clone(),
+            RunId::from_string("run-new-owner"),
+            ConversationId::from_string("conversation-new-owner"),
+        );
+        let new = second
+            .acquire_run_admission(AcquireRunAdmission {
+                run: new_run,
+                namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+                host_instance_id: "rpc-coordinator-new".to_string(),
+                admission_id: "admission-new".to_string(),
+                lease_expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
+                idempotency_key: "start-new".to_string(),
+                command_fingerprint: "start-new-fingerprint".to_string(),
+                replaces_waiting_run_id: None,
+                hitl_resume_claim_id: None,
+            })
+            .await
+            .expect("new admission");
+
+        let mut late_checkpoint = old_checkpoint;
+        late_checkpoint.run_step = late_checkpoint.run_step.saturating_add(1);
+        assert!(
+            first
+                .commit_checkpoint_fenced(&old.lease, late_checkpoint)
+                .await
+                .is_err(),
+            "stale checkpoint must be fenced"
+        );
+        let mut stale_run = old.run.clone();
+        stale_run.status = RunStatus::Completed;
+        let stale_state = ResumableState {
+            agent_id: AgentId::from_string("stale-agent"),
+            session_id: Some(session_id.clone()),
+            run_id: Some(stale_run.run_id.clone()),
+            conversation_id: Some(stale_run.conversation_id.clone()),
+            ..ResumableState::default()
+        };
+        assert!(
+            first
+                .commit_run_evidence_fenced(
+                    &old.lease,
+                    RunEvidenceCommit::new(stale_run, stale_state),
+                )
+                .await
+                .is_err(),
+            "stale final evidence must be fenced"
+        );
+        assert!(
+            first
+                .finalize_run_admission(&old.lease, RunStatus::Completed, None)
+                .await
+                .is_err(),
+            "stale finalization must be fenced"
+        );
+        assert_eq!(
+            first
+                .load_run(&session_id, &old.run.run_id)
+                .await
+                .expect("old reconciled run")
+                .status,
+            RunStatus::Cancelled
+        );
+
+        let new_state = AgentRunState::new(new.run.run_id.clone(), new.run.conversation_id.clone());
+        second
+            .commit_checkpoint_fenced(
+                &new.lease,
+                AgentCheckpoint::new(AgentExecutionNode::RunStart, &new_state),
+            )
+            .await
+            .expect("new owner checkpoint");
+        second
+            .finalize_run_admission(&new.lease, RunStatus::Completed, Some("done".to_string()))
+            .await
+            .expect("new owner finalization");
+        assert!(
+            second
+                .load_run_admission(&new.lease.target)
+                .await
+                .expect("load admission")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn parked_waiting_run_requires_typed_replacement_admission() {
         let store = SqliteSessionStore::in_memory().expect("sqlite store");
         let session_id = SessionId::from_string("session_waiting_replacement");
@@ -448,12 +619,23 @@ mod tests {
                 idempotency_key: "ordinary-key".to_string(),
                 command_fingerprint: "ordinary-fingerprint".to_string(),
                 replaces_waiting_run_id: None,
+                hitl_resume_claim_id: None,
             })
             .await
             .expect_err("ordinary admission must not replace a waiting run");
         assert!(error.to_string().contains("active run"));
 
         let replacement_run_id = RunId::from_string("run_typed_replacement");
+        let claim_id = "hitl-replacement-claim";
+        store
+            .claim_hitl_resume(HitlResumeClaim::new(
+                claim_id.to_string(),
+                session_id.clone(),
+                source_run_id.clone(),
+                chrono::Utc::now(),
+            ))
+            .await
+            .expect("claim waiting source before replacement admission");
         let mut replacement = RunRecord::new(
             session_id.clone(),
             replacement_run_id.clone(),
@@ -470,10 +652,15 @@ mod tests {
                 idempotency_key: "hitl-key".to_string(),
                 command_fingerprint: "hitl-fingerprint".to_string(),
                 replaces_waiting_run_id: Some(source_run_id.clone()),
+                hitl_resume_claim_id: Some(claim_id.to_string()),
             })
             .await
             .expect("typed waiting replacement admission");
         assert_eq!(receipt.run.run_id, replacement_run_id);
+        store
+            .release_hitl_resume_claim(&session_id, &source_run_id, claim_id)
+            .await
+            .expect_err("atomic replacement must transition the claim to started");
         assert_eq!(
             store
                 .load_run(&session_id, &source_run_id)

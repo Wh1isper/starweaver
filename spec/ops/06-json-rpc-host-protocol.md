@@ -115,20 +115,23 @@ Error:
 
 Current domain codes:
 
-|     Code | Meaning                    |
-| -------: | -------------------------- |
-| `-32700` | parse error                |
-| `-32600` | invalid request            |
-| `-32601` | method not found           |
-| `-32602` | invalid params             |
-| `-32000` | internal/server failure    |
-| `-32002` | unsupported feature        |
-| `-32011` | already exists             |
-| `-32012` | idempotency conflict       |
-| `-32013` | run conflict               |
-| `-32031` | environment unavailable    |
-| `-32032` | session search unavailable |
-| `-32050` | configuration failure      |
+|     Code | Meaning                           |
+| -------: | --------------------------------- |
+| `-32700` | parse error                       |
+| `-32600` | invalid request                   |
+| `-32601` | method not found                  |
+| `-32602` | invalid params                    |
+| `-32000` | internal/server failure           |
+| `-32002` | unsupported feature               |
+| `-32010` | durable/active resource not found |
+| `-32011` | already exists                    |
+| `-32012` | idempotency conflict              |
+| `-32013` | run/lifecycle conflict            |
+| `-32014` | stale fencing owner               |
+| `-32015` | retryable storage failure         |
+| `-32031` | environment unavailable           |
+| `-32032` | session search unavailable        |
+| `-32050` | configuration failure             |
 
 Messages are safe for client display and must not include credentials, provider request bodies, raw shell output, or unredacted endpoint launch data.
 
@@ -158,17 +161,18 @@ Messages are safe for client display and must not include credentials, provider 
 
 ## Implemented Methods
 
-| Group                 | Methods                                                                                                                                                                   |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Lifecycle             | `initialize`, `shutdown`                                                                                                                                                  |
-| Diagnostics           | `diagnostics.get`, `config.get`                                                                                                                                           |
-| Profiles              | `profile.list`, `profile.get`, `model.list`, `model.current`, `model.select`                                                                                              |
-| Sessions              | `session.create`, `session.list`, `session.search`, `session.get`, `session.current.get`, `session.current.set`, `session.delete`                                         |
-| Runs                  | `run.start`, `run.prompt`, `run.status`, `run.await`, `run.cancel`, `run.steer`, `run.attach`                                                                             |
-| Streams               | `stream.replay`, stdio-only `stream.subscribe`, `stream.unsubscribe`                                                                                                      |
-| Compatibility aliases | `session.output`, `session.replay`                                                                                                                                        |
-| HITL                  | `approval.list`, `approval.show`, `approval.decide`, `deferred.list`, `deferred.show`, `deferred.complete`, `deferred.fail`                                               |
-| Environments          | `environment.attach`, `environment.detach`, `environment.list`, `environment.health`, `environment.active_mount`, `environment.active_unmount`, `environment.active_list` |
+| Group                  | Methods                                                                                                                                                                   |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Lifecycle              | `initialize`, `shutdown`                                                                                                                                                  |
+| Diagnostics            | `diagnostics.get`, `config.get`                                                                                                                                           |
+| Storage administration | `storage.importLegacy` (typed, explicit source/workspace, HTTP `admin` scope)                                                                                             |
+| Profiles               | `profile.list`, `profile.get`, `model.list`, `model.current`, `model.select`                                                                                              |
+| Sessions               | `session.create`, `session.list`, `session.search`, `session.get`, `session.current.get`, `session.current.set`, `session.delete`                                         |
+| Runs                   | `run.start`, `run.resume`, `run.prompt`, `run.status`, `run.await`, `run.cancel`, `run.steer`, `run.attach`                                                               |
+| Streams                | `stream.replay`, stdio-only `stream.subscribe`, `stream.unsubscribe`                                                                                                      |
+| Compatibility aliases  | `session.output`, `session.replay`                                                                                                                                        |
+| HITL                   | `approval.list`, `approval.show`, `approval.decide`, `deferred.list`, `deferred.show`, `deferred.complete`, `deferred.fail`                                               |
+| Environments           | `environment.attach`, `environment.detach`, `environment.list`, `environment.health`, `environment.active_mount`, `environment.active_unmount`, `environment.active_list` |
 
 A method not in this table is not part of implemented v1. Compatibility aliases are provisional and may be removed in the next host protocol major after clients migrate.
 
@@ -220,6 +224,7 @@ queued, starting, running, waiting, completed, failed, cancelled
 `queued` is durable admission state. The remaining values are shared `RunLifecycle` values. RPC does not maintain a separate status enum.
 
 - `run.start` returns after durable creation and active registration.
+- A non-empty `idempotencyKey` identifies the normalized ordinary start command, including its input, profile, continuation target, and environment attachments. An exact retry returns the original `sessionId`, `runId`, admission receipt, and currently durable status with `idempotentReplay: true`; it does not launch the runtime again. Reusing the key with a different fingerprint or attachment set fails with `-32012`.
 - `run.status` prefers active state and falls back to durable state.
 - `run.await` uses one absolute deadline and returns only terminal state or timeout.
 - Client disconnect cancels the await request, not the run.
@@ -263,10 +268,10 @@ Implemented source rules:
 - envd sources use literal loopback `http://...` with request-only bearer token or trusted-local `stdio://...` launch refs.
 - URL userinfo, credential-like query parameters, fragments, and embedded tokens are rejected.
 - session leases can only attach to runs in that session.
-- connection leases are available only to stateful stdio connections, not unary HTTP.
+- connection leases are available only to stateful stdio connections, not unary HTTP. A connection lease is visible and usable only by the connection that created it; closing that connection revokes the lease. Session leases remain host-owned and may be used by another connection only for the matching session.
 - read-only leases cannot be widened.
-- required readiness is probed before run registration.
-- tokens, launch arguments, and undeclared host paths never appear in results, replay, diagnostics, or model context.
+- required readiness is probed before run registration; attach and health deadlines are rejected above the 60-second host maximum before serialized probe work begins.
+- provider-private attachment values remain process-local. Durable and host-visible projections clear auth and arbitrary metadata and redact stdio endpoint refs, so tokens, launch programs/arguments, and undeclared host paths never appear in results, replay, diagnostics, or model context.
 
 Active mount/unmount operations are serialized per run and use monotonic `bindingVersion`. Successful mutations append typed environment lifecycle replay before acknowledging success. Context injection occurs through steering after the lifecycle event; an injection failure leaves the mount active and returns a safe warning.
 
@@ -276,7 +281,7 @@ Envd remains the environment data/effect plane. Host attachment leases do not tr
 
 Approval and deferred records are canonical `starweaver-session` durable records. Decisions persist before success is returned. Terminal conflicts fail rather than overwrite prior evidence.
 
-Current v1 does not promise a general cross-method idempotency store. Active environment mutation uses operation-specific idempotency to prevent duplicate binding versions, lifecycle events, and steering injection. Richer method-wide idempotency remains an RFC.
+Current v1 does not promise a general cross-method idempotency store. Ordinary `run.start` has durable command-fingerprint idempotency as described above. Active environment mutation uses operation-specific idempotency to prevent duplicate binding versions, lifecycle events, and steering injection. Richer method-wide idempotency remains an RFC.
 
 ## Proposed Agent-Facing Composition
 
@@ -300,7 +305,7 @@ Async subagent execution is separately specified in `../sdk/06-async-subagent-ex
 
 - Stdio inherits the local OS process identity and does not use HTTP bearer credentials.
 - HTTP is bearer-authenticated by default and loopback-only. Authentication is evaluated before JSON-RPC dispatch, including health requests.
-- HTTP methods require one explicit scope: `read` for queries/initialize, `run` for session/run/environment effects, `approval` for HITL decisions, `admin` for administrative mutations, and `shutdown` for process termination. Scopes do not imply one another.
+- HTTP methods require one explicit scope: `read` for side-effect-free queries/initialize, `run` for session/run/environment effects, `approval` for HITL decisions, `admin` for administrative mutations, and `shutdown` for process termination. Scopes do not imply one another. `environment.health` requires `run` because an inline `stdio://` envd readiness probe can launch a configured local process; a future read-only health method must be limited to non-launching sources or existing safe leases.
 - Missing/invalid credentials return HTTP 401; valid credentials lacking the method scope return HTTP 403.
 - Config reads are allowlisted.
 - RPC profile credentials are loaded at run start and are never returned.

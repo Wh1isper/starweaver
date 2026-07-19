@@ -6,7 +6,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -14,10 +14,10 @@ use std::{
 use serde::Serialize;
 use serde_json::{Value, json};
 use starweaver_agent::{
-    AgentContext, AgentControlHandle, AgentSessionControlHandle, AgentSessionQueryHandle,
-    AgentStreamDropPolicy, AgentStreamOptions, BackgroundSubagentSupervisor,
-    BackgroundSubagentTaskResult, SubagentDelegationMode, attach_agent_session_control,
-    attach_agent_session_query,
+    AgentContext, AgentControlHandle, AgentDurabilityError, AgentHitlResults,
+    AgentSessionControlHandle, AgentSessionQueryHandle, AgentStreamDropPolicy, AgentStreamError,
+    AgentStreamOptions, BackgroundSubagentSupervisor, BackgroundSubagentTaskResult,
+    SubagentDelegationMode, attach_agent_session_control, attach_agent_session_query,
 };
 use starweaver_core::{ConversationId, RunId, SessionId, SubagentAttemptId};
 use starweaver_environment::{
@@ -32,9 +32,9 @@ use starweaver_session::{
     AcquireBackgroundSubagentContinuation, AcquireRunAdmission, AgentSessionOperation,
     AgentSessionScope, BackgroundSubagentContinuationCause, BackgroundSubagentRecord,
     DurableBackgroundSubagentDeliveryStatus, DurableBackgroundSubagentRetentionStatus,
-    DurableControlReceipt, InputPart, LOCAL_SESSION_NAMESPACE, ManagedRunTarget, RunAdmissionLease,
-    RunAdmissionReceipt, RunRecord, RunStatus, SessionDeletionFence, SessionStatus, SessionStore,
-    SessionStoreError,
+    DurableControlReceipt, HitlResumeClaim, InputPart, LOCAL_SESSION_NAMESPACE, ManagedRunTarget,
+    RunAdmissionLease, RunAdmissionReceipt, RunRecord, RunStatus, SessionDeletionFence,
+    SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError,
 };
 use starweaver_storage::{DurableReplaySource, SqliteStorage};
 use starweaver_stream::{
@@ -42,20 +42,31 @@ use starweaver_stream::{
     EnvironmentLifecycleEvent, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayEventLog,
     ReplayScope, StreamArchive, StreamTerminalMarker,
 };
-use tokio::{sync::watch, task::JoinHandle};
+use tokio::{
+    sync::{Mutex as AsyncMutex, watch},
+    task::JoinHandle,
+};
 
 use crate::{
     RpcAgentCatalog, RpcConfig, RpcHostError, RpcHostResult,
-    environment::{resolve_rpc_environment, resolve_rpc_environment_target},
+    environment::{
+        effective_rpc_environment_attachments, resolve_rpc_environment,
+        resolve_rpc_environment_target, safe_rpc_environment_attachments,
+    },
     environment_manager::EnvironmentAttachmentManager,
     session_management::{RpcAgentSessionAdapter, command_fingerprint},
 };
 
+const DURABLE_SESSION_ID_METADATA_KEY: &str = "starweaver.durable_session_id";
 const DURABLE_RUN_ID_METADATA_KEY: &str = "starweaver.durable_run_id";
 const RPC_PROFILE_METADATA_KEY: &str = "rpc.profile";
+const RPC_ENVIRONMENT_ATTACHMENTS_METADATA_KEY: &str = "rpc.environment_attachments";
 const ACTIVE_LEASE_TTL: Duration = Duration::from_secs(30);
 const ACTIVE_LEASE_HEARTBEAT: Duration = Duration::from_secs(10);
 const TERMINAL_CACHE_LIMIT: usize = 64;
+const ACTIVE_EVENT_CACHE_LIMIT: usize = 2_048;
+const DEFAULT_REPLAY_PAGE_LIMIT: usize = 200;
+const MAX_REPLAY_PAGE_LIMIT: usize = 1_000;
 const BACKGROUND_COMPLETION_TASK_LIMIT: usize = 256;
 const BACKGROUND_RECORD_SCAN_LIMIT: usize = 1_024;
 const BACKGROUND_RETENTION_CLEANUP_LIMIT: usize = 256;
@@ -84,6 +95,32 @@ pub struct RpcRunRequest {
     pub command_fingerprint: String,
     /// Install profile-granted session query/control handles for this run.
     pub install_session_management: bool,
+}
+
+/// RPC HITL continuation request after wire parameters and attachments are validated.
+#[derive(Clone, Debug)]
+pub struct RpcHitlResumeRequest {
+    /// Durable session containing the waiting source run.
+    pub session_id: SessionId,
+    /// Waiting run whose decisions are ready to consume.
+    pub source_run_id: RunId,
+    /// Profile used to materialize the continuation runtime.
+    pub profile: String,
+    /// Materialized host environment attachments for this continuation.
+    pub environment_attachments: Vec<EnvironmentAttachmentRef>,
+    /// Stable resume idempotency key.
+    pub idempotency_key: String,
+    /// Normalized typed resume-command fingerprint.
+    pub command_fingerprint: String,
+    /// Install profile-granted session query/control handles for this run.
+    pub install_session_management: bool,
+}
+
+#[derive(Clone)]
+struct HitlLaunch {
+    snapshot: SessionResumeSnapshot,
+    results: AgentHitlResults,
+    claim_id: String,
 }
 
 /// Stable status projection returned by RPC methods.
@@ -137,8 +174,11 @@ struct ActiveRun {
     control: AgentControlHandle,
     lease: RunAdmissionLease,
     events: Vec<ReplayEvent>,
+    replay_publish_lock: Arc<AsyncMutex<()>>,
     next_display_sequence: usize,
     next_event_sequence: usize,
+    terminal_replay_sequence: Arc<AtomicUsize>,
+    replay_error: Option<String>,
     environment: Arc<SwitchableEnvironmentProvider>,
     environment_attachments: Vec<EnvironmentAttachmentRef>,
     environment_binding_version: u64,
@@ -156,24 +196,25 @@ struct TerminalRun {
 struct EnvironmentMutationRecord {
     params_digest: String,
     result: Value,
-    attachment: EnvironmentAttachmentRef,
 }
 
 /// RPC-owned active mount mutation outcome used by the service boundary.
+#[derive(Debug)]
 pub struct RpcActiveMountOutcome {
     /// Wire result.
     pub result: Value,
     /// Whether this request applied a new mutation rather than replaying an idempotent result.
+    #[cfg(test)]
     pub applied: bool,
 }
 
 /// RPC-owned active unmount mutation outcome used by the service boundary.
+#[derive(Debug)]
 pub struct RpcActiveUnmountOutcome {
     /// Wire result.
     pub result: Value,
-    /// Attachment removed by the mutation.
-    pub removed: EnvironmentAttachmentRef,
     /// Whether this request applied a new mutation rather than replaying an idempotent result.
+    #[cfg(test)]
     pub applied: bool,
 }
 
@@ -323,6 +364,261 @@ impl RpcRuntimeCoordinator {
         tasks.insert(attempt_id, task);
     }
 
+    /// Resume a durable waiting run through the ordinary active-run pipeline.
+    ///
+    /// All materialization and HITL validation occurs before the exclusive claim is acquired.
+    /// Waiting replacement admission atomically transitions that claim to `Started`; from that
+    /// point failures are persisted as related-run evidence instead of releasing the claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, storage, or runtime materialization failures.
+    #[must_use]
+    pub fn resume_waiting(&self, request: RpcHitlResumeRequest) -> RpcBoxFuture<'_, RpcStartedRun> {
+        Box::pin(self.resume_waiting_inner(request))
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn resume_waiting_inner(
+        &self,
+        mut request: RpcHitlResumeRequest,
+    ) -> RpcHostResult<RpcStartedRun> {
+        request.environment_attachments =
+            effective_rpc_environment_attachments(&request.environment_attachments);
+        if !self.accepting.load(Ordering::Acquire) {
+            return Err(RpcHostError::Runtime(
+                "RPC coordinator is shutting down and no longer accepts runs".to_string(),
+            ));
+        }
+        self.reap_finished_tasks().await?;
+        let identity = command_fingerprint(
+            "rpc_hitl_resume_identity",
+            &json!({
+                "sessionId": request.session_id,
+                "sourceRunId": request.source_run_id,
+                "idempotencyKey": request.idempotency_key,
+                "commandFingerprint": request.command_fingerprint,
+            }),
+        )
+        .map_err(|error| RpcHostError::Invalid(error.to_string()))?;
+        let identity_suffix = identity.rsplit(':').next().unwrap_or(identity.as_str());
+        let continuation_run_id = RunId::from_string(format!("run_rpc_hitl_{identity_suffix}"));
+        let claim_id = format!("rpc-hitl-claim-{identity_suffix}");
+        let store = self.storage.session_store();
+        // Read durable idempotency truth before mutable source evidence. This lookup is strictly
+        // non-mutating, so a Preflight claim orphaned before admission cannot accidentally create
+        // a queued continuation merely because a client retried.
+        if let Some(replay) = store
+            .load_run_admission_receipt(
+                LOCAL_SESSION_NAMESPACE,
+                &request.idempotency_key,
+                &request.command_fingerprint,
+            )
+            .await?
+        {
+            let status = store
+                .load_run(&request.session_id, &continuation_run_id)
+                .await
+                .map_or(replay.run.status, |run| run.status);
+            let environment_attachments = recorded_environment_attachments(&replay.run);
+            return Ok(RpcStartedRun {
+                session_id: request.session_id,
+                run_id: continuation_run_id,
+                environment_attachments,
+                admission_id: replay.lease.admission_id,
+                fencing_generation: replay.lease.fencing_generation,
+                status,
+                idempotent_replay: true,
+            });
+        }
+        let mut snapshot = store
+            .resume_snapshot(&request.session_id, &request.source_run_id)
+            .await?;
+        if snapshot.run.status != RunStatus::Waiting {
+            // An admission may have committed between the first receipt lookup and this snapshot.
+            // Recheck without mutating; otherwise the source simply is not resumable.
+            if let Some(replay) = store
+                .load_run_admission_receipt(
+                    LOCAL_SESSION_NAMESPACE,
+                    &request.idempotency_key,
+                    &request.command_fingerprint,
+                )
+                .await?
+            {
+                let status = store
+                    .load_run(&request.session_id, &continuation_run_id)
+                    .await
+                    .map_or(replay.run.status, |run| run.status);
+                let environment_attachments = recorded_environment_attachments(&replay.run);
+                return Ok(RpcStartedRun {
+                    session_id: request.session_id,
+                    run_id: continuation_run_id,
+                    environment_attachments,
+                    admission_id: replay.lease.admission_id,
+                    fencing_generation: replay.lease.fencing_generation,
+                    status,
+                    idempotent_replay: true,
+                });
+            }
+            return Err(RpcHostError::Invalid(format!(
+                "run {} is not waiting",
+                request.source_run_id.as_str()
+            )));
+        }
+        let checkpoint_state = {
+            let checkpoint = snapshot.latest_checkpoint.as_mut().ok_or_else(|| {
+                RpcHostError::Invalid(format!(
+                    "waiting run {} has no resumable checkpoint",
+                    request.source_run_id.as_str()
+                ))
+            })?;
+            // Checkpoints are execution snapshots and may precede the terminal Waiting projection.
+            // The durable source run status is authoritative for continuation admission; normalize
+            // the in-memory effective state without rewriting immutable checkpoint evidence.
+            checkpoint.state.status = starweaver_runtime::RunStatus::Waiting;
+            checkpoint.state.clone()
+        };
+        let results = AgentHitlResults::from_resume_snapshot(&snapshot);
+
+        // Resolve the complete runtime boundary before claiming. This may open provider handles,
+        // but it does not preprocess user input, execute tools, or mutate durable claim state.
+        let resolved_environment = resolve_rpc_environment(
+            &self.config.workspace_root,
+            request.session_id.as_str(),
+            &request.environment_attachments,
+        )?;
+        let preflight_context = AgentContext::from_state(snapshot.state.clone());
+        let preflight_runtime = self
+            .catalog
+            .runtime_builder(&request.profile)?
+            .context(preflight_context)
+            .environment(resolved_environment.provider)
+            .build();
+        preflight_runtime
+            .session()
+            .validate_hitl_results_for_state(&checkpoint_state, &results)
+            .map_err(|error| RpcHostError::Invalid(error.to_string()))?;
+
+        let mut run = RunRecord::new(
+            request.session_id.clone(),
+            continuation_run_id,
+            snapshot.run.conversation_id.clone(),
+        );
+        run.profile = Some(request.profile.clone());
+        run.restore_from_run_id = Some(request.source_run_id.clone());
+        run.trigger_type = Some("rpc_hitl_resume".to_string());
+        run.status = RunStatus::Queued;
+        run.metadata
+            .insert(RPC_PROFILE_METADATA_KEY.to_string(), json!(request.profile));
+        run.metadata.insert(
+            RPC_ENVIRONMENT_ATTACHMENTS_METADATA_KEY.to_string(),
+            json!(safe_rpc_environment_attachments(
+                &request.environment_attachments
+            )),
+        );
+        let admission_request = AcquireRunAdmission {
+            run,
+            namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+            host_instance_id: (*self.host_instance_id).clone(),
+            admission_id: format!("admission_{identity_suffix}"),
+            lease_expires_at: chrono::Utc::now()
+                + chrono::Duration::from_std(ACTIVE_LEASE_TTL).unwrap_or_default(),
+            idempotency_key: request.idempotency_key.clone(),
+            command_fingerprint: request.command_fingerprint.clone(),
+            replaces_waiting_run_id: Some(request.source_run_id.clone()),
+            hitl_resume_claim_id: Some(claim_id.clone()),
+        };
+        let claim = HitlResumeClaim::new(
+            claim_id.clone(),
+            request.session_id.clone(),
+            request.source_run_id.clone(),
+            chrono::Utc::now(),
+        );
+        let admission = match store.claim_hitl_resume(claim).await {
+            Ok(()) => match store.acquire_run_admission(admission_request.clone()).await {
+                Ok(admission) => admission,
+                Err(error) => {
+                    let _ = store
+                        .release_hitl_resume_claim(
+                            &request.session_id,
+                            &request.source_run_id,
+                            &claim_id,
+                        )
+                        .await;
+                    return Err(error.into());
+                }
+            },
+            // A prior host may have durably written this deterministic Preflight claim and
+            // stopped before admission. After the complete side-effect-free preflight above, the
+            // store can safely consume that exact claim into one fenced admission. A concurrent
+            // winner is returned as an idempotent receipt by the same call.
+            Err(claim_error) => match store.acquire_run_admission(admission_request).await {
+                Ok(admission) => admission,
+                Err(_) => return Err(claim_error.into()),
+            },
+        };
+        let launch = HitlLaunch {
+            snapshot,
+            results,
+            claim_id,
+        };
+        Box::pin(self.start_preadmitted_hitl(
+            RpcRunRequest {
+                durable_input: Vec::new(),
+                input: AgentInput::text(""),
+                session_id: Some(request.session_id),
+                restore_from_run_id: Some(request.source_run_id),
+                profile: request.profile,
+                environment_attachments: request.environment_attachments,
+                idempotency_key: request.idempotency_key,
+                command_fingerprint: request.command_fingerprint,
+                install_session_management: request.install_session_management,
+            },
+            admission,
+            launch,
+        ))
+        .await
+    }
+
+    /// Read an exact durable start receipt without probing external resources or changing state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an idempotency conflict or storage error.
+    pub async fn lookup_started_run(
+        &self,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> RpcHostResult<Option<RpcStartedRun>> {
+        let Some(receipt) = self
+            .storage
+            .session_store()
+            .load_run_admission_receipt(
+                LOCAL_SESSION_NAMESPACE,
+                idempotency_key,
+                command_fingerprint,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let status = self
+            .storage
+            .session_store()
+            .load_run(&receipt.run.session_id, &receipt.run.run_id)
+            .await
+            .map_or(receipt.run.status, |run| run.status);
+        Ok(Some(RpcStartedRun {
+            session_id: receipt.run.session_id.clone(),
+            run_id: receipt.run.run_id.clone(),
+            environment_attachments: recorded_environment_attachments(&receipt.run),
+            admission_id: receipt.lease.admission_id,
+            fencing_generation: receipt.lease.fencing_generation,
+            status,
+            idempotent_replay: true,
+        }))
+    }
+
     /// Start one live run directly through `AgentRuntime`.
     ///
     /// # Errors
@@ -330,15 +626,135 @@ impl RpcRuntimeCoordinator {
     /// Returns storage or runtime construction failures.
     #[must_use]
     pub fn start(&self, request: RpcRunRequest) -> RpcBoxFuture<'_, RpcStartedRun> {
-        Box::pin(self.start_inner(request, None))
+        Box::pin(self.start_inner(request, None, None))
+    }
+
+    async fn start_preadmitted_hitl(
+        &self,
+        request: RpcRunRequest,
+        admission: RunAdmissionReceipt,
+        launch: HitlLaunch,
+    ) -> RpcHostResult<RpcStartedRun> {
+        let result =
+            Box::pin(self.start_inner(request, Some(admission.clone()), Some(launch.clone())))
+                .await;
+        let error = match result {
+            Ok(started) => return Ok(started),
+            Err(error) => error,
+        };
+
+        // From admission until the worker owns the lease, this wrapper is the single failure
+        // owner. Inner runtime preparation may already have committed related-run evidence; in
+        // that case durable terminal state is authoritative and must not be written a second time.
+        let store = self.storage.session_store();
+        let mut durable = store
+            .load_run(&admission.run.session_id, &admission.run.run_id)
+            .await?;
+        if !durable.status.is_terminal() {
+            if let Err(persist_error) = self
+                .persist_started_hitl_launch_failure(
+                    &admission,
+                    &launch,
+                    "runtime preparation failed",
+                )
+                .await
+            {
+                return Err(RpcHostError::Runtime(format!(
+                    "{error}; failed to persist started continuation failure: {persist_error}"
+                )));
+            }
+            durable = store
+                .load_run(&admission.run.session_id, &admission.run.run_id)
+                .await?;
+        }
+        if let Err(finalize_error) = store
+            .finalize_run_admission(
+                &admission.lease,
+                durable.status,
+                durable.output_preview.clone(),
+            )
+            .await
+        {
+            return Err(RpcHostError::Runtime(format!(
+                "{error}; terminal evidence committed but admission release requires reconciliation: {finalize_error}"
+            )));
+        }
+        Err(error)
+    }
+
+    async fn persist_started_hitl_launch_failure(
+        &self,
+        admission: &RunAdmissionReceipt,
+        launch: &HitlLaunch,
+        message: &str,
+    ) -> RpcHostResult<()> {
+        let mut run = admission.run.clone();
+        run.status = RunStatus::Failed;
+        run.output_preview = Some(message.to_string());
+        run.updated_at = chrono::Utc::now();
+        let mut state = launch.snapshot.state.clone();
+        state.session_id = Some(run.session_id.clone());
+        state.run_id = Some(run.run_id.clone());
+        state.metadata.insert(
+            DURABLE_SESSION_ID_METADATA_KEY.to_string(),
+            json!(run.session_id.as_str()),
+        );
+        state.metadata.insert(
+            DURABLE_RUN_ID_METADATA_KEY.to_string(),
+            json!(run.run_id.as_str()),
+        );
+        let mut source_update = starweaver_session::RelatedRunUpdate::new(
+            launch.snapshot.run.run_id.clone(),
+            RunStatus::Waiting,
+            RunStatus::Failed,
+        );
+        source_update.resume_claim_id = Some(launch.claim_id.clone());
+        source_update.output_preview = Some("continuation launch failed".to_string());
+        source_update
+            .approvals
+            .clone_from(&launch.snapshot.approvals);
+        source_update
+            .deferred_tools
+            .clone_from(&launch.snapshot.deferred_tools);
+        let mut commit = starweaver_session::RunEvidenceCommit::new(run, state);
+        commit.related_run_updates.push(source_update);
+        self.storage
+            .session_store()
+            .commit_run_evidence_fenced(&admission.lease, commit)
+            .await?;
+        Ok(())
+    }
+
+    async fn finalize_preworker_failure(
+        &self,
+        admission: &RunAdmissionReceipt,
+        fallback: &str,
+    ) -> RpcHostResult<RunRecord> {
+        let store = self.storage.session_store();
+        let durable = store
+            .load_run(&admission.run.session_id, &admission.run.run_id)
+            .await?;
+        let (status, output_preview) = if durable.status.is_terminal() {
+            // Stream draining commits complete evidence before admission release. That durable
+            // result is authoritative even when the surrounding startup path also failed.
+            (durable.status, durable.output_preview)
+        } else {
+            (RunStatus::Failed, Some(fallback.to_string()))
+        };
+        Ok(store
+            .finalize_run_admission(&admission.lease, status, output_preview)
+            .await?)
     }
 
     #[allow(clippy::too_many_lines)]
     async fn start_inner(
         &self,
-        request: RpcRunRequest,
+        mut request: RpcRunRequest,
         preadmitted: Option<RunAdmissionReceipt>,
+        hitl_launch: Option<HitlLaunch>,
     ) -> RpcHostResult<RpcStartedRun> {
+        request.environment_attachments =
+            effective_rpc_environment_attachments(&request.environment_attachments);
         if !self.accepting.load(Ordering::Acquire) {
             return Err(RpcHostError::Runtime(
                 "RPC coordinator is shutting down and no longer accepts runs".to_string(),
@@ -395,6 +811,12 @@ impl RpcRuntimeCoordinator {
             run.status = RunStatus::Queued;
             run.metadata
                 .insert(RPC_PROFILE_METADATA_KEY.to_string(), json!(request.profile));
+            run.metadata.insert(
+                RPC_ENVIRONMENT_ATTACHMENTS_METADATA_KEY.to_string(),
+                json!(safe_rpc_environment_attachments(
+                    &request.environment_attachments
+                )),
+            );
             self.storage
                 .session_store()
                 .acquire_run_admission(AcquireRunAdmission {
@@ -407,12 +829,14 @@ impl RpcRuntimeCoordinator {
                     idempotency_key: request.idempotency_key.clone(),
                     command_fingerprint: request.command_fingerprint.clone(),
                     replaces_waiting_run_id: None,
+                    hitl_resume_claim_id: None,
                 })
                 .await?
         };
         let run_id = admission.run.run_id.clone();
         let target = admission.lease.target.clone();
-        if admission.idempotent_replay && !launch_preadmitted {
+        if admission.idempotent_replay && hitl_launch.is_some() {
+            let environment_attachments = recorded_environment_attachments(&admission.run);
             let status = self
                 .storage
                 .session_store()
@@ -422,7 +846,25 @@ impl RpcRuntimeCoordinator {
             return Ok(RpcStartedRun {
                 session_id,
                 run_id,
-                environment_attachments: request.environment_attachments,
+                environment_attachments,
+                admission_id: admission.lease.admission_id,
+                fencing_generation: admission.lease.fencing_generation,
+                status,
+                idempotent_replay: true,
+            });
+        }
+        if admission.idempotent_replay && !launch_preadmitted {
+            let environment_attachments = recorded_environment_attachments(&admission.run);
+            let status = self
+                .storage
+                .session_store()
+                .load_run(&session_id, &run_id)
+                .await
+                .map_or(admission.run.status, |run| run.status);
+            return Ok(RpcStartedRun {
+                session_id,
+                run_id,
+                environment_attachments,
                 admission_id: admission.lease.admission_id,
                 fencing_generation: admission.lease.fencing_generation,
                 status,
@@ -454,7 +896,7 @@ impl RpcRuntimeCoordinator {
             }
         }
 
-        let prepared: RpcHostResult<_> = async {
+        let prepared: RpcHostResult<_> = Box::pin(async {
             let mut state = match request.restore_from_run_id.as_ref() {
                 Some(restore_run_id) => {
                     let storage = self.storage.clone();
@@ -557,6 +999,7 @@ impl RpcRuntimeCoordinator {
                     );
                 }
             }
+            let terminal_replay_sequence = Arc::new(AtomicUsize::new(0));
             let mut runtime = self
                 .catalog
                 .runtime_builder(&request.profile)?
@@ -566,39 +1009,114 @@ impl RpcRuntimeCoordinator {
                 .environment(resolved_environment.provider.clone())
                 .durable_session_id(session_id.clone())
                 .session_store(session_store)
+                .admission_lease(admission.lease.clone())
                 .stream_archive(stream_archive)
+                .retain_terminal_replay_evidence()
+                .terminal_replay_sequence(Arc::clone(&terminal_replay_sequence))
                 .build();
             let input = request.input.clone();
-            let handle = runtime
-                .try_stream_with_stream_options(
-                    input.clone(),
-                    AgentStreamOptions::new().drop_policy(AgentStreamDropPolicy::Backpressure),
-                )
-                .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
-            Ok((runtime, input, handle, resolved_environment))
-        }
-        .await;
-        let (mut runtime, input, mut handle, resolved_environment) = match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                let _ = self
-                    .storage
-                    .session_store()
-                    .update_run_status(
-                        &session_id,
-                        &run_id,
-                        RunStatus::Failed,
-                        Some("runtime preparation failed".to_string()),
-                    )
-                    .await;
-                let _ = self
-                    .storage
-                    .session_store()
-                    .release_run_admission(&admission.lease)
-                    .await;
-                return Err(error);
+            if let Some(launch) = hitl_launch.as_ref() {
+                let checkpoint = launch.snapshot.latest_checkpoint.as_ref().ok_or_else(|| {
+                    RpcHostError::Invalid("waiting resume snapshot lost its checkpoint".to_string())
+                })?;
+                if let Err(error) = runtime
+                    .session()
+                    .validate_hitl_results_for_state(&checkpoint.state, &launch.results)
+                {
+                    let message = format!("HITL validation changed after admission: {error}");
+                    let persisted = runtime
+                        .persist_hitl_injection_failure(
+                            &launch.snapshot,
+                            &launch.results,
+                            launch.claim_id.clone(),
+                            message.clone(),
+                        )
+                        .await;
+                    return Err(RpcHostError::Runtime(match persisted {
+                        Ok(()) => message,
+                        Err(persist_error) => {
+                            format!("{message}; failed to persist started continuation failure: {persist_error}")
+                        }
+                    }));
+                }
+                if let Err(error) = runtime
+                    .session_mut()
+                    .inject_hitl_results_for_state(&checkpoint.state, launch.results.clone())
+                    .await
+                {
+                    let message = format!("HITL result injection failed: {error}");
+                    let persisted = runtime
+                        .persist_hitl_injection_failure(
+                            &launch.snapshot,
+                            &launch.results,
+                            launch.claim_id.clone(),
+                            message.clone(),
+                        )
+                        .await;
+                    return Err(RpcHostError::Runtime(match persisted {
+                        Ok(()) => message,
+                        Err(persist_error) => {
+                            format!("{message}; failed to persist started continuation failure: {persist_error}")
+                        }
+                    }));
+                }
             }
-        };
+            let handle = match runtime.try_stream_with_stream_options(
+                input.clone(),
+                AgentStreamOptions::new().drop_policy(AgentStreamDropPolicy::Backpressure),
+            ) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    let message = error.to_string();
+                    if let Some(launch) = hitl_launch.as_ref() {
+                        let persisted = runtime
+                            .persist_hitl_injection_failure(
+                                &launch.snapshot,
+                                &launch.results,
+                                launch.claim_id.clone(),
+                                message.clone(),
+                            )
+                            .await;
+                        return Err(RpcHostError::Runtime(match persisted {
+                            Ok(()) => message,
+                            Err(persist_error) => format!(
+                                "{message}; failed to persist started continuation failure: {persist_error}"
+                            ),
+                        }));
+                    }
+                    return Err(RpcHostError::Runtime(message));
+                }
+            };
+            Ok((
+                runtime,
+                input,
+                handle,
+                resolved_environment,
+                terminal_replay_sequence,
+            ))
+        })
+        .await;
+        let (mut runtime, input, mut handle, resolved_environment, terminal_replay_sequence) =
+            match prepared {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    if hitl_launch.is_some() {
+                        // `start_preadmitted_hitl` owns exactly-once related-run failure evidence
+                        // and admission release for every pre-worker error.
+                        return Err(error);
+                    }
+                    let _ = self
+                        .storage
+                        .session_store()
+                        .finalize_run_admission(
+                            &admission.lease,
+                            RunStatus::Failed,
+                            Some("runtime preparation failed".to_string()),
+                        )
+                        .await;
+                    return Err(error);
+                }
+            };
         let control = handle.control_handle();
         supervisor.begin_parent_run(run_id.clone());
         if let Err(error) = self
@@ -606,23 +1124,29 @@ impl RpcRuntimeCoordinator {
             .mark_run_started(run_id.as_str(), &resolved_environment.attachments)
         {
             let _ = control.interrupt(Some("environment lease registration failed".to_string()));
-            let _ = runtime.finish_stream(input, handle).await;
-            let _ = self
-                .storage
-                .session_store()
-                .update_run_status(
-                    &session_id,
-                    &run_id,
-                    RunStatus::Failed,
-                    Some("environment lease registration failed".to_string()),
-                )
-                .await;
-            let _ = self
-                .storage
-                .session_store()
-                .release_run_admission(&admission.lease)
+            if let Some(launch) = hitl_launch.as_ref() {
+                let _ = runtime
+                    .finish_hitl_stream(
+                        input,
+                        handle,
+                        &launch.snapshot,
+                        &launch.results,
+                        launch.claim_id.clone(),
+                    )
+                    .await;
+            } else {
+                let _ = runtime.finish_stream(input, handle).await;
+            }
+            let cleanup = self
+                .finalize_preworker_failure(&admission, "environment lease registration failed")
                 .await;
             supervisor.end_parent_run(&run_id);
+            if let Err(cleanup_error) = cleanup {
+                return Err(RpcHostError::Runtime(format!(
+                    "{}; admission cleanup requires reconciliation: {cleanup_error}",
+                    error.message
+                )));
+            }
             return Err(RpcHostError::Invalid(error.message));
         }
         let initial_status = RpcRunStatus {
@@ -638,8 +1162,11 @@ impl RpcRuntimeCoordinator {
             control,
             lease: admission.lease.clone(),
             events: Vec::new(),
+            replay_publish_lock: Arc::new(AsyncMutex::new(())),
             next_display_sequence: 0,
             next_event_sequence: 0,
+            terminal_replay_sequence,
+            replay_error: None,
             environment: Arc::clone(&resolved_environment.switchable),
             environment_attachments: resolved_environment.attachments.clone(),
             environment_binding_version: 1,
@@ -652,7 +1179,7 @@ impl RpcRuntimeCoordinator {
         if let Err(error) = self
             .storage
             .session_store()
-            .update_run_status(&session_id, &run_id, RunStatus::Running, None)
+            .update_run_status_fenced(&admission.lease, RunStatus::Running, None)
             .await
         {
             let removed = self
@@ -665,15 +1192,31 @@ impl RpcRuntimeCoordinator {
                     .control
                     .interrupt(Some("durable running transition failed".to_string()));
             }
-            let _ = runtime.finish_stream(input, handle).await;
+            if let Some(launch) = hitl_launch.as_ref() {
+                let _ = runtime
+                    .finish_hitl_stream(
+                        input,
+                        handle,
+                        &launch.snapshot,
+                        &launch.results,
+                        launch.claim_id.clone(),
+                    )
+                    .await;
+            } else {
+                let _ = runtime.finish_stream(input, handle).await;
+            }
             let _ = self.environment_manager.mark_run_finished(run_id.as_str());
-            let _ = self
-                .storage
-                .session_store()
-                .release_run_admission(&admission.lease)
+            let cleanup = self
+                .finalize_preworker_failure(&admission, "durable running transition failed")
                 .await;
             supervisor.end_parent_run(&run_id);
-            return Err(error.into());
+            let primary: RpcHostError = error.into();
+            if let Err(cleanup_error) = cleanup {
+                return Err(RpcHostError::Runtime(format!(
+                    "{primary}; admission cleanup requires reconciliation: {cleanup_error}"
+                )));
+            }
+            return Err(primary);
         }
 
         let active = Arc::clone(&self.active);
@@ -688,6 +1231,7 @@ impl RpcRuntimeCoordinator {
         let fencing_generation = admission.lease.fencing_generation;
         let mut worker_lease = admission.lease;
         let worker_supervisor = supervisor.clone();
+        let worker_hitl_launch = hitl_launch;
         let completion_coordinator = self.clone();
         let task = tokio::spawn(async move {
             let projection_context =
@@ -700,7 +1244,7 @@ impl RpcRuntimeCoordinator {
                         let Some(record) = record else { break; };
                         publish_record(
                             &active,
-                            &replay_log,
+                            &store,
                             &worker_target,
                             &projection_context,
                             &record,
@@ -711,7 +1255,14 @@ impl RpcRuntimeCoordinator {
                         let expires = chrono::Utc::now()
                             + chrono::Duration::from_std(ACTIVE_LEASE_TTL).unwrap_or_default();
                         match store.heartbeat_run_admission(&worker_lease, expires).await {
-                            Ok(renewed) => worker_lease = renewed,
+                            Ok(renewed) => {
+                                worker_lease = renewed.clone();
+                                if let Ok(mut registry) = active.lock()
+                                    && let Some(run) = registry.get_mut(&worker_target)
+                                {
+                                    run.lease = renewed;
+                                }
+                            }
                             Err(_) => {
                                 if let Ok(registry) = active.lock()
                                     && let Some(run) = registry.get(&worker_target)
@@ -723,7 +1274,109 @@ impl RpcRuntimeCoordinator {
                     }
                 }
             }
-            let completion = runtime.finish_stream(input, handle).await;
+            let terminal_publish_lock = {
+                let Ok(registry) = active.lock() else {
+                    return;
+                };
+                let Some(active_run) = registry.get(&worker_target) else {
+                    return;
+                };
+                Arc::clone(&active_run.replay_publish_lock)
+            };
+            // Terminal evidence, durable publication, cache visibility, and active-run removal
+            // share the same barrier as display and environment lifecycle publication. Once this
+            // guard is held no later mutation may reserve the terminal sequence or alter bindings.
+            let _terminal_publish_guard = terminal_publish_lock.lock().await;
+            let replay_error = active
+                .lock()
+                .ok()
+                .and_then(|registry| registry.get(&worker_target)?.replay_error.clone());
+            if let Some(replay_error) = replay_error {
+                if let Some(launch) = worker_hitl_launch.as_ref() {
+                    let _ = runtime
+                        .finish_hitl_stream(
+                            input,
+                            handle,
+                            &launch.snapshot,
+                            &launch.results,
+                            launch.claim_id.clone(),
+                        )
+                        .await;
+                } else {
+                    let _ = handle.complete().await;
+                }
+                let message = format!("live replay persistence failed: {replay_error}");
+                let terminal_durable = store
+                    .finalize_run_admission(&worker_lease, RunStatus::Failed, Some(message.clone()))
+                    .await
+                    .is_ok();
+                let mut final_status = RpcRunStatus {
+                    session_id: worker_session_id.as_str().to_string(),
+                    run_id: worker_run_id.as_str().to_string(),
+                    status: "failed".to_string(),
+                    output_preview: None,
+                    error: Some(message),
+                };
+                if !terminal_durable {
+                    final_status.error = Some(
+                        "failed to persist replay failure as the terminal durable status"
+                            .to_string(),
+                    );
+                }
+                if let Err(delivery_error) =
+                    finalize_parent_deliveries_with_retry(&worker_supervisor, &worker_run_id, false)
+                        .await
+                {
+                    final_status.error.get_or_insert_with(|| {
+                        format!("failed to roll back background result delivery: {delivery_error}")
+                    });
+                }
+                worker_supervisor.end_parent_run(&worker_run_id);
+                if let Ok(registry) = active.lock()
+                    && let Some(active_run) = registry.get(&worker_target)
+                {
+                    let _ = active_run.status_tx.send(final_status.clone());
+                }
+                if let Err(cleanup) = environment_manager.mark_run_finished(worker_run_id.as_str())
+                {
+                    final_status.error.get_or_insert_with(|| {
+                        format!("environment lease cleanup failed: {}", cleanup.message)
+                    });
+                }
+                let removed = active
+                    .lock()
+                    .ok()
+                    .and_then(|mut registry| registry.remove(&worker_target));
+                if let Some(removed) = removed
+                    && let Ok(mut cache) = terminal.lock()
+                {
+                    cache.push_back(TerminalRun {
+                        target: worker_target.clone(),
+                        status: final_status,
+                        events: removed.events,
+                    });
+                    while cache.len() > TERMINAL_CACHE_LIMIT {
+                        cache.pop_front();
+                    }
+                }
+                let _ = completion_coordinator
+                    .schedule_session_background_results(&worker_session_id)
+                    .await;
+                return;
+            }
+            let completion = if let Some(launch) = worker_hitl_launch.as_ref() {
+                runtime
+                    .finish_hitl_stream(
+                        input,
+                        handle,
+                        &launch.snapshot,
+                        &launch.results,
+                        launch.claim_id.clone(),
+                    )
+                    .await
+            } else {
+                runtime.finish_stream(input, handle).await
+            };
             let (status, durable_status, output_preview, error) = match completion {
                 Ok(result) => (
                     run_status_name(result.result.state.status).to_string(),
@@ -732,7 +1385,7 @@ impl RpcRuntimeCoordinator {
                     None,
                 ),
                 Err(error) => {
-                    let cancelled = error.to_string().contains("interrupted");
+                    let cancelled = durability_error_is_cancelled(&error);
                     (
                         if cancelled { "cancelled" } else { "failed" }.to_string(),
                         if cancelled {
@@ -759,65 +1412,57 @@ impl RpcRuntimeCoordinator {
                         .unwrap_or_else(|| "agent run failed".to_string()),
                 },
             };
-            let (terminal_event, mut final_status) = if let Ok(mut registry) = active.lock()
-                && let Some(active_run) = registry.get_mut(&worker_target)
-            {
-                let final_status = RpcRunStatus {
-                    session_id: worker_session_id.as_str().to_string(),
-                    run_id: worker_run_id.as_str().to_string(),
-                    status,
-                    output_preview: output_preview.clone(),
-                    error,
-                };
-                let event = ReplayEvent::new(
-                    ReplayScope::run(worker_run_id.as_str()),
-                    active_run.next_event_sequence,
-                    ReplayEventKind::Terminal { marker },
-                );
-                active_run.next_event_sequence = active_run.next_event_sequence.saturating_add(1);
-                active_run.events.push(event.clone());
-                (Some(event), final_status)
-            } else {
-                (
-                    None,
-                    RpcRunStatus {
-                        session_id: worker_session_id.as_str().to_string(),
-                        run_id: worker_run_id.as_str().to_string(),
-                        status,
-                        output_preview: output_preview.clone(),
-                        error,
-                    },
-                )
+            let mut final_status = RpcRunStatus {
+                session_id: worker_session_id.as_str().to_string(),
+                run_id: worker_run_id.as_str().to_string(),
+                status,
+                output_preview: output_preview.clone(),
+                error,
             };
-            if let Some(event) = terminal_event {
-                let scope = event.scope.clone();
-                if let Err(persist_error) = replay_log.append(scope, event).await {
-                    final_status.error.get_or_insert_with(|| {
-                        format!("failed to persist terminal replay event: {persist_error}")
-                    });
-                }
-            }
-            let terminal_durable = store
-                .update_run_status(
-                    &worker_session_id,
-                    &worker_run_id,
-                    durable_status,
-                    output_preview,
-                )
-                .await
-                .is_ok();
-            if terminal_durable {
-                let _ = store.release_run_admission(&worker_lease).await;
-            } else {
-                final_status.status = "failed".to_string();
+            let finalized_status = durable_status;
+            let finalized_output = output_preview;
+            if let Err(persist_error) =
+                publish_committed_terminal_events(&active, &replay_log, &worker_target, marker)
+                    .await
+            {
                 final_status.error.get_or_insert_with(|| {
-                    "failed to persist terminal durable run status".to_string()
+                    format!("failed to load committed terminal replay events: {persist_error}")
                 });
             }
+            let terminal_durable = match store
+                .finalize_run_admission(&worker_lease, finalized_status, finalized_output)
+                .await
+            {
+                Ok(_) => true,
+                Err(finalize_error) => {
+                    // `finish_stream` commits terminal evidence before admission release. If that
+                    // evidence is present, it remains authoritative; lease cleanup is recovered by
+                    // reconciliation and must not rewrite a completed run as process-local failed.
+                    match store.load_run(&worker_session_id, &worker_run_id).await {
+                        Ok(run) if run.status == finalized_status && run.status.is_terminal() => {
+                            final_status.error.get_or_insert_with(|| {
+                                format!(
+                                    "terminal evidence committed but admission release requires reconciliation: {finalize_error}"
+                                )
+                            });
+                            true
+                        }
+                        _ => {
+                            final_status.status = "failed".to_string();
+                            final_status.error.get_or_insert_with(|| {
+                                format!(
+                                    "failed to persist terminal durable run status: {finalize_error}"
+                                )
+                            });
+                            false
+                        }
+                    }
+                }
+            };
             if let Err(delivery_error) = finalize_parent_deliveries_with_retry(
                 &worker_supervisor,
                 &worker_run_id,
-                terminal_durable && durable_status == RunStatus::Completed,
+                terminal_durable && finalized_status == RunStatus::Completed,
             )
             .await
             {
@@ -864,7 +1509,9 @@ impl RpcRuntimeCoordinator {
         Ok(RpcStartedRun {
             session_id,
             run_id,
-            environment_attachments: resolved_environment.attachments,
+            environment_attachments: safe_rpc_environment_attachments(
+                &resolved_environment.attachments,
+            ),
             admission_id,
             fencing_generation,
             status: RunStatus::Running,
@@ -1238,14 +1885,17 @@ impl RpcRuntimeCoordinator {
             &scope,
             matches!(
                 run.trigger_type.as_deref(),
-                Some("rpc" | "async_subagent_result")
+                Some("rpc" | "rpc_hitl_resume" | "async_subagent_result")
             ),
         )?;
         let canonical_source = replay_source == DurableReplaySource::ReplayEvents;
+        let effective_limit = limit
+            .unwrap_or(DEFAULT_REPLAY_PAGE_LIMIT)
+            .clamp(1, MAX_REPLAY_PAGE_LIMIT);
         let mut events = if canonical_source {
             self.storage
                 .replay_event_log()
-                .replay_after(&scope, cursor.clone(), limit)
+                .replay_after(&scope, cursor.clone(), Some(effective_limit))
                 .await?
         } else {
             let display_cursor = cursor
@@ -1290,9 +1940,7 @@ impl RpcRuntimeCoordinator {
             }
         }
         events.sort_by_key(|event| event.sequence);
-        if let Some(limit) = limit {
-            events.truncate(limit);
-        }
+        events.truncate(effective_limit);
         Ok(events)
     }
 
@@ -1419,6 +2067,7 @@ impl RpcRuntimeCoordinator {
                     idempotency_key: idempotency_key.clone(),
                     command_fingerprint: command_fingerprint.clone(),
                     replaces_waiting_run_id: None,
+                    hitl_resume_claim_id: None,
                 },
             })
             .await?;
@@ -1442,6 +2091,7 @@ impl RpcRuntimeCoordinator {
                 install_session_management: true,
             },
             Some(receipt.admission),
+            None,
         ))
         .await?;
         store
@@ -1565,7 +2215,7 @@ impl RpcRuntimeCoordinator {
         for control in controls {
             let _ = control.interrupt(Some("RPC host shutdown".to_string()));
         }
-        let mut tasks = self
+        let tasks = self
             .tasks
             .lock()
             .map_err(active_registry_error)?
@@ -1580,17 +2230,12 @@ impl RpcRuntimeCoordinator {
             )
             .collect::<Vec<_>>();
         let mut timed_out = false;
-        for task in &mut tasks {
-            if tokio::time::timeout_at(deadline, &mut *task).await.is_err() {
+        for mut task in tasks {
+            if tokio::time::timeout_at(deadline, &mut task).await.is_err() {
                 timed_out = true;
                 task.abort();
+                let _ = task.await;
             }
-        }
-        for task in tasks {
-            if !task.is_finished() {
-                task.abort();
-            }
-            let _ = task.await;
         }
         self.storage
             .session_store()
@@ -1831,23 +2476,65 @@ impl RpcRuntimeCoordinator {
         attachment: EnvironmentAttachmentRef,
         params_digest: &str,
     ) -> Result<RpcActiveMountOutcome, RpcError> {
-        let operation_id = format!("envop_{}", uuid::Uuid::new_v4());
-        let (result, control, lifecycle_event) = {
-            let mut registry = self
+        let coordinator = self.clone();
+        let params = params.clone();
+        let params_digest = params_digest.to_string();
+        tokio::spawn(async move {
+            coordinator
+                .active_environment_mount_owned(params, attachment, params_digest)
+                .await
+        })
+        .await
+        .map_err(|error| {
+            RpcError::new(RUN_CONFLICT, format!("active mount task failed: {error}"))
+        })?
+    }
+
+    #[allow(clippy::significant_drop_tightening, clippy::too_many_lines)]
+    async fn active_environment_mount_owned(
+        &self,
+        params: EnvironmentActiveMountParams,
+        attachment: EnvironmentAttachmentRef,
+        params_digest: String,
+    ) -> Result<RpcActiveMountOutcome, RpcError> {
+        let publish_lock = {
+            let registry = self
                 .active
                 .lock()
                 .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
-            let run = active_mutable_run_mut(&mut registry, &params.run_id)?;
-            let mutation_key = params
-                .idempotency_key
-                .as_deref()
-                .map(|key| format!("mount:{key}"));
+            Arc::clone(&active_mutable_run(&registry, &params.run_id)?.replay_publish_lock)
+        };
+        let _publish_guard = publish_lock.lock().await;
+        let mutation_key = params
+            .idempotency_key
+            .as_deref()
+            .map(|key| format!("mount:{key}"));
+        let (
+            previous_target,
+            previous_attachment,
+            mounted,
+            target,
+            previous_binding_version,
+            binding_version,
+            event_sequence,
+            session_id,
+            run_id,
+            lease,
+            environment,
+            control,
+        ) = {
+            let registry = self
+                .active
+                .lock()
+                .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
+            let run = active_mutable_run(&registry, &params.run_id)?;
             if let Some(key) = mutation_key.as_ref()
                 && let Some(record) = run.environment_idempotency.get(key)
             {
-                ensure_idempotency_digest(record, params_digest)?;
+                ensure_idempotency_digest(record, &params_digest)?;
                 return Ok(RpcActiveMountOutcome {
                     result: record.result.clone(),
+                    #[cfg(test)]
                     applied: false,
                 });
             }
@@ -1855,7 +2542,6 @@ impl RpcRuntimeCoordinator {
                 run.environment_binding_version,
                 params.expected_binding_version,
             )?;
-            let previous_binding_version = run.environment_binding_version;
             let existing_index = run
                 .environment_attachments
                 .iter()
@@ -1866,6 +2552,8 @@ impl RpcRuntimeCoordinator {
                     format!("environment mount already exists: {}", attachment.id),
                 ));
             }
+            let previous_attachment =
+                existing_index.map(|index| run.environment_attachments[index].clone());
             let mut mounted = attachment;
             let mut updated = run.environment_attachments.clone();
             if let Some(index) = existing_index {
@@ -1880,61 +2568,125 @@ impl RpcRuntimeCoordinator {
                 updated.push(mounted.clone());
             }
             normalize_default_flags(&mut updated)?;
+            let previous_target = resolve_rpc_environment_target(
+                &self.config.workspace_root,
+                run.lease.target.session_id.as_str(),
+                &run.environment_attachments,
+            )
+            .map_err(RpcError::from)?;
             let target = resolve_rpc_environment_target(
                 &self.config.workspace_root,
                 run.lease.target.session_id.as_str(),
                 &updated,
             )
             .map_err(RpcError::from)?;
-            let process_provider = target.provider.clone().process_shell_provider();
-            run.environment
-                .replace_target(SwitchableEnvironmentTarget::new(
-                    target.provider,
-                    process_provider,
-                ))
-                .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
-            run.environment_attachments = target.attachments;
-            run.environment_binding_version = run.environment_binding_version.saturating_add(1);
-            let lifecycle_event = append_environment_lifecycle_event(
-                run,
-                &operation_id,
-                "environment_mounted",
-                &json!({"action": "mounted", "mount": mount_summary(&mounted, "ready")}),
-            );
-            let result = json!({
-                "runId": params.run_id,
-                "operationId": operation_id,
-                "mountId": mounted.id,
-                "replace": params.replace,
-                "mount": mount_summary(&mounted, "ready"),
-                "previousBindingVersion": previous_binding_version,
-                "bindingVersion": run.environment_binding_version,
-                "environment": environment_summary(
-                    run.environment_binding_version,
-                    &run.environment_attachments,
-                ),
-                "eventCursor": cursor_value(&params.run_id, lifecycle_event.sequence),
-            });
-            if let Some(key) = mutation_key {
-                run.environment_idempotency.insert(
-                    key,
-                    EnvironmentMutationRecord {
-                        params_digest: params_digest.to_string(),
-                        result: result.clone(),
-                        attachment: mounted,
-                    },
-                );
-            }
-            (result, run.control.clone(), lifecycle_event)
+            (
+                previous_target,
+                previous_attachment,
+                mounted,
+                target,
+                run.environment_binding_version,
+                run.environment_binding_version.saturating_add(1),
+                run.next_event_sequence,
+                run.lease.target.session_id.clone(),
+                run.lease.target.run_id.clone(),
+                run.lease.clone(),
+                Arc::clone(&run.environment),
+                run.control.clone(),
+            )
         };
-        let lifecycle_scope = lifecycle_event.scope.clone();
-        self.storage
-            .replay_event_log()
-            .append(lifecycle_scope, lifecycle_event)
+        let operation_id = format!("envop_{}", uuid::Uuid::new_v4());
+        let lifecycle_event = environment_lifecycle_event(
+            event_sequence,
+            &session_id,
+            &run_id,
+            binding_version,
+            &target.attachments,
+            &operation_id,
+            "environment_mounted",
+            &json!({"action": "mounted", "mount": mount_summary(&mounted, "ready")}),
+        );
+        let mut result = json!({
+            "runId": params.run_id,
+            "operationId": operation_id,
+            "mountId": mounted.id,
+            "replace": params.replace,
+            "mount": mount_summary(&mounted, "ready"),
+            "previousBindingVersion": previous_binding_version,
+            "bindingVersion": binding_version,
+            "environment": environment_summary(binding_version, &target.attachments),
+            "eventCursor": cursor_value(&params.run_id, lifecycle_event.sequence),
+            "contextInjectionRequested": params.inject_context,
+        });
+
+        self.environment_manager.replace_run_attachment(
+            &params.run_id,
+            previous_attachment.as_ref(),
+            Some(&mounted),
+        )?;
+        let replacement = SwitchableEnvironmentTarget::new(
+            target.provider.clone(),
+            target.provider.clone().process_shell_provider(),
+        );
+        if let Err(error) = environment.replace_target(replacement) {
+            let manager_rollback = self.environment_manager.replace_run_attachment(
+                &params.run_id,
+                Some(&mounted),
+                previous_attachment.as_ref(),
+            );
+            if let Err(rollback) = manager_rollback {
+                return Err(RpcError::new(
+                    RUN_CONFLICT,
+                    format!("{error}; active mount lease rollback failed: {rollback:?}"),
+                ));
+            }
+            return Err(RpcError::new(RUN_CONFLICT, error.to_string()));
+        }
+        if let Err(error) = self
+            .storage
+            .session_store()
+            .append_replay_events_fenced(&lease, vec![lifecycle_event.clone()])
             .await
-            .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
+        {
+            let rollback_target = SwitchableEnvironmentTarget::new(
+                previous_target.provider.clone(),
+                previous_target.provider.clone().process_shell_provider(),
+            );
+            let provider_rollback = environment.replace_target(rollback_target);
+            let lease_rollback = self.environment_manager.replace_run_attachment(
+                &params.run_id,
+                Some(&mounted),
+                previous_attachment.as_ref(),
+            );
+            if provider_rollback.is_err() || lease_rollback.is_err() {
+                return Err(RpcError::new(
+                    RUN_CONFLICT,
+                    format!(
+                        "{error}; active mount rollback failed: provider={:?}, lease={:?}",
+                        provider_rollback.err(),
+                        lease_rollback.err().map(|error| error.message)
+                    ),
+                ));
+            }
+            return Err(RpcError::new(RUN_CONFLICT, error.to_string()));
+        }
+        {
+            let mut registry = self
+                .active
+                .lock()
+                .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
+            let run = active_mutable_run_mut(&mut registry, &params.run_id)?;
+            debug_assert_eq!(run.environment_binding_version, previous_binding_version);
+            debug_assert_eq!(run.next_event_sequence, event_sequence);
+            run.environment_attachments = target.attachments;
+            run.environment_binding_version = binding_version;
+            run.next_event_sequence = event_sequence.saturating_add(1);
+            run.terminal_replay_sequence
+                .store(run.next_event_sequence, Ordering::Release);
+            push_cached_event(run, lifecycle_event);
+        }
         if params.inject_context {
-            let _receipt = control
+            let injected = control
                 .steer(
                     operation_id,
                     format!(
@@ -1944,10 +2696,29 @@ impl RpcRuntimeCoordinator {
                     ),
                 )
                 .await
+                .is_ok();
+            if let Some(object) = result.as_object_mut() {
+                object.insert("contextInjected".to_string(), json!(injected));
+            }
+        }
+        if let Some(key) = mutation_key {
+            let mut registry = self
+                .active
+                .lock()
                 .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
+            active_mutable_run_mut(&mut registry, &params.run_id)?
+                .environment_idempotency
+                .insert(
+                    key,
+                    EnvironmentMutationRecord {
+                        params_digest,
+                        result: result.clone(),
+                    },
+                );
         }
         Ok(RpcActiveMountOutcome {
             result,
+            #[cfg(test)]
             applied: true,
         })
     }
@@ -1958,24 +2729,62 @@ impl RpcRuntimeCoordinator {
         params: &EnvironmentActiveUnmountParams,
         params_digest: &str,
     ) -> Result<RpcActiveUnmountOutcome, RpcError> {
-        let operation_id = format!("envop_{}", uuid::Uuid::new_v4());
-        let (removed, mut updated, binding_version, environment, session_id, control) = {
+        let coordinator = self.clone();
+        let params = params.clone();
+        let params_digest = params_digest.to_string();
+        tokio::spawn(async move {
+            coordinator
+                .active_environment_unmount_owned(params, params_digest)
+                .await
+        })
+        .await
+        .map_err(|error| {
+            RpcError::new(RUN_CONFLICT, format!("active unmount task failed: {error}"))
+        })?
+    }
+
+    #[allow(clippy::significant_drop_tightening, clippy::too_many_lines)]
+    async fn active_environment_unmount_owned(
+        &self,
+        params: EnvironmentActiveUnmountParams,
+        params_digest: String,
+    ) -> Result<RpcActiveUnmountOutcome, RpcError> {
+        let publish_lock = {
+            let registry = self
+                .active
+                .lock()
+                .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
+            Arc::clone(&active_mutable_run(&registry, &params.run_id)?.replay_publish_lock)
+        };
+        let _publish_guard = publish_lock.lock().await;
+        let mutation_key = params
+            .idempotency_key
+            .as_deref()
+            .map(|key| format!("unmount:{key}"));
+        let (
+            removed,
+            mut updated,
+            previous_attachments,
+            previous_binding_version,
+            event_sequence,
+            environment,
+            session_id,
+            run_id,
+            lease,
+            control,
+        ) = {
             let registry = self
                 .active
                 .lock()
                 .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
             let run = active_mutable_run(&registry, &params.run_id)?;
-            let mutation_key = params
-                .idempotency_key
-                .as_deref()
-                .map(|key| format!("unmount:{key}"));
             if let Some(key) = mutation_key.as_ref()
                 && let Some(record) = run.environment_idempotency.get(key)
             {
-                ensure_idempotency_digest(record, params_digest)?;
+                ensure_idempotency_digest(record, &params_digest)?;
                 return Ok(RpcActiveUnmountOutcome {
                     result: record.result.clone(),
-                    removed: record.attachment.clone(),
+                    #[cfg(test)]
                     applied: false,
                 });
             }
@@ -1999,15 +2808,20 @@ impl RpcRuntimeCoordinator {
                     "cannot unmount the only active environment mount",
                 ));
             }
-            let mut updated = run.environment_attachments.clone();
+            let previous_attachments = run.environment_attachments.clone();
+            let mut updated = previous_attachments.clone();
             let removed = updated.remove(index);
-            apply_unmount_defaults(&removed, &mut updated, params)?;
+            apply_unmount_defaults(&removed, &mut updated, &params)?;
             (
                 removed,
                 updated,
+                previous_attachments,
                 run.environment_binding_version,
+                run.next_event_sequence,
                 Arc::clone(&run.environment),
-                run.lease.target.session_id.as_str().to_string(),
+                run.lease.target.session_id.clone(),
+                run.lease.target.run_id.clone(),
+                run.lease.clone(),
                 run.control.clone(),
             )
         };
@@ -2038,82 +2852,138 @@ impl RpcRuntimeCoordinator {
             }
         }
         normalize_default_flags(&mut updated)?;
-        let target =
-            resolve_rpc_environment_target(&self.config.workspace_root, &session_id, &updated)
-                .map_err(RpcError::from)?;
-        let (result, lifecycle_event) = {
+        let previous_target = resolve_rpc_environment_target(
+            &self.config.workspace_root,
+            session_id.as_str(),
+            &previous_attachments,
+        )
+        .map_err(RpcError::from)?;
+        let target = resolve_rpc_environment_target(
+            &self.config.workspace_root,
+            session_id.as_str(),
+            &updated,
+        )
+        .map_err(RpcError::from)?;
+        let binding_version = previous_binding_version.saturating_add(1);
+        let operation_id = format!("envop_{}", uuid::Uuid::new_v4());
+        let lifecycle_event = environment_lifecycle_event(
+            event_sequence,
+            &session_id,
+            &run_id,
+            binding_version,
+            &target.attachments,
+            &operation_id,
+            "environment_unmounted",
+            &json!({
+                "action": "unmounted",
+                "removedMount": mount_summary(&removed, "detached"),
+            }),
+        );
+        let mut result = json!({
+            "runId": params.run_id,
+            "operationId": operation_id,
+            "mountId": removed.id,
+            "removedMount": mount_summary(&removed, "detached"),
+            "previousBindingVersion": previous_binding_version,
+            "bindingVersion": binding_version,
+            "environment": environment_summary(binding_version, &target.attachments),
+            "eventCursor": cursor_value(&params.run_id, lifecycle_event.sequence),
+            "contextInjectionRequested": params.inject_context,
+        });
+
+        self.environment_manager
+            .replace_run_attachment(&params.run_id, Some(&removed), None)?;
+        let replacement = SwitchableEnvironmentTarget::new(
+            target.provider.clone(),
+            target.provider.clone().process_shell_provider(),
+        );
+        if let Err(error) = environment.replace_target(replacement) {
+            let manager_rollback = self.environment_manager.replace_run_attachment(
+                &params.run_id,
+                None,
+                Some(&removed),
+            );
+            if let Err(rollback) = manager_rollback {
+                return Err(RpcError::new(
+                    RUN_CONFLICT,
+                    format!("{error}; active unmount lease rollback failed: {rollback:?}"),
+                ));
+            }
+            return Err(RpcError::new(RUN_CONFLICT, error.to_string()));
+        }
+        if let Err(error) = self
+            .storage
+            .session_store()
+            .append_replay_events_fenced(&lease, vec![lifecycle_event.clone()])
+            .await
+        {
+            let rollback_target = SwitchableEnvironmentTarget::new(
+                previous_target.provider.clone(),
+                previous_target.provider.clone().process_shell_provider(),
+            );
+            let provider_rollback = environment.replace_target(rollback_target);
+            let manager_rollback = self.environment_manager.replace_run_attachment(
+                &params.run_id,
+                None,
+                Some(&removed),
+            );
+            if provider_rollback.is_err() || manager_rollback.is_err() {
+                return Err(RpcError::new(
+                    RUN_CONFLICT,
+                    format!(
+                        "{error}; active unmount rollback failed: provider={:?}, lease={:?}",
+                        provider_rollback.err(),
+                        manager_rollback.err().map(|error| error.message)
+                    ),
+                ));
+            }
+            return Err(RpcError::new(RUN_CONFLICT, error.to_string()));
+        }
+        {
             let mut registry = self
                 .active
                 .lock()
                 .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
             let run = active_mutable_run_mut(&mut registry, &params.run_id)?;
-            if run.environment_binding_version != binding_version {
-                return Err(RpcError::new(
-                    RUN_CONFLICT,
-                    "environment binding changed while unmount was being prepared",
-                ));
-            }
-            let process_provider = target.provider.clone().process_shell_provider();
-            run.environment
-                .replace_target(SwitchableEnvironmentTarget::new(
-                    target.provider,
-                    process_provider,
-                ))
-                .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
+            debug_assert_eq!(run.environment_binding_version, previous_binding_version);
+            debug_assert_eq!(run.next_event_sequence, event_sequence);
             run.environment_attachments = target.attachments;
-            run.environment_binding_version = run.environment_binding_version.saturating_add(1);
-            let lifecycle_event = append_environment_lifecycle_event(
-                run,
-                &operation_id,
-                "environment_unmounted",
-                &json!({
-                    "action": "unmounted",
-                    "removedMount": mount_summary(&removed, "detached"),
-                }),
-            );
-            let result = json!({
-                "runId": params.run_id,
-                "operationId": operation_id,
-                "mountId": removed.id,
-                "removedMount": mount_summary(&removed, "detached"),
-                "previousBindingVersion": binding_version,
-                "bindingVersion": run.environment_binding_version,
-                "environment": environment_summary(
-                    run.environment_binding_version,
-                    &run.environment_attachments,
-                ),
-                "eventCursor": cursor_value(&params.run_id, lifecycle_event.sequence),
-            });
-            if let Some(key) = params.idempotency_key.as_deref() {
-                run.environment_idempotency.insert(
-                    format!("unmount:{key}"),
-                    EnvironmentMutationRecord {
-                        params_digest: params_digest.to_string(),
-                        result: result.clone(),
-                        attachment: removed.clone(),
-                    },
-                );
-            }
-            (result, lifecycle_event)
-        };
-        let lifecycle_scope = lifecycle_event.scope.clone();
-        self.storage
-            .replay_event_log()
-            .append(lifecycle_scope, lifecycle_event)
-            .await
-            .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
+            run.environment_binding_version = binding_version;
+            run.next_event_sequence = event_sequence.saturating_add(1);
+            run.terminal_replay_sequence
+                .store(run.next_event_sequence, Ordering::Release);
+            push_cached_event(run, lifecycle_event);
+        }
         if params.inject_context {
-            let _receipt = control
+            let injected = control
                 .steer(
                     operation_id,
                     format!("Environment mount {} was removed.", params.mount_id),
                 )
                 .await
+                .is_ok();
+            if let Some(object) = result.as_object_mut() {
+                object.insert("contextInjected".to_string(), json!(injected));
+            }
+        }
+        if let Some(key) = mutation_key {
+            let mut registry = self
+                .active
+                .lock()
                 .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
+            active_mutable_run_mut(&mut registry, &params.run_id)?
+                .environment_idempotency
+                .insert(
+                    key,
+                    EnvironmentMutationRecord {
+                        params_digest,
+                        result: result.clone(),
+                    },
+                );
         }
         Ok(RpcActiveUnmountOutcome {
             result,
-            removed,
+            #[cfg(test)]
             applied: true,
         })
     }
@@ -2306,34 +3176,32 @@ fn apply_unmount_defaults(
     Ok(())
 }
 
-fn append_environment_lifecycle_event(
-    run: &mut ActiveRun,
+#[allow(clippy::too_many_arguments)]
+fn environment_lifecycle_event(
+    sequence: usize,
+    session_id: &SessionId,
+    run_id: &RunId,
+    binding_version: u64,
+    attachments: &[EnvironmentAttachmentRef],
     operation_id: &str,
     operation_kind: &str,
     extra: &Value,
 ) -> ReplayEvent {
-    let sequence = run.next_event_sequence;
-    run.next_event_sequence = run.next_event_sequence.saturating_add(1);
     let extra = extra.as_object().cloned().unwrap_or_default();
     let lifecycle = EnvironmentLifecycleEvent {
         operation_kind: operation_kind.to_string(),
-        session_id: run.lease.target.session_id.as_str().to_string(),
-        run_id: run.lease.target.run_id.as_str().to_string(),
-        binding_version: run.environment_binding_version,
-        environment: environment_summary(
-            run.environment_binding_version,
-            &run.environment_attachments,
-        ),
+        session_id: session_id.as_str().to_string(),
+        run_id: run_id.as_str().to_string(),
+        binding_version,
+        environment: environment_summary(binding_version, attachments),
         operation_id: Some(operation_id.to_string()),
         extra,
     };
-    let event = ReplayEvent::new(
-        ReplayScope::run(run.lease.target.run_id.as_str()),
+    ReplayEvent::new(
+        ReplayScope::run(run_id.as_str()),
         sequence,
         ReplayEventKind::EnvironmentLifecycle(Box::new(lifecycle)),
-    );
-    run.events.push(event.clone());
-    event
+    )
 }
 
 fn environment_summary(binding_version: u64, attachments: &[EnvironmentAttachmentRef]) -> Value {
@@ -2364,7 +3232,9 @@ fn mount_summary(attachment: &EnvironmentAttachmentRef, status: &str) -> Value {
         "defaultForShell": attachment.is_default_for_shell,
         "status": status,
         "environmentId": attachment.environment_id,
-        "metadata": attachment.metadata,
+        // Arbitrary attachment metadata remains provider-private until a typed safe allowlist
+        // exists; lifecycle replay must not turn extension values into durable diagnostics.
+        "metadata": {},
     })
 }
 
@@ -2384,49 +3254,151 @@ fn attachment_id_from_result(result: &Value) -> &str {
 
 async fn publish_record(
     active: &Arc<Mutex<HashMap<ManagedRunTarget, ActiveRun>>>,
-    replay_log: &starweaver_storage::SqliteReplayEventLog,
+    store: &starweaver_storage::SqliteSessionStore,
     target: &ManagedRunTarget,
     projection_context: &DisplayProjectionContext,
     record: &AgentStreamRecord,
 ) {
-    let messages = DefaultDisplayMessageProjector
+    let mut messages = DefaultDisplayMessageProjector
         .project(projection_context, record)
         .await;
+    if let Some(terminal_index) = messages
+        .iter()
+        .position(starweaver_stream::DisplayMessage::is_terminal)
+    {
+        if messages[terminal_index..]
+            .iter()
+            .any(|message| !message.is_terminal())
+        {
+            if let Ok(mut registry) = active.lock()
+                && let Some(active_run) = registry.get_mut(target)
+            {
+                let error =
+                    "display projector emitted a non-terminal message after a terminal message"
+                        .to_string();
+                active_run.replay_error = Some(error.clone());
+                let _ = active_run.control.interrupt(Some(error));
+            }
+            return;
+        }
+        messages.truncate(terminal_index);
+    }
     if messages.is_empty() {
         return;
     }
-    let scope = ReplayScope::run(target.run_id.as_str());
-    let events = {
-        let Ok(mut registry) = active.lock() else {
+    let publish_lock = {
+        let Ok(registry) = active.lock() else {
             return;
         };
-        let Some(active_run) = registry.get_mut(target) else {
+        let Some(active_run) = registry.get(target) else {
             return;
         };
-        let mut events = Vec::with_capacity(messages.len());
-        for mut message in messages {
-            message.sequence = active_run.next_display_sequence;
-            active_run.next_display_sequence = active_run.next_display_sequence.saturating_add(1);
-            let event =
-                ReplayEvent::display_at(scope.clone(), active_run.next_event_sequence, message);
-            active_run.next_event_sequence = active_run.next_event_sequence.saturating_add(1);
-            active_run.events.push(event.clone());
-            events.push(event);
-        }
-        events
+        Arc::clone(&active_run.replay_publish_lock)
     };
-    for event in events {
-        if let Err(error) = replay_log.append(scope.clone(), event).await
-            && let Ok(mut registry) = active.lock()
+    let _publish_guard = publish_lock.lock().await;
+    let scope = ReplayScope::run(target.run_id.as_str());
+    let (display_sequence, event_sequence, lease) = {
+        let Ok(registry) = active.lock() else {
+            return;
+        };
+        let Some(active_run) = registry.get(target) else {
+            return;
+        };
+        (
+            active_run.next_display_sequence,
+            active_run.next_event_sequence,
+            active_run.lease.clone(),
+        )
+    };
+    let mut events = Vec::with_capacity(messages.len());
+    for (offset, mut message) in messages.into_iter().enumerate() {
+        message.sequence = display_sequence.saturating_add(offset);
+        events.push(ReplayEvent::display_at(
+            scope.clone(),
+            event_sequence.saturating_add(offset),
+            message,
+        ));
+    }
+    if let Err(error) = store
+        .append_replay_events_fenced(&lease, events.clone())
+        .await
+    {
+        if let Ok(mut registry) = active.lock()
             && let Some(active_run) = registry.get_mut(target)
         {
+            let message = format!("failed to persist replay event batch: {error}");
+            active_run.replay_error = Some(message.clone());
             let mut status = active_run.status_tx.borrow().clone();
-            status
-                .error
-                .get_or_insert_with(|| format!("failed to persist replay event: {error}"));
+            status.error.get_or_insert_with(|| message.clone());
             let _ = active_run.status_tx.send(status);
+            let _ = active_run.control.interrupt(Some(message));
+        }
+        return;
+    }
+    if let Ok(mut registry) = active.lock()
+        && let Some(active_run) = registry.get_mut(target)
+    {
+        active_run.next_display_sequence = display_sequence.saturating_add(events.len());
+        active_run.next_event_sequence = event_sequence.saturating_add(events.len());
+        active_run
+            .terminal_replay_sequence
+            .store(active_run.next_event_sequence, Ordering::Release);
+        for event in events {
+            push_cached_event(active_run, event);
         }
     }
+}
+
+fn push_cached_event(run: &mut ActiveRun, event: ReplayEvent) {
+    run.events.push(event);
+    let overflow = run.events.len().saturating_sub(ACTIVE_EVENT_CACHE_LIMIT);
+    if overflow > 0 {
+        run.events.drain(..overflow);
+    }
+}
+
+async fn publish_committed_terminal_events(
+    active: &Arc<Mutex<HashMap<ManagedRunTarget, ActiveRun>>>,
+    replay_log: &starweaver_storage::SqliteReplayEventLog,
+    target: &ManagedRunTarget,
+    expected_marker: StreamTerminalMarker,
+) -> Result<(), String> {
+    let sequence = {
+        let registry = active.lock().map_err(|error| error.to_string())?;
+        registry
+            .get(target)
+            .map(|run| run.next_event_sequence)
+            .ok_or_else(|| "active run disappeared before terminal publication".to_string())?
+    };
+    let scope = ReplayScope::run(target.run_id.as_str());
+    let cursor = sequence
+        .checked_sub(1)
+        .map(|previous| ReplayCursor::replay_event(scope.clone(), previous));
+    let events = replay_log
+        .replay_after(&scope, cursor, Some(2))
+        .await
+        .map_err(|error| error.to_string())?;
+    if events.len() != 2
+        || events[0].sequence != sequence
+        || !matches!(&events[0].event, ReplayEventKind::DisplayMessage(message) if message.is_terminal())
+        || events[1].sequence != sequence.saturating_add(1)
+        || !matches!(&events[1].event, ReplayEventKind::Terminal { marker } if marker == &expected_marker)
+    {
+        return Err(format!(
+            "durable replay does not contain the expected terminal pair at sequence {sequence}"
+        ));
+    }
+    let mut registry = active.lock().map_err(|error| error.to_string())?;
+    let run = registry
+        .get_mut(target)
+        .ok_or_else(|| "active run disappeared after terminal publication".to_string())?;
+    run.next_display_sequence = run.next_display_sequence.saturating_add(1);
+    run.next_event_sequence = sequence.saturating_add(events.len());
+    for event in events {
+        push_cached_event(run, event);
+    }
+    drop(registry);
+    Ok(())
 }
 
 async fn finalize_parent_deliveries_with_retry(
@@ -2505,6 +3477,19 @@ async fn resolve_background_result_content<S: SessionStore + ?Sized>(
     )
 }
 
+fn recorded_environment_attachments(run: &RunRecord) -> Vec<EnvironmentAttachmentRef> {
+    let recorded = run
+        .metadata
+        .get(RPC_ENVIRONMENT_ATTACHMENTS_METADATA_KEY)
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<EnvironmentAttachmentRef>>(value).ok())
+        // Receipts written before this evidence field existed are interpreted conservatively as
+        // the RPC default binding. Never substitute attachments from a retrying request.
+        .unwrap_or_else(|| effective_rpc_environment_attachments(&[]));
+    // Sanitize older records that may predate the provider-private/durable projection split.
+    safe_rpc_environment_attachments(&recorded)
+}
+
 fn status_from_record(run: &RunRecord) -> RpcRunStatus {
     RpcRunStatus {
         session_id: run.session_id.as_str().to_string(),
@@ -2517,6 +3502,17 @@ fn status_from_record(run: &RunRecord) -> RpcRunStatus {
 
 const fn durable_run_status_name(status: RunStatus) -> &'static str {
     status.as_str()
+}
+
+const fn durability_error_is_cancelled(error: &AgentDurabilityError) -> bool {
+    matches!(
+        error,
+        AgentDurabilityError::Agent(starweaver_runtime::AgentError::Cancelled { .. })
+            | AgentDurabilityError::Stream(
+                AgentStreamError::Interrupted { .. }
+                    | AgentStreamError::Agent(starweaver_runtime::AgentError::Cancelled { .. })
+            )
+    )
 }
 
 const fn run_status_name(status: starweaver_runtime::RunStatus) -> &'static str {
@@ -2541,14 +3537,654 @@ fn active_registry_error<T>(error: std::sync::PoisonError<T>) -> RpcHostError {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(
+        clippy::significant_drop_tightening,
+        clippy::too_many_lines,
+        clippy::unwrap_used
+    )]
 
     use super::*;
-    use starweaver_session::DurableBackgroundSubagentDeliveryRelease;
+    use rusqlite::Connection;
+    use starweaver_agent::{
+        AgentRuntimeBuilder, DynToolset, FunctionTool, StaticToolset, TestModel, ToolContext,
+        ToolResult,
+    };
+    use starweaver_environment::EnvironmentProvider;
+    use starweaver_model::{
+        ModelResponse, ModelResponsePart, ProviderPartInfo, ToolCallPart, tool_call_response,
+    };
+    use starweaver_rpc_core::{
+        EnvironmentAttachmentAccessMode, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
+        LOCAL_ENVIRONMENT_ATTACHMENT_KIND,
+    };
+    use starweaver_session::{ApprovalStatus, DurableBackgroundSubagentDeliveryRelease};
+    use starweaver_stream::AgentStreamEvent;
 
     // File-backed SQLite has a long latency tail under parallel Windows CI load; production
     // run-await limits remain owned by the RPC service policy.
     const TEST_RUN_COMPLETION_TIMEOUT: Duration = Duration::from_secs(30);
+
+    fn local_attachment(id: &str, is_default: bool) -> EnvironmentAttachmentRef {
+        EnvironmentAttachmentRef {
+            id: id.to_string(),
+            kind: LOCAL_ENVIRONMENT_ATTACHMENT_KIND.to_string(),
+            mode: Some(EnvironmentAttachmentAccessMode::ReadWrite),
+            is_default,
+            is_default_for_shell: is_default,
+            attachment_lease_id: None,
+            endpoint_ref: None,
+            environment_id: None,
+            auth_token: None,
+            metadata: serde_json::Map::new(),
+        }
+    }
+
+    async fn insert_active_environment_fixture(
+        coordinator: &RpcRuntimeCoordinator,
+        attachments: Vec<EnvironmentAttachmentRef>,
+    ) -> (SessionId, RunId, starweaver_agent::AgentStreamHandle) {
+        let session = coordinator
+            .storage
+            .create_session(Some("default".to_string()), None)
+            .unwrap();
+        let run_id = RunId::new();
+        let mut record = RunRecord::new(
+            session.session_id.clone(),
+            run_id.clone(),
+            ConversationId::new(),
+        );
+        record.status = RunStatus::Queued;
+        let store = coordinator.storage.session_store();
+        let admission = store
+            .acquire_run_admission(AcquireRunAdmission {
+                run: record,
+                namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+                host_instance_id: (*coordinator.host_instance_id).clone(),
+                admission_id: format!("environment-fixture-admission-{}", run_id.as_str()),
+                lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+                idempotency_key: format!("environment-fixture-{}", run_id.as_str()),
+                command_fingerprint: "environment-fixture-v1".to_string(),
+                replaces_waiting_run_id: None,
+                hitl_resume_claim_id: None,
+            })
+            .await
+            .unwrap();
+        store
+            .update_run_status_fenced(&admission.lease, RunStatus::Running, None)
+            .await
+            .unwrap();
+        let resolved = resolve_rpc_environment(
+            &coordinator.config.workspace_root,
+            session.session_id.as_str(),
+            &attachments,
+        )
+        .unwrap();
+        let handle = starweaver_agent::AgentBuilder::new(Arc::new(
+            starweaver_agent::TestModel::with_text("fixture"),
+        ))
+        .build_app()
+        .stream("fixture");
+        let control = handle.control_handle();
+        let target = RpcRuntimeCoordinator::target(&session.session_id, &run_id);
+        let initial_status = RpcRunStatus {
+            session_id: session.session_id.as_str().to_string(),
+            run_id: run_id.as_str().to_string(),
+            status: "running".to_string(),
+            output_preview: None,
+            error: None,
+        };
+        let (status_tx, _) = watch::channel(initial_status);
+        coordinator.active.lock().unwrap().insert(
+            target,
+            ActiveRun {
+                status_tx,
+                control,
+                lease: admission.lease,
+                events: Vec::new(),
+                replay_publish_lock: Arc::new(AsyncMutex::new(())),
+                next_display_sequence: 0,
+                next_event_sequence: 0,
+                terminal_replay_sequence: Arc::new(AtomicUsize::new(0)),
+                replay_error: None,
+                environment: resolved.switchable,
+                environment_attachments: resolved.attachments,
+                environment_binding_version: 1,
+                environment_idempotency: HashMap::new(),
+            },
+        );
+        (session.session_id, run_id, handle)
+    }
+
+    async fn seed_waiting_approval(
+        storage: &SqliteStorage,
+        session_id: SessionId,
+        executions: Arc<AtomicUsize>,
+    ) -> (RunId, String) {
+        let executions_for_tool = Arc::clone(&executions);
+        let tool = FunctionTool::new(
+            "effect_once",
+            Some("Test effect requiring approval".to_string()),
+            json!({"type": "object"}),
+            move |_context: ToolContext, _arguments: Value| {
+                let executions = Arc::clone(&executions_for_tool);
+                async move {
+                    executions.fetch_add(1, Ordering::SeqCst);
+                    Ok(ToolResult::new(json!({"executed": true})))
+                }
+            },
+        );
+        let toolset: DynToolset =
+            Arc::new(StaticToolset::new("hitl-effect-once").with_tool(Arc::new(tool)));
+        let mut runtime = AgentRuntimeBuilder::new(Arc::new(TestModel::with_responses(vec![
+            tool_call_response("effect-call", "effect_once", json!({})),
+        ])))
+        .durable_session_id(session_id.clone())
+        .session_store(Arc::new(storage.session_store()))
+        .approval_required_tools(["effect_once"])
+        .toolset(&toolset)
+        .build();
+        let waiting = runtime.run("request approved effect").await.unwrap();
+        assert_eq!(waiting.state.status, starweaver_runtime::RunStatus::Waiting);
+        let approvals = storage
+            .session_store()
+            .load_approvals(&session_id, &waiting.state.run_id)
+            .await
+            .unwrap();
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(approvals[0].status, ApprovalStatus::Pending);
+        (waiting.state.run_id, approvals[0].approval_id.clone())
+    }
+
+    fn hitl_resume_request(
+        session_id: SessionId,
+        source_run_id: RunId,
+        idempotency_key: &str,
+    ) -> RpcHitlResumeRequest {
+        RpcHitlResumeRequest {
+            session_id,
+            source_run_id,
+            profile: "default".to_string(),
+            environment_attachments: Vec::new(),
+            idempotency_key: idempotency_key.to_string(),
+            command_fingerprint: format!("hitl-resume:{idempotency_key}:v1"),
+            install_session_management: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn hitl_preflight_does_not_claim_and_denied_resume_terminalizes_atomically() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
+        let coordinator = RpcRuntimeCoordinator::new(
+            config,
+            catalog,
+            storage.clone(),
+            EnvironmentAttachmentManager::new(),
+        );
+        let session_id = SessionId::from_string("rpc-hitl-denied-session");
+        let executions = Arc::new(AtomicUsize::new(0));
+        let (source_run_id, approval_id) = Box::pin(seed_waiting_approval(
+            &storage,
+            session_id.clone(),
+            Arc::clone(&executions),
+        ))
+        .await;
+        let request =
+            hitl_resume_request(session_id.clone(), source_run_id.clone(), "rpc-hitl-denied");
+
+        let error = coordinator
+            .resume_waiting(request.clone())
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("missing HITL decisions"),
+            "{error}"
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        let store = storage.session_store();
+        assert_eq!(store.list_runs(&session_id).await.unwrap().len(), 1);
+        let probe_claim_id = "preflight-remained-unclaimed";
+        store
+            .claim_hitl_resume(HitlResumeClaim::new(
+                probe_claim_id.to_string(),
+                session_id.clone(),
+                source_run_id.clone(),
+                chrono::Utc::now(),
+            ))
+            .await
+            .unwrap();
+        store
+            .release_hitl_resume_claim(&session_id, &source_run_id, probe_claim_id)
+            .await
+            .unwrap();
+
+        storage
+            .decide_approval(
+                &approval_id,
+                ApprovalStatus::Denied,
+                Some("desktop-user".to_string()),
+                Some("not authorized".to_string()),
+            )
+            .unwrap();
+        let started = coordinator.resume_waiting(request.clone()).await.unwrap();
+        let terminal = coordinator
+            .await_terminal(
+                &started.session_id,
+                &started.run_id,
+                Some(TEST_RUN_COMPLETION_TIMEOUT),
+            )
+            .await
+            .unwrap();
+        assert_eq!(terminal.status, "completed", "{terminal:?}");
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+
+        let source = store.load_run(&session_id, &source_run_id).await.unwrap();
+        let continuation = store.load_run(&session_id, &started.run_id).await.unwrap();
+        assert_eq!(source.status, RunStatus::Completed);
+        assert_eq!(continuation.status, RunStatus::Completed);
+        assert_eq!(
+            continuation.restore_from_run_id.as_ref(),
+            Some(&source_run_id)
+        );
+        let resolved = store
+            .load_approvals(&session_id, &source_run_id)
+            .await
+            .unwrap();
+        assert_eq!(resolved[0].status, ApprovalStatus::Denied);
+        assert!(
+            store
+                .release_hitl_resume_claim(
+                    &session_id,
+                    &source_run_id,
+                    "preflight-remained-unclaimed",
+                )
+                .await
+                .is_ok(),
+            "consumed claims are absent and cannot re-enable an effect"
+        );
+
+        let replay = coordinator.resume_waiting(request).await.unwrap();
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.run_id, started.run_id);
+        assert_eq!(replay.status, RunStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn post_admission_hitl_preparation_failure_terminalizes_related_evidence_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let session_id = SessionId::from_string("rpc-hitl-preparation-failure-session");
+        let executions = Arc::new(AtomicUsize::new(0));
+        let (source_run_id, approval_id) = Box::pin(seed_waiting_approval(
+            &storage,
+            session_id.clone(),
+            Arc::clone(&executions),
+        ))
+        .await;
+        storage
+            .decide_approval(
+                &approval_id,
+                ApprovalStatus::Approved,
+                Some("desktop-user".to_string()),
+                None,
+            )
+            .unwrap();
+
+        let materializations = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&materializations);
+        let factory: Arc<crate::agent_catalog::TestRuntimeFactory> = Arc::new(move |_profile| {
+            if calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Err(RpcHostError::Runtime(
+                    "injected second materialization failure".to_string(),
+                ));
+            }
+            let tool = FunctionTool::new(
+                "effect_once",
+                Some("Test effect requiring approval".to_string()),
+                json!({"type": "object"}),
+                |_context: ToolContext, _arguments: Value| async move {
+                    Ok(ToolResult::new(json!({"executed": true})))
+                },
+            );
+            let toolset: DynToolset =
+                Arc::new(StaticToolset::new("hitl-effect-once").with_tool(Arc::new(tool)));
+            Ok(
+                AgentRuntimeBuilder::new(Arc::new(TestModel::with_text("unused")))
+                    .approval_required_tools(["effect_once"])
+                    .toolset(&toolset),
+            )
+        });
+        let catalog = RpcAgentCatalog::new(config.clone())
+            .unwrap()
+            .with_test_runtime_factory(factory);
+        let coordinator = RpcRuntimeCoordinator::new(
+            config,
+            catalog,
+            storage.clone(),
+            EnvironmentAttachmentManager::new(),
+        );
+        let request = hitl_resume_request(
+            session_id.clone(),
+            source_run_id.clone(),
+            "rpc-hitl-preparation-failure",
+        );
+        let error = coordinator
+            .resume_waiting(request.clone())
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("second materialization failure"),
+            "{error}"
+        );
+        assert!(!error.to_string().contains("failed to persist"), "{error}");
+        assert_eq!(materializations.load(Ordering::SeqCst), 2);
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+
+        let receipt = storage
+            .session_store()
+            .load_run_admission_receipt(
+                LOCAL_SESSION_NAMESPACE,
+                &request.idempotency_key,
+                &request.command_fingerprint,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let store = storage.session_store();
+        assert_eq!(
+            store
+                .load_run(&session_id, &source_run_id)
+                .await
+                .unwrap()
+                .status,
+            RunStatus::Failed
+        );
+        assert_eq!(
+            store
+                .load_run(&session_id, &receipt.run.run_id)
+                .await
+                .unwrap()
+                .status,
+            RunStatus::Failed
+        );
+        assert!(
+            store
+                .load_run_admission(&receipt.lease.target)
+                .await
+                .unwrap()
+                .is_none(),
+            "terminal failure evidence must release the active admission"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_exact_hitl_resume_executes_approved_tool_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let session_id = SessionId::from_string("rpc-hitl-effect-once-session");
+        let executions = Arc::new(AtomicUsize::new(0));
+        let (source_run_id, approval_id) = Box::pin(seed_waiting_approval(
+            &storage,
+            session_id.clone(),
+            Arc::clone(&executions),
+        ))
+        .await;
+        storage
+            .decide_approval(
+                &approval_id,
+                ApprovalStatus::Approved,
+                Some("desktop-user".to_string()),
+                None,
+            )
+            .unwrap();
+
+        let executions_for_factory = Arc::clone(&executions);
+        let factory: Arc<crate::agent_catalog::TestRuntimeFactory> = Arc::new(move |_profile| {
+            let executions_for_tool = Arc::clone(&executions_for_factory);
+            let tool = FunctionTool::new(
+                "effect_once",
+                Some("Test effect requiring approval".to_string()),
+                json!({"type": "object"}),
+                move |_context: ToolContext, _arguments: Value| {
+                    let executions = Arc::clone(&executions_for_tool);
+                    async move {
+                        executions.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        Ok(ToolResult::new(json!({"executed": true})))
+                    }
+                },
+            );
+            let toolset: DynToolset =
+                Arc::new(StaticToolset::new("hitl-effect-once").with_tool(Arc::new(tool)));
+            Ok(
+                AgentRuntimeBuilder::new(Arc::new(TestModel::with_text("resumed")))
+                    .approval_required_tools(["effect_once"])
+                    .toolset(&toolset),
+            )
+        });
+        let catalog = RpcAgentCatalog::new(config.clone())
+            .unwrap()
+            .with_test_runtime_factory(factory);
+        let coordinator = RpcRuntimeCoordinator::new(
+            config,
+            catalog,
+            storage.clone(),
+            EnvironmentAttachmentManager::new(),
+        );
+        let request = hitl_resume_request(
+            session_id.clone(),
+            source_run_id.clone(),
+            "rpc-hitl-effect-once",
+        );
+        // Simulate a host stopping after the durable Preflight claim commit but before admission.
+        // Retrying must perform a read-only receipt lookup, complete the real preflight, and then
+        // consume this exact claim into one continuation instead of admitting a probe run.
+        let identity = command_fingerprint(
+            "rpc_hitl_resume_identity",
+            &json!({
+                "sessionId": session_id,
+                "sourceRunId": source_run_id,
+                "idempotencyKey": request.idempotency_key,
+                "commandFingerprint": request.command_fingerprint,
+            }),
+        )
+        .unwrap();
+        let identity_suffix = identity.rsplit(':').next().unwrap();
+        storage
+            .session_store()
+            .claim_hitl_resume(HitlResumeClaim::new(
+                format!("rpc-hitl-claim-{identity_suffix}"),
+                session_id.clone(),
+                source_run_id.clone(),
+                chrono::Utc::now(),
+            ))
+            .await
+            .unwrap();
+
+        let mut drifted = request.clone();
+        drifted.command_fingerprint = format!("{}-drifted", request.command_fingerprint);
+        let drifted_result = coordinator.resume_waiting(drifted).await;
+        assert!(
+            drifted_result.is_err(),
+            "changed command must not consume an orphaned preflight claim"
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            storage
+                .session_store()
+                .load_run(&session_id, &source_run_id)
+                .await
+                .unwrap()
+                .status,
+            RunStatus::Waiting
+        );
+
+        let (first, second) = tokio::join!(
+            coordinator.resume_waiting(request.clone()),
+            coordinator.resume_waiting(request.clone()),
+        );
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_eq!(first.run_id, second.run_id);
+        assert_eq!(first.admission_id, second.admission_id);
+        assert_ne!(first.idempotent_replay, second.idempotent_replay);
+
+        // A Desktop client can subscribe immediately after `run.resume` returns, before the
+        // continuation publishes its first event. The run producer identity must select the
+        // canonical replay family rather than pinning the empty run to display messages.
+        coordinator
+            .replay(&first.session_id, &first.run_id, None, Some(32))
+            .await
+            .unwrap();
+        assert_eq!(
+            coordinator
+                .storage
+                .resolve_replay_source(&ReplayScope::run(first.run_id.as_str()), false)
+                .unwrap(),
+            DurableReplaySource::ReplayEvents
+        );
+
+        let terminal = coordinator
+            .await_terminal(
+                &first.session_id,
+                &first.run_id,
+                Some(TEST_RUN_COMPLETION_TIMEOUT),
+            )
+            .await
+            .unwrap();
+        assert_eq!(terminal.status, "completed", "{terminal:?}");
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+
+        let replay = coordinator.resume_waiting(request).await.unwrap();
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.run_id, first.run_id);
+        assert_eq!(replay.status, RunStatus::Completed);
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        let store = storage.session_store();
+        assert_eq!(
+            store
+                .load_run(&session_id, &source_run_id)
+                .await
+                .unwrap()
+                .status,
+            RunStatus::Completed
+        );
+        assert_eq!(
+            store
+                .load_approvals(&session_id, &source_run_id)
+                .await
+                .unwrap()[0]
+                .status,
+            ApprovalStatus::Approved
+        );
+    }
+
+    #[tokio::test]
+    async fn run_start_persists_and_replays_only_safe_environment_attachments() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
+        let coordinator = RpcRuntimeCoordinator::new(
+            config,
+            catalog,
+            storage.clone(),
+            EnvironmentAttachmentManager::new(),
+        );
+        let private_program = std::env::current_exe().unwrap();
+        let encoded_program = private_program
+            .to_string_lossy()
+            .bytes()
+            .map(|byte| {
+                if byte.is_ascii_alphanumeric()
+                    || matches!(byte, b'/' | b':' | b'\\' | b'.' | b'-' | b'_')
+                {
+                    char::from(byte).to_string()
+                } else {
+                    format!("%{byte:02X}")
+                }
+            })
+            .collect::<String>();
+        let private_endpoint = format!("stdio://{encoded_program}?arg=--help&arg=private-value");
+        let request = RpcRunRequest {
+            durable_input: vec![InputPart::text("safe environment evidence")],
+            input: AgentInput::text("safe environment evidence"),
+            session_id: None,
+            restore_from_run_id: None,
+            profile: "default".to_string(),
+            environment_attachments: vec![EnvironmentAttachmentRef {
+                id: "workspace".to_string(),
+                kind: "envd".to_string(),
+                mode: Some(EnvironmentAttachmentAccessMode::ReadWrite),
+                is_default: true,
+                is_default_for_shell: true,
+                attachment_lease_id: None,
+                endpoint_ref: Some(private_endpoint),
+                environment_id: Some("environment-safe-id".to_string()),
+                auth_token: Some("private-bearer".to_string()),
+                metadata: serde_json::Map::from_iter([(
+                    "private".to_string(),
+                    json!("private-metadata"),
+                )]),
+            }],
+            idempotency_key: "safe-environment-start".to_string(),
+            command_fingerprint: "safe-environment-start-v1".to_string(),
+            install_session_management: false,
+        };
+
+        let started = coordinator.start(request.clone()).await.unwrap();
+        assert_eq!(
+            started.environment_attachments[0].endpoint_ref.as_deref(),
+            Some("stdio://<redacted>")
+        );
+        assert!(started.environment_attachments[0].auth_token.is_none());
+        assert!(started.environment_attachments[0].metadata.is_empty());
+        let durable = storage
+            .session_store()
+            .load_run(&started.session_id, &started.run_id)
+            .await
+            .unwrap();
+        let recorded = durable
+            .metadata
+            .get(RPC_ENVIRONMENT_ATTACHMENTS_METADATA_KEY)
+            .unwrap();
+        let encoded = recorded.to_string();
+        let private_program = private_program.to_string_lossy();
+        for private in [
+            private_program.as_ref(),
+            "private-value",
+            "private-bearer",
+            "private-metadata",
+        ] {
+            assert!(
+                !encoded.contains(private),
+                "durable metadata leaked {private}"
+            );
+        }
+
+        let mut retry = request;
+        retry.environment_attachments = vec![local_attachment("retry-must-not-win", true)];
+        let replay = coordinator.start(retry).await.unwrap();
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.run_id, started.run_id);
+        assert_eq!(
+            replay.environment_attachments,
+            started.environment_attachments
+        );
+        assert!(
+            !serde_json::to_string(&replay.environment_attachments)
+                .unwrap()
+                .contains("private")
+        );
+    }
 
     #[tokio::test]
     async fn starts_and_awaits_a_run_without_cli_types() {
@@ -2613,7 +4249,7 @@ mod tests {
             session_id: None,
             restore_from_run_id: None,
             profile: "default".to_string(),
-            environment_attachments: Vec::new(),
+            environment_attachments: vec![local_attachment("workspace", true)],
             idempotency_key: "same-start".to_string(),
             command_fingerprint: "same-fingerprint".to_string(),
             install_session_management: false,
@@ -2627,12 +4263,25 @@ mod tests {
             )
             .await
             .unwrap();
-        let replay = coordinator.start(request.clone()).await.unwrap();
+        let replay = coordinator
+            .start(RpcRunRequest {
+                // Even a caller that bypasses wire-level fingerprinting cannot replace facts in
+                // an exact durable receipt with values from the retrying request.
+                environment_attachments: vec![local_attachment("data", true)],
+                ..request.clone()
+            })
+            .await
+            .unwrap();
         assert_eq!(replay.session_id, first.session_id);
         assert_eq!(replay.run_id, first.run_id);
         assert_eq!(replay.admission_id, first.admission_id);
         assert!(replay.idempotent_replay);
         assert_eq!(replay.status, RunStatus::Completed);
+        assert_eq!(
+            replay.environment_attachments,
+            first.environment_attachments
+        );
+        assert_eq!(replay.environment_attachments[0].id, "workspace");
 
         let conflict = coordinator
             .start(RpcRunRequest {
@@ -2977,6 +4626,7 @@ mod tests {
                 idempotency_key: "live-background-consumer".to_string(),
                 command_fingerprint: "live-background-consumer-v1".to_string(),
                 replaces_waiting_run_id: None,
+                hitl_resume_claim_id: None,
             })
             .await
             .unwrap();
@@ -3120,6 +4770,739 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn active_mount_replay_failure_leaves_binding_and_idempotency_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::write(
+            config.workspace_root.join("environment-fixture.txt"),
+            "before",
+        )
+        .unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let coordinator = RpcRuntimeCoordinator::new(
+            config.clone(),
+            RpcAgentCatalog::new(config.clone()).unwrap(),
+            storage,
+            EnvironmentAttachmentManager::new(),
+        );
+        let (_session_id, run_id, _handle) = insert_active_environment_fixture(
+            &coordinator,
+            vec![local_attachment(LOCAL_ENVIRONMENT_ATTACHMENT_ID, true)],
+        )
+        .await;
+        let before = coordinator
+            .active_environment_list(run_id.as_str())
+            .unwrap();
+        let connection = Connection::open(&config.database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_environment_mount_replay
+                 BEFORE INSERT ON replay_events
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected active mount replay failure');
+                 END;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let attachment = local_attachment("extra", false);
+        let params = EnvironmentActiveMountParams {
+            run_id: run_id.as_str().to_string(),
+            attachment: attachment.clone(),
+            replace: false,
+            inject_context: false,
+            expected_binding_version: Some(1),
+            idempotency_key: Some("mount-once".to_string()),
+        };
+        let error = coordinator
+            .active_environment_mount(&params, attachment.clone(), "mount-digest")
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("injected active mount replay failure")
+        );
+        assert_eq!(
+            coordinator
+                .active_environment_list(run_id.as_str())
+                .unwrap(),
+            before
+        );
+        let environment = {
+            let registry = coordinator.active.lock().unwrap();
+            let run = active_mutable_run(&registry, run_id.as_str()).unwrap();
+            assert_eq!(run.environment_binding_version, 1);
+            assert_eq!(run.next_event_sequence, 0);
+            assert_eq!(run.terminal_replay_sequence.load(Ordering::Acquire), 0);
+            assert!(run.events.is_empty());
+            assert!(run.environment_idempotency.is_empty());
+            Arc::clone(&run.environment)
+        };
+        assert_eq!(
+            environment
+                .read_text("/environment/local/environment-fixture.txt")
+                .await
+                .unwrap(),
+            "before"
+        );
+        assert!(
+            environment
+                .read_text("/environment/extra/environment-fixture.txt")
+                .await
+                .is_err()
+        );
+
+        let connection = Connection::open(&config.database_path).unwrap();
+        connection
+            .execute_batch("DROP TRIGGER fail_environment_mount_replay;")
+            .unwrap();
+        drop(connection);
+        let applied = coordinator
+            .active_environment_mount(&params, attachment.clone(), "mount-digest")
+            .await
+            .unwrap();
+        assert!(applied.applied);
+        let replayed = coordinator
+            .active_environment_mount(&params, attachment, "mount-digest")
+            .await
+            .unwrap();
+        assert!(!replayed.applied);
+        assert_eq!(replayed.result, applied.result);
+    }
+
+    #[tokio::test]
+    async fn active_unmount_replay_failure_leaves_binding_and_idempotency_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::write(
+            config.workspace_root.join("environment-fixture.txt"),
+            "before",
+        )
+        .unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let coordinator = RpcRuntimeCoordinator::new(
+            config.clone(),
+            RpcAgentCatalog::new(config.clone()).unwrap(),
+            storage,
+            EnvironmentAttachmentManager::new(),
+        );
+        let (_session_id, run_id, _handle) = insert_active_environment_fixture(
+            &coordinator,
+            vec![
+                local_attachment(LOCAL_ENVIRONMENT_ATTACHMENT_ID, true),
+                local_attachment("extra", false),
+            ],
+        )
+        .await;
+        let before = coordinator
+            .active_environment_list(run_id.as_str())
+            .unwrap();
+        let connection = Connection::open(&config.database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_environment_unmount_replay
+                 BEFORE INSERT ON replay_events
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected active unmount replay failure');
+                 END;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let params = EnvironmentActiveUnmountParams {
+            run_id: run_id.as_str().to_string(),
+            mount_id: "extra".to_string(),
+            new_default_mount_id: None,
+            new_default_shell_mount_id: None,
+            inject_context: false,
+            expected_binding_version: Some(1),
+            idempotency_key: Some("unmount-once".to_string()),
+        };
+        let error = coordinator
+            .active_environment_unmount(&params, "unmount-digest")
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("injected active unmount replay failure")
+        );
+        assert_eq!(
+            coordinator
+                .active_environment_list(run_id.as_str())
+                .unwrap(),
+            before
+        );
+        let environment = {
+            let registry = coordinator.active.lock().unwrap();
+            let run = active_mutable_run(&registry, run_id.as_str()).unwrap();
+            assert_eq!(run.environment_binding_version, 1);
+            assert_eq!(run.next_event_sequence, 0);
+            assert_eq!(run.terminal_replay_sequence.load(Ordering::Acquire), 0);
+            assert!(run.events.is_empty());
+            assert!(run.environment_idempotency.is_empty());
+            Arc::clone(&run.environment)
+        };
+        assert_eq!(
+            environment
+                .read_text("/environment/extra/environment-fixture.txt")
+                .await
+                .unwrap(),
+            "before"
+        );
+
+        let connection = Connection::open(&config.database_path).unwrap();
+        connection
+            .execute_batch("DROP TRIGGER fail_environment_unmount_replay;")
+            .unwrap();
+        drop(connection);
+        let applied = coordinator
+            .active_environment_unmount(&params, "unmount-digest")
+            .await
+            .unwrap();
+        assert!(applied.applied);
+        let replayed = coordinator
+            .active_environment_unmount(&params, "unmount-digest")
+            .await
+            .unwrap();
+        assert!(!replayed.applied);
+        assert_eq!(replayed.result, applied.result);
+        let environment = {
+            let registry = coordinator.active.lock().unwrap();
+            let run = active_mutable_run(&registry, run_id.as_str()).unwrap();
+            Arc::clone(&run.environment)
+        };
+        assert!(
+            environment
+                .read_text("/environment/extra/environment-fixture.txt")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_environment_owner_cannot_publish_or_change_binding() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::write(
+            config.workspace_root.join("environment-fixture.txt"),
+            "before",
+        )
+        .unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let coordinator = RpcRuntimeCoordinator::new(
+            config.clone(),
+            RpcAgentCatalog::new(config.clone()).unwrap(),
+            storage,
+            EnvironmentAttachmentManager::new(),
+        );
+        let (session_id, run_id, _handle) = insert_active_environment_fixture(
+            &coordinator,
+            vec![local_attachment(LOCAL_ENVIRONMENT_ATTACHMENT_ID, true)],
+        )
+        .await;
+        let old_lease = {
+            let registry = coordinator.active.lock().unwrap();
+            active_mutable_run(&registry, run_id.as_str())
+                .unwrap()
+                .lease
+                .clone()
+        };
+        coordinator
+            .storage
+            .session_store()
+            .reconcile_expired_run_admissions(
+                LOCAL_SESSION_NAMESPACE,
+                old_lease.lease_expires_at + chrono::Duration::seconds(1),
+            )
+            .await
+            .unwrap();
+        let replacement_run =
+            RunRecord::new(session_id.clone(), RunId::new(), ConversationId::new());
+        coordinator
+            .storage
+            .session_store()
+            .acquire_run_admission(AcquireRunAdmission {
+                run: replacement_run,
+                namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+                host_instance_id: "replacement-host".to_string(),
+                admission_id: "replacement-admission".to_string(),
+                lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+                idempotency_key: "replacement-start".to_string(),
+                command_fingerprint: "replacement-start-v1".to_string(),
+                replaces_waiting_run_id: None,
+                hitl_resume_claim_id: None,
+            })
+            .await
+            .unwrap();
+
+        let attachment = local_attachment("extra", false);
+        let params = EnvironmentActiveMountParams {
+            run_id: run_id.as_str().to_string(),
+            attachment: attachment.clone(),
+            replace: false,
+            inject_context: false,
+            expected_binding_version: Some(1),
+            idempotency_key: Some("stale-mount".to_string()),
+        };
+        let error = coordinator
+            .active_environment_mount(&params, attachment, "stale-mount-digest")
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, RUN_CONFLICT);
+        let (environment, binding_version, event_count) = {
+            let registry = coordinator.active.lock().unwrap();
+            let run = active_mutable_run(&registry, run_id.as_str()).unwrap();
+            (
+                Arc::clone(&run.environment),
+                run.environment_binding_version,
+                run.events.len(),
+            )
+        };
+        assert_eq!(binding_version, 1);
+        assert_eq!(event_count, 0);
+        assert!(
+            environment
+                .read_text("/environment/extra/environment-fixture.txt")
+                .await
+                .is_err()
+        );
+        let durable = coordinator
+            .storage
+            .replay_event_log()
+            .replay_after(&ReplayScope::run(run_id.as_str()), None, None)
+            .await
+            .unwrap();
+        assert!(durable.is_empty());
+    }
+
+    #[tokio::test]
+    async fn display_projection_batch_rolls_back_when_second_event_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let coordinator = RpcRuntimeCoordinator::new(
+            config.clone(),
+            RpcAgentCatalog::new(config.clone()).unwrap(),
+            storage,
+            EnvironmentAttachmentManager::new(),
+        );
+        let (session_id, run_id, _handle) = insert_active_environment_fixture(
+            &coordinator,
+            vec![local_attachment(LOCAL_ENVIRONMENT_ATTACHMENT_ID, true)],
+        )
+        .await;
+        let connection = Connection::open(&config.database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_second_projected_replay
+                 BEFORE INSERT ON replay_events
+                 WHEN NEW.sequence = 1
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected second replay failure');
+                 END;",
+            )
+            .unwrap();
+        drop(connection);
+        let response = ModelResponse {
+            parts: vec![
+                ModelResponsePart::ProviderThinking {
+                    text: "inspect".to_string(),
+                    signature: None,
+                    provider: ProviderPartInfo::new("test").with_id("thinking-1"),
+                },
+                ModelResponsePart::ProviderText {
+                    text: "answer".to_string(),
+                    provider: ProviderPartInfo::new("test").with_id("text-1"),
+                },
+                ModelResponsePart::ProviderToolCall {
+                    call: ToolCallPart {
+                        id: "call-1".to_string(),
+                        name: "lookup".to_string(),
+                        arguments: json!({"query": "value"}).into(),
+                    },
+                    provider: ProviderPartInfo::new("test").with_id("tool-1"),
+                },
+            ],
+            usage: starweaver_agent::Usage::default(),
+            model_name: None,
+            provider: None,
+            finish_reason: None,
+            timestamp: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: starweaver_core::Metadata::default(),
+        };
+        let record =
+            AgentStreamRecord::new(0, AgentStreamEvent::ModelResponse { step: 1, response });
+        let projection_context = DisplayProjectionContext::new(session_id, run_id.clone());
+        assert!(
+            DefaultDisplayMessageProjector
+                .project(&projection_context, &record)
+                .await
+                .len()
+                > 1
+        );
+        publish_record(
+            &coordinator.active,
+            &coordinator.storage.session_store(),
+            &RpcRuntimeCoordinator::target(&projection_context.session_id, &run_id),
+            &projection_context,
+            &record,
+        )
+        .await;
+
+        let durable = coordinator
+            .storage
+            .replay_event_log()
+            .replay_after(&ReplayScope::run(run_id.as_str()), None, None)
+            .await
+            .unwrap();
+        assert!(durable.is_empty(), "the first event must roll back");
+        let registry = coordinator.active.lock().unwrap();
+        let run = active_mutable_run(&registry, run_id.as_str()).unwrap();
+        assert_eq!(run.next_display_sequence, 0);
+        assert_eq!(run.next_event_sequence, 0);
+        assert!(run.events.is_empty());
+        assert!(run.replay_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn cancelled_active_mount_request_finishes_once_and_replays_exact_result() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let coordinator = RpcRuntimeCoordinator::new(
+            config.clone(),
+            RpcAgentCatalog::new(config.clone()).unwrap(),
+            storage,
+            EnvironmentAttachmentManager::new(),
+        );
+        let (_session_id, run_id, _handle) = insert_active_environment_fixture(
+            &coordinator,
+            vec![local_attachment(LOCAL_ENVIRONMENT_ATTACHMENT_ID, true)],
+        )
+        .await;
+        let publish_lock = {
+            let registry = coordinator.active.lock().unwrap();
+            Arc::clone(
+                &active_mutable_run(&registry, run_id.as_str())
+                    .unwrap()
+                    .replay_publish_lock,
+            )
+        };
+        let guard = publish_lock.lock().await;
+        let attachment = local_attachment("extra", false);
+        let params = EnvironmentActiveMountParams {
+            run_id: run_id.as_str().to_string(),
+            attachment: attachment.clone(),
+            replace: false,
+            inject_context: true,
+            expected_binding_version: Some(1),
+            idempotency_key: Some("lost-response".to_string()),
+        };
+        let request_coordinator = coordinator.clone();
+        let request_params = params.clone();
+        let request_attachment = attachment.clone();
+        let request = tokio::spawn(async move {
+            request_coordinator
+                .active_environment_mount(
+                    &request_params,
+                    request_attachment,
+                    "lost-response-digest",
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        request.abort();
+        drop(guard);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let ready = coordinator
+                    .active_environment_list(run_id.as_str())
+                    .ok()
+                    .and_then(|value| value["environment"]["bindingVersion"].as_u64())
+                    == Some(2);
+                if ready {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let replayed = coordinator
+            .active_environment_mount(&params, attachment, "lost-response-digest")
+            .await
+            .unwrap();
+        assert!(!replayed.applied);
+        assert_eq!(replayed.result["bindingVersion"], 2);
+        let registry = coordinator.active.lock().unwrap();
+        let run = active_mutable_run(&registry, run_id.as_str()).unwrap();
+        assert_eq!(run.environment_binding_version, 2);
+        assert_eq!(run.next_event_sequence, 1);
+        assert_eq!(run.events.len(), 1);
+        assert_eq!(run.environment_idempotency.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn terminal_publication_barrier_rejects_waiting_environment_mutation() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let coordinator = RpcRuntimeCoordinator::new(
+            config,
+            RpcAgentCatalog::new(RpcConfig::for_tests(temp.path())).unwrap(),
+            storage,
+            EnvironmentAttachmentManager::new(),
+        );
+        let (session_id, run_id, _handle) = insert_active_environment_fixture(
+            &coordinator,
+            vec![local_attachment(LOCAL_ENVIRONMENT_ATTACHMENT_ID, true)],
+        )
+        .await;
+        let target = RpcRuntimeCoordinator::target(&session_id, &run_id);
+        let (publish_lock, environment) = {
+            let registry = coordinator.active.lock().unwrap();
+            let run = registry.get(&target).unwrap();
+            (
+                Arc::clone(&run.replay_publish_lock),
+                Arc::clone(&run.environment),
+            )
+        };
+        let guard = publish_lock.lock().await;
+        let attachment = local_attachment("extra", false);
+        let params = EnvironmentActiveMountParams {
+            run_id: run_id.as_str().to_string(),
+            attachment: attachment.clone(),
+            replace: false,
+            inject_context: false,
+            expected_binding_version: Some(1),
+            idempotency_key: Some("terminal-race".to_string()),
+        };
+        let request_coordinator = coordinator.clone();
+        let request = tokio::spawn(async move {
+            request_coordinator
+                .active_environment_mount(&params, attachment, "terminal-race-digest")
+                .await
+        });
+        tokio::task::yield_now().await;
+        coordinator.active.lock().unwrap().remove(&target).unwrap();
+        drop(guard);
+        let error = request.await.unwrap().unwrap_err();
+        assert_eq!(error.code, RUN_CONFLICT);
+        assert!(error.message.contains("active run not found"));
+        assert!(
+            environment
+                .read_text("/environment/extra/environment-fixture.txt")
+                .await
+                .is_err()
+        );
+        let durable = coordinator
+            .storage
+            .replay_event_log()
+            .replay_after(&ReplayScope::run(run_id.as_str()), None, None)
+            .await
+            .unwrap();
+        assert!(durable.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replay_append_failure_publishes_no_cursor_and_cannot_complete_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let connection = Connection::open(&config.database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_rpc_replay_append
+                 BEFORE INSERT ON replay_events
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected RPC replay append failure');
+                 END;",
+            )
+            .unwrap();
+        drop(connection);
+        let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
+        let coordinator = RpcRuntimeCoordinator::new(
+            config.clone(),
+            catalog,
+            storage.clone(),
+            EnvironmentAttachmentManager::new(),
+        );
+        let started = coordinator
+            .start(RpcRunRequest {
+                durable_input: vec![InputPart::text("replay failure")],
+                input: AgentInput::text("replay failure"),
+                session_id: None,
+                restore_from_run_id: None,
+                profile: "default".to_string(),
+                environment_attachments: Vec::new(),
+                idempotency_key: "replay-failure".to_string(),
+                command_fingerprint: "replay-failure-v1".to_string(),
+                install_session_management: false,
+            })
+            .await
+            .unwrap();
+        let status = coordinator
+            .await_terminal(
+                &started.session_id,
+                &started.run_id,
+                Some(TEST_RUN_COMPLETION_TIMEOUT),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status, "failed", "{status:?}");
+        assert!(
+            status
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("replay")),
+            "{status:?}"
+        );
+        assert!(
+            coordinator
+                .replay(&started.session_id, &started.run_id, None, None)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a failed durable append must not leak an active-cache cursor"
+        );
+        let durable = storage
+            .session_store()
+            .load_run(&started.session_id, &started.run_id)
+            .await
+            .unwrap();
+        assert_eq!(durable.status, RunStatus::Failed);
+
+        coordinator.shutdown(Duration::from_secs(5)).await.unwrap();
+        drop(coordinator);
+        drop(storage);
+        let connection = Connection::open(&config.database_path).unwrap();
+        connection
+            .execute_batch("DROP TRIGGER fail_rpc_replay_append;")
+            .unwrap();
+        drop(connection);
+        let reopened_storage = SqliteStorage::open(&config.database_path).unwrap();
+        let reopened = RpcRuntimeCoordinator::new(
+            config.clone(),
+            RpcAgentCatalog::new(config).unwrap(),
+            reopened_storage,
+            EnvironmentAttachmentManager::new(),
+        );
+        assert!(
+            reopened
+                .replay(&started.session_id, &started.run_id, None, None)
+                .await
+                .unwrap()
+                .is_empty(),
+            "restart must not reveal a cursor that was never durably appended"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_published_cursor_replays_in_bounded_pages_after_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let coordinator = RpcRuntimeCoordinator::new(
+            config.clone(),
+            RpcAgentCatalog::new(config.clone()).unwrap(),
+            storage,
+            EnvironmentAttachmentManager::new(),
+        );
+        let started = coordinator
+            .start(RpcRunRequest {
+                durable_input: vec![InputPart::text("replay restart")],
+                input: AgentInput::text("replay restart"),
+                session_id: None,
+                restore_from_run_id: None,
+                profile: "default".to_string(),
+                environment_attachments: Vec::new(),
+                idempotency_key: "replay-restart".to_string(),
+                command_fingerprint: "replay-restart-v1".to_string(),
+                install_session_management: false,
+            })
+            .await
+            .unwrap();
+        let status = coordinator
+            .await_terminal(
+                &started.session_id,
+                &started.run_id,
+                Some(TEST_RUN_COMPLETION_TIMEOUT),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status, "completed", "{status:?}");
+        let published = coordinator
+            .replay(
+                &started.session_id,
+                &started.run_id,
+                None,
+                Some(MAX_REPLAY_PAGE_LIMIT),
+            )
+            .await
+            .unwrap();
+        assert!(published.len() >= 2, "{published:?}");
+        assert!(
+            published
+                .iter()
+                .enumerate()
+                .all(|(sequence, event)| event.sequence == sequence),
+            "published replay sequences must be contiguous: {published:?}"
+        );
+        assert!(matches!(
+            published.last().map(|event| &event.event),
+            Some(ReplayEventKind::Terminal {
+                marker: StreamTerminalMarker::RunCompleted
+            })
+        ));
+        coordinator.shutdown(Duration::from_secs(5)).await.unwrap();
+        drop(coordinator);
+
+        let reopened_storage = SqliteStorage::open(&config.database_path).unwrap();
+        let reopened = RpcRuntimeCoordinator::new(
+            config.clone(),
+            RpcAgentCatalog::new(config).unwrap(),
+            reopened_storage,
+            EnvironmentAttachmentManager::new(),
+        );
+        let mut replayed = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = reopened
+                .replay(
+                    &started.session_id,
+                    &started.run_id,
+                    cursor.clone(),
+                    Some(1),
+                )
+                .await
+                .unwrap();
+            if page.is_empty() {
+                break;
+            }
+            assert_eq!(page.len(), 1);
+            cursor = Some(ReplayCursor::replay_event(
+                ReplayScope::run(started.run_id.as_str()),
+                page[0].sequence,
+            ));
+            replayed.extend(page);
+        }
+        assert_eq!(replayed, published);
+    }
+
+    #[tokio::test]
     async fn startup_reconciliation_preserves_unexpired_foreign_lease() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
@@ -3144,6 +5527,7 @@ mod tests {
                 idempotency_key: "foreign-start".to_string(),
                 command_fingerprint: "foreign-command".to_string(),
                 replaces_waiting_run_id: None,
+                hitl_resume_claim_id: None,
             })
             .await
             .unwrap();

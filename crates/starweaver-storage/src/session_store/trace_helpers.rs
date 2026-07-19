@@ -33,7 +33,7 @@ pub(super) fn load_checkpoint_ids(
         .prepare(
             "SELECT record FROM checkpoint_records
              WHERE session_id = ?1 AND run_id = ?2
-             ORDER BY sequence_no ASC, checkpoint_id ASC",
+             ORDER BY sequence_no ASC, created_at ASC, rowid ASC",
         )
         .map_err(map_sqlite_session_error)?;
     let rows = statement

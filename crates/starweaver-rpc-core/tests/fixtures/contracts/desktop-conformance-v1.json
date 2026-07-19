@@ -1,0 +1,234 @@
+{
+  "schema": "starweaver.host.desktop-conformance",
+  "major": 1,
+  "revision": "2026-07-18",
+  "methods": [
+    {
+      "method": "initialize",
+      "paramsType": "HostInitializeParams",
+      "resultType": "HostInitializeResult"
+    },
+    {
+      "method": "shutdown",
+      "paramsType": "EmptyParams",
+      "resultType": "ShutdownResult"
+    },
+    {
+      "method": "diagnostics.get",
+      "paramsType": "EmptyParams",
+      "resultType": "DiagnosticsGetResult"
+    },
+    {
+      "method": "profile.list",
+      "paramsType": "ClientStateParams",
+      "resultType": "ProfileListResult"
+    },
+    {
+      "method": "model.list",
+      "paramsType": "ClientStateParams",
+      "resultType": "ModelListResult"
+    },
+    {
+      "method": "profile.get",
+      "paramsType": "ProfileGetParams",
+      "resultType": "ProfileGetResult"
+    },
+    {
+      "method": "model.current",
+      "paramsType": "ClientStateParams",
+      "resultType": "ModelCurrentResult"
+    },
+    {
+      "method": "model.select",
+      "paramsType": "ModelSelectParams",
+      "resultType": "ModelSelectResult"
+    },
+    {
+      "method": "config.get",
+      "paramsType": "ConfigGetParams",
+      "resultType": "ConfigGetResult"
+    },
+    {
+      "method": "storage.importLegacy",
+      "paramsType": "StorageImportLegacyParams",
+      "resultType": "StorageImportLegacyResult"
+    },
+    {
+      "method": "session.create",
+      "paramsType": "SessionCreateParams",
+      "resultType": "SessionCreateResult"
+    },
+    {
+      "method": "session.list",
+      "paramsType": "SessionListParams",
+      "resultType": "SessionListResult"
+    },
+    {
+      "method": "session.search",
+      "paramsType": "SessionSearchParams",
+      "resultType": "SessionSearchResult"
+    },
+    {
+      "method": "session.get",
+      "paramsType": "SessionGetParams",
+      "resultType": "SessionGetResult"
+    },
+    {
+      "method": "session.current.get",
+      "paramsType": "EmptyParams",
+      "resultType": "SessionCurrentResult"
+    },
+    {
+      "method": "session.current.set",
+      "paramsType": "SessionCurrentSetParams",
+      "resultType": "SessionCurrentResult"
+    },
+    {
+      "method": "session.delete",
+      "paramsType": "SessionDeleteParams",
+      "resultType": "SessionDeleteResult"
+    },
+    {
+      "method": "run.start",
+      "paramsType": "RunStartParams",
+      "resultType": "RunStartResult"
+    },
+    {
+      "method": "run.resume",
+      "paramsType": "RunResumeParams",
+      "resultType": "RunResumeResult"
+    },
+    {
+      "method": "run.prompt",
+      "paramsType": "RunPromptParams",
+      "resultType": "RunPromptResult"
+    },
+    {
+      "method": "run.status",
+      "paramsType": "RunIdentityParams",
+      "resultType": "RunStatusResult"
+    },
+    {
+      "method": "run.await",
+      "paramsType": "RunAwaitParams",
+      "resultType": "RunAwaitResult"
+    },
+    {
+      "method": "run.cancel",
+      "paramsType": "RunCancelParams",
+      "resultType": "RunCancelResult"
+    },
+    {
+      "method": "run.steer",
+      "paramsType": "RunSteerParams",
+      "resultType": "RunSteerResult"
+    },
+    {
+      "method": "run.attach",
+      "paramsType": "RunAttachParams",
+      "resultType": "RunAttachmentResult"
+    },
+    {
+      "method": "session.output",
+      "paramsType": "SessionOutputParams",
+      "resultType": "SessionOutputResult"
+    },
+    {
+      "method": "stream.replay",
+      "paramsType": "StreamReplayParams",
+      "resultType": "StreamReplayResult"
+    },
+    {
+      "method": "session.replay",
+      "paramsType": "SessionReplayParams",
+      "resultType": "SessionReplayResult"
+    },
+    {
+      "method": "approval.list",
+      "paramsType": "ApprovalListParams",
+      "resultType": "ApprovalListResult"
+    },
+    {
+      "method": "approval.show",
+      "paramsType": "ApprovalShowParams",
+      "resultType": "ApprovalShowResult"
+    },
+    {
+      "method": "approval.decide",
+      "paramsType": "ApprovalDecideParams",
+      "resultType": "ApprovalDecideResult"
+    },
+    {
+      "method": "deferred.list",
+      "paramsType": "DeferredListParams",
+      "resultType": "DeferredListResult"
+    },
+    {
+      "method": "deferred.show",
+      "paramsType": "DeferredShowParams",
+      "resultType": "DeferredShowResult"
+    },
+    {
+      "method": "deferred.complete",
+      "paramsType": "DeferredCompleteParams",
+      "resultType": "DeferredCompleteResult"
+    },
+    {
+      "method": "deferred.fail",
+      "paramsType": "DeferredFailParams",
+      "resultType": "DeferredFailResult"
+    },
+    {
+      "method": "environment.attach",
+      "paramsType": "EnvironmentAttachParams",
+      "resultType": "EnvironmentAttachResult"
+    },
+    {
+      "method": "environment.detach",
+      "paramsType": "EnvironmentDetachParams",
+      "resultType": "EnvironmentDetachResult"
+    },
+    {
+      "method": "environment.list",
+      "paramsType": "EnvironmentListParams",
+      "resultType": "EnvironmentListResult"
+    },
+    {
+      "method": "environment.health",
+      "paramsType": "EnvironmentHealthParams",
+      "resultType": "EnvironmentHealthResult"
+    },
+    {
+      "method": "environment.active_mount",
+      "paramsType": "EnvironmentActiveMountParams",
+      "resultType": "EnvironmentActiveMountResult"
+    },
+    {
+      "method": "environment.active_unmount",
+      "paramsType": "EnvironmentActiveUnmountParams",
+      "resultType": "EnvironmentActiveUnmountResult"
+    },
+    {
+      "method": "environment.active_list",
+      "paramsType": "EnvironmentActiveListParams",
+      "resultType": "EnvironmentActiveListResult"
+    },
+    {
+      "method": "stream.subscribe",
+      "paramsType": "StreamSubscribeParams",
+      "resultType": "StreamSubscribeResult"
+    },
+    {
+      "method": "stream.unsubscribe",
+      "paramsType": "StreamUnsubscribeParams",
+      "resultType": "StreamUnsubscribeResult"
+    }
+  ],
+  "notifications": [
+    "subscription.ready",
+    "stream.event",
+    "run.status",
+    "diagnostic",
+    "subscription.closed"
+  ]
+}

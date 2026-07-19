@@ -269,6 +269,16 @@ fn http_rejects_missing_credentials_browser_blind_writes_and_insufficient_scopes
 
     for (method, params) in [
         (
+            "environment.health",
+            json!({
+                "attachment": {
+                    "id": "probe",
+                    "kind": "envd",
+                    "endpointRef": "stdio://must-not-launch"
+                }
+            }),
+        ),
+        (
             "approval.decide",
             json!({"approvalId": "approval_missing", "status": "approved"}),
         ),

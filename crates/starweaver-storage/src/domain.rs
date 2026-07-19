@@ -8,15 +8,19 @@ use starweaver_core::{RunId, SessionId};
 use starweaver_session::{
     ApprovalDecision, ApprovalRecord, ApprovalStatus, CheckpointRef, DeferredToolRecord,
     ExecutionStatus, HitlResumeClaim, HitlResumeClaimState, PendingStreamPublication,
-    RunEvidenceCommit, RunRecord, SessionRecord, SessionStoreError, SessionStoreResult,
+    RunAdmissionLease, RunEvidenceCommit, RunRecord, SessionRecord, SessionStoreError,
+    SessionStoreResult,
 };
 use starweaver_stream::{AgentStreamRecord, DisplayMessage, ReplayEvent, ReplayScope};
 
 use crate::{
     SqliteStorage,
-    session_store::records::{
-        allocate_or_reuse_run_sequence, apply_run_to_session, list_run_records, load_run_record,
-        load_session_record, save_run_record, save_session_record,
+    session_store::{
+        ensure_run_admission_in_transaction,
+        records::{
+            allocate_or_reuse_run_sequence, apply_run_to_session, list_run_records,
+            load_run_record, load_session_record, save_run_record, save_session_record,
+        },
     },
     sqlite::{
         collect_json_record_rows, deserialize_json_record, map_display_session_error,
@@ -276,7 +280,29 @@ impl SqliteStorage {
     /// records, serialization failures, or SQLite failures. Any failure rolls back the whole
     /// commit.
     pub fn commit_run_evidence(&self, commit: RunEvidenceCommit) -> SessionStoreResult<RunRecord> {
-        self.commit_run_evidence_observed(commit, |_| Ok(()))
+        self.commit_run_evidence_observed(commit, None, |_| Ok(()))
+    }
+
+    /// Commit complete run evidence only while the supplied admission lease is current.
+    ///
+    /// Exact retries of already committed evidence remain idempotent after lease release.
+    ///
+    /// # Errors
+    ///
+    /// Returns a conflict for an expired or stale owner, or any ordinary evidence error.
+    pub fn commit_run_evidence_fenced(
+        &self,
+        lease: &RunAdmissionLease,
+        commit: RunEvidenceCommit,
+    ) -> SessionStoreResult<RunRecord> {
+        if lease.target.session_id != commit.run.session_id
+            || lease.target.run_id != commit.run.run_id
+        {
+            return Err(SessionStoreError::Conflict(
+                "run evidence does not match admission target".to_string(),
+            ));
+        }
+        self.commit_run_evidence_observed(commit, Some(lease), |_| Ok(()))
     }
 
     #[cfg(test)]
@@ -285,7 +311,7 @@ impl SqliteStorage {
         commit: RunEvidenceCommit,
         fail_after: EvidenceWritePoint,
     ) -> SessionStoreResult<RunRecord> {
-        self.commit_run_evidence_observed(commit, |point| {
+        self.commit_run_evidence_observed(commit, None, |point| {
             if point == fail_after {
                 return Err(SessionStoreError::Failed(format!(
                     "injected run-evidence fault after {point:?}"
@@ -299,6 +325,7 @@ impl SqliteStorage {
     fn commit_run_evidence_observed(
         &self,
         mut commit: RunEvidenceCommit,
+        admission_lease: Option<&RunAdmissionLease>,
         mut after_write: impl FnMut(EvidenceWritePoint) -> SessionStoreResult<()>,
     ) -> SessionStoreResult<RunRecord> {
         commit.run.stream_cursors.clone_from(&commit.stream_cursors);
@@ -449,6 +476,9 @@ impl SqliteStorage {
                 commit.run.session_id.as_str(),
                 commit.run.run_id.as_str()
             )));
+        }
+        if let Some(lease) = admission_lease {
+            ensure_run_admission_in_transaction(&transaction, lease, Utc::now())?;
         }
         for (update_index, (update, (approval_payloads, deferred_payloads))) in commit
             .related_run_updates
@@ -664,20 +694,48 @@ impl SqliteStorage {
             after_write(EvidenceWritePoint::DisplaySnapshot)?;
         }
 
-        let latest_checkpoint = transaction
-            .query_row(
-                "SELECT record FROM checkpoint_records
-                 WHERE session_id = ?1 AND run_id = ?2
-                 ORDER BY sequence_no DESC, checkpoint_id DESC LIMIT 1",
-                params![commit.run.session_id.as_str(), commit.run.run_id.as_str()],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(map_sqlite_session_error)?
-            .map(|payload| deserialize_json_record::<AgentCheckpoint>(&payload))
-            .transpose()?;
+        let latest_checkpoint_created_at = commit
+            .run
+            .latest_checkpoint
+            .as_ref()
+            .map_or(commit.run.updated_at, |reference| reference.created_at);
+        let latest_checkpoint = if let Some(reference) = commit.run.latest_checkpoint.as_ref() {
+            let checkpoint = transaction
+                .query_row(
+                    "SELECT record FROM checkpoint_records
+                     WHERE session_id = ?1 AND run_id = ?2 AND checkpoint_id = ?3",
+                    params![
+                        commit.run.session_id.as_str(),
+                        commit.run.run_id.as_str(),
+                        reference.checkpoint_id.as_str()
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(map_sqlite_session_error)?
+                .ok_or_else(|| {
+                    SessionStoreError::NotFound(format!(
+                        "checkpoint {} referenced by run {}",
+                        reference.checkpoint_id.as_str(),
+                        commit.run.run_id.as_str()
+                    ))
+                })?;
+            let checkpoint = deserialize_json_record::<AgentCheckpoint>(&checkpoint)?;
+            if checkpoint.run_step != reference.sequence {
+                return Err(SessionStoreError::Failed(format!(
+                    "latest checkpoint sequence mismatch for run {}: reference {}, checkpoint {}",
+                    commit.run.run_id.as_str(),
+                    reference.sequence,
+                    checkpoint.run_step
+                )));
+            }
+            Some(checkpoint)
+        } else {
+            commit.checkpoints.last().cloned()
+        };
         if let Some(checkpoint) = latest_checkpoint.as_ref() {
-            commit.run.latest_checkpoint = Some(checkpoint_ref(checkpoint, commit.run.updated_at));
+            commit.run.latest_checkpoint =
+                Some(checkpoint_ref(checkpoint, latest_checkpoint_created_at));
         }
         session.state.clone_from(&commit.context_state);
         session
@@ -1284,7 +1342,7 @@ fn insert_exact_opaque_run_record(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn insert_exact_replay_event(
+pub fn insert_exact_replay_event(
     transaction: &Transaction<'_>,
     table: &str,
     family: &str,
@@ -1518,6 +1576,9 @@ fn replace_resolved_approval(
         .map_err(map_sqlite_session_error)?
         .ok_or_else(|| SessionStoreError::NotFound(approval.approval_id.clone()))?;
     let existing = deserialize_json_record::<ApprovalRecord>(&existing_payload)?;
+    if existing == *approval {
+        return Ok(());
+    }
     let same_request = existing.approval_id == approval.approval_id
         && existing.session_id == approval.session_id
         && existing.run_id == approval.run_id
@@ -1584,6 +1645,9 @@ fn replace_resolved_deferred_tool(
         .map_err(map_sqlite_session_error)?
         .ok_or_else(|| SessionStoreError::NotFound(deferred.deferred_id.clone()))?;
     let existing = deserialize_json_record::<DeferredToolRecord>(&existing_payload)?;
+    if existing == *deferred {
+        return Ok(());
+    }
     let same_request = existing.deferred_id == deferred.deferred_id
         && existing.session_id == deferred.session_id
         && existing.run_id == deferred.run_id
