@@ -156,7 +156,7 @@ Policies should cover:
 
 ```mermaid
 flowchart TB
-    app[SDK app / Service / Desktop App]
+    app[SDK app / Service / Host App]
     provider[SandboxedShellProvider]
     fileops[Local file operations]
     shell[Sandboxed shell runtime]

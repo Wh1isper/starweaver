@@ -5,6 +5,9 @@ use serde_json::{Map, Value};
 
 use super::Metadata;
 
+/// Metadata key binding an approval-required return to the exact arguments that were reviewed.
+pub const TOOL_RETURN_APPROVAL_ARGUMENTS_METADATA_KEY: &str = "starweaver.approval_tool_arguments";
+
 /// Function-style tool call.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ToolCallPart {

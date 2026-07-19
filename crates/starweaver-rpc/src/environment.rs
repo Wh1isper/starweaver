@@ -14,7 +14,7 @@ use starweaver_environment::{
 };
 use starweaver_rpc_core::{
     EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
-    LOCAL_ENVIRONMENT_ATTACHMENT_KIND,
+    LOCAL_ENVIRONMENT_ATTACHMENT_KIND, normalize_environment_attachment_refs,
 };
 
 use crate::{RpcHostError, RpcHostResult};
@@ -131,21 +131,12 @@ fn resolve_attachment(
 pub fn effective_rpc_environment_attachments(
     attachments: &[EnvironmentAttachmentRef],
 ) -> Vec<EnvironmentAttachmentRef> {
-    let mut effective = if attachments.is_empty() {
+    let effective = if attachments.is_empty() {
         vec![default_local_attachment()]
     } else {
         attachments.to_vec()
     };
-    let default_id = default_attachment_id(&effective).map(ToString::to_string);
-    let default_shell_id =
-        default_shell_attachment_id(&effective, default_id.as_deref()).map(ToString::to_string);
-    for attachment in &mut effective {
-        attachment.mode = Some(attachment.resolved_mode());
-        attachment.is_default = default_id.as_deref() == Some(attachment.id.as_str());
-        attachment.is_default_for_shell =
-            default_shell_id.as_deref() == Some(attachment.id.as_str());
-    }
-    effective
+    normalize_environment_attachment_refs(&effective)
 }
 
 /// Project provider-private attachments into credential-free durable and host-visible evidence.
@@ -168,34 +159,6 @@ pub fn safe_rpc_environment_attachments(
         .collect()
 }
 
-fn default_attachment_id(attachments: &[EnvironmentAttachmentRef]) -> Option<&str> {
-    if attachments.len() == 1 {
-        return Some(attachments[0].id.as_str());
-    }
-    attachments
-        .iter()
-        .find(|attachment| attachment.is_default)
-        .map(|attachment| attachment.id.as_str())
-}
-
-fn default_shell_attachment_id<'a>(
-    attachments: &'a [EnvironmentAttachmentRef],
-    default_id: Option<&'a str>,
-) -> Option<&'a str> {
-    if let Some(explicit) = attachments
-        .iter()
-        .find(|attachment| attachment.is_default_for_shell)
-        .map(|attachment| attachment.id.as_str())
-    {
-        return Some(explicit);
-    }
-    let default_id = default_id?;
-    attachments
-        .iter()
-        .find(|attachment| attachment.id == default_id && attachment_supports_shell(attachment))
-        .map(|attachment| attachment.id.as_str())
-}
-
 fn default_local_attachment() -> EnvironmentAttachmentRef {
     EnvironmentAttachmentRef {
         id: LOCAL_ENVIRONMENT_ATTACHMENT_ID.to_string(),
@@ -216,13 +179,6 @@ const fn environment_mount_mode(mode: EnvironmentAttachmentAccessMode) -> Enviro
         EnvironmentAttachmentAccessMode::ReadOnly => EnvironmentMountMode::ReadOnly,
         EnvironmentAttachmentAccessMode::ReadWrite => EnvironmentMountMode::ReadWrite,
     }
-}
-
-fn attachment_supports_shell(attachment: &EnvironmentAttachmentRef) -> bool {
-    matches!(
-        attachment.resolved_mode(),
-        EnvironmentAttachmentAccessMode::ReadWrite
-    )
 }
 
 #[cfg(test)]

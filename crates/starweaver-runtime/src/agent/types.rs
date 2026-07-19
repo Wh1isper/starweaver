@@ -201,6 +201,60 @@ pub enum AgentError {
     ToolCallsRequireTools,
 }
 
+impl AgentError {
+    /// Return the stable category safe for durable and client-visible surfaces.
+    #[must_use]
+    pub const fn public_code(&self) -> &'static str {
+        match self {
+            Self::Model(_) => "model_error",
+            Self::Capability(_) => "capability_error",
+            Self::Cancelled { .. } => "cancelled",
+            Self::CapabilityOrder(_) => "capability_order_error",
+            Self::StructuredOutput(_) => "structured_output_error",
+            Self::DynamicInstruction(_) => "dynamic_instruction_error",
+            Self::OutputRetryLimitExceeded { .. } => "output_retry_limit_exceeded",
+            Self::ToolRetryLimitExceeded { .. } => "tool_retry_limit_exceeded",
+            Self::StepLimitExceeded { .. } => "step_limit_exceeded",
+            Self::UsageLimit(_) => "usage_limit_exceeded",
+            Self::ExecutionSuspended { .. } => "execution_suspended",
+            Self::Executor(_) => "executor_error",
+            Self::ToolCallsRequireTools => "tool_calls_require_tools",
+        }
+    }
+
+    /// Return a diagnostic safe for durable events and client-visible surfaces.
+    ///
+    /// Free-form provider, capability, instruction, executor, and cancellation details are
+    /// intentionally omitted because they can contain request content, credentials, or host
+    /// internals. The original typed error remains available to local callers and telemetry.
+    #[must_use]
+    pub fn public_message(&self) -> String {
+        match self {
+            Self::Model(error) => error.public_message(),
+            Self::Capability(_) => "agent capability failed".to_string(),
+            Self::Cancelled { .. } => "agent run cancelled".to_string(),
+            Self::CapabilityOrder(_) => "agent capability ordering failed".to_string(),
+            Self::StructuredOutput(_) => "structured output could not be processed".to_string(),
+            Self::DynamicInstruction(_) => "dynamic instruction generation failed".to_string(),
+            Self::OutputRetryLimitExceeded { retries } => {
+                format!("output retry limit exceeded after {retries} retries")
+            }
+            Self::ToolRetryLimitExceeded { max_retries, .. } => {
+                format!("tool retry limit exceeded after {max_retries} retries")
+            }
+            Self::StepLimitExceeded { steps } => {
+                format!("step limit exceeded after {steps} steps")
+            }
+            Self::UsageLimit(_) => "usage limit exceeded".to_string(),
+            Self::ExecutionSuspended { .. } => "agent execution suspended".to_string(),
+            Self::Executor(_) => "agent executor failed".to_string(),
+            Self::ToolCallsRequireTools => {
+                "tool calls require starweaver-tools runtime support".to_string()
+            }
+        }
+    }
+}
+
 /// Bare agent result.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AgentResult {

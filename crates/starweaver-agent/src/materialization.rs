@@ -17,7 +17,9 @@ pub const AGENT_MATERIALIZATION_METADATA_KEY: &str = "starweaver.agent.materiali
 /// Durable metadata key containing [`ContinuationMaterialization`].
 pub const AGENT_CONTINUATION_METADATA_KEY: &str = "starweaver.agent.continuation";
 /// Current materialization evidence schema version.
-pub const AGENT_MATERIALIZATION_VERSION: u32 = 1;
+pub const AGENT_MATERIALIZATION_VERSION: u32 = 2;
+/// Shared first-party host policy identity for semantically equivalent CLI/RPC bundles.
+pub const STARWEAVER_AGENT_POLICY_VERSION: &str = "starweaver-agent-policy-v1";
 
 /// Safe, product-neutral evidence for one resolved agent runtime.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -35,8 +37,57 @@ pub struct ResolvedAgentMaterialization {
     pub policy_version: String,
     /// Credential-free environment binding category, not a path, endpoint, or lease id.
     pub environment_binding_class: String,
+    /// Domain-separated digest of host-resolved provider and runtime behavior.
+    pub runtime_binding_digest: String,
+    /// Domain-separated digest of the host workspace root identity.
+    pub workspace_root_digest: String,
     /// SHA-256 fingerprint of the fields above.
     pub fingerprint: String,
+}
+
+/// The original v1 durable materialization shape.
+///
+/// This stays private so newly persisted evidence always uses v2. It is decoded only to verify
+/// existing durable records before they are projected into the v2 in-memory representation.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyResolvedAgentMaterialization {
+    version: u32,
+    agent_spec_digest: String,
+    model_profile_id: String,
+    toolset_ids: Vec<String>,
+    policy_version: String,
+    environment_binding_class: String,
+    fingerprint: String,
+}
+
+impl LegacyResolvedAgentMaterialization {
+    fn fingerprint_is_valid(&self) -> bool {
+        self.version == 1
+            && self.fingerprint
+                == calculate_legacy_fingerprint(
+                    self.version,
+                    &self.agent_spec_digest,
+                    &self.model_profile_id,
+                    &self.toolset_ids,
+                    &self.policy_version,
+                    &self.environment_binding_class,
+                )
+    }
+
+    fn into_unbound_projection(self) -> ResolvedAgentMaterialization {
+        ResolvedAgentMaterialization {
+            version: self.version,
+            agent_spec_digest: self.agent_spec_digest,
+            model_profile_id: self.model_profile_id,
+            toolset_ids: self.toolset_ids,
+            policy_version: self.policy_version,
+            environment_binding_class: self.environment_binding_class,
+            runtime_binding_digest: "sha256:unbound".to_string(),
+            workspace_root_digest: "sha256:unbound".to_string(),
+            fingerprint: self.fingerprint,
+        }
+    }
 }
 
 impl AgentSpec {
@@ -95,17 +146,51 @@ impl ResolvedAgentMaterialization {
             toolset_ids,
             policy_version: policy_version.into(),
             environment_binding_class: environment_binding_class.into(),
+            runtime_binding_digest: "sha256:unbound".to_string(),
+            workspace_root_digest: "sha256:unbound".to_string(),
             fingerprint: String::new(),
         };
         evidence.fingerprint = evidence.calculate_fingerprint();
         evidence
     }
 
+    /// Bind credential-free host runtime and workspace identities before persisting evidence.
+    #[must_use]
+    pub fn with_host_bindings(
+        mut self,
+        runtime_binding_digest: impl Into<String>,
+        workspace_root_digest: impl Into<String>,
+    ) -> Self {
+        self.runtime_binding_digest = runtime_binding_digest.into();
+        self.workspace_root_digest = workspace_root_digest.into();
+        self.fingerprint = self.calculate_fingerprint();
+        self
+    }
+
     /// Recalculate and verify the fingerprint carried by decoded durable evidence.
     #[must_use]
     pub fn fingerprint_is_valid(&self) -> bool {
-        self.version == AGENT_MATERIALIZATION_VERSION
-            && self.fingerprint == self.calculate_fingerprint()
+        match self.version {
+            AGENT_MATERIALIZATION_VERSION => self.fingerprint == self.calculate_fingerprint(),
+            1 => {
+                self.runtime_binding_digest == "sha256:unbound"
+                    && self.workspace_root_digest == "sha256:unbound"
+                    && self.fingerprint
+                        == calculate_legacy_fingerprint(
+                            self.version,
+                            &self.agent_spec_digest,
+                            &self.model_profile_id,
+                            &self.toolset_ids,
+                            &self.policy_version,
+                            &self.environment_binding_class,
+                        )
+            }
+            _ => false,
+        }
+    }
+
+    const fn has_unbound_host_bindings(&self) -> bool {
+        self.version == 1
     }
 
     /// Insert this evidence into durable run or context metadata.
@@ -114,10 +199,34 @@ impl ResolvedAgentMaterialization {
     ///
     /// Returns a serialization error if the evidence cannot be represented as JSON.
     pub fn insert_into(&self, metadata: &mut Map<String, Value>) -> Result<(), serde_json::Error> {
-        metadata.insert(
-            AGENT_MATERIALIZATION_METADATA_KEY.to_string(),
-            serde_json::to_value(self)?,
-        );
+        // A verified v1 projection must retain its original wire shape and fingerprint if a host
+        // copies it forward. Emitting v2-only binding fields under `version: 1` would turn valid
+        // historical evidence into malformed evidence on its next read.
+        let value = if self.version == 1 {
+            #[derive(Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct LegacyFingerprintInput<'a> {
+                version: u32,
+                agent_spec_digest: &'a str,
+                model_profile_id: &'a str,
+                toolset_ids: &'a [String],
+                policy_version: &'a str,
+                environment_binding_class: &'a str,
+                fingerprint: &'a str,
+            }
+            serde_json::to_value(LegacyFingerprintInput {
+                version: self.version,
+                agent_spec_digest: &self.agent_spec_digest,
+                model_profile_id: &self.model_profile_id,
+                toolset_ids: &self.toolset_ids,
+                policy_version: &self.policy_version,
+                environment_binding_class: &self.environment_binding_class,
+                fingerprint: &self.fingerprint,
+            })?
+        } else {
+            serde_json::to_value(self)?
+        };
+        metadata.insert(AGENT_MATERIALIZATION_METADATA_KEY.to_string(), value);
         Ok(())
     }
 
@@ -135,6 +244,16 @@ impl ResolvedAgentMaterialization {
         let Some(value) = metadata.get(AGENT_MATERIALIZATION_METADATA_KEY) else {
             return Ok(None);
         };
+        if value.get("version").and_then(Value::as_u64) == Some(1) {
+            let legacy =
+                serde_json::from_value::<LegacyResolvedAgentMaterialization>(value.clone())
+                    .map_err(MaterializationEvidenceError::Malformed)?;
+            if !legacy.fingerprint_is_valid() {
+                return Err(MaterializationEvidenceError::InvalidFingerprint);
+            }
+            return Ok(Some(legacy.into_unbound_projection()));
+        }
+
         let evidence = serde_json::from_value::<Self>(value.clone())
             .map_err(MaterializationEvidenceError::Malformed)?;
         if !evidence.fingerprint_is_valid() {
@@ -153,6 +272,8 @@ impl ResolvedAgentMaterialization {
             toolset_ids: &'a [String],
             policy_version: &'a str,
             environment_binding_class: &'a str,
+            runtime_binding_digest: &'a str,
+            workspace_root_digest: &'a str,
         }
         let input = FingerprintInput {
             version: self.version,
@@ -161,10 +282,43 @@ impl ResolvedAgentMaterialization {
             toolset_ids: &self.toolset_ids,
             policy_version: &self.policy_version,
             environment_binding_class: &self.environment_binding_class,
+            runtime_binding_digest: &self.runtime_binding_digest,
+            workspace_root_digest: &self.workspace_root_digest,
         };
         let encoded = serde_json::to_vec(&input).unwrap_or_default();
         format!("sha256:{:x}", Sha256::digest(encoded))
     }
+}
+
+fn calculate_legacy_fingerprint(
+    version: u32,
+    agent_spec_digest: &str,
+    model_profile_id: &str,
+    toolset_ids: &[String],
+    policy_version: &str,
+    environment_binding_class: &str,
+) -> String {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LegacyFingerprintInput<'a> {
+        version: u32,
+        agent_spec_digest: &'a str,
+        model_profile_id: &'a str,
+        toolset_ids: &'a [String],
+        policy_version: &'a str,
+        environment_binding_class: &'a str,
+    }
+
+    let input = LegacyFingerprintInput {
+        version,
+        agent_spec_digest,
+        model_profile_id,
+        toolset_ids,
+        policy_version,
+        environment_binding_class,
+    };
+    let encoded = serde_json::to_vec(&input).unwrap_or_default();
+    format!("sha256:{:x}", Sha256::digest(encoded))
 }
 
 /// Explicit semantics selected for a continuation across materialization boundaries.
@@ -263,6 +417,34 @@ impl ContinuationMaterialization {
                 &source.environment_binding_class,
                 &target.environment_binding_class,
             );
+            if source.has_unbound_host_bindings() {
+                // A verified v1 record predates the host-bound digests. Treat its unbound
+                // projection as drift even if a caller supplied an unbound v2 target: v1 cannot
+                // establish the binding parity required by preserve or compatible continuation.
+                drift.push(MaterializationDrift {
+                    field: "runtimeBindingDigest".to_string(),
+                    source: Some(Value::String(source.runtime_binding_digest.clone())),
+                    target: Value::String(target.runtime_binding_digest.clone()),
+                });
+                drift.push(MaterializationDrift {
+                    field: "workspaceRootDigest".to_string(),
+                    source: Some(Value::String(source.workspace_root_digest.clone())),
+                    target: Value::String(target.workspace_root_digest.clone()),
+                });
+            } else {
+                push_drift(
+                    &mut drift,
+                    "runtimeBindingDigest",
+                    &source.runtime_binding_digest,
+                    &target.runtime_binding_digest,
+                );
+                push_drift(
+                    &mut drift,
+                    "workspaceRootDigest",
+                    &source.workspace_root_digest,
+                    &target.workspace_root_digest,
+                );
+            }
         } else {
             drift.push(MaterializationDrift {
                 field: "sourceEvidence".to_string(),
@@ -299,6 +481,39 @@ impl ContinuationMaterialization {
         Ok(())
     }
 
+    /// Decode a persisted continuation decision from durable metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when present evidence is malformed.
+    pub fn from_metadata(
+        metadata: &Map<String, Value>,
+    ) -> Result<Option<Self>, MaterializationEvidenceError> {
+        let Some(value) = metadata.get(AGENT_CONTINUATION_METADATA_KEY) else {
+            return Ok(None);
+        };
+        serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(MaterializationEvidenceError::Malformed)
+    }
+
+    /// Verify this persisted decision against authenticated source and target evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored decision is denied or differs from a fresh assessment.
+    pub fn validate(
+        &self,
+        source: Option<&ResolvedAgentMaterialization>,
+        target: &ResolvedAgentMaterialization,
+    ) -> Result<(), MaterializationEvidenceError> {
+        let expected = Self::assess(source, target, self.mode);
+        if !self.allowed || *self != expected {
+            return Err(MaterializationEvidenceError::InconsistentContinuation);
+        }
+        Ok(())
+    }
+
     /// Render a concise credential-free drift summary for a host UI or error.
     #[must_use]
     pub fn drift_summary(&self) -> String {
@@ -320,6 +535,8 @@ pub enum MaterializationEvidenceError {
     Malformed(serde_json::Error),
     /// Present evidence fingerprint does not match its fields.
     InvalidFingerprint,
+    /// Persisted continuation evidence is denied or inconsistent with its source and target.
+    InconsistentContinuation,
 }
 
 impl fmt::Display for MaterializationEvidenceError {
@@ -331,6 +548,9 @@ impl fmt::Display for MaterializationEvidenceError {
             ),
             Self::InvalidFingerprint => {
                 formatter.write_str("agent materialization fingerprint is invalid")
+            }
+            Self::InconsistentContinuation => {
+                formatter.write_str("agent continuation materialization evidence is inconsistent")
             }
         }
     }
@@ -745,6 +965,79 @@ mod tests {
     }
 
     #[test]
+    fn verified_v1_evidence_projects_as_unbound_and_requires_switch() {
+        let toolset_ids = vec!["filesystem".to_string(), "shell".to_string()];
+        let fingerprint = calculate_legacy_fingerprint(
+            1,
+            "spec-a",
+            "model-a",
+            &toolset_ids,
+            "policy-v1",
+            "local:read_write",
+        );
+        let mut metadata = Map::from_iter([(
+            AGENT_MATERIALIZATION_METADATA_KEY.to_string(),
+            json!({
+                "version": 1,
+                "agentSpecDigest": "spec-a",
+                "modelProfileId": "model-a",
+                "toolsetIds": toolset_ids,
+                "policyVersion": "policy-v1",
+                "environmentBindingClass": "local:read_write",
+                "fingerprint": fingerprint,
+            }),
+        )]);
+
+        let Some(source) = ResolvedAgentMaterialization::from_metadata(&metadata).unwrap() else {
+            panic!("v1 durable evidence must decode");
+        };
+        assert_eq!(source.version, 1);
+        assert_eq!(source.runtime_binding_digest, "sha256:unbound");
+        assert_eq!(source.workspace_root_digest, "sha256:unbound");
+        assert!(source.fingerprint_is_valid());
+        let mut forwarded = Map::new();
+        source.insert_into(&mut forwarded).unwrap();
+        assert_eq!(
+            ResolvedAgentMaterialization::from_metadata(&forwarded).unwrap(),
+            Some(source.clone()),
+            "a verified v1 receipt must remain readable after a host copies its evidence"
+        );
+
+        let target = evidence("spec-a", "model-a")
+            .with_host_bindings("sha256:runtime-bound", "sha256:workspace-bound");
+        let preserve = ContinuationMaterialization::assess(
+            Some(&source),
+            &target,
+            ContinuationMaterializationMode::Preserve,
+        );
+        assert!(!preserve.allowed);
+        let compatible = ContinuationMaterialization::assess(
+            Some(&source),
+            &target,
+            ContinuationMaterializationMode::Compatible,
+        );
+        assert!(!compatible.allowed);
+        assert_eq!(
+            compatible.drift_summary(),
+            "runtimeBindingDigest, workspaceRootDigest"
+        );
+        assert!(
+            ContinuationMaterialization::assess(
+                Some(&source),
+                &target,
+                ContinuationMaterializationMode::Switch,
+            )
+            .allowed
+        );
+
+        metadata[AGENT_MATERIALIZATION_METADATA_KEY]["policyVersion"] = json!("tampered");
+        assert!(matches!(
+            ResolvedAgentMaterialization::from_metadata(&metadata),
+            Err(MaterializationEvidenceError::InvalidFingerprint)
+        ));
+    }
+
+    #[test]
     fn spec_digest_uses_an_allowlisted_semantic_projection() {
         let mut first = AgentSpec {
             name: "agent".to_string(),
@@ -1123,6 +1416,75 @@ mod tests {
         );
         assert!(allowed.allowed);
         assert_eq!(allowed.drift.len(), 2);
+    }
+
+    #[test]
+    fn continuation_validation_rejects_semantically_tampered_evidence() {
+        let source = evidence("spec-a", "model-a");
+        let target = evidence("spec-b", "model-b");
+        let valid = ContinuationMaterialization::assess(
+            Some(&source),
+            &target,
+            ContinuationMaterializationMode::Switch,
+        );
+        assert!(valid.validate(Some(&source), &target).is_ok());
+
+        let mut denied = valid.clone();
+        denied.allowed = false;
+        assert!(matches!(
+            denied.validate(Some(&source), &target),
+            Err(MaterializationEvidenceError::InconsistentContinuation)
+        ));
+
+        let mut target_tamper = valid.clone();
+        target_tamper.target_fingerprint = source.fingerprint.clone();
+        assert!(matches!(
+            target_tamper.validate(Some(&source), &target),
+            Err(MaterializationEvidenceError::InconsistentContinuation)
+        ));
+
+        let mut source_tamper = valid.clone();
+        source_tamper.source_fingerprint = Some(target.fingerprint.clone());
+        assert!(matches!(
+            source_tamper.validate(Some(&source), &target),
+            Err(MaterializationEvidenceError::InconsistentContinuation)
+        ));
+
+        let mut drift_tamper = valid;
+        drift_tamper.drift.clear();
+        assert!(matches!(
+            drift_tamper.validate(Some(&source), &target),
+            Err(MaterializationEvidenceError::InconsistentContinuation)
+        ));
+    }
+
+    #[test]
+    fn continuation_metadata_roundtrips_and_rejects_malformed_evidence() {
+        let source = evidence("spec-a", "model-a");
+        let target = evidence("spec-b", "model-a");
+        let continuation = ContinuationMaterialization::assess(
+            Some(&source),
+            &target,
+            ContinuationMaterializationMode::Compatible,
+        );
+        let mut metadata = Map::new();
+        continuation.insert_into(&mut metadata).unwrap();
+        assert_eq!(
+            ContinuationMaterialization::from_metadata(&metadata).unwrap(),
+            Some(continuation)
+        );
+        assert_eq!(
+            ContinuationMaterialization::from_metadata(&Map::new()).unwrap(),
+            None
+        );
+        metadata.insert(
+            AGENT_CONTINUATION_METADATA_KEY.to_string(),
+            json!({"mode": "invalid"}),
+        );
+        assert!(matches!(
+            ContinuationMaterialization::from_metadata(&metadata),
+            Err(MaterializationEvidenceError::Malformed(_))
+        ));
     }
 
     #[test]

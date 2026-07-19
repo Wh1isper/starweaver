@@ -26,11 +26,10 @@ fn setup_creates_config_catalogs_and_directories() {
     assert!(global_gitignore.contains("worktrees/"));
     assert!(global_gitignore.contains("message_history/"));
     assert!(global_gitignore.contains("tui/state.json"));
-    assert!(global_gitignore.contains("desktop/state.json"));
+    assert!(global_gitignore.contains("state.lock"));
     assert!(temp.path().join("global/skills").is_dir());
     assert!(temp.path().join("global/subagents").is_dir());
     assert!(temp.path().join("global/tui").is_dir());
-    assert!(temp.path().join("global/desktop").is_dir());
     assert!(!temp.path().join(".starweaver/config.toml").exists());
 
     let rows = String::from_utf8(output.stdout)
@@ -43,6 +42,29 @@ fn setup_creates_config_catalogs_and_directories() {
     assert!(rows.iter().any(|row| row["kind"] == "global-state-ignore"));
     assert!(!rows.iter().any(|row| row["kind"] == "state-ignore"));
 
+    fs::write(temp.path().join("global/.gitignore"), "state.json\n").unwrap();
+    let repaired_global = cli(&temp).arg("setup").output().unwrap();
+    assert!(
+        repaired_global.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&repaired_global.stderr)
+    );
+    let repaired_global_rows = String::from_utf8(repaired_global.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        repaired_global_rows
+            .iter()
+            .any(|row| { row["kind"] == "global-state-ignore" && row["status"] == "updated" })
+    );
+    assert!(
+        fs::read_to_string(temp.path().join("global/.gitignore"))
+            .unwrap()
+            .contains("state.lock")
+    );
+
     let project = cli(&temp).args(["setup", "--project"]).output().unwrap();
     assert!(project.status.success());
     assert!(temp.path().join(".starweaver/config.toml").exists());
@@ -52,8 +74,28 @@ fn setup_creates_config_catalogs_and_directories() {
     assert!(temp.path().join(".starweaver/subagents").is_dir());
     let gitignore = fs::read_to_string(temp.path().join(".starweaver/.gitignore")).unwrap();
     assert!(gitignore.contains("state.json"));
+    assert!(gitignore.contains("state.lock"));
     assert!(gitignore.contains("starweaver.sqlite"));
     assert!(gitignore.contains("store/"));
+
+    fs::write(temp.path().join(".starweaver/.gitignore"), "state.json\n").unwrap();
+    let repaired = cli(&temp).args(["setup", "--project"]).output().unwrap();
+    assert!(repaired.status.success());
+    let repaired_rows = String::from_utf8(repaired.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        repaired_rows
+            .iter()
+            .any(|row| { row["kind"] == "state-ignore" && row["status"] == "updated" })
+    );
+    assert!(
+        fs::read_to_string(temp.path().join(".starweaver/.gitignore"))
+            .unwrap()
+            .contains("state.lock")
+    );
 
     let second = cli(&temp).arg("setup").output().unwrap();
     assert!(second.status.success());

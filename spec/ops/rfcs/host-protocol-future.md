@@ -4,7 +4,7 @@ Status: non-normative RFC archive
 
 Implemented host protocol behavior is defined only by `../06-json-rpc-host-protocol.md`. This document preserves proposed long-connection transports, subscription semantics, authorization roles, pagination, full idempotency, and other future extensions. Statements using normative language here are design proposals and must not be interpreted as implemented v1 behavior.
 
-The Starweaver host protocol is the independent control plane implemented by the standalone `starweaver-rpc` product for desktop clients, automation hosts, and future product surfaces that need durable sessions, run orchestration, replay, live stream subscriptions, HITL decisions, model profile selection, configuration reads, and diagnostics.
+The Starweaver host protocol is the independent control plane implemented by the standalone `starweaver-rpc` product for host clients, automation hosts, and future product surfaces that need durable sessions, run orchestration, replay, live stream subscriptions, HITL decisions, model profile selection, configuration reads, and diagnostics.
 
 JSON-RPC 2.0 is the semantic request/response protocol. Stdio, HTTP, local sockets, named pipes, and WebSocket are transport profiles over the same typed Starweaver method and event contracts. The normative product boundary is `00-product-boundaries.md`: RPC does not depend on or run through `starweaver-cli`, and CLI/TUI do not run through RPC.
 
@@ -32,7 +32,7 @@ JSON-RPC 2.0 is the semantic request/response protocol. Stdio, HTTP, local socke
 
 ```mermaid
 flowchart TD
-    host[Desktop or host client]
+    host[Host client]
     transport[Transport profile: stdio, HTTP, socket, named pipe, WebSocket]
     rpc[starweaver.host JSON-RPC protocol]
     rpc_server[starweaver-rpc server]
@@ -230,7 +230,7 @@ Transport profiles only define framing, process IO, and connection lifetime. The
 
 | Profile      | Framing                                        | Primary use                         |
 | ------------ | ---------------------------------------------- | ----------------------------------- |
-| `stdio`      | UTF-8 newline-delimited JSON objects           | Desktop launches standalone RPC     |
+| `stdio`      | UTF-8 newline-delimited JSON objects           | Local host launches standalone RPC  |
 | `http`       | One JSON-RPC object per `POST /rpc` body       | Local request/response integrations |
 | `local-sock` | One JSON-RPC object per length-delimited frame | Long-lived local host integrations  |
 | `named-pipe` | Same as local socket                           | Windows local host integrations     |
@@ -304,13 +304,13 @@ All clients begin with `initialize`.
   "method": "initialize",
   "params": {
     "clientInfo": {
-      "name": "desktop",
+      "name": "local_host",
       "version": "0.1.0"
     },
     "clientIdentity": {
-      "clientId": "desktop:user-machine-install"
+      "clientId": "local-host:user-machine-install"
     },
-    "clientStateScope": "desktop",
+    "clientStateScope": "local_host",
     "workspaceRoot": "/workspace/project",
     "requiredFeatures": ["run.lifecycle", "stream.subscribe"],
     "preferredProjectionFormats": ["starweaver.display_message", "agui"]
@@ -2261,11 +2261,11 @@ Result:
 
 Params:
 
-| Field              | Type   | Required | Meaning                                       |
-| ------------------ | ------ | -------- | --------------------------------------------- |
-| `clientStateScope` | string | no       | `tui`, `desktop`, or another registered scope |
-| `limit`            | number | no       | Maximum rows                                  |
-| `pageToken`        | string | no       | Opaque pagination token                       |
+| Field              | Type   | Required | Meaning                                          |
+| ------------------ | ------ | -------- | ------------------------------------------------ |
+| `clientStateScope` | string | no       | `tui`, `local_host`, or another registered scope |
+| `limit`            | number | no       | Maximum rows                                     |
+| `pageToken`        | string | no       | Opaque pagination token                          |
 
 Result:
 
@@ -2281,15 +2281,15 @@ Result:
 
 Params:
 
-| Field              | Type   | Required | Meaning                                       |
-| ------------------ | ------ | -------- | --------------------------------------------- |
-| `clientStateScope` | string | yes      | `tui`, `desktop`, or another registered scope |
+| Field              | Type   | Required | Meaning                                          |
+| ------------------ | ------ | -------- | ------------------------------------------------ |
+| `clientStateScope` | string | yes      | `tui`, `local_host`, or another registered scope |
 
 Result:
 
 ```json
 {
-  "clientStateScope": "desktop",
+  "clientStateScope": "local_host",
   "selectedProfile": "default_model",
   "resolvedProfile": {}
 }
@@ -2297,16 +2297,16 @@ Result:
 
 `model.select` params:
 
-| Field              | Type   | Required | Meaning                                       |
-| ------------------ | ------ | -------- | --------------------------------------------- |
-| `clientStateScope` | string | yes      | `tui`, `desktop`, or another registered scope |
-| `profile`          | string | yes      | RPC config-backed model profile name          |
+| Field              | Type   | Required | Meaning                                          |
+| ------------------ | ------ | -------- | ------------------------------------------------ |
+| `clientStateScope` | string | yes      | `tui`, `local_host`, or another registered scope |
+| `profile`          | string | yes      | RPC config-backed model profile name             |
 
 Result:
 
 ```json
 {
-  "clientStateScope": "desktop",
+  "clientStateScope": "local_host",
   "selectedProfile": "default_model",
   "resolvedProfile": {}
 }
@@ -2662,7 +2662,7 @@ Operational review:
 Future-surface review:
 
 - Local socket and WebSocket can reuse the same protocol crate.
-- Desktop can consume the protocol from `starweaver-rpc` without linking or launching CLI internals.
+- A host client can consume the protocol from `starweaver-rpc` without linking or launching CLI internals.
 - Durable async-subagent operator control can add feature-gated `subagent.list/status/steer/cancel/await` methods keyed by `attempt_id`; these remain separate from session CRUD and top-level run control.
 - Platform adapters can bridge events without adopting AGUI as the core.
 - JSON Schema and golden fixtures can be generated from typed protocol structs.

@@ -8,16 +8,18 @@ use starweaver_core::{
     AgentExecutionNode, AgentId, ConversationId, RunId, RunLifecycle, SessionId, SubagentAttemptId,
 };
 use starweaver_session::{
-    AcquireBackgroundSubagentContinuation, AcquireRunAdmission, BACKGROUND_SUBAGENT_RECORD_VERSION,
-    BackgroundSubagentArtifact, BackgroundSubagentArtifactLimits,
-    BackgroundSubagentContinuationCause, BackgroundSubagentRecord,
-    BackgroundSubagentTerminalCommit, DurableBackgroundSubagentDeliveryClaim,
-    DurableBackgroundSubagentDeliveryRelease, DurableBackgroundSubagentDeliveryStatus,
-    DurableBackgroundSubagentExecutionStatus, DurableBackgroundSubagentOwnerLease,
-    DurableBackgroundSubagentResultRef, DurableBackgroundSubagentRetentionStatus, HitlResumeClaim,
-    InputPart, LOCAL_SESSION_NAMESPACE, RelatedRunUpdate, RunEvidenceCommit, RunRecord, RunStatus,
-    SessionDeletionFence, SessionRecord, SessionStatus, SessionStore, SessionStoreError,
-    StreamPublicationTarget, StreamPublicationTargets,
+    AcquireBackgroundSubagentContinuation, AcquireRunAdmission, ApprovalRecord, ApprovalStatus,
+    BACKGROUND_SUBAGENT_RECORD_VERSION, BackgroundSubagentArtifact,
+    BackgroundSubagentArtifactLimits, BackgroundSubagentContinuationCause,
+    BackgroundSubagentRecord, BackgroundSubagentTerminalCommit,
+    DurableBackgroundSubagentDeliveryClaim, DurableBackgroundSubagentDeliveryRelease,
+    DurableBackgroundSubagentDeliveryStatus, DurableBackgroundSubagentExecutionStatus,
+    DurableBackgroundSubagentOwnerLease, DurableBackgroundSubagentResultRef,
+    DurableBackgroundSubagentRetentionStatus, HitlResumeAbortOutcome, HitlResumeClaim, InputPart,
+    LOCAL_SESSION_NAMESPACE, RelatedRunUpdate, RunEvidenceCommit, RunRecord, RunStatus,
+    RunTerminalError, RunTerminalProjection, SessionDeletionFence, SessionRecord, SessionStatus,
+    SessionStore, SessionStoreError, StreamPublicationTarget, StreamPublicationTargets,
+    ToolApprovalDecision,
 };
 use starweaver_stream::{ReplayEvent, ReplayEventKind, ReplayScope};
 
@@ -68,6 +70,147 @@ pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix:
         .commit_run_evidence(source_commit)
         .await
         .expect("exact source evidence retry");
+
+    for (label, status, terminal_error) in [
+        ("failed-without-diagnostic", RunStatus::Failed, None),
+        (
+            "completed-with-diagnostic",
+            RunStatus::Completed,
+            Some(RunTerminalError::new("unexpected", "unexpected")),
+        ),
+        (
+            "active-with-diagnostic",
+            RunStatus::Running,
+            Some(RunTerminalError::new("stale", "stale")),
+        ),
+    ] {
+        let mut invalid = RunRecord::new(
+            session_id.clone(),
+            RunId::from_string(format!("contract-{label}-{suffix}")),
+            ConversationId::new(),
+        );
+        invalid.status = status;
+        invalid.terminal_error = terminal_error;
+        store
+            .append_run(invalid)
+            .await
+            .expect_err("invalid new run state must be rejected");
+    }
+    let mut valid_failure = RunRecord::new(
+        session_id.clone(),
+        RunId::from_string(format!("contract-valid-failure-{suffix}")),
+        ConversationId::new(),
+    );
+    valid_failure.status = RunStatus::Failed;
+    valid_failure.terminal_error = Some(RunTerminalError::new(
+        "contract_failure",
+        "contract failure",
+    ));
+    store
+        .append_run(valid_failure)
+        .await
+        .expect("complete terminal projection must be accepted");
+
+    let admission_session_id =
+        SessionId::from_string(format!("contract-admission-normalization-{suffix}"));
+    let admission_run_id =
+        RunId::from_string(format!("contract-admission-normalization-run-{suffix}"));
+    store
+        .save_session(SessionRecord::new(admission_session_id.clone()))
+        .await
+        .expect("save admission normalization session");
+    let mut stale_terminal_run = RunRecord::new(
+        admission_session_id.clone(),
+        admission_run_id.clone(),
+        ConversationId::new(),
+    );
+    stale_terminal_run.status = RunStatus::Failed;
+    stale_terminal_run.output_preview = Some("secret stale output".to_string());
+    stale_terminal_run.terminal_error = Some(RunTerminalError::new(
+        "stale_failure",
+        "secret stale diagnostic",
+    ));
+    let admission_request = AcquireRunAdmission {
+        run: stale_terminal_run,
+        namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+        host_instance_id: format!("contract-admission-normalization-host-{suffix}"),
+        admission_id: format!("contract-admission-normalization-admission-{suffix}"),
+        lease_expires_at: Utc::now() + chrono::Duration::minutes(1),
+        idempotency_key: format!("contract-admission-normalization-key-{suffix}"),
+        command_fingerprint: format!("contract-admission-normalization-fingerprint-{suffix}"),
+        replaces_waiting_run_id: None,
+        hitl_resume_claim_id: None,
+    };
+    let admitted = store
+        .acquire_run_admission(admission_request.clone())
+        .await
+        .expect("normalize stale terminal projection during admission");
+    assert_eq!(admitted.run.status, RunStatus::Queued);
+    assert_eq!(admitted.run.output_preview, None);
+    assert_eq!(admitted.run.terminal_error, None);
+    assert_eq!(
+        store
+            .load_run(&admission_session_id, &admission_run_id)
+            .await
+            .expect("load normalized admitted run"),
+        admitted.run
+    );
+    let admission_replay = store
+        .acquire_run_admission(admission_request)
+        .await
+        .expect("exact admission retry returns normalized durable receipt");
+    assert!(admission_replay.idempotent_replay);
+    assert_eq!(admission_replay.run, admitted.run);
+
+    for (label, status, code, message) in [
+        (
+            "failed",
+            RunStatus::Failed,
+            "legacy_status_update_failed",
+            "run failed",
+        ),
+        (
+            "cancelled",
+            RunStatus::Cancelled,
+            "legacy_status_update_cancelled",
+            "run cancelled",
+        ),
+    ] {
+        let legacy_session_id =
+            SessionId::from_string(format!("contract-legacy-{label}-session-{suffix}"));
+        let legacy_run_id = RunId::from_string(format!("contract-legacy-{label}-run-{suffix}"));
+        store
+            .save_session(SessionRecord::new(legacy_session_id.clone()))
+            .await
+            .expect("save legacy status session");
+        store
+            .append_run(RunRecord::new(
+                legacy_session_id.clone(),
+                legacy_run_id.clone(),
+                ConversationId::new(),
+            ))
+            .await
+            .expect("append legacy status run");
+        store
+            .update_run_status(
+                &legacy_session_id,
+                &legacy_run_id,
+                status,
+                Some("secret caller-provided failure text".to_string()),
+            )
+            .await
+            .expect("apply safe legacy status update");
+        let updated = store
+            .load_run(&legacy_session_id, &legacy_run_id)
+            .await
+            .expect("load safely updated legacy run");
+        assert_eq!(updated.status, status);
+        assert_eq!(updated.output_preview, None);
+        assert_eq!(
+            updated.terminal_error,
+            Some(RunTerminalError::new(code, message))
+        );
+    }
 
     let pending = store
         .pending_stream_publications(&session_id)
@@ -136,6 +279,15 @@ pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix:
         ))
         .await
         .expect("claim waiting source");
+    store
+        .claim_hitl_resume(HitlResumeClaim::new(
+            claim_id.clone(),
+            session_id.clone(),
+            source_run_id.clone(),
+            Utc::now() + chrono::Duration::seconds(1),
+        ))
+        .await
+        .expect("same deterministic preflight claim must survive process restart");
     store
         .mark_hitl_resume_started(&session_id, &source_run_id, &claim_id)
         .await
@@ -215,6 +367,128 @@ pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix:
         .commit_run_evidence(conflicting)
         .await
         .expect_err("conflicting evidence retry must fail");
+}
+
+pub async fn assert_approval_reviewed_arguments_immutable_contract(
+    store: Arc<dyn SessionStore>,
+    suffix: &str,
+) {
+    let session_id = SessionId::from_string(format!("approval-binding-session-{suffix}"));
+    let source_run_id = RunId::from_string(format!("approval-binding-source-{suffix}"));
+    let continuation_run_id = RunId::from_string(format!("approval-binding-continuation-{suffix}"));
+    let conversation_id =
+        ConversationId::from_string(format!("approval-binding-conversation-{suffix}"));
+    store
+        .save_session(SessionRecord::new(session_id.clone()))
+        .await
+        .expect("save approval binding session");
+    let mut source = RunRecord::new(
+        session_id.clone(),
+        source_run_id.clone(),
+        conversation_id.clone(),
+    );
+    source.status = RunStatus::Waiting;
+    store
+        .append_run(source)
+        .await
+        .expect("park approval binding source");
+
+    let mut pending = ApprovalRecord::new(
+        format!("approval-binding-{suffix}"),
+        session_id.clone(),
+        source_run_id.clone(),
+        format!("approval-binding-call-{suffix}"),
+        "shell",
+    );
+    pending.reviewed_arguments = Some(serde_json::json!({
+        "command": "echo safe",
+        "environment": {"MODE": "safe"},
+        "timeout_seconds": 10,
+    }));
+    store
+        .append_approval(pending.clone())
+        .await
+        .expect("append pending approval binding");
+
+    let claim_id = format!("approval-binding-claim-{suffix}");
+    store
+        .claim_hitl_resume(HitlResumeClaim::new(
+            claim_id.clone(),
+            session_id.clone(),
+            source_run_id.clone(),
+            Utc::now(),
+        ))
+        .await
+        .expect("claim approval binding source");
+    store
+        .mark_hitl_resume_started(&session_id, &source_run_id, &claim_id)
+        .await
+        .expect("start approval binding claim");
+
+    let mut resolved = pending.clone();
+    resolved.status = ApprovalStatus::Approved;
+    resolved.decision = Some(ToolApprovalDecision::approved().into_approval_decision());
+    resolved.updated_at = Utc::now();
+    let mut tampered = resolved.clone();
+    tampered.reviewed_arguments = Some(serde_json::json!({
+        "command": "echo unsafe",
+        "environment": {"MODE": "unsafe"},
+        "timeout_seconds": 600,
+    }));
+
+    let mut continuation = RunRecord::new(
+        session_id.clone(),
+        continuation_run_id.clone(),
+        conversation_id.clone(),
+    );
+    continuation.status = RunStatus::Completed;
+    continuation.restore_from_run_id = Some(source_run_id.clone());
+    let context = resumable_state(&session_id, &continuation_run_id, &conversation_id);
+    let mut rejected = RunEvidenceCommit::new(continuation.clone(), context.clone());
+    let mut rejected_update = RelatedRunUpdate::new(
+        source_run_id.clone(),
+        RunStatus::Waiting,
+        RunStatus::Completed,
+    );
+    rejected_update.resume_claim_id = Some(claim_id.clone());
+    rejected_update.approvals.push(tampered);
+    rejected.related_run_updates.push(rejected_update);
+    store
+        .commit_run_evidence(rejected)
+        .await
+        .expect_err("approval resolution must not rewrite reviewed arguments");
+    assert!(matches!(
+        store.load_run(&session_id, &continuation_run_id).await,
+        Err(SessionStoreError::NotFound(_))
+    ));
+    assert_eq!(
+        store
+            .load_approvals(&session_id, &source_run_id)
+            .await
+            .expect("load approval after rejected rewrite"),
+        vec![pending]
+    );
+
+    let mut accepted = RunEvidenceCommit::new(continuation, context);
+    let mut accepted_update = RelatedRunUpdate::new(
+        source_run_id.clone(),
+        RunStatus::Waiting,
+        RunStatus::Completed,
+    );
+    accepted_update.resume_claim_id = Some(claim_id);
+    accepted_update.approvals.push(resolved.clone());
+    accepted.related_run_updates.push(accepted_update);
+    store
+        .commit_run_evidence(accepted)
+        .await
+        .expect("resolve approval without changing reviewed arguments");
+    assert_eq!(
+        store
+            .load_approvals(&session_id, &source_run_id)
+            .await
+            .expect("load resolved immutable approval"),
+        vec![resolved]
+    );
 }
 
 pub async fn assert_atomic_hitl_replacement_admission_contract(
@@ -372,12 +646,51 @@ pub async fn assert_atomic_hitl_replacement_admission_contract(
             .await
             .expect("load session after replacement")
             .active_run_id,
-        Some(continuation_run_id)
+        Some(continuation_run_id.clone())
+    );
+    assert_eq!(
+        store
+            .abort_admitted_hitl_resume(
+                &receipt.lease,
+                &source_run_id,
+                &claim_id,
+                "pre-effect launch failed",
+            )
+            .await
+            .expect("abort admitted replacement before the effect fence"),
+        HitlResumeAbortOutcome::AbortedBeforeEffect
+    );
+    assert_eq!(
+        store
+            .load_run(&session_id, &continuation_run_id)
+            .await
+            .expect("load aborted replacement")
+            .status,
+        RunStatus::Failed
+    );
+    assert_eq!(
+        store
+            .load_run(&session_id, &source_run_id)
+            .await
+            .expect("load retryable waiting source")
+            .status,
+        RunStatus::Waiting
+    );
+    assert_eq!(
+        store
+            .load_session(&session_id)
+            .await
+            .expect("aborted replacement must clear the active session pointer")
+            .active_run_id,
+        None
     );
     store
-        .finalize_run_admission(&receipt.lease, RunStatus::Cancelled, None)
+        .finalize_run_admission(
+            &receipt.lease,
+            RunTerminalProjection::failed(RunTerminalError::new("test_failure", "test failure")),
+        )
         .await
-        .expect("terminalize replacement admission");
+        .expect("release aborted replacement admission");
     assert!(
         store
             .load_run_admission_receipt(
@@ -390,6 +703,292 @@ pub async fn assert_atomic_hitl_replacement_admission_contract(
             .is_some(),
         "idempotency truth must outlive the active lease"
     );
+    let retry_claim_id = format!("hitl-admission-retry-claim-{suffix}");
+    let retry_run_id = RunId::from_string(format!("hitl-admission-retry-run-{suffix}"));
+    store
+        .claim_hitl_resume(HitlResumeClaim::new(
+            retry_claim_id.clone(),
+            session_id.clone(),
+            source_run_id.clone(),
+            Utc::now(),
+        ))
+        .await
+        .expect("aborted source must accept a new preflight claim");
+    let mut retry_run = RunRecord::new(
+        session_id.clone(),
+        retry_run_id.clone(),
+        ConversationId::from_string(format!("hitl-admission-retry-conversation-{suffix}")),
+    );
+    retry_run.restore_from_run_id = Some(source_run_id.clone());
+    let retry = store
+        .acquire_run_admission(AcquireRunAdmission {
+            run: retry_run,
+            namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+            host_instance_id: format!("hitl-admission-retry-host-{suffix}"),
+            admission_id: format!("hitl-admission-retry-lease-{suffix}"),
+            lease_expires_at: Utc::now() + chrono::Duration::minutes(1),
+            idempotency_key: format!("hitl-admission-retry-key-{suffix}"),
+            command_fingerprint: format!("hitl-admission-retry-fingerprint-{suffix}"),
+            replaces_waiting_run_id: Some(source_run_id),
+            hitl_resume_claim_id: Some(retry_claim_id),
+        })
+        .await
+        .expect("aborted source must be retryable through a new fenced admission");
+    assert_eq!(retry.run.run_id, retry_run_id);
+}
+
+pub async fn assert_started_hitl_orphan_reconciliation_contract(
+    store: Arc<dyn SessionStore>,
+    suffix: &str,
+) {
+    let session_id = SessionId::from_string(format!("hitl-orphan-session-{suffix}"));
+    let source_run_id = RunId::from_string(format!("hitl-orphan-source-{suffix}"));
+    let replacement_run_id = RunId::from_string(format!("hitl-orphan-replacement-{suffix}"));
+    let conversation_id = ConversationId::from_string(format!("hitl-orphan-conversation-{suffix}"));
+    store
+        .save_session(SessionRecord::new(session_id.clone()))
+        .await
+        .expect("save HITL orphan session");
+    let mut source = RunRecord::new(
+        session_id.clone(),
+        source_run_id.clone(),
+        conversation_id.clone(),
+    );
+    source.status = RunStatus::Waiting;
+    store
+        .append_run(source)
+        .await
+        .expect("park HITL orphan source");
+
+    let claim_id = format!("hitl-orphan-claim-{suffix}");
+    store
+        .claim_hitl_resume(HitlResumeClaim::new(
+            claim_id.clone(),
+            session_id.clone(),
+            source_run_id.clone(),
+            Utc::now(),
+        ))
+        .await
+        .expect("claim HITL orphan source");
+    let mut replacement = RunRecord::new(
+        session_id.clone(),
+        replacement_run_id.clone(),
+        conversation_id,
+    );
+    replacement.restore_from_run_id = Some(source_run_id.clone());
+    let expires_at = Utc::now() + chrono::Duration::seconds(1);
+    let reconciliation_at = expires_at + chrono::Duration::seconds(1);
+    let request = AcquireRunAdmission {
+        run: replacement,
+        namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+        host_instance_id: format!("hitl-orphan-host-{suffix}"),
+        admission_id: format!("hitl-orphan-admission-{suffix}"),
+        lease_expires_at: expires_at,
+        idempotency_key: format!("hitl-orphan-key-{suffix}"),
+        command_fingerprint: format!("hitl-orphan-fingerprint-{suffix}"),
+        replaces_waiting_run_id: Some(source_run_id.clone()),
+        hitl_resume_claim_id: Some(claim_id.clone()),
+    };
+    let receipt = store
+        .acquire_run_admission(request.clone())
+        .await
+        .expect("admit already-expired HITL replacement");
+    store
+        .start_hitl_resume_effect(&receipt.lease, &source_run_id, &claim_id)
+        .await
+        .expect("cross the effect fence before simulating host loss");
+
+    assert_eq!(
+        store
+            .reconcile_expired_run_admissions(LOCAL_SESSION_NAMESPACE, reconciliation_at)
+            .await
+            .expect("atomically reconcile started HITL orphan"),
+        vec![receipt.lease.target.clone()]
+    );
+    for run_id in [&replacement_run_id, &source_run_id] {
+        let run = store
+            .load_run(&session_id, run_id)
+            .await
+            .expect("load reconciled HITL run");
+        assert_eq!(run.status, RunStatus::Cancelled);
+        assert_eq!(
+            run.output_preview.as_deref(),
+            Some("interrupted after host lease expired")
+        );
+        assert_eq!(
+            starweaver_session::ContinuationEffectState::from_metadata(&run.metadata).unwrap(),
+            Some(starweaver_session::ContinuationEffectState::indeterminate())
+        );
+    }
+    assert_eq!(
+        store
+            .load_session(&session_id)
+            .await
+            .expect("load reconciled HITL session")
+            .active_run_id,
+        None
+    );
+    assert!(
+        store
+            .load_run_admission(&receipt.lease.target)
+            .await
+            .expect("load reconciled HITL admission")
+            .is_none()
+    );
+    store
+        .mark_hitl_resume_started(&session_id, &source_run_id, &claim_id)
+        .await
+        .expect_err("reconciliation must consume the exact started claim");
+
+    let replay = store
+        .acquire_run_admission(request)
+        .await
+        .expect("exact admission retry returns durable receipt without replaying the effect");
+    assert!(replay.idempotent_replay);
+    assert_eq!(replay.lease, receipt.lease);
+    assert!(
+        store
+            .load_run_admission(&receipt.lease.target)
+            .await
+            .expect("idempotency retry must not restore admission")
+            .is_none()
+    );
+    assert!(
+        store
+            .reconcile_expired_run_admissions(LOCAL_SESSION_NAMESPACE, reconciliation_at)
+            .await
+            .expect("repeat HITL orphan reconciliation")
+            .is_empty(),
+        "claim consumption and terminalization must be at most once"
+    );
+    assert_eq!(
+        store
+            .load_run(&session_id, &source_run_id)
+            .await
+            .expect("load source after retry")
+            .status,
+        RunStatus::Cancelled
+    );
+}
+
+pub async fn assert_implicit_started_hitl_orphan_reconciliation_contract(
+    store: Arc<dyn SessionStore>,
+    suffix: &str,
+) {
+    let session_id = SessionId::from_string(format!("implicit-hitl-orphan-session-{suffix}"));
+    let source_run_id = RunId::from_string(format!("implicit-hitl-orphan-source-{suffix}"));
+    let replacement_run_id =
+        RunId::from_string(format!("implicit-hitl-orphan-replacement-{suffix}"));
+    let next_run_id = RunId::from_string(format!("implicit-hitl-orphan-next-{suffix}"));
+    let conversation_id =
+        ConversationId::from_string(format!("implicit-hitl-orphan-conversation-{suffix}"));
+    store
+        .save_session(SessionRecord::new(session_id.clone()))
+        .await
+        .expect("save implicit HITL orphan session");
+    let mut source = RunRecord::new(
+        session_id.clone(),
+        source_run_id.clone(),
+        conversation_id.clone(),
+    );
+    source.status = RunStatus::Waiting;
+    store
+        .append_run(source)
+        .await
+        .expect("park implicit HITL orphan source");
+
+    let claim_id = format!("implicit-hitl-orphan-claim-{suffix}");
+    store
+        .claim_hitl_resume(HitlResumeClaim::new(
+            claim_id.clone(),
+            session_id.clone(),
+            source_run_id.clone(),
+            Utc::now(),
+        ))
+        .await
+        .expect("claim implicit HITL orphan source");
+    let mut replacement = RunRecord::new(
+        session_id.clone(),
+        replacement_run_id.clone(),
+        conversation_id.clone(),
+    );
+    replacement.restore_from_run_id = Some(source_run_id.clone());
+    let expired_receipt = store
+        .acquire_run_admission(AcquireRunAdmission {
+            run: replacement,
+            namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+            host_instance_id: format!("implicit-hitl-orphan-host-{suffix}"),
+            admission_id: format!("implicit-hitl-orphan-admission-{suffix}"),
+            lease_expires_at: Utc::now() - chrono::Duration::seconds(1),
+            idempotency_key: format!("implicit-hitl-orphan-key-{suffix}"),
+            command_fingerprint: format!("implicit-hitl-orphan-fingerprint-{suffix}"),
+            replaces_waiting_run_id: Some(source_run_id.clone()),
+            hitl_resume_claim_id: Some(claim_id.clone()),
+        })
+        .await
+        .expect("admit expired HITL replacement");
+    // The stale lease is already expired, so use the explicit pre-effect transition only in the
+    // controlled contract fixture by first moving its expiry into the future is not possible.
+    // This scenario validates admitted recovery below; started recovery is covered above.
+
+    let next_receipt = store
+        .acquire_run_admission(AcquireRunAdmission {
+            run: RunRecord::new(session_id.clone(), next_run_id.clone(), conversation_id),
+            namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+            host_instance_id: format!("implicit-hitl-next-host-{suffix}"),
+            admission_id: format!("implicit-hitl-next-admission-{suffix}"),
+            lease_expires_at: Utc::now() + chrono::Duration::minutes(1),
+            idempotency_key: format!("implicit-hitl-next-key-{suffix}"),
+            command_fingerprint: format!("implicit-hitl-next-fingerprint-{suffix}"),
+            replaces_waiting_run_id: None,
+            hitl_resume_claim_id: None,
+        })
+        .await
+        .expect("new admission atomically reconciles expired HITL replacement");
+
+    let replacement = store
+        .load_run(&session_id, &replacement_run_id)
+        .await
+        .expect("load implicitly reconciled replacement");
+    assert_eq!(replacement.status, RunStatus::Cancelled);
+    assert_eq!(
+        replacement.output_preview.as_deref(),
+        Some("interrupted after host lease expired")
+    );
+    assert_eq!(
+        store
+            .load_run(&session_id, &source_run_id)
+            .await
+            .expect("load source preserved before effect")
+            .status,
+        RunStatus::Waiting
+    );
+    assert_eq!(
+        store
+            .load_session(&session_id)
+            .await
+            .expect("load session after implicit reconciliation")
+            .active_run_id,
+        Some(next_run_id)
+    );
+    assert!(
+        store
+            .load_run_admission(&expired_receipt.lease.target)
+            .await
+            .expect("load expired admission after implicit reconciliation")
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .load_run_admission(&next_receipt.lease.target)
+            .await
+            .expect("load replacement admission after implicit reconciliation"),
+        Some(next_receipt.lease)
+    );
+    store
+        .mark_hitl_resume_started(&session_id, &source_run_id, &claim_id)
+        .await
+        .expect_err("implicit reconciliation must consume the exact started claim");
 }
 
 pub async fn assert_terminal_evidence_admission_cleanup_contract(
@@ -446,8 +1045,10 @@ pub async fn assert_terminal_evidence_admission_cleanup_contract(
     let finalized = store
         .finalize_run_admission(
             &receipt.lease,
-            RunStatus::Failed,
-            Some("process-local cleanup failure".to_string()),
+            RunTerminalProjection::failed(RunTerminalError::new(
+                "process_local_cleanup_failed",
+                "process-local cleanup failure",
+            )),
         )
         .await
         .expect("cleanup must release the matching lease without replacing terminal evidence");
@@ -466,8 +1067,7 @@ pub async fn assert_terminal_evidence_admission_cleanup_contract(
     let exact_retry = store
         .finalize_run_admission(
             &receipt.lease,
-            RunStatus::Completed,
-            Some("authoritative result".to_string()),
+            RunTerminalProjection::completed(Some("authoritative result".to_string())),
         )
         .await
         .expect("exact terminal cleanup retry is idempotent");
@@ -475,11 +1075,68 @@ pub async fn assert_terminal_evidence_admission_cleanup_contract(
     store
         .finalize_run_admission(
             &receipt.lease,
-            RunStatus::Failed,
-            Some("process-local cleanup failure".to_string()),
+            RunTerminalProjection::failed(RunTerminalError::new(
+                "process_local_cleanup_failed",
+                "process-local cleanup failure",
+            )),
         )
         .await
         .expect_err("released admission cannot rewrite authoritative terminal evidence");
+
+    let failed_session_id = SessionId::from_string(format!("terminal-error-session-{suffix}"));
+    let failed_run_id = RunId::from_string(format!("terminal-error-run-{suffix}"));
+    store
+        .save_session(SessionRecord::new(failed_session_id.clone()))
+        .await
+        .expect("save terminal error session");
+    let failed_receipt = store
+        .acquire_run_admission(AcquireRunAdmission {
+            run: RunRecord::new(
+                failed_session_id,
+                failed_run_id,
+                ConversationId::from_string(format!("terminal-error-conversation-{suffix}")),
+            ),
+            namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+            host_instance_id: format!("terminal-error-host-{suffix}"),
+            admission_id: format!("terminal-error-admission-{suffix}"),
+            lease_expires_at: Utc::now() + chrono::Duration::minutes(1),
+            idempotency_key: format!("terminal-error-key-{suffix}"),
+            command_fingerprint: format!("terminal-error-fingerprint-{suffix}"),
+            replaces_waiting_run_id: None,
+            hitl_resume_claim_id: None,
+        })
+        .await
+        .expect("acquire terminal error admission");
+    let failed_projection = RunTerminalProjection::failed(RunTerminalError::new(
+        "replay_persistence_failed",
+        "durable replay append failed",
+    ));
+    let failed = store
+        .finalize_run_admission(&failed_receipt.lease, failed_projection.clone())
+        .await
+        .expect("persist complete failed terminal projection");
+    assert_eq!(
+        failed.terminal_projection(),
+        Some(failed_projection.clone())
+    );
+    assert_eq!(failed.output_preview, None);
+    assert_eq!(
+        store
+            .finalize_run_admission(&failed_receipt.lease, failed_projection)
+            .await
+            .expect("exact failed projection retry is idempotent"),
+        failed
+    );
+    store
+        .finalize_run_admission(
+            &failed_receipt.lease,
+            RunTerminalProjection::failed(RunTerminalError::new(
+                "different_failure",
+                "different failure",
+            )),
+        )
+        .await
+        .expect_err("a conflicting failed projection cannot rewrite durable evidence");
 }
 
 async fn assert_waiting_source_is_still_active(
@@ -849,6 +1506,7 @@ pub async fn assert_background_subagent_contract(store: Arc<dyn SessionStore>, s
     );
     continuation.input = record.continuation_input(None);
     continuation.profile = Some("default".to_string());
+    continuation.restore_from_run_id = Some(parent_run_id.clone());
     continuation.parent_run_id = Some(parent_run_id.clone());
     continuation.trigger_type = Some("async_subagent_result".to_string());
     continuation.metadata.insert(
@@ -887,6 +1545,16 @@ pub async fn assert_background_subagent_contract(store: Arc<dyn SessionStore>, s
             hitl_resume_claim_id: None,
         },
     };
+    let mut stale_source = request.clone();
+    stale_source.admission.run.restore_from_run_id = Some(RunId::from_string(format!(
+        "stale-background-head-{suffix}"
+    )));
+    assert!(matches!(
+        store
+            .acquire_background_subagent_continuation(stale_source)
+            .await,
+        Err(SessionStoreError::Conflict(_))
+    ));
     let mut forged_cause = request.clone();
     forged_cause.cause.agent_id = format!("forged-agent-{suffix}");
     assert!(matches!(

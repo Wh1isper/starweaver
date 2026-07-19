@@ -125,6 +125,178 @@ impl<'de> Deserialize<'de> for DurableRunStatus {
     }
 }
 
+/// Product-neutral diagnostic retained with a terminal durable run.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RunTerminalError {
+    /// Stable `snake_case` category chosen by the producing boundary.
+    pub code: String,
+    /// Sanitized diagnostic suitable for durable retrieval.
+    pub message: String,
+}
+
+impl RunTerminalError {
+    /// Build a terminal diagnostic from a stable code and safe message.
+    #[must_use]
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+}
+
+/// Atomic terminal status, output, and diagnostic projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RunTerminalProjection {
+    /// Terminal durable status.
+    pub status: RunStatus,
+    /// User-visible final output preview, not an error transport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_preview: Option<String>,
+    /// Safe terminal diagnostic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<RunTerminalError>,
+}
+
+impl RunTerminalProjection {
+    /// Build and validate a terminal projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-terminal status, a failed status without a diagnostic,
+    /// a completed status with a diagnostic, or an empty diagnostic field.
+    pub fn try_new(
+        status: RunStatus,
+        output_preview: Option<String>,
+        error: Option<RunTerminalError>,
+    ) -> Result<Self, RunTerminalProjectionError> {
+        let projection = Self {
+            status,
+            output_preview,
+            error,
+        };
+        projection.validate()?;
+        Ok(projection)
+    }
+
+    /// Build a successful terminal projection.
+    #[must_use]
+    pub const fn completed(output_preview: Option<String>) -> Self {
+        Self {
+            status: RunStatus::Completed,
+            output_preview,
+            error: None,
+        }
+    }
+
+    /// Build a failed terminal projection with no output preview.
+    #[must_use]
+    pub const fn failed(error: RunTerminalError) -> Self {
+        Self {
+            status: RunStatus::Failed,
+            output_preview: None,
+            error: Some(error),
+        }
+    }
+
+    /// Build a cancelled terminal projection with an optional safe reason.
+    #[must_use]
+    pub const fn cancelled(error: Option<RunTerminalError>) -> Self {
+        Self {
+            status: RunStatus::Cancelled,
+            output_preview: None,
+            error,
+        }
+    }
+
+    /// Validate the projection as a new terminal write.
+    ///
+    /// Historical records may lack a diagnostic. Stores validate this invariant only when
+    /// terminalizing a non-terminal record, while preserving already-committed legacy evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the projection violates terminal status or diagnostic invariants.
+    pub fn validate(&self) -> Result<(), RunTerminalProjectionError> {
+        if !self.status.is_terminal() {
+            return Err(RunTerminalProjectionError::NonTerminalStatus(self.status));
+        }
+        if self.status == RunStatus::Failed && self.error.is_none() {
+            return Err(RunTerminalProjectionError::MissingFailureDiagnostic);
+        }
+        if self.status == RunStatus::Completed && self.error.is_some() {
+            return Err(RunTerminalProjectionError::UnexpectedSuccessDiagnostic);
+        }
+        if let Some(error) = self.error.as_ref() {
+            if error.code.is_empty() {
+                return Err(RunTerminalProjectionError::EmptyDiagnosticCode);
+            }
+            if error.message.is_empty() {
+                return Err(RunTerminalProjectionError::EmptyDiagnosticMessage);
+            }
+        }
+        Ok(())
+    }
+
+    /// Return whether this projection exactly matches a durable run record.
+    #[must_use]
+    pub fn matches(&self, run: &RunRecord) -> bool {
+        (run.status, &run.output_preview, &run.terminal_error)
+            == (self.status, &self.output_preview, &self.error)
+    }
+
+    /// Apply this complete projection to a run record.
+    pub fn apply_to(&self, run: &mut RunRecord) {
+        run.status = self.status;
+        run.output_preview.clone_from(&self.output_preview);
+        run.terminal_error.clone_from(&self.error);
+    }
+}
+
+/// Invalid new terminal run projection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RunTerminalProjectionError {
+    /// The supplied status is not terminal.
+    NonTerminalStatus(RunStatus),
+    /// A failed run omitted its diagnostic.
+    MissingFailureDiagnostic,
+    /// A completed run carried an error diagnostic.
+    UnexpectedSuccessDiagnostic,
+    /// A non-terminal run carried a stale terminal diagnostic.
+    UnexpectedNonTerminalDiagnostic(RunStatus),
+    /// The stable diagnostic category is empty.
+    EmptyDiagnosticCode,
+    /// The diagnostic message is empty.
+    EmptyDiagnosticMessage,
+}
+
+impl std::fmt::Display for RunTerminalProjectionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonTerminalStatus(status) => {
+                write!(formatter, "run status {} is not terminal", status.as_str())
+            }
+            Self::MissingFailureDiagnostic => {
+                formatter.write_str("failed run requires a terminal diagnostic")
+            }
+            Self::UnexpectedSuccessDiagnostic => {
+                formatter.write_str("completed run cannot carry a terminal diagnostic")
+            }
+            Self::UnexpectedNonTerminalDiagnostic(status) => write!(
+                formatter,
+                "non-terminal run status {} cannot carry a terminal diagnostic",
+                status.as_str()
+            ),
+            Self::EmptyDiagnosticCode => formatter.write_str("terminal diagnostic code is empty"),
+            Self::EmptyDiagnosticMessage => {
+                formatter.write_str("terminal diagnostic message is empty")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RunTerminalProjectionError {}
+
 /// A queued durable run has not entered an executable runtime lifecycle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QueuedRunStatus;
@@ -518,6 +690,9 @@ pub struct RunRecord {
     /// Final output preview.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_preview: Option<String>,
+    /// Safe diagnostic for a failed or cancelled terminal run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_error: Option<RunTerminalError>,
     /// Final structured output preview or summary.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub structured_output: Value,
@@ -566,6 +741,83 @@ impl starweaver_core::VersionedRecord for RunRecord {
 }
 
 impl RunRecord {
+    /// Return the complete terminal projection when this record is terminal.
+    ///
+    /// Historical failed records may legitimately return a projection with no diagnostic.
+    #[must_use]
+    pub fn terminal_projection(&self) -> Option<RunTerminalProjection> {
+        self.status.is_terminal().then(|| RunTerminalProjection {
+            status: self.status,
+            output_preview: self.output_preview.clone(),
+            error: self.terminal_error.clone(),
+        })
+    }
+
+    /// Validate a newly persisted run state.
+    ///
+    /// Historical records are accepted when read, but every new write must carry a complete
+    /// terminal projection and every non-terminal write must omit stale terminal diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when status, output, and terminal diagnostic are inconsistent.
+    pub fn validate_new_write(&self) -> Result<(), RunTerminalProjectionError> {
+        self.terminal_projection().map_or_else(
+            || {
+                if self.terminal_error.is_some() {
+                    Err(RunTerminalProjectionError::UnexpectedNonTerminalDiagnostic(
+                        self.status,
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+            |terminal| terminal.validate(),
+        )
+    }
+
+    /// Normalize caller-provided state before a new admission is persisted.
+    ///
+    /// Admission always creates a queued execution. Any stale terminal projection from a reused
+    /// record is discarded rather than becoming active-run state or client-visible output.
+    pub fn normalize_for_admission(&mut self) {
+        self.status = RunStatus::Queued;
+        self.output_preview = None;
+        self.terminal_error = None;
+    }
+
+    /// Apply the legacy low-level status update contract.
+    ///
+    /// The legacy API cannot distinguish safe diagnostics from arbitrary caller text, so failed
+    /// and cancelled updates discard their preview and persist a fixed generic diagnostic.
+    pub fn apply_legacy_status_update(
+        &mut self,
+        status: RunStatus,
+        output_preview: Option<String>,
+    ) {
+        self.status = status;
+        match status {
+            RunStatus::Failed => {
+                self.output_preview = None;
+                self.terminal_error = Some(RunTerminalError::new(
+                    "legacy_status_update_failed",
+                    "run failed",
+                ));
+            }
+            RunStatus::Cancelled => {
+                self.output_preview = None;
+                self.terminal_error = Some(RunTerminalError::new(
+                    "legacy_status_update_cancelled",
+                    "run cancelled",
+                ));
+            }
+            _ => {
+                self.output_preview = output_preview;
+                self.terminal_error = None;
+            }
+        }
+    }
+
     /// Build a run record for a session.
     #[must_use]
     pub fn new(session_id: SessionId, run_id: RunId, conversation_id: ConversationId) -> Self {
@@ -577,6 +829,7 @@ impl RunRecord {
             input: Vec::new(),
             status: RunStatus::Queued,
             output_preview: None,
+            terminal_error: None,
             structured_output: Value::Null,
             latest_checkpoint: None,
             environment_state: None,

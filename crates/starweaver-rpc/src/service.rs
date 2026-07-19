@@ -1,36 +1,45 @@
 //! Standalone RPC method dispatch.
 
 use std::{
+    cell::Cell,
     collections::HashMap,
+    future::Future,
+    ops::Deref,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        mpsc as std_mpsc,
     },
     time::Duration,
 };
 
 use serde_json::{Value, json};
+use starweaver_agent::{
+    ContinuationMaterialization, ContinuationMaterializationMode, ResolvedAgentMaterialization,
+};
 use starweaver_core::{ProtocolIdentity, RunId, SessionId};
 use starweaver_rpc_core::{
-    DiagnosticLevel, DiagnosticNotificationParams, EnvironmentAttachmentRef, HostInitializeParams,
+    AgentMaterialization, ContinuationAssessment, ContinuationMode, DiagnosticLevel,
+    DiagnosticNotificationParams, EnvironmentAttachmentRef, HostInitializeParams,
     HostNotificationKind, HostRunStatus, INVALID_PARAMS, JsonRpcOutcome, METHOD_NOT_FOUND,
-    NOT_INITIALIZED, ProfileConfig, ProfileGetResult, RpcError, RunInput, RunResumeParams,
-    RunResumeResult, SessionSearchFeatureCapabilities, SessionSearchParams, SessionSearchResult,
-    StorageImportLegacyParams, StorageImportLegacyResult, StreamEventParams, StreamPayloadFormat,
-    SubscriptionClosedParams, SubscriptionClosedReason, SubscriptionReadyParams,
-    UNSUPPORTED_FEATURE, attachment_result, error_response, handle_json_rpc_text_async,
-    host_protocol_identity_with_session_search, output_item, replay_cursor_from_params,
-    replay_result, stream_payload_format, typed_notification, validate_host_initialize,
+    NOT_INITIALIZED, ProfileConfig, ProfileGetResult, RpcError, RunPromptResult, RunResumeParams,
+    RunResumeResult, RunStartParams, RunStartResult, SessionSearchFeatureCapabilities,
+    SessionSearchParams, SessionSearchResult, StorageImportLegacyParams, StorageImportLegacyResult,
+    StreamEventParams, StreamPayloadFormat, SubscriptionClosedParams, SubscriptionClosedReason,
+    SubscriptionReadyParams, UNSUPPORTED_FEATURE, attachment_result, error_response,
+    handle_json_rpc_text_async, host_protocol_identity_with_session_search, output_item,
+    replay_cursor_from_params, replay_result, stream_payload_format, typed_notification,
+    validate_host_initialize,
 };
 use starweaver_runtime::AgentInput;
 use starweaver_session::{
-    ApprovalStatus, ExecutionStatus, InputPart, SessionFilter, SessionSearchError,
+    ApprovalStatus, ExecutionStatus, InputPart, RunRecord, SessionFilter, SessionSearchError,
     SessionSearchProvider, SessionSearchScope, SessionStore, SessionStoreResult,
 };
 use starweaver_storage::{LocalSessionSearchLimits, LocalSessionSearchProvider, SqliteStorage};
 use starweaver_stream::{ReplayCursor, ReplayScope};
 use tokio::{
-    runtime::Runtime,
+    runtime::{Builder as RuntimeBuilder, Handle, Runtime},
     sync::{mpsc, watch},
 };
 use uuid::Uuid;
@@ -46,6 +55,47 @@ const MAX_RUN_AWAIT: Duration = Duration::from_secs(30);
 const DEFAULT_CLIENT_STATE_SCOPE: &str = "rpc";
 const MAX_CONNECTION_SUBSCRIPTIONS: usize = 32;
 const SUBSCRIPTION_REPLAY_PAGE: usize = 256;
+const RPC_RUNTIME_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+std::thread_local! {
+    static RPC_RUNTIME_WORKER: Cell<bool> = const { Cell::new(false) };
+}
+
+struct RpcExecutionRuntime {
+    runtime: Option<Runtime>,
+}
+
+impl RpcExecutionRuntime {
+    const fn new(runtime: Runtime) -> Self {
+        Self {
+            runtime: Some(runtime),
+        }
+    }
+}
+
+impl Deref for RpcExecutionRuntime {
+    type Target = Runtime;
+
+    fn deref(&self) -> &Self::Target {
+        let Some(runtime) = self.runtime.as_ref() else {
+            unreachable!("RPC execution runtime is unavailable during shutdown");
+        };
+        runtime
+    }
+}
+
+impl Drop for RpcExecutionRuntime {
+    fn drop(&mut self) {
+        let Some(runtime) = self.runtime.take() else {
+            return;
+        };
+        if Handle::try_current().is_ok() {
+            runtime.shutdown_background();
+        } else {
+            drop(runtime);
+        }
+    }
+}
 
 async fn run_storage<T, F>(storage: SqliteStorage, operation: F) -> Result<T, RpcError>
 where
@@ -64,7 +114,7 @@ where
 
 /// Notification capability of the selected transport.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RpcNotificationMode {
+enum RpcNotificationMode {
     /// Transport can emit out-of-band notifications.
     Live,
     /// Transport supports request/response replay only.
@@ -72,26 +122,33 @@ pub enum RpcNotificationMode {
 }
 
 /// RPC-owned application service.
+#[derive(Clone)]
 pub struct RpcService {
-    config: RpcConfig,
-    catalog: RpcAgentCatalog,
+    config: Arc<RpcConfig>,
+    catalog: Arc<RpcAgentCatalog>,
     storage: SqliteStorage,
-    coordinator: RpcRuntimeCoordinator,
+    coordinator: Arc<RpcRuntimeCoordinator>,
     environment_manager: EnvironmentAttachmentManager,
     session_search: Option<Arc<dyn SessionSearchProvider>>,
     session_search_scope: SessionSearchScope,
     notifications: RpcNotificationMode,
     state: RpcStateRepository,
-    runtime: Arc<Runtime>,
+    runtime: Arc<RpcExecutionRuntime>,
 }
 
 /// Per-connection host protocol negotiation state.
-pub struct RpcConnection<'a> {
-    service: &'a RpcService,
+#[derive(Clone)]
+pub struct RpcConnection {
+    service: RpcService,
+    state: Arc<RpcConnectionState>,
+}
+
+struct RpcConnectionState {
     initialized: AtomicBool,
     connection_id: String,
     output: Option<mpsc::Sender<Value>>,
     subscriptions: Arc<Mutex<HashMap<String, ConnectionSubscription>>>,
+    environment_manager: EnvironmentAttachmentManager,
 }
 
 struct ConnectionSubscription {
@@ -101,10 +158,9 @@ struct ConnectionSubscription {
     ready: watch::Sender<bool>,
 }
 
-impl Drop for RpcConnection<'_> {
+impl Drop for RpcConnectionState {
     fn drop(&mut self) {
-        self.service
-            .environment_manager
+        self.environment_manager
             .release_connection_leases(&self.connection_id);
         if let Ok(mut subscriptions) = self.subscriptions.lock() {
             for subscription in subscriptions.values() {
@@ -115,11 +171,18 @@ impl Drop for RpcConnection<'_> {
     }
 }
 
-impl RpcConnection<'_> {
+impl RpcConnection {
     /// Handle one frame using this connection's initialization state.
     #[must_use]
     pub fn handle_text(&self, text: &str) -> JsonRpcOutcome {
-        self.service.runtime.block_on(self.handle_text_async(text))
+        let connection = self.clone();
+        let task_text = text.to_string();
+        match execute_on_runtime(&self.service.runtime, async move {
+            connection.handle_text_async(&task_text).await
+        }) {
+            Ok(outcome) => outcome,
+            Err(error) => runtime_failure_outcome(text, &error),
+        }
     }
 
     async fn handle_text_async(&self, text: &str) -> JsonRpcOutcome {
@@ -127,13 +190,13 @@ impl RpcConnection<'_> {
             if method == "initialize" {
                 let result = self
                     .service
-                    .initialize_result(&params, self.output.is_some());
+                    .initialize_result(&params, self.state.output.is_some());
                 if result.is_ok() {
-                    self.initialized.store(true, Ordering::Release);
+                    self.state.initialized.store(true, Ordering::Release);
                 }
                 return result;
             }
-            if !self.initialized.load(Ordering::Acquire) {
+            if !self.state.initialized.load(Ordering::Acquire) {
                 return Err(RpcError::new(
                     NOT_INITIALIZED,
                     "host protocol initialize must succeed before calling other methods",
@@ -144,7 +207,7 @@ impl RpcConnection<'_> {
                 "stream.unsubscribe" => self.stream_unsubscribe(&params),
                 _ => {
                     self.service
-                        .dispatch(&method, &params, Some(&self.connection_id))
+                        .dispatch(&method, &params, Some(&self.state.connection_id))
                         .await
                 }
             }
@@ -153,7 +216,7 @@ impl RpcConnection<'_> {
     }
 
     async fn stream_subscribe(&self, params: &Value) -> Result<Value, RpcError> {
-        let Some(output) = self.output.clone() else {
+        let Some(output) = self.state.output.clone() else {
             return Err(RpcError::new(
                 UNSUPPORTED_FEATURE,
                 "stream.subscribe requires a live notification transport",
@@ -171,6 +234,7 @@ impl RpcConnection<'_> {
             .map_or_else(|| format!("sub_{}", Uuid::new_v4()), ToString::to_string);
         {
             let subscriptions = self
+                .state
                 .subscriptions
                 .lock()
                 .map_err(subscription_registry_error)?;
@@ -196,6 +260,7 @@ impl RpcConnection<'_> {
         let (ready, ready_receiver) = watch::channel(false);
         {
             let mut subscriptions = self
+                .state
                 .subscriptions
                 .lock()
                 .map_err(subscription_registry_error)?;
@@ -234,7 +299,7 @@ impl RpcConnection<'_> {
     }
 
     fn stream_unsubscribe(&self, params: &Value) -> Result<Value, RpcError> {
-        if self.output.is_none() {
+        if self.state.output.is_none() {
             return Err(RpcError::new(
                 UNSUPPORTED_FEATURE,
                 "stream.unsubscribe requires a live notification transport",
@@ -242,6 +307,7 @@ impl RpcConnection<'_> {
         }
         let subscription_id = required_string(params, "subscriptionId")?;
         let removed = self
+            .state
             .subscriptions
             .lock()
             .map_err(|error| {
@@ -263,7 +329,7 @@ impl RpcConnection<'_> {
 
     /// Release notifications only after the corresponding JSON-RPC response was flushed.
     pub fn activate_pending_subscriptions(&self) {
-        if let Ok(subscriptions) = self.subscriptions.lock() {
+        if let Ok(subscriptions) = self.state.subscriptions.lock() {
             for subscription in subscriptions.values() {
                 let _ = subscription.ready.send(true);
             }
@@ -283,7 +349,7 @@ impl RpcConnection<'_> {
         output: mpsc::Sender<Value>,
     ) {
         let coordinator = self.service.coordinator.clone();
-        let subscriptions = Arc::clone(&self.subscriptions);
+        let subscriptions = Arc::clone(&self.state.subscriptions);
         self.service.runtime.spawn(async move {
             loop {
                 if *cancel.borrow() {
@@ -399,6 +465,7 @@ impl RpcConnection<'_> {
                                 status: status.status,
                                 output_preview: status.output_preview,
                                 error: status.error,
+                                continuation_effect: status.continuation_effect,
                             })),
                         )
                         .await;
@@ -510,6 +577,45 @@ async fn send_subscription_frame(
     }
 }
 
+fn execute_on_runtime<T, F>(runtime: &Runtime, future: F) -> RpcHostResult<T>
+where
+    T: Send + 'static,
+    F: Future<Output = T> + Send + 'static,
+{
+    if RPC_RUNTIME_WORKER.with(Cell::get) {
+        return Err(RpcHostError::Runtime(
+            "blocking RPC service APIs cannot run on an RPC runtime worker".to_string(),
+        ));
+    }
+    // Tokio never polls a spawned future synchronously, so the caller waits only
+    // for completion and never carries the request state machine on its stack.
+    let (result_sender, result_receiver) = std_mpsc::sync_channel(1);
+    drop(runtime.spawn(async move {
+        let result = future.await;
+        let _ = result_sender.send(result);
+    }));
+    result_receiver.recv().map_err(|_| {
+        RpcHostError::Runtime("RPC runtime task stopped before returning a result".to_string())
+    })
+}
+
+fn runtime_failure_outcome(text: &str, error: &RpcHostError) -> JsonRpcOutcome {
+    let response = serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|request| request.get("id").cloned())
+        .map(|id| {
+            error_response(
+                &id,
+                starweaver_rpc_core::SERVER_ERROR,
+                &format!("RPC request execution failed: {error}"),
+            )
+        });
+    JsonRpcOutcome {
+        response,
+        shutdown: false,
+    }
+}
+
 impl RpcService {
     /// Construct a service for stdio/live transports.
     ///
@@ -537,12 +643,12 @@ impl RpcService {
         let storage = SqliteStorage::open(&config.database_path)?;
         let catalog = RpcAgentCatalog::new(config.clone())?;
         let environment_manager = EnvironmentAttachmentManager::new();
-        let coordinator = RpcRuntimeCoordinator::new(
+        let coordinator = Arc::new(RpcRuntimeCoordinator::new(
             config.clone(),
             catalog.clone(),
             storage.clone(),
             environment_manager.clone(),
-        );
+        ));
         let session_search_scope =
             SessionSearchScope::local(config.database_path.to_string_lossy().into_owned());
         let session_search = if config.session_search.enabled {
@@ -567,12 +673,23 @@ impl RpcService {
         } else {
             None
         };
-        let runtime = Runtime::new().map_err(|error| RpcHostError::Runtime(error.to_string()))?;
-        runtime.block_on(coordinator.reconcile_startup())?;
+        let runtime = RuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .thread_name("starweaver-rpc-runtime")
+            .thread_stack_size(RPC_RUNTIME_THREAD_STACK_SIZE)
+            .on_thread_start(|| RPC_RUNTIME_WORKER.with(|worker| worker.set(true)))
+            .on_thread_stop(|| RPC_RUNTIME_WORKER.with(|worker| worker.set(false)))
+            .build()
+            .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+        let runtime = Arc::new(RpcExecutionRuntime::new(runtime));
+        let startup_coordinator = Arc::clone(&coordinator);
+        execute_on_runtime(&runtime, async move {
+            startup_coordinator.reconcile_startup().await
+        })??;
         let state = RpcStateRepository::new(config.state_dir.clone());
         Ok(Self {
-            config,
-            catalog,
+            config: Arc::new(config),
+            catalog: Arc::new(catalog),
             storage,
             coordinator,
             environment_manager,
@@ -580,35 +697,40 @@ impl RpcService {
             session_search_scope,
             notifications,
             state,
-            runtime: Arc::new(runtime),
+            runtime,
         })
     }
 
     pub(crate) fn shutdown_owned_runtime(&self, timeout: Duration) -> RpcHostResult<()> {
-        self.runtime.block_on(self.coordinator.shutdown(timeout))
+        let coordinator = self.coordinator.clone();
+        execute_on_runtime(
+            &self.runtime,
+            async move { coordinator.shutdown(timeout).await },
+        )?
     }
 
     /// Open an uninitialized stateful protocol connection.
     #[must_use]
-    pub fn connection(&self) -> RpcConnection<'_> {
-        RpcConnection {
-            service: self,
-            initialized: AtomicBool::new(false),
-            connection_id: format!("connection_{}", Uuid::new_v4()),
-            output: None,
-            subscriptions: Arc::new(Mutex::new(HashMap::new())),
-        }
+    pub fn connection(&self) -> RpcConnection {
+        self.new_connection(None)
     }
 
     /// Open an uninitialized stdio connection with a bounded notification sink.
     #[must_use]
-    pub fn live_connection(&self, output: mpsc::Sender<Value>) -> RpcConnection<'_> {
+    pub fn live_connection(&self, output: mpsc::Sender<Value>) -> RpcConnection {
+        self.new_connection(Some(output))
+    }
+
+    fn new_connection(&self, output: Option<mpsc::Sender<Value>>) -> RpcConnection {
         RpcConnection {
-            service: self,
-            initialized: AtomicBool::new(false),
-            connection_id: format!("connection_{}", Uuid::new_v4()),
-            output: Some(output),
-            subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            service: self.clone(),
+            state: Arc::new(RpcConnectionState {
+                initialized: AtomicBool::new(false),
+                connection_id: format!("connection_{}", Uuid::new_v4()),
+                output,
+                subscriptions: Arc::new(Mutex::new(HashMap::new())),
+                environment_manager: self.environment_manager.clone(),
+            }),
         }
     }
 
@@ -1086,14 +1208,25 @@ impl RpcService {
         connection_id: Option<&str>,
     ) -> Result<Value, RpcError> {
         let started = self.start_run_from_params(params, connection_id).await?;
-        Ok(json!({
-            "sessionId": started.session_id,
-            "runId": started.run_id,
-            "status": started.status,
-            "idempotentReplay": started.idempotent_replay,
-            "payloadFormat": "display",
-            "environmentAttachments": started.environment_attachments,
-        }))
+        let run = self
+            .storage
+            .session_store()
+            .load_run(&started.session_id, &started.run_id)
+            .await
+            .map_err(rpc_error)?;
+        let (materialization, continuation) = wire_materialization(&self.storage, &run).await?;
+        require_current_materialization(started.idempotent_replay, materialization.as_ref())?;
+        serde_json::to_value(RunStartResult {
+            session_id: started.session_id,
+            run_id: started.run_id,
+            status: started.status.as_str().to_string(),
+            idempotent_replay: started.idempotent_replay,
+            payload_format: "display".to_string(),
+            environment_attachments: started.environment_attachments,
+            materialization,
+            continuation,
+        })
+        .map_err(|error| RpcError::new(starweaver_rpc_core::SERVER_ERROR, error.to_string()))
     }
 
     async fn run_prompt(
@@ -1110,14 +1243,25 @@ impl RpcService {
             .await_terminal(&started.session_id, &started.run_id, timeout)
             .await
             .map_err(rpc_error)?;
-        Ok(json!({
-            "sessionId": started.session_id,
-            "runId": started.run_id,
-            "status": status.status,
-            "output": status.output_preview,
-            "error": status.error,
-            "environmentAttachments": started.environment_attachments,
-        }))
+        let run = self
+            .storage
+            .session_store()
+            .load_run(&started.session_id, &started.run_id)
+            .await
+            .map_err(rpc_error)?;
+        let (materialization, continuation) = wire_materialization(&self.storage, &run).await?;
+        require_current_materialization(started.idempotent_replay, materialization.as_ref())?;
+        serde_json::to_value(RunPromptResult {
+            session_id: started.session_id,
+            run_id: started.run_id,
+            status: status.status,
+            output: status.output_preview,
+            error: status.error,
+            environment_attachments: started.environment_attachments,
+            materialization,
+            continuation,
+        })
+        .map_err(|error| RpcError::new(starweaver_rpc_core::SERVER_ERROR, error.to_string()))
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1157,20 +1301,19 @@ impl RpcService {
             .or(source.profile)
             .or(session.profile)
             .unwrap_or_else(|| self.catalog.default_profile().to_string());
-        self.catalog.profile(&profile).map_err(rpc_error)?;
         let environment_attachments =
             effective_rpc_environment_attachments(&params.environment_attachments);
         let fingerprint_attachments = run_attachment_fingerprint(&environment_attachments)?;
-        let fingerprint = command_fingerprint(
+        let fingerprint = continuation_command_fingerprint(
             "rpc_run_resume",
-            &json!({
+            json!({
                 "sessionId": params.session_id,
                 "sourceRunId": params.run_id,
                 "profile": profile,
                 "environmentAttachments": fingerprint_attachments,
             }),
-        )
-        .map_err(|error| RpcError::new(INVALID_PARAMS, error.to_string()))?;
+            params.continuation_mode,
+        )?;
         let source_run_id = params.run_id.clone();
         if let Some(started) = self
             .coordinator
@@ -1183,16 +1326,26 @@ impl RpcService {
                 Some(params.session_id.as_str()),
                 connection_id,
             )?;
+            let run = self
+                .storage
+                .session_store()
+                .load_run(&started.session_id, &started.run_id)
+                .await
+                .map_err(rpc_error)?;
+            let (materialization, continuation) = wire_materialization(&self.storage, &run).await?;
             return serde_json::to_value(RunResumeResult {
                 session_id: started.session_id,
                 run_id: started.run_id,
                 source_run_id,
                 status: started.status,
                 environment_attachments: started.environment_attachments,
+                materialization,
+                continuation,
                 idempotent_replay: true,
             })
             .map_err(|error| RpcError::new(starweaver_rpc_core::SERVER_ERROR, error.to_string()));
         }
+        self.catalog.profile(&profile).map_err(rpc_error)?;
         let materialized = self
             .environment_manager
             .materialize_run_attachments(
@@ -1213,6 +1366,7 @@ impl RpcService {
                 environment_attachments: materialized,
                 idempotency_key: params.idempotency_key,
                 command_fingerprint: fingerprint,
+                continuation_mode: agent_continuation_mode(params.continuation_mode),
                 install_session_management: self.notifications == RpcNotificationMode::Live,
             })
             .await
@@ -1248,12 +1402,22 @@ impl RpcService {
                 ));
             }
         };
+        let run = self
+            .storage
+            .session_store()
+            .load_run(&started.session_id, &started.run_id)
+            .await
+            .map_err(rpc_error)?;
+        let (materialization, continuation) = wire_materialization(&self.storage, &run).await?;
+        require_current_materialization(started.idempotent_replay, materialization.as_ref())?;
         serde_json::to_value(RunResumeResult {
             session_id: started.session_id,
             run_id: started.run_id,
             source_run_id,
             status: started.status,
             environment_attachments: started.environment_attachments,
+            materialization,
+            continuation,
             idempotent_replay: started.idempotent_replay,
         })
         .map_err(|error| RpcError::new(starweaver_rpc_core::SERVER_ERROR, error.to_string()))
@@ -1283,6 +1447,7 @@ impl RpcService {
             )?;
             return Ok(started);
         }
+        self.catalog.profile(&request.profile).map_err(rpc_error)?;
         let materialized = self
             .environment_manager
             .materialize_run_attachments(
@@ -1461,7 +1626,7 @@ impl RpcService {
     }
 }
 
-fn negotiate_unary_protocol(text: &str, connection: &RpcConnection<'_>) -> Option<JsonRpcOutcome> {
+fn negotiate_unary_protocol(text: &str, connection: &RpcConnection) -> Option<JsonRpcOutcome> {
     let value = serde_json::from_str::<Value>(text).ok()?;
     if value.get("method").and_then(Value::as_str) == Some("initialize") {
         return None;
@@ -1477,7 +1642,7 @@ fn negotiate_unary_protocol(text: &str, connection: &RpcConnection<'_>) -> Optio
         });
     match negotiated {
         Ok(()) => {
-            connection.initialized.store(true, Ordering::Release);
+            connection.state.initialized.store(true, Ordering::Release);
             None
         }
         Err(message) => Some(JsonRpcOutcome {
@@ -1487,6 +1652,112 @@ fn negotiate_unary_protocol(text: &str, connection: &RpcConnection<'_>) -> Optio
             shutdown: false,
         }),
     }
+}
+
+const fn wire_continuation_mode(mode: ContinuationMaterializationMode) -> ContinuationMode {
+    match mode {
+        ContinuationMaterializationMode::Preserve => ContinuationMode::Preserve,
+        ContinuationMaterializationMode::Compatible => ContinuationMode::Compatible,
+        ContinuationMaterializationMode::Switch => ContinuationMode::Switch,
+    }
+}
+
+const fn agent_continuation_mode(mode: ContinuationMode) -> ContinuationMaterializationMode {
+    match mode {
+        ContinuationMode::Preserve => ContinuationMaterializationMode::Preserve,
+        ContinuationMode::Compatible => ContinuationMaterializationMode::Compatible,
+        ContinuationMode::Switch => ContinuationMaterializationMode::Switch,
+    }
+}
+
+fn require_current_materialization(
+    idempotent_replay: bool,
+    materialization: Option<&AgentMaterialization>,
+) -> Result<(), RpcError> {
+    if materialization.is_none() && !idempotent_replay {
+        return Err(RpcError::new(
+            starweaver_rpc_core::SERVER_ERROR,
+            "newly admitted RPC run is missing materialization evidence",
+        ));
+    }
+    Ok(())
+}
+
+async fn wire_materialization(
+    storage: &SqliteStorage,
+    run: &RunRecord,
+) -> Result<(Option<AgentMaterialization>, Option<ContinuationAssessment>), RpcError> {
+    let continuation = ContinuationMaterialization::from_metadata(&run.metadata)
+        .map_err(|error| RpcError::new(starweaver_rpc_core::SERVER_ERROR, error.to_string()))?;
+    let Some(materialization) = ResolvedAgentMaterialization::from_metadata(&run.metadata)
+        .map_err(|error| RpcError::new(starweaver_rpc_core::SERVER_ERROR, error.to_string()))?
+    else {
+        if continuation.is_some() {
+            return Err(RpcError::new(
+                starweaver_rpc_core::SERVER_ERROR,
+                "legacy RPC run unexpectedly carries continuation evidence",
+            ));
+        }
+        return Ok((None, None));
+    };
+    match (&run.restore_from_run_id, continuation.as_ref()) {
+        (None, None) => {}
+        (None, Some(_)) => {
+            return Err(RpcError::new(
+                starweaver_rpc_core::SERVER_ERROR,
+                "fresh RPC run unexpectedly carries continuation evidence",
+            ));
+        }
+        (Some(_), None) => {
+            return Err(RpcError::new(
+                starweaver_rpc_core::SERVER_ERROR,
+                "continued RPC run is missing continuation evidence",
+            ));
+        }
+        (Some(source_run_id), Some(continuation)) => {
+            let source = storage
+                .session_store()
+                .load_run(&run.session_id, source_run_id)
+                .await
+                .map_err(rpc_error)?;
+            let source_materialization =
+                ResolvedAgentMaterialization::from_metadata(&source.metadata).map_err(|error| {
+                    RpcError::new(starweaver_rpc_core::SERVER_ERROR, error.to_string())
+                })?;
+            continuation
+                .validate(source_materialization.as_ref(), &materialization)
+                .map_err(|error| {
+                    RpcError::new(starweaver_rpc_core::SERVER_ERROR, error.to_string())
+                })?;
+        }
+    }
+    let materialization = AgentMaterialization {
+        version: materialization.version,
+        agent_spec_digest: materialization.agent_spec_digest,
+        model_profile_id: materialization.model_profile_id,
+        toolset_ids: materialization.toolset_ids,
+        policy_version: materialization.policy_version,
+        environment_binding_class: materialization.environment_binding_class,
+        runtime_binding_digest: materialization.runtime_binding_digest,
+        workspace_root_digest: materialization.workspace_root_digest,
+        fingerprint: materialization.fingerprint,
+    };
+    let continuation = continuation.map(|continuation| ContinuationAssessment {
+        mode: wire_continuation_mode(continuation.mode),
+        source_fingerprint: continuation.source_fingerprint,
+        target_fingerprint: continuation.target_fingerprint,
+        drift: continuation
+            .drift
+            .into_iter()
+            .map(|drift| starweaver_rpc_core::MaterializationDrift {
+                field: drift.field,
+                source: drift.source,
+                target: drift.target,
+            })
+            .collect(),
+        allowed: continuation.allowed,
+    });
+    Ok((Some(materialization), continuation))
 }
 
 fn run_attachment_fingerprint(
@@ -1513,33 +1784,48 @@ fn run_attachment_fingerprint(
         .collect()
 }
 
+fn continuation_command_fingerprint(
+    domain: &str,
+    mut input: Value,
+    mode: ContinuationMode,
+) -> Result<String, RpcError> {
+    if mode != ContinuationMode::Preserve {
+        let object = input.as_object_mut().ok_or_else(|| {
+            RpcError::new(
+                INVALID_PARAMS,
+                "continuation command fingerprint input must be an object",
+            )
+        })?;
+        object.insert("continuationMode".to_string(), json!(mode));
+    }
+    command_fingerprint(domain, &input)
+        .map_err(|error| RpcError::new(INVALID_PARAMS, error.to_string()))
+}
+
 fn run_request(
     catalog: &RpcAgentCatalog,
     state: &RpcStateRepository,
     params: &Value,
     environment_attachments: &[EnvironmentAttachmentRef],
 ) -> Result<RpcRunRequest, RpcError> {
-    let (durable_input, input) = run_input(params)?;
-    let explicit_profile = explicit_profile_selector(params)?;
-    let scope = resolved_client_state_scope(params)?;
-    let selected_profile = state
-        .read_selected_profile(&scope)
-        .map_err(rpc_error)?
-        .filter(|profile| catalog.profile(profile).is_ok());
-    let profile = explicit_profile
+    let params = decode_run_start_params(params, environment_attachments)?;
+    let (durable_input, input) = run_input(&params)?;
+    let scope = params
+        .client_state_scope
+        .as_deref()
+        .unwrap_or(DEFAULT_CLIENT_STATE_SCOPE);
+    let selected_profile = state.read_selected_profile(scope).map_err(rpc_error)?;
+    let profile = params
+        .profile
+        .clone()
         .or(selected_profile)
         .unwrap_or_else(|| catalog.default_profile().to_string());
-    catalog.profile(&profile)?;
-    let session_id = optional_session_id(params, "sessionId");
+    let session_id = params.session_id;
     let idempotency_key = params
-        .get("idempotencyKey")
-        .and_then(Value::as_str)
-        .map_or_else(|| format!("run_{}", Uuid::new_v4()), ToString::to_string);
-    let restore_from_run_id = params
-        .get("restoreFromRunId")
-        .or_else(|| params.get("runId"))
-        .and_then(Value::as_str)
-        .map(|value| RunId::from_string(value.to_string()));
+        .idempotency_key
+        .unwrap_or_else(|| format!("run_{}", Uuid::new_v4()));
+    let restore_from_run_id = params.restore_from_run_id;
+    let continuation_mode = params.continuation_mode;
     let environment_attachments = run_attachment_fingerprint(environment_attachments)?;
     let fingerprint_input = json!({
         "sessionId": session_id,
@@ -1548,8 +1834,8 @@ fn run_request(
         "restoreFromRunId": restore_from_run_id,
         "environmentAttachments": environment_attachments,
     });
-    let command_fingerprint = command_fingerprint("rpc_run_start", &fingerprint_input)
-        .map_err(|error| RpcError::new(INVALID_PARAMS, error.to_string()))?;
+    let command_fingerprint =
+        continuation_command_fingerprint("rpc_run_start", fingerprint_input, continuation_mode)?;
     Ok(RpcRunRequest {
         durable_input,
         input,
@@ -1559,32 +1845,91 @@ fn run_request(
         environment_attachments: Vec::new(),
         idempotency_key,
         command_fingerprint,
+        continuation_mode: agent_continuation_mode(continuation_mode),
         install_session_management: false,
     })
 }
 
-fn run_input(params: &Value) -> Result<(Vec<InputPart>, AgentInput), RpcError> {
-    let prompt = params.get("prompt");
-    let structured = params.get("input");
-    let durable_input = match (prompt, structured) {
+fn decode_run_start_params(
+    params: &Value,
+    environment_attachments: &[EnvironmentAttachmentRef],
+) -> Result<RunStartParams, RpcError> {
+    let mut canonical = params.clone();
+    let object = canonical
+        .as_object_mut()
+        .ok_or_else(|| RpcError::new(INVALID_PARAMS, "run.start params must be an object"))?;
+
+    let profile = explicit_profile_selector(params)?;
+    object.remove("modelProfile");
+    match profile {
+        Some(profile) => {
+            object.insert("profile".to_string(), Value::String(profile));
+        }
+        None => {
+            object.remove("profile");
+        }
+    }
+
+    let client_state_scope = client_state_scope(params, false)?;
+    object.remove("client");
+    match client_state_scope {
+        Some(scope) => {
+            object.insert("clientStateScope".to_string(), Value::String(scope));
+        }
+        None => {
+            object.remove("clientStateScope");
+        }
+    }
+
+    let restore_from_run_id = optional_string(params, "restoreFromRunId")?;
+    let legacy_run_id = optional_string(params, "runId")?;
+    if let (Some(restore_from_run_id), Some(run_id)) = (&restore_from_run_id, &legacy_run_id)
+        && restore_from_run_id != run_id
+    {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            "restoreFromRunId and runId must match when both are supplied",
+        ));
+    }
+    object.remove("restoreFromRunId");
+    object.remove("runId");
+    if let Some(run_id) = restore_from_run_id.or(legacy_run_id) {
+        object.insert("restoreFromRunId".to_string(), Value::String(run_id));
+    }
+    object.remove("environment");
+    object.remove("environments");
+    if environment_attachments.is_empty() {
+        object.remove("environmentAttachments");
+    } else {
+        object.insert(
+            "environmentAttachments".to_string(),
+            serde_json::to_value(environment_attachments)
+                .map_err(|error| RpcError::new(INVALID_PARAMS, error.to_string()))?,
+        );
+    }
+
+    serde_json::from_value(canonical).map_err(|error| {
+        RpcError::new(INVALID_PARAMS, format!("invalid run.start params: {error}"))
+    })
+}
+
+fn run_input(params: &RunStartParams) -> Result<(Vec<InputPart>, AgentInput), RpcError> {
+    let durable_input = match (&params.prompt, &params.input) {
         (Some(_), Some(_)) => {
             return Err(RpcError::new(
                 INVALID_PARAMS,
                 "run input accepts either prompt or input.parts, not both",
             ));
         }
-        (Some(_), None) => vec![InputPart::text(required_string(params, "prompt")?)],
-        (None, Some(value)) => {
-            let input = serde_json::from_value::<RunInput>(value.clone()).map_err(|error| {
-                RpcError::new(INVALID_PARAMS, format!("invalid input.parts: {error}"))
-            })?;
+        (Some(prompt), None) => vec![InputPart::text(prompt.clone())],
+        (None, Some(input)) => {
             if input.parts.is_empty() {
                 return Err(RpcError::new(
                     INVALID_PARAMS,
                     "input.parts must contain at least one part",
                 ));
             }
-            input.parts
+            input.parts.clone()
         }
         (None, None) => {
             return Err(RpcError::new(
@@ -1798,6 +2143,235 @@ mod tests {
         .to_string()
     }
 
+    fn await_run_admission_release(service: &RpcService, session_id: &str, run_id: &str) {
+        let target = starweaver_session::ManagedRunTarget::new(
+            starweaver_session::LOCAL_SESSION_NAMESPACE,
+            SessionId::from_string(session_id),
+            RunId::from_string(run_id),
+        );
+        let released = service.runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    if service
+                        .storage
+                        .session_store()
+                        .load_run_admission(&target)
+                        .await
+                        .unwrap()
+                        .is_none()
+                    {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+        });
+        assert!(released.is_ok(), "run admission was not released");
+    }
+
+    #[test]
+    fn run_start_executes_on_rpc_runtime_stack() {
+        let transport = std::thread::Builder::new()
+            .name("small-rpc-transport".to_string())
+            .stack_size(1024 * 1024)
+            .spawn(|| {
+                let temp = tempfile::tempdir().unwrap();
+                let service = RpcService::live(RpcConfig::for_tests(temp.path())).unwrap();
+                let started = service
+                    .handle_text(&request(
+                        1,
+                        "run.start",
+                        json!({
+                            "prompt": "small transport stack",
+                            "idempotencyKey": "small-transport-stack"
+                        }),
+                    ))
+                    .response
+                    .unwrap();
+                assert!(started.get("error").is_none(), "{started}");
+                let awaited = service
+                    .handle_text(&request(
+                        2,
+                        "run.await",
+                        json!({
+                            "sessionId": started["result"]["sessionId"],
+                            "runId": started["result"]["runId"],
+                            "timeoutMs": 5_000
+                        }),
+                    ))
+                    .response
+                    .unwrap();
+                assert_eq!(awaited["result"]["status"]["status"], "completed");
+            })
+            .unwrap();
+        transport.join().unwrap();
+    }
+
+    #[test]
+    fn blocking_service_entry_rejects_rpc_worker_reentry() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = RpcService::live(RpcConfig::for_tests(temp.path())).unwrap();
+        let nested_service = service.clone();
+        let outcome = execute_on_runtime(&service.runtime, async move {
+            nested_service.handle_text(&request(1, "diagnostics.get", json!({})))
+        })
+        .unwrap();
+        let response = outcome.response.unwrap();
+        assert_eq!(response["error"]["code"], starweaver_rpc_core::SERVER_ERROR);
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("cannot run on an RPC runtime worker")
+        );
+    }
+
+    #[test]
+    fn final_service_drop_is_safe_on_runtime_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = RpcService::live(RpcConfig::for_tests(temp.path())).unwrap();
+        let runtime = Arc::clone(&service.runtime);
+        let (release, released) = tokio::sync::oneshot::channel();
+        let (completed, completion) = std_mpsc::sync_channel(1);
+        drop(runtime.spawn(async move {
+            let _ = released.await;
+            drop(service);
+            let _ = completed.send(());
+        }));
+        drop(runtime);
+        release.send(()).unwrap();
+        completion.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn run_start_restore_aliases_must_match() {
+        let matching = decode_run_start_params(
+            &json!({
+                "prompt": "continue",
+                "restoreFromRunId": "run_source",
+                "runId": "run_source"
+            }),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            matching.restore_from_run_id,
+            Some(RunId::from_string("run_source"))
+        );
+
+        let conflict = decode_run_start_params(
+            &json!({
+                "prompt": "continue",
+                "restoreFromRunId": "run_source",
+                "runId": "run_other"
+            }),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(conflict.code, INVALID_PARAMS);
+        assert!(conflict.message.contains("must match"));
+    }
+
+    #[test]
+    fn wire_materialization_rejects_semantically_tampered_durable_continuation() {
+        use starweaver_core::ConversationId;
+        use starweaver_session::{RunRecord, RunStatus};
+
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        let service = RpcService::live(config).unwrap();
+        let session = service
+            .storage
+            .create_session_for_product(
+                Some("default".to_string()),
+                Some("materialization tamper test".to_string()),
+                None,
+                Some("rpc"),
+            )
+            .unwrap();
+        let source_run_id = RunId::from_string("run_materialization_origin");
+        let source_materialization = ResolvedAgentMaterialization::new(
+            "spec-source",
+            "model-source",
+            ["toolset-source".to_string()],
+            "policy-source",
+            "environment-source",
+        );
+        let mut source = RunRecord::new(
+            session.session_id.clone(),
+            source_run_id.clone(),
+            ConversationId::new(),
+        );
+        source.status = RunStatus::Completed;
+        source_materialization
+            .insert_into(&mut source.metadata)
+            .unwrap();
+        service
+            .storage
+            .session_store()
+            .append_run_allocated(source)
+            .unwrap();
+
+        let target_materialization = ResolvedAgentMaterialization::new(
+            "spec-target",
+            "model-target",
+            ["toolset-target".to_string()],
+            "policy-target",
+            "environment-target",
+        );
+        let valid = ContinuationMaterialization::assess(
+            Some(&source_materialization),
+            &target_materialization,
+            ContinuationMaterializationMode::Switch,
+        );
+        assert!(valid.allowed);
+        assert!(!valid.drift.is_empty());
+
+        let mut denied = valid.clone();
+        denied.allowed = false;
+        let mut wrong_source = valid.clone();
+        wrong_source.source_fingerprint = Some("sha256:tampered-source".to_string());
+        let mut wrong_target = valid.clone();
+        wrong_target.target_fingerprint = "sha256:tampered-target".to_string();
+        let mut wrong_drift = valid;
+        wrong_drift.drift.clear();
+
+        for (suffix, continuation) in [
+            ("allowed", denied),
+            ("source", wrong_source),
+            ("target", wrong_target),
+            ("drift", wrong_drift),
+        ] {
+            let run_id = RunId::from_string(format!("run_materialization_{suffix}"));
+            let mut target = RunRecord::new(
+                session.session_id.clone(),
+                run_id.clone(),
+                ConversationId::new(),
+            );
+            target.restore_from_run_id = Some(source_run_id.clone());
+            target_materialization
+                .insert_into(&mut target.metadata)
+                .unwrap();
+            continuation.insert_into(&mut target.metadata).unwrap();
+            service.storage.begin_run(target).unwrap();
+            let target = service
+                .storage
+                .load_run(&session.session_id, &run_id)
+                .unwrap();
+
+            let error = service
+                .runtime
+                .block_on(wire_materialization(&service.storage, &target))
+                .unwrap_err();
+            assert_eq!(error.code, starweaver_rpc_core::SERVER_ERROR, "{suffix}");
+            assert!(
+                error.message.contains("inconsistent"),
+                "{suffix}: {error:?}"
+            );
+        }
+    }
+
     #[test]
     fn service_creates_and_reads_session_without_cli() {
         let temp = tempfile::tempdir().unwrap();
@@ -1848,7 +2422,11 @@ mod tests {
         source_run.profile = Some("general".to_string());
         source_run.status = RunStatus::Completed;
         source_run.output_preview = Some("CLI source output".to_string());
-        let source_run = service.storage.begin_run(source_run).unwrap();
+        let source_run = service
+            .storage
+            .session_store()
+            .append_run_allocated(source_run)
+            .unwrap();
         let mut source_state = ResumableState {
             session_id: Some(session.session_id.clone()),
             run_id: Some(source_run_id.clone()),
@@ -1871,6 +2449,7 @@ mod tests {
                 "sessionId": session.session_id.as_str(),
                 "restoreFromRunId": source_run_id.as_str(),
                 "profile": "default",
+                "continuationMode": "switch",
                 "prompt": "continue from the CLI context"
             }),
         ));
@@ -2104,7 +2683,11 @@ mod tests {
         );
         run.trigger_type = Some("cli".to_string());
         run.status = RunStatus::Completed;
-        service.storage.begin_run(run).unwrap();
+        service
+            .storage
+            .session_store()
+            .append_run_allocated(run)
+            .unwrap();
         let messages = (0..300)
             .map(|sequence| {
                 DisplayMessage::new(
@@ -2127,7 +2710,7 @@ mod tests {
 
         let (sender, mut receiver) = mpsc::channel(512);
         let connection = service.live_connection(sender);
-        connection.initialized.store(true, Ordering::Release);
+        connection.state.initialized.store(true, Ordering::Release);
         let subscribe = connection.handle_text(&request(
             1,
             "stream.subscribe",
@@ -2273,7 +2856,11 @@ mod tests {
         let params = json!({
             "prompt": "hello",
             "idempotencyKey": "detached-run-retry",
-            "environment": {"id": "workspace", "attachmentLeaseId": lease_id}
+            "environmentAttachments": [{
+                "id": "workspace",
+                "kind": "local",
+                "attachmentLeaseId": lease_id
+            }]
         });
         let first = connection
             .handle_text(&request(2, "run.start", params.clone()))
@@ -2294,14 +2881,30 @@ mod tests {
             .response
             .unwrap();
         assert_eq!(awaited["result"]["status"]["status"], "completed");
-        let detached = connection
-            .handle_text(&request(
-                4,
-                "environment.detach",
-                json!({"attachmentLeaseId": lease_id}),
-            ))
-            .response
-            .unwrap();
+        let detach_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let detached = loop {
+            let detached = connection
+                .handle_text(&request(
+                    4,
+                    "environment.detach",
+                    json!({"attachmentLeaseId": lease_id}),
+                ))
+                .response
+                .unwrap();
+            if detached.get("error").is_none() {
+                break detached;
+            }
+            assert_eq!(
+                detached["error"]["code"],
+                starweaver_rpc_core::RUN_CONFLICT,
+                "detach failed for an unexpected reason: {detached}"
+            );
+            assert!(
+                std::time::Instant::now() < detach_deadline,
+                "lease remained active after terminal run cleanup: {detached}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
         assert_eq!(detached["result"]["detached"], true);
 
         let replay = connection
@@ -2331,6 +2934,198 @@ mod tests {
     }
 
     #[test]
+    fn continuation_mode_fingerprints_preserve_legacy_default_and_distinguish_opt_ins() {
+        let input = json!({
+            "sessionId": "session-fingerprint",
+            "profile": "default",
+            "input": [{"kind": "text", "text": "hello"}],
+            "restoreFromRunId": null,
+            "environmentAttachments": []
+        });
+        let legacy = command_fingerprint("rpc_run_start", &input).unwrap();
+        let preserve = continuation_command_fingerprint(
+            "rpc_run_start",
+            input.clone(),
+            ContinuationMode::Preserve,
+        )
+        .unwrap();
+        let compatible = continuation_command_fingerprint(
+            "rpc_run_start",
+            input.clone(),
+            ContinuationMode::Compatible,
+        )
+        .unwrap();
+        let switch =
+            continuation_command_fingerprint("rpc_run_start", input, ContinuationMode::Switch)
+                .unwrap();
+
+        assert_eq!(preserve, legacy);
+        assert_ne!(compatible, preserve);
+        assert_ne!(switch, preserve);
+        assert_ne!(compatible, switch);
+    }
+
+    #[test]
+    fn exact_run_retry_projects_pre_materialization_receipt_as_legacy() {
+        use starweaver_core::ConversationId;
+        use starweaver_session::{AcquireRunAdmission, RunRecord};
+
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        let service = RpcService::live(config).unwrap();
+        let session = service
+            .storage
+            .create_session_for_product(
+                Some("default".to_string()),
+                Some("legacy receipt".to_string()),
+                None,
+                Some("rpc"),
+            )
+            .unwrap();
+        let params = json!({
+            "sessionId": session.session_id.as_str(),
+            "prompt": "legacy exact retry",
+            "idempotencyKey": "legacy-materialization-retry"
+        });
+        let refs = effective_rpc_environment_attachments(&[]);
+        let rpc_request = run_request(&service.catalog, &service.state, &params, &refs).unwrap();
+        let legacy_fingerprint = command_fingerprint(
+            "rpc_run_start",
+            &json!({
+                "sessionId": rpc_request.session_id,
+                "profile": rpc_request.profile,
+                "input": rpc_request.durable_input,
+                "restoreFromRunId": rpc_request.restore_from_run_id,
+                "environmentAttachments": run_attachment_fingerprint(&refs).unwrap(),
+            }),
+        )
+        .unwrap();
+        assert_eq!(rpc_request.command_fingerprint, legacy_fingerprint);
+        let run_id = RunId::from_string("run_legacy_materialization_receipt");
+        let mut run = RunRecord::new(session.session_id, run_id.clone(), ConversationId::new());
+        run.input = rpc_request.durable_input;
+        run.profile = Some(rpc_request.profile);
+        run.trigger_type = Some("rpc".to_string());
+        service.runtime.block_on(async {
+            service
+                .storage
+                .session_store()
+                .acquire_run_admission(AcquireRunAdmission {
+                    run,
+                    namespace_id: starweaver_session::LOCAL_SESSION_NAMESPACE.to_string(),
+                    host_instance_id: "legacy-host".to_string(),
+                    admission_id: "legacy-admission".to_string(),
+                    lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(1),
+                    idempotency_key: "legacy-materialization-retry".to_string(),
+                    command_fingerprint: legacy_fingerprint,
+                    replaces_waiting_run_id: None,
+                    hitl_resume_claim_id: None,
+                })
+                .await
+                .unwrap();
+        });
+
+        let replay = service
+            .handle_text(&request(1, "run.start", params))
+            .response
+            .unwrap();
+        assert!(replay.get("error").is_none(), "{replay}");
+        assert_eq!(replay["result"]["runId"], run_id.as_str());
+        assert_eq!(replay["result"]["idempotentReplay"], true);
+        assert!(replay["result"].get("materialization").is_none());
+        assert!(replay["result"].get("continuation").is_none());
+    }
+
+    #[test]
+    fn exact_resume_retry_projects_pre_materialization_receipt_as_legacy() {
+        use starweaver_core::ConversationId;
+        use starweaver_session::{AcquireRunAdmission, RunRecord, RunStatus};
+
+        let temp = tempfile::tempdir().unwrap();
+        let service = RpcService::live(RpcConfig::for_tests(temp.path())).unwrap();
+        let session = service
+            .storage
+            .create_session_for_product(
+                Some("default".to_string()),
+                Some("legacy resume receipt".to_string()),
+                None,
+                Some("rpc"),
+            )
+            .unwrap();
+        let source_run_id = RunId::from_string("run_legacy_resume_source");
+        let mut source = RunRecord::new(
+            session.session_id.clone(),
+            source_run_id.clone(),
+            ConversationId::new(),
+        );
+        source.profile = Some("default".to_string());
+        source.status = RunStatus::Completed;
+        service
+            .storage
+            .session_store()
+            .append_run_allocated(source)
+            .unwrap();
+
+        let refs = effective_rpc_environment_attachments(&[]);
+        let legacy_fingerprint = command_fingerprint(
+            "rpc_run_resume",
+            &json!({
+                "sessionId": session.session_id,
+                "sourceRunId": source_run_id,
+                "profile": "default",
+                "environmentAttachments": run_attachment_fingerprint(&refs).unwrap(),
+            }),
+        )
+        .unwrap();
+        let target_run_id = RunId::from_string("run_legacy_resume_receipt");
+        let mut target = RunRecord::new(
+            session.session_id.clone(),
+            target_run_id.clone(),
+            ConversationId::new(),
+        );
+        target.restore_from_run_id = Some(source_run_id.clone());
+        target.profile = Some("default".to_string());
+        target.trigger_type = Some("rpc".to_string());
+        service.runtime.block_on(async {
+            service
+                .storage
+                .session_store()
+                .acquire_run_admission(AcquireRunAdmission {
+                    run: target,
+                    namespace_id: starweaver_session::LOCAL_SESSION_NAMESPACE.to_string(),
+                    host_instance_id: "legacy-resume-host".to_string(),
+                    admission_id: "legacy-resume-admission".to_string(),
+                    lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(1),
+                    idempotency_key: "legacy-resume-retry".to_string(),
+                    command_fingerprint: legacy_fingerprint,
+                    replaces_waiting_run_id: None,
+                    hitl_resume_claim_id: None,
+                })
+                .await
+                .unwrap();
+        });
+
+        let replay = service
+            .handle_text(&request(
+                1,
+                "run.resume",
+                json!({
+                    "sessionId": session.session_id,
+                    "runId": source_run_id,
+                    "idempotencyKey": "legacy-resume-retry"
+                }),
+            ))
+            .response
+            .unwrap();
+        assert!(replay.get("error").is_none(), "{replay}");
+        assert_eq!(replay["result"]["runId"], target_run_id.as_str());
+        assert_eq!(replay["result"]["sourceRunId"], source_run_id.as_str());
+        assert_eq!(replay["result"]["idempotentReplay"], true);
+        assert!(replay["result"].get("materialization").is_none());
+        assert!(replay["result"].get("continuation").is_none());
+    }
+
+    #[test]
     fn ordinary_run_start_exact_retry_returns_original_receipt_and_status() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
@@ -2346,6 +3141,17 @@ mod tests {
             .unwrap();
         assert!(first.get("error").is_none(), "{first}");
         assert_eq!(first["result"]["idempotentReplay"], false);
+        assert_eq!(
+            first["result"]["materialization"]["policyVersion"],
+            starweaver_agent::materialization::STARWEAVER_AGENT_POLICY_VERSION
+        );
+        assert!(
+            first["result"]["materialization"]["fingerprint"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("sha256:"))
+        );
+        assert!(first["result"].get("continuation").is_none());
+        let original_materialization = first["result"]["materialization"].clone();
         let session_id = first["result"]["sessionId"].as_str().unwrap();
         let run_id = first["result"]["runId"].as_str().unwrap();
         let awaited = service
@@ -2370,6 +3176,11 @@ mod tests {
         assert_eq!(replay["result"]["runId"], run_id);
         assert_eq!(replay["result"]["status"], "completed");
         assert_eq!(replay["result"]["idempotentReplay"], true);
+        assert_eq!(
+            replay["result"]["materialization"],
+            original_materialization
+        );
+        assert!(replay["result"].get("continuation").is_none());
 
         let conflict = service
             .handle_text(&request(
@@ -2396,7 +3207,189 @@ mod tests {
     }
 
     #[test]
-    fn run_start_fingerprints_canonical_environment_aliases_and_rejects_drift() {
+    fn exact_run_retry_survives_profile_removal_after_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut initial_config = RpcConfig::for_tests(temp.path());
+        let mut retired = initial_config.profiles["default"].clone();
+        retired.model_id = "test:retired".to_string();
+        retired.test_response = Some("retired".to_string());
+        initial_config
+            .profiles
+            .insert("retired".to_string(), retired);
+        let mut restarted_config = initial_config.clone();
+        restarted_config.profiles.remove("retired");
+
+        let service = RpcService::live(initial_config).unwrap();
+        let params = json!({
+            "profile": "retired",
+            "prompt": "stable retry",
+            "idempotencyKey": "profile-removal-retry"
+        });
+        let first = service
+            .handle_text(&request(1, "run.start", params.clone()))
+            .response
+            .unwrap();
+        assert!(first.get("error").is_none(), "{first}");
+        let session_id = first["result"]["sessionId"].clone();
+        let run_id = first["result"]["runId"].clone();
+        let awaited = service
+            .handle_text(&request(
+                2,
+                "run.await",
+                json!({
+                    "sessionId": session_id,
+                    "runId": run_id,
+                    "timeoutMs": 5_000
+                }),
+            ))
+            .response
+            .unwrap();
+        assert_eq!(awaited["result"]["status"]["status"], "completed");
+        service
+            .shutdown_owned_runtime(Duration::from_secs(5))
+            .unwrap();
+        drop(service);
+
+        let restarted = RpcService::live(restarted_config).unwrap();
+        let replay = restarted
+            .handle_text(&request(3, "run.start", params))
+            .response
+            .unwrap();
+        assert!(replay.get("error").is_none(), "{replay}");
+        assert_eq!(replay["result"]["sessionId"], session_id);
+        assert_eq!(replay["result"]["runId"], run_id);
+        assert_eq!(replay["result"]["idempotentReplay"], true);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn run_start_enforces_materialization_modes_before_admission() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = RpcConfig::for_tests(temp.path());
+        let mut alternate = config.profiles["default"].clone();
+        alternate.model_id = "test:alternate".to_string();
+        alternate.test_response = Some("alternate".to_string());
+        config.profiles.insert("alternate".to_string(), alternate);
+        let service = RpcService::live(config).unwrap();
+
+        let source = service
+            .handle_text(&request(
+                1,
+                "run.start",
+                json!({
+                    "prompt": "source",
+                    "idempotencyKey": "materialization-source"
+                }),
+            ))
+            .response
+            .unwrap();
+        assert!(source.get("error").is_none(), "{source}");
+        let session_id = source["result"]["sessionId"].as_str().unwrap();
+        let source_run_id = source["result"]["runId"].as_str().unwrap();
+        let source_fingerprint = source["result"]["materialization"]["fingerprint"]
+            .as_str()
+            .unwrap();
+        let awaited = service
+            .handle_text(&request(
+                2,
+                "run.await",
+                json!({
+                    "sessionId": session_id,
+                    "runId": source_run_id,
+                    "timeoutMs": 5_000
+                }),
+            ))
+            .response
+            .unwrap();
+        assert_eq!(awaited["result"]["status"]["status"], "completed");
+
+        await_run_admission_release(&service, session_id, source_run_id);
+        let exact = service
+            .handle_text(&request(
+                3,
+                "run.start",
+                json!({
+                    "sessionId": session_id,
+                    "restoreFromRunId": source_run_id,
+                    "prompt": "exact continuation",
+                    "idempotencyKey": "materialization-exact"
+                }),
+            ))
+            .response
+            .unwrap();
+        assert!(exact.get("error").is_none(), "{exact}");
+        assert_eq!(exact["result"]["continuation"]["mode"], "preserve");
+        assert_eq!(
+            exact["result"]["continuation"]["sourceFingerprint"],
+            source_fingerprint
+        );
+        assert!(exact["result"]["continuation"].get("drift").is_none());
+        let exact_run_id = exact["result"]["runId"].as_str().unwrap();
+        let exact_awaited = service
+            .handle_text(&request(
+                4,
+                "run.await",
+                json!({
+                    "sessionId": session_id,
+                    "runId": exact_run_id,
+                    "timeoutMs": 5_000
+                }),
+            ))
+            .response
+            .unwrap();
+        assert_eq!(exact_awaited["result"]["status"]["status"], "completed");
+
+        let rejected = service
+            .handle_text(&request(
+                5,
+                "run.start",
+                json!({
+                    "sessionId": session_id,
+                    "restoreFromRunId": source_run_id,
+                    "profile": "alternate",
+                    "prompt": "unsafe implicit profile switch",
+                    "idempotencyKey": "materialization-rejected"
+                }),
+            ))
+            .response
+            .unwrap();
+        assert_eq!(rejected["error"]["code"], INVALID_PARAMS);
+        assert!(
+            rejected["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("modelProfileId")
+        );
+
+        await_run_admission_release(&service, session_id, exact_run_id);
+        let switched = service
+            .handle_text(&request(
+                6,
+                "run.start",
+                json!({
+                    "sessionId": session_id,
+                    "restoreFromRunId": source_run_id,
+                    "profile": "alternate",
+                    "prompt": "explicit profile switch",
+                    "continuationMode": "switch",
+                    "idempotencyKey": "materialization-switched"
+                }),
+            ))
+            .response
+            .unwrap();
+        assert!(switched.get("error").is_none(), "{switched}");
+        assert_eq!(switched["result"]["continuation"]["mode"], "switch");
+        assert!(
+            switched["result"]["continuation"]["drift"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["field"] == "modelProfileId")
+        );
+    }
+
+    #[test]
+    fn run_start_fingerprints_canonical_environment_attachments_and_rejects_drift() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
         let service = RpcService::live(config).unwrap();
@@ -2406,8 +3399,13 @@ mod tests {
                 "run.start",
                 json!({
                     "prompt": "hello",
-                    "idempotencyKey": "environment-alias-retry",
-                    "environment": {"id": "workspace", "kind": "local"}
+                    "idempotencyKey": "environment-attachment-retry",
+                    "environmentAttachments": [{
+                        "id": "workspace",
+                        "kind": "local",
+                        "mode": "read_write",
+                        "default": true
+                    }]
                 }),
             ))
             .response
@@ -2426,7 +3424,7 @@ mod tests {
                 "run.start",
                 json!({
                     "prompt": "hello",
-                    "idempotencyKey": "environment-alias-retry",
+                    "idempotencyKey": "environment-attachment-retry",
                     "environmentAttachments": [
                         {
                             "id": "workspace",
@@ -2453,8 +3451,8 @@ mod tests {
                 "run.start",
                 json!({
                     "prompt": "hello",
-                    "idempotencyKey": "environment-alias-retry",
-                    "environments": [{"id": "data", "kind": "local"}]
+                    "idempotencyKey": "environment-attachment-retry",
+                    "environmentAttachments": [{"id": "data", "kind": "local"}]
                 }),
             ))
             .response
@@ -2493,6 +3491,9 @@ mod tests {
             2
         );
         assert_eq!(result["environmentAttachments"][0]["id"], "workspace");
+        assert_eq!(result["environmentAttachments"][0]["default"], true);
+        assert_eq!(result["environmentAttachments"][0]["defaultForShell"], true);
+        assert_eq!(result["environmentAttachments"][1]["id"], "data");
         assert_eq!(result["environmentAttachments"][1]["mode"], "read_only");
     }
 
@@ -2549,7 +3550,8 @@ mod tests {
                 ]
             }
         });
-        let (durable, input) = run_input(&params).expect("structured input");
+        let typed = serde_json::from_value::<RunStartParams>(params).unwrap();
+        let (durable, input) = run_input(&typed).expect("structured input");
         assert_eq!(durable.len(), 2);
         assert_eq!(input.content.len(), 2);
         assert!(matches!(durable[0], InputPart::Text { .. }));
@@ -2558,11 +3560,12 @@ mod tests {
             starweaver_model::ContentPart::ImageUrl { .. }
         ));
 
-        let error = run_input(&json!({
+        let typed = serde_json::from_value::<RunStartParams>(json!({
             "prompt": "ambiguous",
             "input": {"parts": [{"kind": "text", "text": "also ambiguous"}]}
         }))
-        .expect_err("prompt and structured input must conflict");
+        .unwrap();
+        let error = run_input(&typed).expect_err("prompt and structured input must conflict");
         assert_eq!(error.code, INVALID_PARAMS);
         assert!(error.message.contains("not both"));
     }
@@ -2627,7 +3630,7 @@ mod tests {
         let selected = service.handle_text(&request(
             1,
             "model.select",
-            json!({"clientStateScope": "desktop", "profile": "coding"}),
+            json!({"clientStateScope": "primary", "profile": "coding"}),
         ));
         assert_eq!(
             selected.response.unwrap()["result"]["selectedProfile"],
@@ -2637,7 +3640,7 @@ mod tests {
 
         let reopened = RpcService::live(config).unwrap();
         let current =
-            reopened.handle_text(&request(2, "model.current", json!({"client": "desktop"})));
+            reopened.handle_text(&request(2, "model.current", json!({"client": "primary"})));
         assert_eq!(
             current.response.unwrap()["result"]["selectedProfile"],
             "coding"
@@ -2645,7 +3648,7 @@ mod tests {
         let scoped = run_request(
             &reopened.catalog,
             &reopened.state,
-            &json!({"prompt": "hello", "clientStateScope": "desktop"}),
+            &json!({"prompt": "hello", "clientStateScope": "primary"}),
             &[],
         )
         .unwrap();
@@ -2656,7 +3659,7 @@ mod tests {
             &reopened.state,
             &json!({
                 "prompt": "hello",
-                "clientStateScope": "desktop",
+                "clientStateScope": "primary",
                 "profile": default_profile
             }),
             &[],
@@ -2667,7 +3670,7 @@ mod tests {
         let conflict = reopened.handle_text(&request(
             3,
             "model.current",
-            json!({"clientStateScope": "desktop", "client": "tui"}),
+            json!({"clientStateScope": "primary", "client": "secondary"}),
         ));
         assert_eq!(conflict.response.unwrap()["error"]["code"], INVALID_PARAMS);
     }

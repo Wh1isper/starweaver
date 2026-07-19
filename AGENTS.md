@@ -18,19 +18,19 @@ Current workspace members:
 - `crates/starweaver-oauth` — OAuth credential storage under `~/.starweaver`, Codex device login, token refresh, JWT metadata extraction, and store-backed token sources
 - `crates/starweaver-oauth-provider` — OAuth-backed provider helpers, Codex model construction helpers, and refresh supervisor utilities
 - `crates/starweaver-context` — AgentContext, explicit agent-tool state, checkpointable run state, versioned checkpoint records, executor callback contracts, explicit runtime-ephemeral state, narrow tool runtime snapshots, read-only host capability views, typed dependencies, resumable state, state store, product-neutral event-bus integration, message bus, and usage ledger
-- `crates/starweaver-runtime` — core agent loop, graph state machine, typed request-phase transitions, static and dynamic instructions, semantic retry, tool execution over provider-neutral tool schema, per-tool retry budgets, approval/deferred control-flow recording, prepare-tools hooks, structured output, typed structured output parsing, output functions, message history continuation, history processors, system prompt reinjection, usage-limit enforcement, typed usage snapshot events, typed stream emission, scoped overrides, context integration, capability hooks, capability bundles, trace recording, checkpoint emission, direct executor behavior, and compatibility re-exports
+- `crates/starweaver-runtime` — core agent loop, graph state machine, typed request-phase transitions, static and dynamic instructions, semantic retry, tool execution over provider-neutral tool schema, per-tool retry budgets, approval/deferred control-flow recording, prepare-tools hooks, structured output, typed structured output parsing, output functions, message history continuation, history processors, system prompt reinjection, usage-limit enforcement, typed usage snapshot events, typed stream emission, safe public error projection, scoped overrides, context integration, capability hooks, capability bundles, trace recording, checkpoint emission, direct executor behavior, and compatibility re-exports
 - `crates/starweaver-tools` — function tool schema, prefixed tools/toolsets, MCP toolset foundations, tool metadata, retry budget metadata, approval/deferred control-flow metadata, tool registries, toolset combinators, and execution primitives
 - `crates/starweaver-agent` — ergonomic SDK facade, `AgentBuilder`, `AgentApp`, SDK-level subagent registry, first-party tool bundles, spec presets, session helpers, media/filter helpers, and application-facing helpers
 - `crates/starweaver-environment` — `EnvironmentProvider`, virtual and local provider foundations, file and shell policies, resource references, environment state snapshots, and envd-backed provider adapters
 - `crates/starweaver-envd-core` — runtime-neutral envd service trait, DTOs, protocol identity, JSON-RPC frame helpers, state descriptors, and error mapping
 - `crates/starweaver-envd-client` — stdio/http `EnvdRpcClient` over the shared envd service interface
 - `crates/starweaver-envd` — `LocalEnvd`, local ephemeral envd state, JSON-RPC dispatcher, stdio/http server transports, and standalone `starweaver-envd` binary
-- `crates/starweaver-session` — shared durable session contracts for canonical input parts, family-aware stream cursor refs, `SessionStore` traits, versioned session/run records, fenced background-subagent execution, run-aware delivery release/reconciliation, integrity-checked quota-bounded artifact retention, typed continuation causes and atomic admission, resume snapshots, approvals, deferred records, and compact trace projections
+- `crates/starweaver-session` — shared durable session contracts for canonical input parts, family-aware stream cursor refs, `SessionStore` traits, versioned session/run records, typed atomic terminal status/output/diagnostic projections, fenced background-subagent execution, run-aware delivery release/reconciliation, integrity-checked quota-bounded artifact retention, typed continuation causes and atomic admission, resume snapshots, approvals, deferred records, and compact trace projections
 - `crates/starweaver-stream` — typed raw agent stream records, source attribution and sinks, shared display/replay contracts, family-aware replay cursors, replay event logs, replay transports, realtime compaction buffers, stream archives, UI adapters, sanitization, and protocol envelopes
 - `crates/starweaver-storage` — canonical shared SQLite migrations, atomic evidence domain operations, concrete `SessionStore`, replay event-log, stream archive adapters, typed query facade, and migration status reporting
 - `crates/starweaver-cli` — independent CLI/TUI product surface for headless runs, terminal interaction, display rendering, session restore, launcher dispatch, direct environment/envd connectivity, and install/update workflows
 - `crates/starweaver-rpc-core` — typed JSON-RPC host protocol contracts, envelopes, errors, stream payload projection, and replay result helpers
-- `crates/starweaver-rpc` — independent standalone JSON-RPC host product for Desktop and local host integrations, owning `rpc.toml`, AgentSpec/profile/model materialization, handlers, coordination, authorization, subscriptions, environment attachments, and transports
+- `crates/starweaver-rpc` — independent standalone JSON-RPC host product for local and external host integrations, owning `rpc.toml`, AgentSpec/profile/model materialization, handlers, coordination, authorization, subscriptions, environment attachments, and transports
 - `packages/starweaver-py` — in-process Python SDK bindings, Python tool injection, live `AgentRun` control, message bus facades, typed HITL helpers, deterministic test models, sessions, stream records, and Python distribution artifacts
 
 Planned areas live in `spec/` until their responsibilities, integration points, and validation paths are clear:
@@ -46,7 +46,7 @@ Planned areas live in `spec/` until their responsibilities, integration points, 
 - `starweaver-oauth-provider`: OAuth provider construction helpers and proactive refresh supervision.
 - `starweaver-tools`: tool schema, toolsets, metadata, tool context, combinators, and protocol-level tool execution primitives.
 - `starweaver-context`: AgentContext, explicit agent-tool state, checkpointable run state, checkpoint/executor callback contracts, explicit runtime-ephemeral state, narrow tool runtime snapshots, read-only host capability views, typed dependencies, resumable state, state store, event bus, message bus, and usage ledger.
-- `starweaver-runtime`: core agent loop, explicit typed phase transitions, tool loop, output loop, capabilities, usage-limit enforcement, usage snapshot publication, stream and checkpoint emission, direct executor behavior, trace spans, and compatibility re-exports.
+- `starweaver-runtime`: core agent loop, explicit typed phase transitions, tool loop, output loop, capabilities, usage-limit enforcement, usage snapshot publication, stream and checkpoint emission, safe public projection of typed runtime/model errors, direct executor behavior, trace spans, and compatibility re-exports.
 - `starweaver-agent`: SDK ergonomics, tool implementation bundles, subagent protocols, application wrappers, filters, media helpers, and policy presets. New stable imports belong in `starweaver_agent::prelude`; advanced contracts use explicit owning-layer namespaces, while root re-exports are a 0.x compatibility facade.
 - `ask_user_question` is main-agent-only. Subagent inheritance must reject it when required, strip it from optional/inherit-all paths, and deny it again after each child agent's final static, dynamic, and capability tool preparation.
 - First-party tool bundles use Filtered dependency requirements. Strict tools receive only requested authority intersected with the host-installed per-tool `ToolCapabilityGrant`; named `HostCapabilities`, shell projection, and capability-specific mutable handles are deny-by-default. Never add a new broad mutable context handle when a narrow grant can own the operation.
@@ -54,12 +54,13 @@ Planned areas live in `spec/` until their responsibilities, integration points, 
 - `starweaver-envd-core`: runtime-neutral envd service protocol, DTOs, state descriptors, JSON-RPC frame helpers, and error mapping.
 - `starweaver-envd-client`: stdio/http envd client implementing the shared envd service interface.
 - `starweaver-envd`: local envd implementation, ephemeral local state, service dispatcher, stdio/http transports, and standalone envd binary.
-- `starweaver-session`: shared durable session contracts for input parts, `SessionStore` traits, session/run records, fenced background execution, run-aware delivery dispositions, artifact evidence, typed continuation causes and atomic admission, resume snapshots, approvals, deferred records, and compact trace projections.
+- `starweaver-session`: shared durable session contracts for input parts, `SessionStore` traits, session/run records, typed atomic terminal status/output/diagnostic projections, fenced background execution, run-aware delivery dispositions, artifact evidence, typed continuation causes and atomic admission, resume snapshots, approvals, deferred records, and compact trace projections.
 - `starweaver-stream`: typed raw agent stream records, source attribution and sinks, display/replay stream contracts, UI adapters, sanitizers, realtime compaction buffers, stream archives, and protocol envelopes.
 - `starweaver-storage`: canonical SQLite migrations, atomic evidence domain operations, typed query facade, concrete `SessionStore`, `StreamArchive`, and `ReplayEventLog` adapters, plus migration status reporting.
 - `starweaver-cli`: independent command-line/TUI product surface and local automation entry point; it must not host or depend on the RPC product.
 - `starweaver-rpc-core`: typed JSON-RPC host protocol definitions and framing/projection helpers only.
 - `starweaver-rpc`: independent standalone JSON-RPC host product; it owns `rpc.toml`, profile/model materialization, handlers, and active-run state, must not depend on CLI, and independently connects to shared storage, environment, and envd abstractions.
+- RPC transport threads own framing, authorization, request order, response writes, and flush barriers. Startup reconciliation, request dispatch, subscription tails, and coordinated shutdown execute on the RPC-owned Tokio runtime with an explicit worker-stack budget; blocking service entry points must not run on those runtime workers.
 - `starweaver-platform`: hosted orchestration and external protocol adapters such as A2A and AGUI.
 
 ## Documentation Workflow
@@ -148,7 +149,7 @@ Current specs:
 - `spec/alignment/09-architecture-review.md` — cross-workspace architecture, security, durability, API, and consolidation review baseline
 - `spec/alignment/10-session-search-evidence.md` — Phase 1 session-search implementation, conformance, and boundary evidence
 - `spec/alignment/11-tui-ui-ux-completion.md` — complete TUI interaction, status, task, history, and validation evidence
-- `spec/alignment/12-desktop-rpc-readiness.md` — CLI/RPC shared-storage interoperability review and Desktop design entry gates
+- `spec/alignment/12-rpc-host-readiness.md` — RPC host contract, durability, recovery, and interoperability readiness
 
 Use `spec/alignment/` for readiness notes, design comparisons, implementation evidence, and roadmap reminders. Keep unfinished work in the spec that owns the changed contract.
 
@@ -199,6 +200,8 @@ For full local validation, run:
 ```bash
 make ci
 ```
+
+`make rpc-contracts-check` remains the complete standalone in-process/stdio/HTTP contract gate. The aggregate `make ci` uses the ordered `rpc-ci-check` composition so workspace tests provide typed in-process coverage before `rpc-integration-check` builds one normal dev-profile CLI/RPC binary pair and reuses it across the stdio/HTTP and bidirectional subprocess gates.
 
 Before a release, also run the Rust semver and classified Python API gate:
 

@@ -72,8 +72,8 @@ jobs:
       - name: Run tests
         run: make test
 
-      - name: Run CLI/RPC subprocess interoperability
-        run: make desktop-rpc-e2e
+      - name: Validate RPC transports and CLI interoperability
+        run: make rpc-integration-check
 
   cross-platform-tests:
     name: Tests (${{ matrix.os }})
@@ -96,8 +96,8 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-targets --all-features --locked
 
-      - name: Run CLI/RPC subprocess interoperability
-        run: make desktop-rpc-e2e
+      - name: Validate RPC transports and CLI interoperability
+        run: make rpc-integration-check
 
   xtask:
     name: Xtask

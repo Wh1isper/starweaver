@@ -128,8 +128,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let state = RpcStateRepository::new(temp.path());
         state.write_current_session("session_test").unwrap();
-        state.write_selected_profile("desktop", "coding").unwrap();
-        state.write_selected_profile("tui", "general").unwrap();
+        state.write_selected_profile("primary", "coding").unwrap();
+        state
+            .write_selected_profile("secondary", "general")
+            .unwrap();
 
         let reopened = RpcStateRepository::new(temp.path());
         assert_eq!(
@@ -138,13 +140,16 @@ mod tests {
         );
         assert_eq!(
             reopened
-                .read_selected_profile("desktop")
+                .read_selected_profile("primary")
                 .unwrap()
                 .as_deref(),
             Some("coding")
         );
         assert_eq!(
-            reopened.read_selected_profile("tui").unwrap().as_deref(),
+            reopened
+                .read_selected_profile("secondary")
+                .unwrap()
+                .as_deref(),
             Some("general")
         );
     }

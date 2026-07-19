@@ -8,7 +8,7 @@ use starweaver_core::{RunId, SessionId};
 use starweaver_session::{
     ApprovalDecision, ApprovalRecord, ApprovalStatus, CheckpointRef, DeferredToolRecord,
     ExecutionStatus, HitlResumeClaim, HitlResumeClaimState, PendingStreamPublication,
-    RunAdmissionLease, RunEvidenceCommit, RunRecord, SessionRecord, SessionStoreError,
+    RunAdmissionLease, RunEvidenceCommit, RunRecord, RunStatus, SessionRecord, SessionStoreError,
     SessionStoreResult,
 };
 use starweaver_stream::{AgentStreamRecord, DisplayMessage, ReplayEvent, ReplayScope};
@@ -265,6 +265,18 @@ impl SqliteStorage {
             transaction.commit().map_err(map_sqlite_session_error)?;
             return Ok(persisted);
         }
+        if run.status != RunStatus::Queued {
+            return Err(SessionStoreError::Failed(format!(
+                "begin_run requires queued status for new run {}",
+                run.run_id.as_str()
+            )));
+        }
+        run.validate_new_write().map_err(|error| {
+            SessionStoreError::Failed(format!(
+                "invalid run state for {}: {error}",
+                run.run_id.as_str()
+            ))
+        })?;
         save_run_record(&transaction, &run)?;
         apply_run_to_session(&mut session, &run);
         save_session_record(&transaction, &session)?;
@@ -329,7 +341,7 @@ impl SqliteStorage {
         mut after_write: impl FnMut(EvidenceWritePoint) -> SessionStoreResult<()>,
     ) -> SessionStoreResult<RunRecord> {
         commit.run.stream_cursors.clone_from(&commit.stream_cursors);
-        commit.validate()?;
+        commit.validate_structure()?;
         let evidence_digest = commit.digest()?;
         let publication = if commit.publication_targets.is_empty() {
             None
@@ -477,6 +489,7 @@ impl SqliteStorage {
                 commit.run.run_id.as_str()
             )));
         }
+        commit.validate_terminal_projections()?;
         if let Some(lease) = admission_lease {
             ensure_run_admission_in_transaction(&transaction, lease, Utc::now())?;
         }
@@ -527,6 +540,7 @@ impl SqliteStorage {
             }
             source.status = update.status;
             source.output_preview.clone_from(&update.output_preview);
+            source.terminal_error.clone_from(&update.terminal_error);
             source.updated_at = commit.run.updated_at;
             save_run_record(&transaction, &source)?;
             after_write(EvidenceWritePoint::RelatedRun(update_index))?;
@@ -1585,6 +1599,7 @@ fn replace_resolved_approval(
         && existing.action_id == approval.action_id
         && existing.action_name == approval.action_name
         && existing.request == approval.request
+        && existing.reviewed_arguments == approval.reviewed_arguments
         && existing.created_at == approval.created_at
         && existing.trace_context == approval.trace_context
         && existing.metadata == approval.metadata;

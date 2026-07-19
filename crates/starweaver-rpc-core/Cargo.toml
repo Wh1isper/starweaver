@@ -19,5 +19,8 @@ starweaver-core.workspace = true
 starweaver-session.workspace = true
 starweaver-stream.workspace = true
 
+[dev-dependencies]
+jsonschema.workspace = true
+
 [lints]
 workspace = true

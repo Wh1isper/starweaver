@@ -3,10 +3,10 @@ use rusqlite::{params, types::ValueRef};
 use starweaver_context::{AgentCheckpoint, AgentRunState, ResumableState};
 use starweaver_core::{AgentExecutionNode, AgentId, CheckpointId, ConversationId, RunId};
 use starweaver_session::{
-    ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, ExecutionStatus,
-    HitlResumeClaim, InMemorySessionStore, RelatedRunUpdate, RunRecord, RunStatus, SessionRecord,
-    SessionStore, SessionStoreError, StreamCursorRef, StreamPublicationTarget,
-    StreamPublicationTargets,
+    AcquireRunAdmission, ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord,
+    ExecutionStatus, HitlResumeClaim, InMemorySessionStore, LOCAL_SESSION_NAMESPACE,
+    RelatedRunUpdate, RunRecord, RunStatus, RunTerminalError, SessionRecord, SessionStore,
+    SessionStoreError, StreamCursorRef, StreamPublicationTarget, StreamPublicationTargets,
 };
 use starweaver_stream::{AgentStreamEvent, AgentStreamRecord};
 use starweaver_stream::{
@@ -14,7 +14,10 @@ use starweaver_stream::{
     ReplayScope, ReplaySnapshot, StreamArchive,
 };
 
-use crate::{RunEvidenceCommit, SqliteStorage, domain::EvidenceWritePoint};
+use crate::{
+    RunEvidenceCommit, SqliteStorage, domain::EvidenceWritePoint,
+    session_store::records::save_run_record,
+};
 
 fn evidence_state(run: &RunRecord) -> ResumableState {
     ResumableState {
@@ -140,6 +143,20 @@ fn begin_run_assigns_unique_sequences_and_rejects_conflicting_retries() {
             .to_string()
             .contains("run conflict")
     );
+
+    let mut non_queued = RunRecord::new(
+        first.session_id,
+        RunId::from_string("run-non-queued"),
+        ConversationId::new(),
+    );
+    non_queued.status = RunStatus::Completed;
+    assert!(
+        storage
+            .begin_run(non_queued)
+            .expect_err("begin_run only creates queued runs")
+            .to_string()
+            .contains("requires queued status")
+    );
 }
 
 #[test]
@@ -243,6 +260,8 @@ fn sqlite_store_clears_active_run_for_every_terminal_status() {
 
         let mut terminal = run;
         terminal.status = status;
+        terminal.terminal_error = (status == RunStatus::Failed)
+            .then(|| RunTerminalError::new("test_failure", "test failure"));
         store
             .append_run_allocated(terminal)
             .expect("append terminal run");
@@ -364,6 +383,54 @@ async fn commit_run_evidence_is_atomic_and_resume_uses_run_context() {
             "version": 1,
             "payload": {"provider_id": "test"}
         }))
+    );
+}
+
+#[test]
+fn legacy_failed_evidence_exact_retry_remains_idempotent_after_upgrade() {
+    let storage = SqliteStorage::in_memory().expect("storage");
+    let mut run = begun_run(&storage, "legacy-failed-retry");
+    let source_run_id = RunId::from_string("legacy-related-source");
+    run.status = RunStatus::Failed;
+    run.restore_from_run_id = Some(source_run_id.clone());
+    let mut commit = RunEvidenceCommit::new(run.clone(), evidence_state(&run));
+    let mut related = RelatedRunUpdate::new(source_run_id, RunStatus::Waiting, RunStatus::Failed);
+    related.resume_claim_id = Some("legacy-resume-claim".to_string());
+    commit.related_run_updates.push(related);
+    let digest = commit.digest().expect("legacy evidence digest");
+
+    {
+        let connection = storage.lock().expect("connection");
+        save_run_record(&connection, &run).expect("persist legacy failed run");
+        connection
+            .execute(
+                "INSERT INTO run_evidence_commits
+                 (session_id, run_id, digest, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    run.session_id.as_str(),
+                    run.run_id.as_str(),
+                    digest,
+                    run.updated_at.to_rfc3339(),
+                ],
+            )
+            .expect("seal legacy evidence");
+    }
+
+    assert_eq!(
+        storage
+            .commit_run_evidence(commit.clone())
+            .expect("legacy exact retry"),
+        run
+    );
+
+    let mut conflicting = commit;
+    conflicting.run.output_preview = Some("different legacy payload".to_string());
+    assert!(
+        storage
+            .commit_run_evidence(conflicting)
+            .expect_err("different legacy payload must conflict")
+            .to_string()
+            .contains("evidence conflict")
     );
 }
 
@@ -709,6 +776,171 @@ async fn continuation_related_run_update_rolls_back_on_late_replay_failure() {
         storage.load_run(&source.session_id, &continuation_id),
         Err(SessionStoreError::NotFound(_))
     ));
+}
+
+#[tokio::test]
+async fn expired_hitl_replacement_terminalizes_source_and_consumes_started_claim() {
+    let storage = SqliteStorage::in_memory().expect("storage");
+    let mut source = begun_run(&storage, "expired-hitl-replacement");
+    source.status = RunStatus::Waiting;
+    source.updated_at = Utc::now();
+    storage
+        .commit_run_evidence(RunEvidenceCommit::new(
+            source.clone(),
+            evidence_state(&source),
+        ))
+        .expect("commit waiting source");
+
+    let claim_id = "expired-hitl-replacement-claim";
+    let store = storage.session_store();
+    store
+        .claim_hitl_resume(HitlResumeClaim::new(
+            claim_id.to_string(),
+            source.session_id.clone(),
+            source.run_id.clone(),
+            Utc::now(),
+        ))
+        .await
+        .expect("claim waiting source");
+    let replacement_run_id = RunId::from_string("run-expired-hitl-replacement-continuation");
+    let mut replacement = RunRecord::new(
+        source.session_id.clone(),
+        replacement_run_id.clone(),
+        source.conversation_id.clone(),
+    );
+    replacement.restore_from_run_id = Some(source.run_id.clone());
+    let expires_at = Utc::now() + chrono::Duration::seconds(1);
+    let reconciliation_at = expires_at + chrono::Duration::seconds(1);
+    let request = AcquireRunAdmission {
+        run: replacement,
+        namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+        host_instance_id: "expired-hitl-replacement-host".to_string(),
+        admission_id: "expired-hitl-replacement-admission".to_string(),
+        lease_expires_at: expires_at,
+        idempotency_key: "expired-hitl-replacement-key".to_string(),
+        command_fingerprint: "expired-hitl-replacement-fingerprint".to_string(),
+        replaces_waiting_run_id: Some(source.run_id.clone()),
+        hitl_resume_claim_id: Some(claim_id.to_string()),
+    };
+    let receipt = store
+        .acquire_run_admission(request.clone())
+        .await
+        .expect("admit already-expired waiting replacement");
+    store
+        .start_hitl_resume_effect(&receipt.lease, &source.run_id, claim_id)
+        .await
+        .expect("start the admitted continuation before simulating process loss");
+    store
+        .release_hitl_resume_claim(&source.session_id, &source.run_id, claim_id)
+        .await
+        .expect_err("admission must have started the source claim");
+
+    storage
+        .lock()
+        .expect("connection")
+        .execute_batch(
+            "CREATE TRIGGER fail_started_claim_consumption
+             BEFORE DELETE ON hitl_resume_claims
+             BEGIN
+               SELECT RAISE(ABORT, 'injected started claim consumption failure');
+             END;",
+        )
+        .expect("create claim-consumption failure trigger");
+    store
+        .reconcile_expired_run_admissions(LOCAL_SESSION_NAMESPACE, reconciliation_at)
+        .await
+        .expect_err("claim-consumption failure must roll back orphan terminalization");
+    assert_eq!(
+        store
+            .load_run(&source.session_id, &replacement_run_id)
+            .await
+            .expect("load replacement after failed reconciliation")
+            .status,
+        RunStatus::Queued
+    );
+    assert_eq!(
+        store
+            .load_run(&source.session_id, &source.run_id)
+            .await
+            .expect("load source after failed reconciliation")
+            .status,
+        RunStatus::Waiting
+    );
+    assert!(
+        store
+            .load_run_admission(&receipt.lease.target)
+            .await
+            .expect("load admission after failed reconciliation")
+            .is_some()
+    );
+    storage
+        .lock()
+        .expect("connection")
+        .execute_batch("DROP TRIGGER fail_started_claim_consumption;")
+        .expect("drop claim-consumption failure trigger");
+
+    assert_eq!(
+        store
+            .reconcile_expired_run_admissions(LOCAL_SESSION_NAMESPACE, reconciliation_at)
+            .await
+            .expect("reconcile replacement immediately after admission"),
+        vec![receipt.lease.target.clone()]
+    );
+    assert_eq!(
+        store
+            .load_run(&source.session_id, &replacement_run_id)
+            .await
+            .expect("load terminal replacement")
+            .status,
+        RunStatus::Cancelled
+    );
+    assert_eq!(
+        store
+            .load_run(&source.session_id, &source.run_id)
+            .await
+            .expect("load terminal waiting source")
+            .status,
+        RunStatus::Cancelled
+    );
+    let claim_count: i64 = storage
+        .lock()
+        .expect("connection")
+        .query_row(
+            "SELECT COUNT(*) FROM hitl_resume_claims WHERE session_id = ?1 AND run_id = ?2",
+            params![source.session_id.as_str(), source.run_id.as_str()],
+            |row| row.get(0),
+        )
+        .expect("count consumed source claim");
+    assert_eq!(claim_count, 0, "started source claim must be consumed");
+    assert!(
+        store
+            .load_run_admission(&receipt.lease.target)
+            .await
+            .expect("load reconciled admission")
+            .is_none()
+    );
+    assert!(
+        store
+            .reconcile_expired_run_admissions(LOCAL_SESSION_NAMESPACE, reconciliation_at)
+            .await
+            .expect("repeat reconciliation")
+            .is_empty(),
+        "terminalization and claim consumption must be at most once"
+    );
+    let replay = store
+        .acquire_run_admission(request)
+        .await
+        .expect("exact admission replay remains durable");
+    assert!(replay.idempotent_replay);
+    store
+        .claim_hitl_resume(HitlResumeClaim::new(
+            "duplicate-after-expiry".to_string(),
+            source.session_id.clone(),
+            source.run_id.clone(),
+            Utc::now(),
+        ))
+        .await
+        .expect_err("terminal source must not admit another continuation claim");
 }
 
 #[tokio::test]

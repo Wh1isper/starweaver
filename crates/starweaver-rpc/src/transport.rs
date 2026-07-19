@@ -15,8 +15,10 @@ use std::{
 use serde_json::{Value, json};
 
 use crate::{
-    RpcConfig, RpcHostError, RpcHostResult, RpcService,
+    RpcConfig, RpcHostError, RpcHostResult,
     auth::{RpcHttpCredential, RpcHttpScope, required_scope},
+    environment_manager::MAX_READINESS_TIMEOUT_MS,
+    service::RpcService,
 };
 
 const DEFAULT_HTTP_PATH: &str = "/rpc";
@@ -25,6 +27,10 @@ const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
 const MAX_HTTP_CONNECTIONS: usize = 64;
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+// Cover the longest host-bounded operation plus request read, response write,
+// and a small scheduling margin before reporting a failed graceful drain.
+const HTTP_SHUTDOWN_DRAIN_TIMEOUT: Duration =
+    Duration::from_millis(MAX_READINESS_TIMEOUT_MS + 22_000);
 const STDIO_OUTBOUND_CAPACITY: usize = 256;
 const STDIO_RESPONSE_DEADLINE: Duration = Duration::from_secs(5);
 const STDIO_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(12);
@@ -223,7 +229,7 @@ pub fn run_http(config: &RpcConfig, host: &str, port: u16) -> RpcHostResult<()> 
         credential,
     ));
     eprintln!("starweaver rpc http listening on http://{local_address}{DEFAULT_HTTP_PATH}");
-    let service = Arc::new(RpcService::replay_only(config.clone())?);
+    let service = RpcService::replay_only(config.clone())?;
     let served = serve_http(&listener, &service, &security);
     let shutdown = service.shutdown_owned_runtime(Duration::from_secs(10));
     served.and(shutdown)
@@ -276,7 +282,7 @@ impl Drop for ConnectionPermit {
 
 fn serve_http(
     listener: &TcpListener,
-    service: &Arc<RpcService>,
+    service: &RpcService,
     security: &Arc<HttpSecurity>,
 ) -> RpcHostResult<()> {
     listener
@@ -284,37 +290,60 @@ fn serve_http(
         .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
     let shutdown = Arc::new(AtomicBool::new(false));
     let active_connections = Arc::new(AtomicUsize::new(0));
-    while !shutdown.load(Ordering::SeqCst) {
-        match listener.accept() {
-            Ok((mut stream, _address)) => {
-                configure_http_stream(&stream).map_err(RpcHostError::Io)?;
-                let Some(permit) = ConnectionPermit::try_acquire(&active_connections) else {
-                    let _ = write_http_text(
-                        &mut stream,
-                        "503 Service Unavailable",
-                        "too many concurrent connections",
-                    );
-                    continue;
-                };
-                let service = Arc::clone(service);
-                let security = Arc::clone(security);
-                let shutdown = Arc::clone(&shutdown);
-                thread::spawn(move || {
-                    let _permit = permit;
-                    if let Err(error) =
-                        handle_http_connection(stream, &service, &security, &shutdown)
-                    {
-                        eprintln!("rpc http connection error: {error}");
-                    }
-                });
+    let serve_result = (|| -> RpcHostResult<()> {
+        while !shutdown.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut stream, _address)) => {
+                    configure_http_stream(&stream).map_err(RpcHostError::Io)?;
+                    let Some(permit) = ConnectionPermit::try_acquire(&active_connections) else {
+                        let _ = write_http_text(
+                            &mut stream,
+                            "503 Service Unavailable",
+                            "too many concurrent connections",
+                        );
+                        continue;
+                    };
+                    let service = service.clone();
+                    let security = Arc::clone(security);
+                    let shutdown = Arc::clone(&shutdown);
+                    thread::spawn(move || {
+                        let _permit = permit;
+                        if let Err(error) =
+                            handle_http_connection(stream, &service, &security, &shutdown)
+                        {
+                            eprintln!("rpc http connection error: {error}");
+                        }
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(25));
+                }
+                Err(error) => return Err(RpcHostError::Io(error)),
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(25));
-            }
-            Err(error) => return Err(RpcHostError::Io(error)),
         }
+        Ok(())
+    })();
+    let drain_result = drain_http_connections(&active_connections, HTTP_SHUTDOWN_DRAIN_TIMEOUT);
+    serve_result.and(drain_result)
+}
+
+fn drain_http_connections(
+    active_connections: &AtomicUsize,
+    timeout: Duration,
+) -> RpcHostResult<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let active = active_connections.load(Ordering::Acquire);
+        if active == 0 {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(RpcHostError::Runtime(format!(
+                "{active} RPC HTTP connection(s) did not stop before the shutdown deadline"
+            )));
+        }
+        thread::sleep(Duration::from_millis(10));
     }
-    Ok(())
 }
 
 fn handle_http_connection(
@@ -755,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn connection_permits_enforce_and_release_the_limit() {
+    fn connection_permits_enforce_limit_and_support_bounded_drain() {
         let active_connections = Arc::new(AtomicUsize::new(0));
         let permits = (0..MAX_HTTP_CONNECTIONS)
             .map(|_| ConnectionPermit::try_acquire(&active_connections).unwrap())
@@ -767,6 +796,17 @@ mod tests {
         assert!(ConnectionPermit::try_acquire(&active_connections).is_none());
         drop(permits);
         assert_eq!(active_connections.load(Ordering::Acquire), 0);
-        assert!(ConnectionPermit::try_acquire(&active_connections).is_some());
+
+        let permit = ConnectionPermit::try_acquire(&active_connections).unwrap();
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(25));
+            drop(permit);
+        });
+        drain_http_connections(&active_connections, Duration::from_secs(1)).unwrap();
+        release.join().unwrap();
+
+        active_connections.store(1, Ordering::Release);
+        let error = drain_http_connections(&active_connections, Duration::ZERO).unwrap_err();
+        assert!(error.to_string().contains("1 RPC HTTP connection"));
     }
 }

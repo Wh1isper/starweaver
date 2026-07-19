@@ -12,11 +12,11 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use starweaver_agent::{
-    AgentError, AgentSession, AgentStreamRecord, BackgroundSubagentSupervisor, ResumableState,
-    SubagentDelegationMode, attach_process_shell, attach_shell_review_handle,
+    AgentError, AgentHitlResults, AgentSession, AgentStreamRecord, BackgroundSubagentSupervisor,
+    ResumableState, SubagentDelegationMode, attach_process_shell, attach_shell_review_handle,
 };
-use starweaver_context::{AgentContext, BusMessage};
-use starweaver_core::{CancellationToken, SessionId};
+use starweaver_context::{AgentCheckpoint, AgentContext, BusMessage};
+use starweaver_core::{AgentExecutionNode, CancellationToken, SessionId};
 use starweaver_environment::{
     DynEnvironmentProvider, DynProcessShellProvider, EnvironmentError, EnvironmentState,
 };
@@ -30,8 +30,8 @@ use starweaver_runtime::{
     GoalRunOptions, ModelResponseStreamEvent, OutputPolicy,
 };
 use starweaver_session::{
-    ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, RunRecord, RunStatus,
-    ToolReturnRecordInput,
+    ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, PreparedContinuation,
+    RunRecord, RunStatus, RunTerminalError, ToolReturnRecordInput,
 };
 use starweaver_stream::{
     DefaultDisplayMessageProjector, DisplayMessage, DisplayMessageKind, DisplayMessageProjector,
@@ -192,6 +192,36 @@ pub struct CliRunExecution {
     pub artifacts: RunArtifacts,
 }
 
+/// Validate one prepared waiting continuation without invoking hooks or tools.
+///
+/// This preflight must run before the CLI acquires a durable resume claim or admits the
+/// replacement run. Approved tools are executed only by [`execute_agent_session_with_host`]
+/// after atomic waiting-replacement admission.
+pub fn validate_prepared_hitl_continuation(
+    profile: &ResolvedProfile,
+    environment: &DynEnvironmentProvider,
+    process_environment: Option<&DynProcessShellProvider>,
+    prepared: &PreparedContinuation,
+) -> CliResult<()> {
+    let agent = profile.build_agent_with_delegation(SubagentDelegationMode::Disabled, None)?;
+    let mut session = AgentSession::from_state(agent, prepared.snapshot.state.clone());
+    session.set_environment(environment.clone());
+    if let Some(process_environment) = process_environment {
+        attach_process_shell(session.context_mut(), process_environment.clone());
+    }
+    profile.configure_context(session.context_mut());
+    if let Some(shell_review) = profile.shell_review.as_ref() {
+        attach_shell_review_handle(session.context_mut(), shell_review.clone());
+    }
+    let waiting_state = prepared
+        .waiting_state()
+        .ok_or_else(|| CliError::Run("missing prepared HITL state".to_string()))?;
+    let results = AgentHitlResults::from_prepared_continuation(prepared);
+    session
+        .validate_hitl_results_for_state(waiting_state, &results)
+        .map_err(|error| CliError::Run(format!("invalid HITL continuation: {error}")))
+}
+
 /// Execute a resolved profile through `AgentSession`.
 #[allow(dead_code)]
 pub fn execute_agent_session(
@@ -262,6 +292,7 @@ pub fn execute_agent_session_with_channels(
         environment,
         process_environment,
         restore_state,
+        None,
         policy,
         stream_sender,
         steering_channel,
@@ -279,6 +310,7 @@ pub fn execute_agent_session_with_host(
     environment: &DynEnvironmentProvider,
     process_environment: Option<&DynProcessShellProvider>,
     restore_state: Option<ResumableState>,
+    prepared_continuation: Option<&PreparedContinuation>,
     policy: &CliRunPolicy,
     stream_sender: Option<mpsc::SyncSender<AgentStreamRecord>>,
     steering_channel: Option<CliSteeringChannel>,
@@ -348,6 +380,15 @@ pub fn execute_agent_session_with_host(
     if let Some(supervisor) = host.background_subagent_supervisor.as_ref() {
         supervisor.begin_parent_run(run.run_id.clone());
     }
+    if let Some(prepared) = prepared_continuation {
+        let waiting_state = prepared
+            .waiting_state()
+            .ok_or_else(|| CliError::Run("missing prepared HITL state".to_string()))?;
+        let results = AgentHitlResults::from_prepared_continuation(prepared);
+        runtime
+            .block_on(session.inject_hitl_results_for_state(waiting_state, results))
+            .map_err(|error| CliError::Run(format!("HITL result injection failed: {error}")))?;
+    }
     let cancel_receivers = [cancel_receiver, admission_cancel_receiver]
         .into_iter()
         .flatten()
@@ -403,17 +444,27 @@ pub fn execute_agent_session_with_host(
                         .message_history
                         .push(ModelMessage::Response(partial));
                 }
+                let public_error = error.public_message();
                 let projection =
-                    failed_display_projection(run, &raw_records, &error, policy, &runtime);
+                    failed_display_projection(run, &raw_records, &public_error, policy, &runtime);
                 (
-                    error.clone(),
+                    public_error.clone(),
                     raw_records,
                     projection,
                     saved_partial,
-                    Some(error),
+                    Some(public_error),
                 )
             }
         };
+    let checkpoints = if projection.status == RunStatus::Waiting {
+        session
+            .last_run_state()
+            .map(|state| AgentCheckpoint::new(AgentExecutionNode::ToolReturn, state))
+            .into_iter()
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut state = session.export_full_state();
     let environment_state = preserve_environment_export_evidence(&mut state, environment_state);
     state
@@ -445,15 +496,28 @@ pub fn execute_agent_session_with_host(
             json!(saved_interrupted_partial),
         );
     }
+    let terminal_error = match projection.status {
+        RunStatus::Failed => Some(RunTerminalError::new(
+            "cli_run_failed",
+            failure_error.unwrap_or_else(|| "CLI run failed".to_string()),
+        )),
+        RunStatus::Cancelled => Some(RunTerminalError::new(
+            "cli_run_cancelled",
+            "CLI run cancelled by user",
+        )),
+        _ => None,
+    };
     let artifacts = RunArtifacts {
         state,
         environment_state,
         raw_records,
+        checkpoints,
         display_messages: projection.messages,
         display_snapshot: projection.snapshot,
         approvals: projection.approvals,
         deferred_tools: projection.deferred_tools,
         status: projection.status,
+        terminal_error,
     };
     Ok(CliRunExecution { output, artifacts })
 }
@@ -464,13 +528,13 @@ fn preserve_environment_export_evidence(
 ) -> Option<EnvironmentState> {
     match environment_state {
         Ok(environment_state) => Some(environment_state),
-        Err(error) => {
+        Err(_error) => {
             state
                 .metadata
                 .insert("cli.environment_export_failed".to_string(), json!(true));
             state.metadata.insert(
                 "cli.environment_export_error".to_string(),
-                json!(error.to_string()),
+                json!("environment state export failed"),
             );
             None
         }
@@ -480,7 +544,7 @@ fn preserve_environment_export_evidence(
 enum SessionRunOutcome {
     Completed(Box<starweaver_agent::AgentStreamResult>),
     Cancelled,
-    Failed(String),
+    Failed(AgentError),
 }
 
 fn session_run_outcome(
@@ -489,7 +553,7 @@ fn session_run_outcome(
     match result {
         Ok(stream) => SessionRunOutcome::Completed(Box::new(stream)),
         Err(AgentError::Cancelled { .. }) => SessionRunOutcome::Cancelled,
-        Err(error) => SessionRunOutcome::Failed(error.to_string()),
+        Err(error) => SessionRunOutcome::Failed(error),
     }
 }
 
@@ -922,9 +986,27 @@ mod tests {
         CliPromptContentAdapter, CliRunPolicy, CliSteeringAdapter, CliSteeringChannel,
         CliSteeringMessage, SessionRunOutcome, cancelled_display_projection, cli_guidance_key,
         interrupted_partial_response, preserve_environment_export_evidence, run_session_stream,
-        sync_run_execution_identity, sync_run_request_metadata, sync_run_session_affinity,
+        session_run_outcome, sync_run_execution_identity, sync_run_request_metadata,
+        sync_run_session_affinity,
     };
     use crate::{args::HitlPolicy, prompt_input::PromptAttachment};
+
+    #[test]
+    fn session_run_failure_retains_typed_error_for_safe_public_projection() {
+        let outcome = session_run_outcome(Err(starweaver_agent::AgentError::Model(
+            ModelError::ProviderStatus {
+                status: 401,
+                body: serde_json::json!({"echoed_token": "provider-secret"}),
+                retryable: false,
+            },
+        )));
+
+        let SessionRunOutcome::Failed(error) = outcome else {
+            panic!("expected failed run outcome");
+        };
+        assert_eq!(error.public_message(), "provider status 401");
+        assert!(!error.public_message().contains("provider-secret"));
+    }
 
     #[test]
     fn environment_export_failure_is_recorded_without_discarding_session_state() {
@@ -945,10 +1027,9 @@ mod tests {
         assert!(environment_state.is_none());
         assert_eq!(state.message_history.len(), 1);
         assert_eq!(state.metadata["cli.environment_export_failed"], true);
-        assert!(
-            state.metadata["cli.environment_export_error"]
-                .as_str()
-                .is_some_and(|error| error.contains("snapshot unavailable"))
+        assert_eq!(
+            state.metadata["cli.environment_export_error"],
+            "environment state export failed"
         );
     }
 

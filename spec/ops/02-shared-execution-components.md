@@ -136,6 +136,8 @@ Durable records:
 - `SessionRecord`
 - `RunRecord`
 - `RunStatus`
+- `RunTerminalError`
+- `RunTerminalProjection`
 - `ExecutionStatus`
 - `SessionResumeSnapshot`
 - `CompactRunTrace`
@@ -156,12 +158,20 @@ Responsibilities:
 - append runtime checkpoints or checkpoint refs
 - save context state and environment state
 - update run and session status
+- atomically finalize admitted runs with one terminal status/output/diagnostic projection
+- preserve typed terminal diagnostics as primary durable evidence rather than overloading output previews
 - attach trace identifiers
 - append approval and deferred tool records
 - load resume snapshots
 - return compact run and session trace projections
 - store family-aware stream cursor refs for raw runtime evidence, display replay, and typed replay-event replay
 - compact or archive session evidence
+
+New failed writes require a producer-normalized `RunTerminalError`; completed and non-terminal runs cannot carry one. The invariant applies to evidence commits, admission creation/finalization, and low-level run append/update paths so callers cannot select a weaker write boundary. New admission normalizes stale terminal projections to a clean queued record, while the legacy status API discards caller-provided failure text and synthesizes a fixed generic diagnostic. Existing v0/v1 records without the additive optional field remain readable and are never heuristically reinterpreted from `output_preview`.
+
+Cross-version evidence retry is deliberately two-phase: stores first apply legacy-compatible structural validation and compare the canonical digest, then enforce current terminal invariants only after an exact-retry miss. This preserves idempotency for already committed legacy failures while rejecting the same incomplete projection as a new write. Stores preserve an already committed terminal evidence bundle when releasing its matching admission lease, and exact admission retries compare the complete terminal projection.
+
+Terminal diagnostic producers must use their owning runtime/product safe projection. Provider response bodies, transport text, executor details, storage errors, filesystem paths, credentials, and arbitrary cancellation reasons stay in typed local errors or controlled telemetry; they must not enter `RunTerminalError`, output previews, durable metadata, display/replay events, or client-visible RPC messages.
 
 ## Shared Stream Records
 

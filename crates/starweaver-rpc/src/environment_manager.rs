@@ -28,7 +28,7 @@ use uuid::Uuid;
 use crate::session_management::command_fingerprint;
 
 const DEFAULT_READINESS_TIMEOUT_MS: u64 = 5_000;
-const MAX_READINESS_TIMEOUT_MS: u64 = 60_000;
+pub const MAX_READINESS_TIMEOUT_MS: u64 = 60_000;
 
 fn envd_client_for_attachment(
     attachment: &EnvironmentAttachmentRef,

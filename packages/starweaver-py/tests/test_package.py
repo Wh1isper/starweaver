@@ -6390,6 +6390,163 @@ def test_python_json_store_persists_resume_claim_and_stream_publication_outbox(
     asyncio.run(run())
 
 
+def test_python_approval_reviewed_arguments_transition_is_atomic(tmp_path: Path) -> None:
+    async def run() -> None:
+        timestamp = "2026-07-12T00:00:00+00:00"
+        store_specs: list[tuple[starweaver.SessionStore, Path | None]] = [
+            (starweaver.InMemorySessionStore(), None),
+            (
+                starweaver.JsonSessionStore(tmp_path / "approval-transition-store.json"),
+                tmp_path / "approval-transition-store.json",
+            ),
+        ]
+        for index, (configured_store, json_path) in enumerate(store_specs):
+            store = configured_store
+            session_id = f"python-approval-transition-{index}"
+            source_run_id = f"python-approval-source-{index}"
+            target_run_id = f"python-approval-continuation-{index}"
+            conversation_id = f"python-approval-conversation-{index}"
+            claim_id = f"python-approval-claim-{index}"
+            session = starweaver.SessionRecord.from_state(
+                {
+                    "agent_id": "main",
+                    "session_id": session_id,
+                    "conversation_id": conversation_id,
+                }
+            )
+            await store.save_session(session)
+            source_run = {
+                "session_id": session_id,
+                "run_id": source_run_id,
+                "conversation_id": conversation_id,
+                "status": "waiting",
+                "sequence_no": 0,
+                "created_at": timestamp,
+                "updated_at": timestamp,
+            }
+            await store.append_run(source_run)
+            reviewed_arguments = {"path": "approved.txt"}
+            pending_approval = {
+                "approval_id": f"approval_{source_run_id}_call",
+                "session_id": session_id,
+                "run_id": source_run_id,
+                "action_id": "call",
+                "action_name": "write_file",
+                "request": {"path": "requested.txt"},
+                "reviewed_arguments": reviewed_arguments,
+                "status": "pending",
+                "decision": None,
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "trace_context": None,
+                "metadata": {"source": "test"},
+            }
+            await store.append_approval(pending_approval)
+            claim = {
+                "claim_id": claim_id,
+                "session_id": session_id,
+                "run_id": source_run_id,
+                "state": "preflight",
+                "created_at": timestamp,
+            }
+            if json_path is None:
+                await store.claim_hitl_resume(claim)
+                await store.mark_hitl_resume_started(session_id, source_run_id, claim_id)
+            else:
+                payload = cast(starweaver.InMemorySessionStore, store).to_dict()
+                claim_key = json.dumps([session_id, source_run_id], separators=(",", ":"))
+                payload["hitl_resume_claims"][claim_key] = {
+                    **claim,
+                    "state": "started",
+                }
+                json_path.write_text(json.dumps(payload), encoding="utf-8")
+                store = starweaver.JsonSessionStore(json_path)
+
+            resolved_approval = {
+                **pending_approval,
+                "status": "approved",
+                "decision": {"approved": True},
+                "updated_at": "2026-07-12T00:01:00+00:00",
+            }
+
+            def continuation_commit(
+                approval: dict[str, Any],
+                session_id: str = session_id,
+                target_run_id: str = target_run_id,
+                conversation_id: str = conversation_id,
+                source_run_id: str = source_run_id,
+                claim_id: str = claim_id,
+            ) -> dict[str, Any]:
+                return {
+                    "run": {
+                        "session_id": session_id,
+                        "run_id": target_run_id,
+                        "conversation_id": conversation_id,
+                        "status": "completed",
+                        "sequence_no": 0,
+                        "restore_from_run_id": source_run_id,
+                        "created_at": timestamp,
+                        "updated_at": timestamp,
+                    },
+                    "context_state": {
+                        "agent_id": "main",
+                        "session_id": session_id,
+                        "run_id": target_run_id,
+                        "conversation_id": conversation_id,
+                    },
+                    "environment_state": None,
+                    "stream_records": [],
+                    "checkpoints": [],
+                    "approvals": [],
+                    "deferred_tools": [],
+                    "stream_cursors": [],
+                    "display_messages": [],
+                    "replay_events": [],
+                    "display_snapshot": None,
+                    "publication_targets": {"archive": False, "replay": False},
+                    "related_run_updates": [
+                        {
+                            "run_id": source_run_id,
+                            "expected_status": "waiting",
+                            "status": "completed",
+                            "resume_claim_id": claim_id,
+                            "approvals": [approval],
+                            "deferred_tools": [],
+                        }
+                    ],
+                }
+
+            tampered_approval = {
+                **resolved_approval,
+                "reviewed_arguments": {"path": "tampered.txt"},
+            }
+            with pytest.raises(StateError, match="approval transition conflict"):
+                await store.commit_run_evidence(continuation_commit(tampered_approval))
+
+            if json_path is not None:
+                store = starweaver.JsonSessionStore(json_path)
+            assert (await store.load_run(session_id, source_run_id)).to_dict()[
+                "status"
+            ] == "waiting"
+            approvals = await store.load_approvals(session_id, source_run_id)
+            assert approvals[0].to_dict() == pending_approval
+            with pytest.raises(StateError, match="unknown run"):
+                await store.load_run(session_id, target_run_id)
+
+            await store.commit_run_evidence(continuation_commit(resolved_approval))
+            assert (await store.load_run(session_id, source_run_id)).to_dict()[
+                "status"
+            ] == "completed"
+            assert (await store.load_run(session_id, target_run_id)).to_dict()[
+                "status"
+            ] == "completed"
+            terminal_approval = (await store.load_approvals(session_id, source_run_id))[0].to_dict()
+            assert terminal_approval["status"] == "approved"
+            assert terminal_approval["reviewed_arguments"] == reviewed_arguments
+
+    asyncio.run(run())
+
+
 def test_python_in_memory_evidence_validation_and_per_run_resume_state() -> None:
     async def run() -> None:
         store = starweaver.InMemorySessionStore()

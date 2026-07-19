@@ -35,7 +35,7 @@ pub enum EnvironmentAttachmentScopeKind {
 
 /// Host-control scope for an environment attachment lease.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentAttachmentScope {
     /// Scope kind.
     #[serde(default)]
@@ -60,7 +60,7 @@ pub enum EnvironmentReadinessPolicy {
 
 /// Readiness request for attachment operations.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentReadinessRequest {
     /// Probe policy.
     #[serde(default)]
@@ -87,7 +87,7 @@ pub enum EnvironmentReadinessPhase {
 
 /// Tool capability summary for an environment attachment.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentReadinessCapabilities {
     /// File capabilities.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -102,7 +102,7 @@ pub struct EnvironmentReadinessCapabilities {
 
 /// Readiness summary for an environment attachment.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentReadiness {
     /// Transport readiness.
     #[serde(default)]
@@ -135,7 +135,7 @@ pub enum EnvironmentAttachmentStatus {
 
 /// Host-control reference to an environment attached to a run.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentAttachmentRef {
     /// Stable attachment id within the run.
     pub id: String,
@@ -209,7 +209,7 @@ impl EnvironmentAttachmentRef {
 
 /// Host-control attachment lease returned by `environment.attach`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentAttachmentLease {
     /// Host-control lease id.
     pub attachment_lease_id: String,
@@ -246,7 +246,7 @@ pub struct EnvironmentAttachmentLease {
 
 /// Params for `environment.attach`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentAttachParams {
     /// Lease scope.
     #[serde(default)]
@@ -263,7 +263,7 @@ pub struct EnvironmentAttachParams {
 
 /// Params for `environment.detach`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentDetachParams {
     /// Lease id to detach.
     pub attachment_lease_id: String,
@@ -277,7 +277,7 @@ pub struct EnvironmentDetachParams {
 
 /// Params for `environment.list`.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentListParams {
     /// Scope filter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -295,7 +295,7 @@ pub struct EnvironmentListParams {
 
 /// Params for `environment.health`.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentHealthParams {
     /// Existing lease id to probe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -310,7 +310,7 @@ pub struct EnvironmentHealthParams {
 
 /// Params for `environment.active_mount`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentActiveMountParams {
     /// Active run id.
     pub run_id: String,
@@ -332,7 +332,7 @@ pub struct EnvironmentActiveMountParams {
 
 /// Params for `environment.active_unmount`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentActiveUnmountParams {
     /// Active run id.
     pub run_id: String,
@@ -357,38 +357,99 @@ pub struct EnvironmentActiveUnmountParams {
 
 /// Params for `environment.active_list`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentActiveListParams {
     /// Active run id.
     pub run_id: String,
+}
+
+/// Canonicalize validated attachment refs for semantic comparison and execution.
+#[must_use]
+pub fn normalize_environment_attachment_refs(
+    refs: &[EnvironmentAttachmentRef],
+) -> Vec<EnvironmentAttachmentRef> {
+    let mut normalized = refs.to_vec();
+    let default_id = if normalized.len() == 1 {
+        normalized.first().map(|attachment| attachment.id.clone())
+    } else {
+        normalized
+            .iter()
+            .find(|attachment| attachment.is_default)
+            .map(|attachment| attachment.id.clone())
+    };
+    let default_shell_id = normalized
+        .iter()
+        .find(|attachment| attachment.is_default_for_shell)
+        .map(|attachment| attachment.id.clone())
+        .or_else(|| {
+            let default_id = default_id.as_deref()?;
+            normalized
+                .iter()
+                .find(|attachment| {
+                    attachment.id == default_id
+                        && attachment.resolved_mode() == EnvironmentAttachmentAccessMode::ReadWrite
+                })
+                .map(|attachment| attachment.id.clone())
+        });
+    for attachment in &mut normalized {
+        attachment.mode = Some(attachment.resolved_mode());
+        attachment.is_default = default_id.as_deref() == Some(attachment.id.as_str());
+        attachment.is_default_for_shell =
+            default_shell_id.as_deref() == Some(attachment.id.as_str());
+    }
+    normalized
 }
 
 /// Parse environment attachment refs from host RPC params.
 ///
 /// # Errors
 ///
-/// Returns an RPC invalid-params error when the shape is invalid or ids are duplicated.
+/// Returns an RPC invalid-params error when the shape is invalid, aliases conflict, or ids are
+/// duplicated.
 pub fn environment_attachment_refs(
     params: &Value,
 ) -> Result<Vec<EnvironmentAttachmentRef>, RpcError> {
-    let Some(value) = params
-        .get("environmentAttachments")
-        .or_else(|| params.get("environments"))
-        .or_else(|| params.get("environment"))
-    else {
+    let mut parsed = Vec::new();
+    for key in ["environmentAttachments", "environments", "environment"] {
+        let Some(value) = params.get(key) else {
+            continue;
+        };
+        let mut refs = if value.is_array() {
+            serde_json::from_value::<Vec<EnvironmentAttachmentRef>>(value.clone())
+        } else {
+            serde_json::from_value::<EnvironmentAttachmentRef>(value.clone())
+                .map(|value| vec![value])
+        }
+        .map_err(|error| {
+            RpcError::new(
+                INVALID_PARAMS,
+                format!("invalid environment refs in {key}: {error}"),
+            )
+        })?;
+        if refs.len() == 1 {
+            refs[0].is_default = true;
+        }
+        validate_environment_attachment_refs(&refs)?;
+        let mut normalized = normalize_environment_attachment_refs(&refs);
+        normalized.sort_by(|left, right| left.id.cmp(&right.id));
+        parsed.push((key, refs, normalized));
+    }
+    let Some((first_key, first, first_normalized)) = parsed.first() else {
         return Ok(Vec::new());
     };
-    let mut refs = if value.is_array() {
-        serde_json::from_value::<Vec<EnvironmentAttachmentRef>>(value.clone())
-    } else {
-        serde_json::from_value::<EnvironmentAttachmentRef>(value.clone()).map(|value| vec![value])
+    if let Some((conflicting_key, _, _)) = parsed
+        .iter()
+        .skip(1)
+        .find(|(_, _, normalized)| normalized != first_normalized)
+    {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            format!(
+                "environment attachment aliases {first_key} and {conflicting_key} must match when both are supplied"
+            ),
+        ));
     }
-    .map_err(|error| RpcError::new(INVALID_PARAMS, format!("invalid environment refs: {error}")))?;
-    if refs.len() == 1 {
-        refs[0].is_default = true;
-    }
-    validate_environment_attachment_refs(&refs)?;
-    Ok(refs)
+    Ok(first.clone())
 }
 
 /// Build a serializable environment attachment result.
@@ -501,6 +562,7 @@ const fn default_true() -> bool {
 
 /// Typed result for `environment.attach`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnvironmentAttachResult {
     /// Created or reused attachment lease.
     pub attachment: EnvironmentAttachmentLease,
@@ -508,7 +570,7 @@ pub struct EnvironmentAttachResult {
 
 /// Typed result for `environment.detach`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentDetachResult {
     /// Detached lease id.
     pub attachment_lease_id: String,
@@ -518,7 +580,7 @@ pub struct EnvironmentDetachResult {
 
 /// Typed result for `environment.list`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentListResult {
     /// Matching attachment leases.
     pub attachments: Vec<EnvironmentAttachmentLease>,
@@ -529,6 +591,7 @@ pub struct EnvironmentListResult {
 
 /// Typed result for `environment.health`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnvironmentHealthResult {
     /// Effective attachment status.
     pub status: EnvironmentAttachmentStatus,
@@ -538,7 +601,7 @@ pub struct EnvironmentHealthResult {
 
 /// Stable active-run mount projection.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentMountSummary {
     /// Agent-facing mount id.
     pub id: String,
@@ -566,7 +629,7 @@ pub struct EnvironmentMountSummary {
 
 /// Stable active-run environment binding projection.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentBindingSummary {
     /// Monotonic binding version.
     pub binding_version: u64,
@@ -582,7 +645,7 @@ pub struct EnvironmentBindingSummary {
 
 /// Typed result for `environment.active_mount`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentActiveMountResult {
     /// Active run id.
     pub run_id: String,
@@ -611,7 +674,7 @@ pub struct EnvironmentActiveMountResult {
 
 /// Typed result for `environment.active_unmount`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentActiveUnmountResult {
     /// Active run id.
     pub run_id: String,
@@ -638,7 +701,7 @@ pub struct EnvironmentActiveUnmountResult {
 
 /// Typed result for `environment.active_list`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentActiveListResult {
     /// Active run id.
     pub run_id: String,

@@ -64,7 +64,7 @@ Tools:
 - `shell_status`: inspect process state
 - `shell_wait`: wait for or poll background output
 
-Backed by `EnvironmentProvider` shell operations. Local desktop-style execution should use `SandboxedShellProvider` so command execution sees the same workspace mounts as filesystem tools while policy and diagnostics remain provider-owned.
+Backed by `EnvironmentProvider` shell operations. Local local process execution should use `SandboxedShellProvider` so command execution sees the same workspace mounts as filesystem tools while policy and diagnostics remain provider-owned.
 
 ### Resource, Media, and Download Bundle
 

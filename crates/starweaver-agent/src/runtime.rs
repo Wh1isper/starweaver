@@ -1,8 +1,11 @@
 //! SDK runtime builder and owned runtime facade.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::Duration,
 };
 
 use chrono::Utc;
@@ -19,10 +22,12 @@ use starweaver_runtime::{
     OutputSchema, OutputValidator, RunStatus,
 };
 use starweaver_session::{
-    EnvironmentStateRef, HitlResumeClaim, InputPart, PendingStreamPublication, RelatedRunUpdate,
-    RunAdmissionLease, RunEvidenceCommit, RunRecord, RunStatus as SessionRunStatus, SessionRecord,
-    SessionResumeSnapshot, SessionStore, SessionStoreError, SessionStoreExecutor, StreamCursorRef,
-    StreamPublicationTarget, StreamPublicationTargets, ToolReturnRecordInput,
+    AcquireRunAdmission, EnvironmentStateRef, HitlResumeAbortOutcome, HitlResumeClaim, InputPart,
+    PendingStreamPublication, PreparedContinuation, RelatedRunUpdate, RunAdmissionLease,
+    RunEvidenceCommit, RunRecord, RunStatus as SessionRunStatus, RunTerminalError,
+    RunTerminalProjection, SessionRecord, SessionResumeSnapshot, SessionStore, SessionStoreError,
+    SessionStoreExecutor, StreamCursorRef, StreamPublicationTarget, StreamPublicationTargets,
+    ToolReturnRecordInput,
 };
 use starweaver_stream::{
     DefaultDisplayMessageProjector, DisplayMessage, DisplayMessageProjector,
@@ -42,6 +47,63 @@ use crate::{
 
 const DURABLE_SESSION_ID_METADATA_KEY: &str = "starweaver.durable_session_id";
 const DURABLE_RUN_ID_METADATA_KEY: &str = "starweaver.durable_run_id";
+const CLI_RUN_ID_METADATA_KEY: &str = "cli.run_id";
+const SDK_ADMISSION_LEASE_TTL: Duration = Duration::from_secs(30);
+const SDK_ADMISSION_HEARTBEAT: Duration = Duration::from_secs(10);
+
+/// Keeps an SDK-owned admission live from admission through HITL injection and stream completion.
+///
+/// Fenced writes compare stable owner identity and generation rather than a stale expiry snapshot,
+/// so the runtime may retain its original lease while this task renews its durable expiry.
+struct SdkAdmissionHeartbeat {
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    lost: Arc<AtomicBool>,
+}
+
+impl SdkAdmissionHeartbeat {
+    fn start(session_store: Arc<dyn SessionStore>, lease: RunAdmissionLease) -> Self {
+        let (stop, mut stopped) = tokio::sync::oneshot::channel();
+        let lost = Arc::new(AtomicBool::new(false));
+        let heartbeat_lost = Arc::clone(&lost);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(SDK_ADMISSION_HEARTBEAT);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    _ = interval.tick() => {
+                        let expires = Utc::now()
+                            + chrono::Duration::from_std(SDK_ADMISSION_LEASE_TTL)
+                                .unwrap_or_default();
+                        if session_store.heartbeat_run_admission(&lease, expires).await.is_err() {
+                            heartbeat_lost.store(true, Ordering::Release);
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        Self {
+            stop: Some(stop),
+            lost,
+        }
+    }
+
+    fn ensure_live(&self) -> Result<(), AgentDurabilityError> {
+        if self.lost.load(Ordering::Acquire) {
+            return Err(AgentDurabilityError::InvalidContinuationEvidence(
+                "SDK HITL continuation admission lease was lost".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for SdkAdmissionHeartbeat {
+    fn drop(&mut self) {
+        let _ = self.stop.take();
+    }
+}
 
 fn durable_session_id_from_metadata(metadata: &Metadata) -> Option<SessionId> {
     metadata
@@ -86,6 +148,9 @@ pub enum AgentDurabilityError {
         /// Run id.
         run_id: String,
     },
+    /// Durable continuation evidence failed host-neutral identity or effect binding validation.
+    #[error("invalid durable continuation evidence: {0}")]
+    InvalidContinuationEvidence(String),
     /// Session store failed.
     #[error(transparent)]
     SessionStore(#[from] SessionStoreError),
@@ -109,6 +174,34 @@ pub enum AgentDurabilityError {
     /// Live stream failed before it could be persisted.
     #[error(transparent)]
     Stream(#[from] AgentStreamError),
+}
+
+impl AgentDurabilityError {
+    /// Return a diagnostic safe for durable and client-visible surfaces.
+    #[must_use]
+    pub fn public_message(&self) -> String {
+        match self {
+            Self::MissingSessionStore => "durable session store is unavailable".to_string(),
+            Self::SessionMismatch { .. } => "durable session identity mismatch".to_string(),
+            Self::MissingCheckpointState { .. } => {
+                "durable checkpoint state is unavailable".to_string()
+            }
+            Self::InvalidContinuationEvidence(_) => {
+                "durable continuation evidence is invalid".to_string()
+            }
+            Self::SessionStore(SessionStoreError::RetryableStorage(_)) => {
+                "durable storage is temporarily unavailable".to_string()
+            }
+            Self::SessionStore(_) => "durable storage operation failed".to_string(),
+            Self::Replay(_) => "replay persistence failed".to_string(),
+            Self::MissingPublicationSink { .. } => {
+                "required stream publication sink is unavailable".to_string()
+            }
+            Self::Hitl(_) => "human-in-the-loop resolution failed".to_string(),
+            Self::Agent(error) => error.public_message(),
+            Self::Stream(error) => error.public_message(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -833,12 +926,132 @@ impl AgentRuntime {
         flush_pending_stream_publications(durability).await
     }
 
+    fn prepared_durable_hitl_session(
+        &self,
+        state: ResumableState,
+        session_id: &SessionId,
+    ) -> AgentSession {
+        let mut session = self.app.session_from_state(state);
+        // A resumed HITL continuation is a new durable run. The snapshot can retain the
+        // source run's metadata for evidence inspection, but it must not preallocate the
+        // source id for the continuation's runtime loop.
+        session
+            .context_mut()
+            .metadata
+            .remove(DURABLE_RUN_ID_METADATA_KEY);
+        bind_durable_identity(&mut session.context_mut().metadata, session_id, None);
+        session
+    }
+
+    fn rebind_session_to_runtime_executor(&mut self) {
+        // A resumed HITL continuation temporarily replaces the app executor with a fenced lease.
+        // Once that admission is terminally finalized, future ordinary turns must return to the
+        // reusable app executor instead of attempting checkpoints through the released lease.
+        // The durable run metadata is likewise continuation-scoped: leaving it in the restored
+        // context would make the next run reuse the terminal continuation id.
+        let mut session = self.session.clone().rebind_agent(self.app.agent().clone());
+        session
+            .context_mut()
+            .metadata
+            .remove(DURABLE_RUN_ID_METADATA_KEY);
+        session
+            .context_mut()
+            .metadata
+            .remove(CLI_RUN_ID_METADATA_KEY);
+        self.session = session;
+    }
+
+    fn prepared_fenced_durable_hitl_session(
+        &self,
+        state: ResumableState,
+        session_id: &SessionId,
+        session_store: Arc<dyn SessionStore>,
+        admission_lease: RunAdmissionLease,
+    ) -> AgentSession {
+        let agent =
+            self.app
+                .agent()
+                .clone()
+                .with_executor(Arc::new(SessionStoreExecutor::new_fenced(
+                    session_store,
+                    session_id.clone(),
+                    admission_lease,
+                )));
+        let mut session = AgentSession::from_state(agent, state);
+        // A resumed HITL continuation is a new durable run. The snapshot can retain the
+        // source run's metadata for evidence inspection, but it must not preallocate the
+        // source id for the continuation's runtime loop.
+        session
+            .context_mut()
+            .metadata
+            .remove(DURABLE_RUN_ID_METADATA_KEY);
+        bind_durable_identity(&mut session.context_mut().metadata, session_id, None);
+        session
+    }
+
+    /// Inject the canonical HITL continuation for one durable source run under the runtime's
+    /// active admission and source claim.
+    ///
+    /// This is the host-managed streaming counterpart to [`Self::resume_after_hitl_by_id`]. It
+    /// reloads the source snapshot from the bound store, validates it without effects, then asks
+    /// the store to atomically verify the live admission/source/claim binding and advance the
+    /// claim to `Started` before any approved tool can execute.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when durable preparation, admission fencing, claim binding, or tool
+    /// execution fails.
+    pub async fn inject_prepared_hitl_results(
+        &mut self,
+        source_run_id: &RunId,
+        claim_id: &str,
+    ) -> Result<(), AgentDurabilityError> {
+        let durability = self
+            .durability
+            .clone()
+            .ok_or(AgentDurabilityError::MissingSessionStore)?;
+        let lease = durability.admission_lease.as_ref().ok_or_else(|| {
+            AgentDurabilityError::InvalidContinuationEvidence(
+                "prepared HITL injection requires an active run admission".to_string(),
+            )
+        })?;
+        if lease.target.session_id != durability.session_id {
+            return Err(AgentDurabilityError::InvalidContinuationEvidence(
+                "prepared HITL session does not match the admitted runtime".to_string(),
+            ));
+        }
+        let snapshot = durability
+            .session_store
+            .resume_snapshot(&durability.session_id, source_run_id)
+            .await?;
+        let prepared = PreparedContinuation::waiting_hitl(snapshot).map_err(|error| {
+            AgentDurabilityError::InvalidContinuationEvidence(error.to_string())
+        })?;
+        let state = prepared.waiting_state().ok_or_else(|| {
+            AgentDurabilityError::InvalidContinuationEvidence(
+                "prepared HITL continuation has no waiting checkpoint state".to_string(),
+            )
+        })?;
+        let results = AgentHitlResults::from_prepared_continuation(&prepared);
+        self.session
+            .validate_hitl_results_for_state(state, &results)?;
+        durability
+            .session_store
+            .start_hitl_resume_effect(lease, source_run_id, claim_id)
+            .await?;
+        self.session
+            .inject_hitl_results_for_state_after_durable_preparation(state, results)
+            .await?;
+        Ok(())
+    }
+
     /// Resolve HITL decisions for a durable waiting run and continue execution.
     ///
     /// # Errors
     ///
     /// Returns an error when the runtime is not store-backed, the waiting run
     /// cannot be loaded, HITL decisions are invalid, or resumed execution fails.
+    #[allow(clippy::too_many_lines)]
     pub async fn resume_after_hitl_by_id(
         &mut self,
         session_id: &SessionId,
@@ -865,34 +1078,209 @@ impl AgentRuntime {
                 run_id: run_id.as_str().to_string(),
             }
         })?;
-        let mut session = self.app.session_from_state(snapshot.state.clone());
-        // A resumed HITL continuation is a new durable run. The snapshot can retain the
-        // source run's metadata for evidence inspection, but it must not preallocate the
-        // source id for the continuation's runtime loop.
-        session
-            .context_mut()
-            .metadata
-            .remove(DURABLE_RUN_ID_METADATA_KEY);
-        bind_durable_identity(&mut session.context_mut().metadata, session_id, None);
+        let mut session = self.prepared_durable_hitl_session(snapshot.state.clone(), session_id);
         if results.is_empty() && session.context().pending_tool_returns.is_empty() {
             return Err(AgentHitlError::NoWaitingRun.into());
         }
         if !results.is_empty() {
             session.validate_hitl_results_for_state(&checkpoint.state, &results)?;
         }
+        let (approvals, deferred_tools) = resolved_hitl_records(&snapshot, &results);
+        let mut validation_snapshot = snapshot.clone();
+        validation_snapshot.approvals.clone_from(&approvals);
+        validation_snapshot
+            .deferred_tools
+            .clone_from(&deferred_tools);
+        PreparedContinuation::waiting_hitl(validation_snapshot).map_err(|error| {
+            AgentDurabilityError::InvalidContinuationEvidence(error.to_string())
+        })?;
 
-        // Claim before result injection: approved result injection executes the pending tool, so a
-        // post-execution source-run CAS is too late to prevent duplicate external effects.
-        let claim_id = acquire_started_hitl_claim(&durability, session_id, run_id).await?;
+        // Claim and admit a replacement before result injection: approved result injection can
+        // execute a tool, so a source-only CAS after that point is too late. The SDK-owned path
+        // uses the same fenced admission/effect boundary as product hosts rather than the legacy
+        // bare `Preflight -> Started` transition.
+        if durability.admission_lease.is_some() {
+            return Err(AgentDurabilityError::InvalidContinuationEvidence(
+                "resume_after_hitl_by_id cannot reuse an existing admission; use inject_prepared_hitl_results for host-managed continuations".to_string(),
+            ));
+        }
+        let claim_id = format!("sdk-hitl-resume-{}", RunId::new().as_str());
+        durability
+            .session_store
+            .claim_hitl_resume(HitlResumeClaim::new(
+                claim_id.clone(),
+                session_id.clone(),
+                run_id.clone(),
+                Utc::now(),
+            ))
+            .await?;
+        let continuation_run_id = RunId::new();
+        let mut replacement = RunRecord::new(
+            session_id.clone(),
+            continuation_run_id.clone(),
+            snapshot.run.conversation_id.clone(),
+        );
+        replacement.restore_from_run_id = Some(run_id.clone());
+        replacement.profile.clone_from(&snapshot.run.profile);
+        let admission = durability
+            .session_store
+            .acquire_run_admission(AcquireRunAdmission {
+                run: replacement,
+                namespace_id: snapshot.session.namespace_id.clone(),
+                host_instance_id: format!("sdk-agent-{}", RunId::new().as_str()),
+                admission_id: format!("sdk-hitl-admission-{}", RunId::new().as_str()),
+                lease_expires_at: Utc::now() + chrono::Duration::seconds(30),
+                idempotency_key: format!("sdk-hitl-resume-{}", continuation_run_id.as_str()),
+                command_fingerprint: format!("sdk-hitl-resume-source-{}", run_id.as_str()),
+                replaces_waiting_run_id: Some(run_id.clone()),
+                hitl_resume_claim_id: Some(claim_id.clone()),
+            })
+            .await;
+        let admission = match admission {
+            Ok(admission) => admission,
+            Err(error) => {
+                let _ = durability
+                    .session_store
+                    .release_hitl_resume_claim(session_id, run_id, &claim_id)
+                    .await;
+                return Err(error.into());
+            }
+        };
+        // The runtime that validates the source snapshot may have been built before this
+        // method acquired its replacement admission. Rebuild its restored session with the
+        // admitted executor before the Started fence: every subsequent checkpoint must carry
+        // the exact continuation lease rather than falling back to an unfenced store write.
+        session = self.prepared_fenced_durable_hitl_session(
+            snapshot.state.clone(),
+            session_id,
+            Arc::clone(&durability.session_store),
+            admission.lease.clone(),
+        );
+        session.context_mut().run_id = Some(continuation_run_id.clone());
+        bind_durable_identity(
+            &mut session.context_mut().metadata,
+            session_id,
+            Some(&continuation_run_id),
+        );
+        let heartbeat = SdkAdmissionHeartbeat::start(
+            Arc::clone(&durability.session_store),
+            admission.lease.clone(),
+        );
+        if let Err(error) = durability
+            .session_store
+            .start_hitl_resume_effect(&admission.lease, run_id, &claim_id)
+            .await
+        {
+            // A failed response is not proof the effect fence was not crossed. An admitted
+            // replacement is safe to abort by itself; a started one must atomically terminalize
+            // the source with the exact claim before its admission may be released.
+            match durability
+                .session_store
+                .abort_admitted_hitl_resume(
+                    &admission.lease,
+                    run_id,
+                    &claim_id,
+                    "SDK HITL continuation failed before effect",
+                )
+                .await
+            {
+                Ok(HitlResumeAbortOutcome::AbortedBeforeEffect) => {
+                    let target = durability
+                        .session_store
+                        .load_run(session_id, &continuation_run_id)
+                        .await?;
+                    durability
+                        .session_store
+                        .finalize_run_admission(
+                            &admission.lease,
+                            terminal_projection_from_record(&target)?,
+                        )
+                        .await?;
+                }
+                Ok(HitlResumeAbortOutcome::EffectStarted) => {
+                    self.session = session;
+                    self.durability
+                        .as_mut()
+                        .ok_or(AgentDurabilityError::MissingSessionStore)?
+                        .admission_lease = Some(admission.lease.clone());
+                    self.persist_hitl_injection_failure(
+                        &snapshot,
+                        &results,
+                        claim_id.clone(),
+                        "SDK HITL continuation effect state is indeterminate",
+                    )
+                    .await?;
+                    let target = durability
+                        .session_store
+                        .load_run(session_id, &continuation_run_id)
+                        .await?;
+                    durability
+                        .session_store
+                        .finalize_run_admission(
+                            &admission.lease,
+                            terminal_projection_from_record(&target)?,
+                        )
+                        .await?;
+                    self.durability
+                        .as_mut()
+                        .ok_or(AgentDurabilityError::MissingSessionStore)?
+                        .admission_lease = None;
+                    self.rebind_session_to_runtime_executor();
+                }
+                Err(abort_error) => {
+                    return Err(AgentDurabilityError::InvalidContinuationEvidence(format!(
+                        "{error}; unable to determine SDK HITL effect phase: {abort_error}"
+                    )));
+                }
+            }
+            return Err(error.into());
+        }
+        heartbeat.ensure_live()?;
+        self.durability
+            .as_mut()
+            .ok_or(AgentDurabilityError::MissingSessionStore)?
+            .admission_lease = Some(admission.lease.clone());
+        let admission_lease = admission.lease;
 
         // From this point onward the claim deliberately remains fail-closed unless it is consumed
         // by an atomic continuation evidence commit. Injection may already execute a tool.
-        if !results.is_empty() {
-            session
-                .inject_hitl_results_for_state(&checkpoint.state, results.clone())
+        if !results.is_empty()
+            && let Err(injection_error) = session
+                .inject_hitl_results_for_state_after_durable_preparation(
+                    &checkpoint.state,
+                    results.clone(),
+                )
+                .await
+        {
+            // Injection is already past the Started fence and can execute an approved tool.
+            // Convert every error into the same fenced target/source failure evidence used by
+            // host-managed continuations before this SDK-owned admission is released.
+            self.session = session;
+            self.persist_hitl_injection_failure(
+                &snapshot,
+                &results,
+                claim_id.clone(),
+                format!("SDK HITL result injection failed: {injection_error}"),
+            )
+            .await?;
+            let durable_run = durability
+                .session_store
+                .load_run(session_id, &continuation_run_id)
                 .await?;
+            durability
+                .session_store
+                .finalize_run_admission(
+                    &admission_lease,
+                    terminal_projection_from_record(&durable_run)?,
+                )
+                .await?;
+            self.durability
+                .as_mut()
+                .ok_or(AgentDurabilityError::MissingSessionStore)?
+                .admission_lease = None;
+            self.rebind_session_to_runtime_executor();
+            return Err(injection_error.into());
         }
-        let (approvals, deferred_tools) = resolved_hitl_records(&snapshot, &results);
         let fallback_pending_tool_returns = session.pending_hitl_tool_returns();
         let input = starweaver_runtime::AgentInput::text("");
         let completion = session.stream(input.clone()).complete().await;
@@ -915,6 +1303,22 @@ impl AgentRuntime {
             source_update.deferred_tools = deferred_tools;
             self.persist_stream_result(&input, &stream, Some(run_id.clone()), Some(source_update))
                 .await?;
+            let durable_run = durability
+                .session_store
+                .load_run(session_id, &continuation_run_id)
+                .await?;
+            durability
+                .session_store
+                .finalize_run_admission(
+                    &admission_lease,
+                    terminal_projection_from_record(&durable_run)?,
+                )
+                .await?;
+            self.durability
+                .as_mut()
+                .ok_or(AgentDurabilityError::MissingSessionStore)?
+                .admission_lease = None;
+            self.rebind_session_to_runtime_executor();
             return Ok(stream.result);
         }
 
@@ -929,6 +1333,15 @@ impl AgentRuntime {
             RelatedRunUpdate::new(run_id.clone(), SessionRunStatus::Waiting, source_status);
         source_update.resume_claim_id = Some(claim_id);
         source_update.output_preview = Some("continuation failed".to_string());
+        if source_status == SessionRunStatus::Failed {
+            source_update.terminal_error = Some(RunTerminalError::new(
+                "continuation_failed",
+                completion.error.as_ref().map_or_else(
+                    || "stream completed without result".to_string(),
+                    AgentStreamError::public_message,
+                ),
+            ));
+        }
         source_update.approvals = approvals;
         source_update.deferred_tools = deferred_tools;
         self.persist_stream_failure(
@@ -939,6 +1352,22 @@ impl AgentRuntime {
             Some(source_update),
         )
         .await?;
+        let durable_run = durability
+            .session_store
+            .load_run(session_id, &continuation_run_id)
+            .await?;
+        durability
+            .session_store
+            .finalize_run_admission(
+                &admission_lease,
+                terminal_projection_from_record(&durable_run)?,
+            )
+            .await?;
+        self.durability
+            .as_mut()
+            .ok_or(AgentDurabilityError::MissingSessionStore)?
+            .admission_lease = None;
+        self.rebind_session_to_runtime_executor();
         Err(AgentDurabilityError::Stream(
             completion.error.unwrap_or_else(|| {
                 AgentStreamError::Join("stream completed without result".to_string())
@@ -1110,6 +1539,15 @@ impl AgentRuntime {
         );
         source_update.resume_claim_id = Some(claim_id);
         source_update.output_preview = Some("continuation failed".to_string());
+        if source_status == SessionRunStatus::Failed {
+            source_update.terminal_error = Some(RunTerminalError::new(
+                "continuation_failed",
+                completion.error.as_ref().map_or_else(
+                    || "stream completed without result".to_string(),
+                    AgentStreamError::public_message,
+                ),
+            ));
+        }
         source_update.approvals = approvals;
         source_update.deferred_tools = deferred_tools;
         self.persist_stream_failure(
@@ -1152,6 +1590,10 @@ impl AgentRuntime {
         );
         source_update.resume_claim_id = Some(claim_id);
         source_update.output_preview = Some("continuation injection failed".to_string());
+        source_update.terminal_error = Some(RunTerminalError::new(
+            "continuation_injection_failed",
+            "continuation injection failed",
+        ));
         source_update.approvals = approvals;
         source_update.deferred_tools = deferred_tools;
         let completion = AgentStreamCompletion {
@@ -1437,6 +1879,7 @@ impl AgentRuntime {
         let mut run = completion_run_record(&durability, &run_id, &conversation_id).await?;
         run.input = input_parts_from_agent_input(input);
         run.status = session_run_status(status);
+        run.terminal_error = Some(terminal_error_from_stream(stream_error));
         run.structured_output = serde_json::Value::Null;
         run.trace_context = self.session.context().trace_context.clone();
         run.parent_run_id = completion.state.parent_run_id.clone();
@@ -1445,7 +1888,11 @@ impl AgentRuntime {
         if let Some(error) = completion.error.as_ref() {
             run.metadata.insert(
                 "live_stream_error".to_string(),
-                serde_json::json!(error.to_string()),
+                serde_json::json!(error.public_message()),
+            );
+            run.metadata.insert(
+                "live_stream_error_code".to_string(),
+                serde_json::json!(error.public_code()),
             );
         }
         let environment_state = self
@@ -1544,6 +1991,26 @@ async fn completion_run_record(
     }
 }
 
+fn terminal_projection_from_record(
+    run: &RunRecord,
+) -> Result<RunTerminalProjection, AgentDurabilityError> {
+    run.terminal_projection().ok_or_else(|| {
+        AgentDurabilityError::InvalidContinuationEvidence(format!(
+            "run {} has no terminal projection",
+            run.run_id.as_str()
+        ))
+    })
+}
+
+fn terminal_error_from_stream(error: &AgentStreamError) -> RunTerminalError {
+    let code = if live_stream_error_run_status(error) == RunStatus::Cancelled {
+        "agent_cancelled"
+    } else {
+        error.public_code()
+    };
+    RunTerminalError::new(code, error.public_message())
+}
+
 fn agent_error_from_session_store(error: &SessionStoreError) -> AgentError {
     AgentError::Executor(AgentExecutorError::Failed(error.to_string()))
 }
@@ -1560,12 +2027,10 @@ fn session_run_status(status: RunStatus) -> SessionRunStatus {
 }
 
 fn live_stream_cancellation_reason(error: &AgentStreamError) -> String {
-    match error {
-        AgentStreamError::Interrupted { reason }
-        | AgentStreamError::Agent(AgentError::Cancelled { reason }) => reason.clone(),
-        AgentStreamError::RuntimeUnavailable(_)
-        | AgentStreamError::Join(_)
-        | AgentStreamError::Agent(_) => "agent run cancelled".to_string(),
+    if live_stream_error_run_status(error) == RunStatus::Cancelled {
+        "agent run cancelled".to_string()
+    } else {
+        error.public_message()
     }
 }
 
@@ -1886,35 +2351,6 @@ async fn publish_stream_publication(
         }
     }
     first_error.map_or(Ok(()), Err)
-}
-
-async fn acquire_started_hitl_claim(
-    durability: &AgentDurability,
-    session_id: &SessionId,
-    run_id: &RunId,
-) -> Result<String, AgentDurabilityError> {
-    let claim_id = format!("hitl-resume-{}", RunId::new().as_str());
-    durability
-        .session_store
-        .claim_hitl_resume(HitlResumeClaim::new(
-            claim_id.clone(),
-            session_id.clone(),
-            run_id.clone(),
-            Utc::now(),
-        ))
-        .await?;
-    if let Err(error) = durability
-        .session_store
-        .mark_hitl_resume_started(session_id, run_id, &claim_id)
-        .await
-    {
-        let _ = durability
-            .session_store
-            .release_hitl_resume_claim(session_id, run_id, &claim_id)
-            .await;
-        return Err(error.into());
-    }
-    Ok(claim_id)
 }
 
 async fn flush_pending_stream_publications(

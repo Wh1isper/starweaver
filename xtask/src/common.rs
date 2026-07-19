@@ -16,6 +16,24 @@ pub fn root() -> Result<PathBuf, String> {
         .ok_or_else(|| "xtask manifest has no parent".to_string())
 }
 
+pub fn target_dir(repository: &Path) -> PathBuf {
+    env::var_os("CARGO_TARGET_DIR").map_or_else(
+        || repository.join("target"),
+        |path| {
+            let path = PathBuf::from(path);
+            if path.is_absolute() {
+                path
+            } else {
+                repository.join(path)
+            }
+        },
+    )
+}
+
+pub fn binary_name(name: &str) -> String {
+    format!("{name}{}", env::consts::EXE_SUFFIX)
+}
+
 pub fn run_command(command: &mut Command) -> Result<(), String> {
     let status = command.status().map_err(|error| error.to_string())?;
     if status.success() {

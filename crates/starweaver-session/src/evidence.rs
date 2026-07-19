@@ -12,8 +12,9 @@ use starweaver_stream::{
 };
 
 use crate::{
-    ApprovalRecord, DeferredToolRecord, RunRecord, RunStatus, SessionStoreError,
-    SessionStoreResult, StreamCursorRef, StreamPublicationTargets,
+    ApprovalRecord, DeferredToolRecord, RunRecord, RunStatus, RunTerminalError,
+    RunTerminalProjection, SessionStoreError, SessionStoreResult, StreamCursorRef,
+    StreamPublicationTargets,
 };
 
 /// Atomic transition applied to an existing run together with a new run evidence commit.
@@ -33,6 +34,9 @@ pub struct RelatedRunUpdate {
     pub resume_claim_id: Option<String>,
     /// Optional source-run output preview.
     pub output_preview: Option<String>,
+    /// Safe source-run terminal diagnostic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_error: Option<RunTerminalError>,
     /// Resolved approval records owned by the source run.
     pub approvals: Vec<ApprovalRecord>,
     /// Resolved deferred-tool records owned by the source run.
@@ -49,6 +53,7 @@ impl RelatedRunUpdate {
             status,
             resume_claim_id: None,
             output_preview: None,
+            terminal_error: None,
             approvals: Vec::new(),
             deferred_tools: Vec::new(),
         }
@@ -116,15 +121,42 @@ impl RunEvidenceCommit {
         }
     }
 
-    /// Validate identities, cursor scopes, sequence uniqueness, snapshots, and environment shape.
+    /// Validate identities, terminal projections, cursor scopes, sequence uniqueness, snapshots,
+    /// and environment shape for a new evidence write.
     ///
     /// # Errors
     ///
     /// Returns a store error when evidence members cannot belong to one atomic run commit.
     pub fn validate(&self) -> SessionStoreResult<()> {
+        self.validate_structure()?;
+        self.validate_terminal_projections()
+    }
+
+    /// Validate the legacy-compatible structure needed before exact-retry lookup.
+    ///
+    /// This method does not authorize a new write: stores must call
+    /// [`Self::validate_terminal_projections`] after an exact-retry miss.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error when evidence members cannot safely identify one atomic commit.
+    pub fn validate_structure(&self) -> SessionStoreResult<()> {
         validate_primary_identity(self)?;
         validate_stream_evidence(self)?;
         validate_related_run_evidence(self)
+    }
+
+    /// Validate terminal projections before inserting new evidence.
+    ///
+    /// Kept separate from structural validation so an exact retry of legacy evidence committed
+    /// before terminal diagnostics existed remains idempotent across upgrades.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error when primary or related terminal evidence is incomplete.
+    pub fn validate_terminal_projections(&self) -> SessionStoreResult<()> {
+        validate_primary_terminal_projection(self)?;
+        validate_related_terminal_projections(self)
     }
 
     /// Return the canonical SHA-256 digest for exact-retry conflict detection.
@@ -137,6 +169,15 @@ impl RunEvidenceCommit {
             .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
         Ok(format!("{:x}", Sha256::digest(payload)))
     }
+}
+
+fn validate_primary_terminal_projection(commit: &RunEvidenceCommit) -> SessionStoreResult<()> {
+    commit.run.validate_new_write().map_err(|error| {
+        SessionStoreError::Failed(format!(
+            "invalid terminal evidence for run {}: {error}",
+            commit.run.run_id.as_str()
+        ))
+    })
 }
 
 fn validate_primary_identity(commit: &RunEvidenceCommit) -> SessionStoreResult<()> {
@@ -303,12 +344,6 @@ fn validate_related_run_evidence(commit: &RunEvidenceCommit) -> SessionStoreResu
                 run_id.as_str()
             )));
         }
-        if !update.status.is_terminal() {
-            return Err(SessionStoreError::Failed(format!(
-                "related run update {} must target a terminal status",
-                update.run_id.as_str()
-            )));
-        }
         if update.resume_claim_id.as_deref().is_none_or(str::is_empty) {
             return Err(SessionStoreError::Failed(format!(
                 "related run update {} requires an exclusive resume claim",
@@ -344,6 +379,24 @@ fn validate_related_run_evidence(commit: &RunEvidenceCommit) -> SessionStoreResu
                 .map(|record| record.deferred_id.as_str()),
             "deferred tool",
         )?;
+    }
+    Ok(())
+}
+
+fn validate_related_terminal_projections(commit: &RunEvidenceCommit) -> SessionStoreResult<()> {
+    for update in &commit.related_run_updates {
+        RunTerminalProjection {
+            status: update.status,
+            output_preview: update.output_preview.clone(),
+            error: update.terminal_error.clone(),
+        }
+        .validate()
+        .map_err(|error| {
+            SessionStoreError::Failed(format!(
+                "invalid related run update {}: {error}",
+                update.run_id.as_str()
+            ))
+        })?;
     }
     Ok(())
 }

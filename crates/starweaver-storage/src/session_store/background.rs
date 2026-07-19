@@ -556,7 +556,7 @@ impl SqliteSessionStore {
 
     pub(super) fn acquire_background_subagent_continuation_sync(
         &self,
-        mut request: AcquireBackgroundSubagentContinuation,
+        request: AcquireBackgroundSubagentContinuation,
     ) -> SessionStoreResult<BackgroundSubagentContinuationReceipt> {
         let mut connection = self.lock()?;
         let transaction = connection
@@ -629,11 +629,11 @@ impl SqliteSessionStore {
             ));
         }
         let session = load_session_record(&transaction, &background.parent_session_id)?;
-        request
-            .admission
-            .run
-            .restore_from_run_id
-            .clone_from(&session.head_run_id);
+        if request.admission.run.restore_from_run_id != session.head_run_id {
+            return Err(SessionStoreError::Conflict(
+                "background continuation source no longer matches the session head".to_string(),
+            ));
+        }
         let admission_request = request.clone();
         let admission =
             acquire_run_admission_in_transaction(&transaction, request.admission.clone())?;

@@ -502,7 +502,7 @@ clarifying_questions = true
 token_env = "RPC_TEST_TOKEN"
 token_file = "secrets/http-token"
 scopes = ["read", "run"]
-allowed_origins = ["https://desktop.example"]
+allowed_origins = ["https://rpc-host.example"]
 
 [profiles.gateway]
 model_id = "homelab@openai-responses:gpt-5.5"

@@ -8,11 +8,12 @@ use starweaver_session::{
     BackgroundSubagentArtifact, BackgroundSubagentContinuationReceipt, BackgroundSubagentRecord,
     BackgroundSubagentTerminalCommit, CompactRunTrace, CompactSessionTrace, DeferredToolRecord,
     DurableBackgroundSubagentDeliveryClaim, DurableBackgroundSubagentDeliveryRelease,
-    DurableControlReceipt, EnvironmentStateRef, HitlResumeClaim, HitlResumeClaimState,
-    ManagedRunTarget, PendingStreamPublication, RunAdmissionLease, RunAdmissionReceipt,
-    RunEvidenceCommit, RunRecord, RunStatus, SessionContinuationFence, SessionFilter,
-    SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError,
-    SessionStoreResult, StreamCursorRef, StreamPublicationTarget, UpdateManagedSession,
+    DurableControlReceipt, EnvironmentStateRef, HitlResumeAbortOutcome, HitlResumeClaim,
+    HitlResumeClaimState, ManagedRunTarget, PendingStreamPublication, RunAdmissionLease,
+    RunAdmissionReceipt, RunEvidenceCommit, RunRecord, RunStatus, RunTerminalError,
+    RunTerminalProjection, SessionContinuationFence, SessionFilter, SessionRecord,
+    SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError, SessionStoreResult,
+    StreamCursorRef, StreamPublicationTarget, UpdateManagedSession,
 };
 use starweaver_stream::{
     AgentStreamRecord, InMemoryReplayEventLog, ReplayCursor, ReplayEvent, ReplayScope,
@@ -48,6 +49,23 @@ const fn checkpoint_run_status(status: RunLifecycle) -> RunStatus {
     }
 }
 
+fn checkpoint_terminal_error(status: RunLifecycle) -> Option<RunTerminalError> {
+    match status {
+        RunLifecycle::Failed => Some(RunTerminalError::new(
+            "checkpoint_run_failed",
+            "run failed while checkpointing",
+        )),
+        RunLifecycle::Cancelled => Some(RunTerminalError::new(
+            "checkpoint_run_cancelled",
+            "run was cancelled while checkpointing",
+        )),
+        RunLifecycle::Starting
+        | RunLifecycle::Running
+        | RunLifecycle::Waiting
+        | RunLifecycle::Completed => None,
+    }
+}
+
 impl SqliteSessionStore {
     /// Atomically allocate or preserve a run sequence and persist the run.
     ///
@@ -59,6 +77,12 @@ impl SqliteSessionStore {
     /// Returns a store error for missing sessions, immutable-sequence violations, sequence
     /// collisions, serialization failures, or SQLite failures.
     pub fn append_run_allocated(&self, mut run: RunRecord) -> SessionStoreResult<RunRecord> {
+        run.validate_new_write().map_err(|error| {
+            SessionStoreError::Failed(format!(
+                "invalid run state for {}: {error}",
+                run.run_id.as_str()
+            ))
+        })?;
         run.updated_at = Utc::now();
         let mut connection = self.lock()?;
         let transaction = connection
@@ -107,6 +131,7 @@ impl SqliteSessionStore {
                     checkpoint.conversation_id.clone(),
                 );
                 run.status = checkpoint_run_status(checkpoint.resume.status);
+                run.terminal_error = checkpoint_terminal_error(checkpoint.resume.status);
                 run.trace_context = checkpoint.resume.trace_context.clone();
                 run.parent_run_id
                     .clone_from(&checkpoint.state.parent_run_id);
@@ -341,7 +366,12 @@ impl SessionStore for SqliteSessionStore {
                         |row| row.get::<_, String>(0),
                     )
                     .map_err(map_sqlite_session_error)?;
-                if deserialize_json_record::<HitlResumeClaim>(&persisted)? != claim {
+                let persisted = deserialize_json_record::<HitlResumeClaim>(&persisted)?;
+                if persisted.claim_id != claim.claim_id
+                    || persisted.session_id != claim.session_id
+                    || persisted.run_id != claim.run_id
+                    || persisted.state != HitlResumeClaimState::Preflight
+                {
                     return Err(SessionStoreError::Failed(format!(
                         "run {} already has an active resume claim",
                         claim.run_id.as_str()
@@ -349,6 +379,195 @@ impl SessionStore for SqliteSessionStore {
                 }
             }
             transaction.commit().map_err(map_sqlite_session_error)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn start_hitl_resume_effect(
+        &self,
+        lease: &RunAdmissionLease,
+        source_run_id: &RunId,
+        claim_id: &str,
+    ) -> SessionStoreResult<()> {
+        let store = self.clone();
+        let lease = lease.clone();
+        let source_run_id = source_run_id.clone();
+        let claim_id = claim_id.to_string();
+        crate::blocking::run(move || {
+            let mut connection = store.lock()?;
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(map_sqlite_session_error)?;
+            ensure_run_admission_in_transaction(&transaction, &lease, Utc::now())?;
+            let target =
+                load_run_record(&transaction, &lease.target.session_id, &lease.target.run_id)?;
+            if target.restore_from_run_id.as_ref() != Some(&source_run_id)
+                || !target.status.is_active()
+            {
+                return Err(SessionStoreError::Conflict(
+                    "active admission is not bound to the HITL source run".to_string(),
+                ));
+            }
+            let source = load_run_record(&transaction, &lease.target.session_id, &source_run_id)?;
+            if source.status != RunStatus::Waiting {
+                return Err(SessionStoreError::Conflict(
+                    "HITL source run is not waiting".to_string(),
+                ));
+            }
+            let payload = transaction
+                .query_row(
+                    "SELECT record FROM hitl_resume_claims WHERE session_id = ?1 AND run_id = ?2",
+                    params![lease.target.session_id.as_str(), source_run_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(map_sqlite_session_error)?
+                .ok_or_else(|| {
+                    SessionStoreError::NotFound(format!(
+                        "resume claim for {}",
+                        source_run_id.as_str()
+                    ))
+                })?;
+            let mut claim = deserialize_json_record::<HitlResumeClaim>(&payload)?;
+            if claim.claim_id != claim_id
+                || claim.session_id != lease.target.session_id
+                || claim.run_id != source_run_id
+                || claim.state != HitlResumeClaimState::Admitted
+            {
+                return Err(SessionStoreError::Conflict(format!(
+                    "invalid admitted resume claim for run {}",
+                    source_run_id.as_str()
+                )));
+            }
+            claim.state = HitlResumeClaimState::Started;
+            let updated = transaction
+                .execute(
+                    "UPDATE hitl_resume_claims SET record = ?3
+                     WHERE session_id = ?1 AND run_id = ?2 AND claim_id = ?4 AND record = ?5",
+                    params![
+                        claim.session_id.as_str(),
+                        claim.run_id.as_str(),
+                        serialize_json_record(&claim)?,
+                        claim.claim_id,
+                        payload,
+                    ],
+                )
+                .map_err(map_sqlite_session_error)?;
+            if updated != 1 {
+                return Err(SessionStoreError::Conflict(format!(
+                    "admitted resume claim changed for run {}",
+                    source_run_id.as_str()
+                )));
+            }
+            transaction.commit().map_err(map_sqlite_session_error)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn abort_admitted_hitl_resume(
+        &self,
+        lease: &RunAdmissionLease,
+        source_run_id: &RunId,
+        claim_id: &str,
+        output_preview: &str,
+    ) -> SessionStoreResult<HitlResumeAbortOutcome> {
+        let store = self.clone();
+        let lease = lease.clone();
+        let source_run_id = source_run_id.clone();
+        let claim_id = claim_id.to_string();
+        let output_preview = output_preview.to_string();
+        crate::blocking::run(move || {
+            let mut connection = store.lock()?;
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(map_sqlite_session_error)?;
+            ensure_run_admission_in_transaction(&transaction, &lease, Utc::now())?;
+            let mut target =
+                load_run_record(&transaction, &lease.target.session_id, &lease.target.run_id)?;
+            if target.restore_from_run_id.as_ref() != Some(&source_run_id)
+                || !target.status.is_active()
+            {
+                return Err(SessionStoreError::Conflict(
+                    "active admission is not bound to the HITL source run".to_string(),
+                ));
+            }
+            let source = load_run_record(&transaction, &lease.target.session_id, &source_run_id)?;
+            if source.status != RunStatus::Waiting {
+                return Err(SessionStoreError::Conflict(
+                    "HITL source run is not waiting".to_string(),
+                ));
+            }
+            let payload = transaction
+                .query_row(
+                    "SELECT record FROM hitl_resume_claims WHERE session_id = ?1 AND run_id = ?2",
+                    params![lease.target.session_id.as_str(), source_run_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(map_sqlite_session_error)?
+                .ok_or_else(|| {
+                    SessionStoreError::NotFound(format!(
+                        "resume claim for {}",
+                        source_run_id.as_str()
+                    ))
+                })?;
+            let claim = deserialize_json_record::<HitlResumeClaim>(&payload)?;
+            if claim.claim_id != claim_id
+                || claim.session_id != lease.target.session_id
+                || claim.run_id != source_run_id
+            {
+                return Err(SessionStoreError::Conflict(format!(
+                    "invalid resume claim for run {}",
+                    source_run_id.as_str()
+                )));
+            }
+            if claim.state == HitlResumeClaimState::Started {
+                transaction.commit().map_err(map_sqlite_session_error)?;
+                return Ok(HitlResumeAbortOutcome::EffectStarted);
+            }
+            if claim.state != HitlResumeClaimState::Admitted {
+                return Err(SessionStoreError::Conflict(format!(
+                    "invalid admitted resume claim for run {}",
+                    source_run_id.as_str()
+                )));
+            }
+            target.status = RunStatus::Failed;
+            target.output_preview = Some(output_preview.clone());
+            target.terminal_error = Some(RunTerminalError::new(
+                "hitl_resume_preparation_failed",
+                output_preview,
+            ));
+            target.updated_at = Utc::now();
+            save_run_record(&transaction, &target)?;
+            // This is a terminal target transition performed before the generic admission
+            // finalizer. Keep the session pointer in the same transaction: the later finalizer
+            // intentionally preserves an already-terminal target and otherwise leaves an active
+            // pointer to a failed replacement that blocks the waiting source from being retried.
+            let mut session = load_session_record(&transaction, &lease.target.session_id)?;
+            apply_run_to_session(&mut session, &target);
+            save_session_record(&transaction, &session)?;
+            let deleted = transaction
+                .execute(
+                    "DELETE FROM hitl_resume_claims
+                     WHERE session_id = ?1 AND run_id = ?2 AND claim_id = ?3 AND record = ?4",
+                    params![
+                        claim.session_id.as_str(),
+                        claim.run_id.as_str(),
+                        claim.claim_id,
+                        payload,
+                    ],
+                )
+                .map_err(map_sqlite_session_error)?;
+            if deleted != 1 {
+                return Err(SessionStoreError::Conflict(format!(
+                    "admitted resume claim changed while aborting run {}",
+                    source_run_id.as_str()
+                )));
+            }
+            transaction.commit().map_err(map_sqlite_session_error)?;
+            Ok(HitlResumeAbortOutcome::AbortedBeforeEffect)
         })
         .await
         .map_err(SessionStoreError::Failed)?
@@ -719,16 +938,13 @@ impl SessionStore for SqliteSessionStore {
     async fn finalize_run_admission(
         &self,
         lease: &RunAdmissionLease,
-        status: RunStatus,
-        output_preview: Option<String>,
+        terminal: RunTerminalProjection,
     ) -> SessionStoreResult<RunRecord> {
         let store = self.clone();
         let lease = lease.clone();
-        crate::blocking::run(move || {
-            store.finalize_run_admission_sync(&lease, status, output_preview)
-        })
-        .await
-        .map_err(SessionStoreError::Failed)?
+        crate::blocking::run(move || store.finalize_run_admission_sync(&lease, terminal))
+            .await
+            .map_err(SessionStoreError::Failed)?
     }
 
     async fn load_run_admission(
@@ -1194,8 +1410,13 @@ impl SessionStore for SqliteSessionStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(map_sqlite_session_error)?;
             let mut run = load_run_record(&transaction, session_id, run_id)?;
-            run.status = status;
-            run.output_preview = output_preview;
+            run.apply_legacy_status_update(status, output_preview);
+            run.validate_new_write().map_err(|error| {
+                SessionStoreError::Failed(format!(
+                    "invalid run state for {}: {error}",
+                    run.run_id.as_str()
+                ))
+            })?;
             run.updated_at = Utc::now();
             save_run_record(&transaction, &run)?;
             let mut session = load_session_record(&transaction, session_id)?;

@@ -1,21 +1,21 @@
 //! CLI persistence facade over shared `SQLite` storage and product-owned JSON blobs.
 
-use std::{collections::BTreeSet, fs, path::Path, path::PathBuf, sync::Arc};
+use std::{fs, path::Path, path::PathBuf, sync::Arc};
 
 use chrono::Utc;
 use serde::Serialize;
 use serde_json::Value;
-use starweaver_agent::ResumableState;
+use starweaver_context::{AgentCheckpoint, ResumableState};
 use starweaver_core::{ConversationId, RunId, SessionId};
 use starweaver_environment::EnvironmentState;
-use starweaver_model::{ModelMessage, ModelRequest, ModelRequestPart, ToolReturnPart};
-use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
+use starweaver_runtime::AgentStreamRecord;
 use starweaver_session::{
-    AcquireRunAdmission, ApprovalRecord, ApprovalStatus, DeferredToolRecord, EnvironmentStateRef,
-    ExecutionStatus, InputPart, LOCAL_SESSION_NAMESPACE, RelatedRunUpdate, RunAdmissionLease,
-    RunRecord, RunStatus, SessionRecord, SessionSearchError, SessionSearchPage,
-    SessionSearchProvider, SessionSearchQuery, SessionSearchScope, SessionStatus,
-    SessionStoreError, StreamCursorRef,
+    AcquireRunAdmission, ApprovalRecord, ApprovalStatus, ContinuationPreparationMode,
+    DeferredToolRecord, EnvironmentStateRef, ExecutionStatus, InputPart, LOCAL_SESSION_NAMESPACE,
+    PreparedContinuation, RelatedRunUpdate, RunAdmissionLease, RunRecord, RunStatus,
+    RunTerminalError, SessionRecord, SessionSearchError, SessionSearchPage, SessionSearchProvider,
+    SessionSearchQuery, SessionSearchScope, SessionStatus, SessionStore, SessionStoreError,
+    StreamCursorRef,
 };
 use starweaver_storage::{
     LocalSessionSearchProvider, LocalStoreImportReport, RunEvidenceCommit, SqliteStorage,
@@ -26,16 +26,10 @@ use uuid::Uuid;
 use crate::{CliError, CliResult, config::CliConfig, error::io_error};
 
 mod archive;
-mod hitl;
 mod replay;
 mod session_store;
 
 pub use archive::LocalStreamArchive;
-use hitl::{
-    approval_tool_return, deferred_status_is_unresolved, deferred_tool_return,
-    existing_resume_tool_return_ids, latest_tool_call_order, pending_hitl_resume_error,
-    tool_return_control_flow,
-};
 pub use replay::DisplayReplayWindow;
 pub use session_store::LocalSessionStore;
 
@@ -60,6 +54,8 @@ pub struct RunArtifacts {
     pub environment_state: Option<EnvironmentState>,
     /// Raw runtime records.
     pub raw_records: Vec<AgentStreamRecord>,
+    /// Full runtime checkpoints captured at resumable boundaries.
+    pub checkpoints: Vec<AgentCheckpoint>,
     /// Display messages.
     pub display_messages: Vec<DisplayMessage>,
     /// Compact display snapshot.
@@ -70,6 +66,8 @@ pub struct RunArtifacts {
     pub deferred_tools: Vec<DeferredToolRecord>,
     /// Terminal status selected by HITL and runtime policy.
     pub status: RunStatus,
+    /// Safe diagnostic when the selected terminal status failed or was cancelled.
+    pub terminal_error: Option<RunTerminalError>,
 }
 
 /// Session summary row.
@@ -392,7 +390,14 @@ impl LocalStore {
                     metadata: state.metadata.clone(),
                 });
         run.status = artifacts.status;
-        run.output_preview = Some(output);
+        run.terminal_error = artifacts.terminal_error.or_else(|| {
+            (run.status == RunStatus::Failed)
+                .then(|| RunTerminalError::new("cli_run_failed", output.clone()))
+        });
+        run.output_preview = match run.status {
+            RunStatus::Failed | RunStatus::Cancelled => None,
+            _ => Some(output),
+        };
         run.updated_at = Utc::now();
         run.environment_state.clone_from(&environment_ref);
         run.stream_cursors = raw_cursor.into_iter().chain(display_cursor).collect();
@@ -403,6 +408,7 @@ impl LocalStore {
             .as_ref()
             .map(EnvironmentState::to_json);
         commit.stream_records.clone_from(&artifacts.raw_records);
+        commit.checkpoints.clone_from(&artifacts.checkpoints);
         commit.approvals.clone_from(&artifacts.approvals);
         commit.deferred_tools.clone_from(&artifacts.deferred_tools);
         commit.stream_cursors.clone_from(&run.stream_cursors);
@@ -473,7 +479,8 @@ impl LocalStore {
     ) -> CliResult<()> {
         let session = self.load_session(run.session_id.as_str())?;
         run.status = RunStatus::Failed;
-        run.output_preview = Some(message);
+        run.output_preview = None;
+        run.terminal_error = Some(RunTerminalError::new("cli_run_failed", message));
         run.updated_at = Utc::now();
         let mut state = session.state;
         state.run_id = Some(run.run_id.clone());
@@ -490,6 +497,61 @@ impl LocalStore {
         Ok(())
     }
 
+    /// Side-effect-free prepare a waiting HITL continuation from canonical evidence.
+    pub fn prepare_waiting_continuation(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> CliResult<PreparedContinuation> {
+        let store = self.storage.session_store();
+        let session_id = SessionId::from_string(session_id);
+        let run_id = RunId::from_string(run_id);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| CliError::Run(error.to_string()))?;
+        runtime
+            .block_on(store.reconcile_expired_run_admissions(LOCAL_SESSION_NAMESPACE, Utc::now()))
+            .map_err(storage_error)?;
+        match runtime.block_on(store.prepare_continuation(
+            &session_id,
+            &run_id,
+            ContinuationPreparationMode::WaitingHitl,
+        )) {
+            Ok(prepared) => Ok(prepared),
+            Err(error) => {
+                let mut pending = self
+                    .list_approvals(Some(session_id.as_str()), Some(run_id.as_str()))?
+                    .into_iter()
+                    .filter(|approval| approval.status == ApprovalStatus::Pending)
+                    .map(|approval| approval.approval_id)
+                    .collect::<Vec<_>>();
+                pending.extend(
+                    self.list_deferred_tools(Some(session_id.as_str()), Some(run_id.as_str()))?
+                        .into_iter()
+                        .filter(|deferred| {
+                            matches!(
+                                deferred.status,
+                                ExecutionStatus::Pending
+                                    | ExecutionStatus::Running
+                                    | ExecutionStatus::Waiting
+                            )
+                        })
+                        .map(|deferred| deferred.deferred_id),
+                );
+                if pending.is_empty() {
+                    Err(storage_error(error))
+                } else {
+                    Err(CliError::Run(format!(
+                        "cannot resume run {} while HITL items are pending: {}",
+                        run_id.as_str(),
+                        pending.join(", ")
+                    )))
+                }
+            }
+        }
+    }
+
     /// Load the latest saved state for a continuation source.
     pub fn load_restore_state(
         &self,
@@ -499,142 +561,12 @@ impl LocalStore {
         let Some(run_id) = run_id else {
             return Ok(Some(self.load_session(session_id)?.state));
         };
-        let mut state = self
-            .storage
+        self.storage
             .load_run_context(
                 &SessionId::from_string(session_id),
                 &RunId::from_string(run_id),
             )
-            .map_err(storage_error)?;
-        if let Some(state) = state.as_mut() {
-            self.inject_resolved_hitl_tool_returns(session_id, run_id, state)?;
-        }
-        Ok(state)
-    }
-
-    fn inject_resolved_hitl_tool_returns(
-        &self,
-        session_id: &str,
-        run_id: &str,
-        state: &mut ResumableState,
-    ) -> CliResult<()> {
-        let mut existing_returns = existing_resume_tool_return_ids(&state.message_history);
-        let tool_call_order = latest_tool_call_order(&state.message_history);
-        let latest_tool_call_ids = tool_call_order.iter().cloned().collect::<BTreeSet<_>>();
-        let approvals = self.list_approvals(Some(session_id), Some(run_id))?;
-        let deferred_tools = self.list_deferred_tools(Some(session_id), Some(run_id))?;
-        let pending_approvals = approvals
-            .iter()
-            .filter(|approval| {
-                approval.status == ApprovalStatus::Pending
-                    && !existing_returns.contains(&approval.action_id)
-            })
-            .map(|approval| approval.approval_id.clone())
-            .collect::<Vec<_>>();
-        let pending_deferred = deferred_tools
-            .iter()
-            .filter(|deferred| {
-                deferred_status_is_unresolved(deferred.status)
-                    && !existing_returns.contains(&deferred.tool_call_id)
-            })
-            .map(|deferred| deferred.deferred_id.clone())
-            .collect::<Vec<_>>();
-        if !pending_approvals.is_empty() || !pending_deferred.is_empty() {
-            return Err(pending_hitl_resume_error(
-                run_id,
-                &pending_approvals,
-                &pending_deferred,
-            ));
-        }
-
-        let mut resolved = Vec::<(String, ModelRequestPart)>::new();
-        for tool_return in self.list_run_tool_returns(session_id, run_id)? {
-            if !latest_tool_call_ids.contains(&tool_return.tool_call_id)
-                || tool_return_control_flow(&tool_return).is_some()
-                || existing_returns.contains(&tool_return.tool_call_id)
-            {
-                continue;
-            }
-            existing_returns.insert(tool_return.tool_call_id.clone());
-            resolved.push((
-                tool_return.tool_call_id.clone(),
-                ModelRequestPart::ToolReturn(tool_return),
-            ));
-        }
-        for approval in approvals {
-            if existing_returns.contains(&approval.action_id) {
-                continue;
-            }
-            if let Some(tool_return) = approval_tool_return(&approval)? {
-                existing_returns.insert(approval.action_id.clone());
-                resolved.push((
-                    approval.action_id.clone(),
-                    ModelRequestPart::ToolReturn(tool_return),
-                ));
-            }
-        }
-        for deferred in deferred_tools {
-            if existing_returns.contains(&deferred.tool_call_id) {
-                continue;
-            }
-            if let Some(tool_return) = deferred_tool_return(&deferred) {
-                existing_returns.insert(deferred.tool_call_id.clone());
-                resolved.push((
-                    deferred.tool_call_id.clone(),
-                    ModelRequestPart::ToolReturn(tool_return),
-                ));
-            }
-        }
-        if resolved.is_empty() {
-            return Ok(());
-        }
-        resolved.sort_by_key(|(tool_call_id, _)| {
-            tool_call_order
-                .iter()
-                .position(|known| known == tool_call_id)
-                .unwrap_or(usize::MAX)
-        });
-        let mut metadata = serde_json::Map::new();
-        metadata.insert(
-            "starweaver.resume.hitl_results".to_string(),
-            serde_json::json!(true),
-        );
-        metadata.insert(
-            "starweaver.resume.source_run_id".to_string(),
-            serde_json::json!(run_id),
-        );
-        state
-            .message_history
-            .push(ModelMessage::Request(ModelRequest {
-                parts: resolved.into_iter().map(|(_, part)| part).collect(),
-                timestamp: Some(Utc::now()),
-                instructions: None,
-                run_id: Some(RunId::from_string(run_id)),
-                conversation_id: state.conversation_id.clone(),
-                metadata,
-            }));
-        Ok(())
-    }
-
-    fn list_run_tool_returns(
-        &self,
-        session_id: &str,
-        run_id: &str,
-    ) -> CliResult<Vec<ToolReturnPart>> {
-        let records = self
-            .storage
-            .load_stream_records(
-                &SessionId::from_string(session_id),
-                &RunId::from_string(run_id),
-            )
-            .map_err(storage_error)?;
-        Ok(records
-            .into_iter()
-            .filter_map(|record| match record.event {
-                AgentStreamEvent::ToolReturn { tool_return, .. } => Some(tool_return),
-                _ => None,
-            })
-            .collect())
+            .map_err(storage_error)
     }
 
     /// List session summaries for the current workspace.
@@ -971,6 +903,11 @@ fn attach_hitl_resume_update(
                 source_status,
             );
             update.resume_claim_id = Some(claim_id.to_string());
+            update.terminal_error = (source_status == RunStatus::Failed).then(|| {
+                run.terminal_error.clone().unwrap_or_else(|| {
+                    RunTerminalError::new("cli_continuation_failed", "continuation failed")
+                })
+            });
             commit.related_run_updates.push(update);
             Ok(())
         }

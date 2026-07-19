@@ -25,7 +25,7 @@ pub const SESSION_IMPORTED_FROM_METADATA_KEY: &str = "starweaver.imported_from";
 /// Resolve the default machine-local Starweaver configuration directory.
 ///
 /// Native Windows applications normally expose `USERPROFILE` rather than `HOME`. Keeping this
-/// resolution in the shared storage layer prevents CLI, RPC, and future Desktop hosts from opening
+/// resolution in the shared storage layer prevents CLI, RPC, and other hosts from opening
 /// different default databases merely because their process environments or working directories
 /// differ. Resolution fails rather than falling back to the current directory, because a
 /// process-relative machine database would silently split durable sessions between products.
@@ -560,12 +560,12 @@ mod tests {
     fn windows_home_resolution_prefers_native_profile_without_home() {
         assert_eq!(
             windows_user_home_dir_from(
-                Some(OsString::from(r"C:\Users\desktop")),
+                Some(OsString::from(r"C:\Users\operator")),
                 Some(OsString::from("D:")),
                 Some(OsString::from(r"\Users\fallback")),
                 None,
             ),
-            Some(PathBuf::from(r"C:\Users\desktop"))
+            Some(PathBuf::from(r"C:\Users\operator"))
         );
         assert_eq!(
             windows_user_home_dir_from(

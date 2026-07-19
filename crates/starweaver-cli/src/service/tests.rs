@@ -595,7 +595,7 @@ fn delete_session_is_fenced_by_active_work_and_tombstones_evidence() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn hitl_resume_preflight_claim_precedes_run_allocation_and_blocks_ordinary_admission() {
+fn hitl_resume_preflight_rejects_invalid_evidence_before_claim_or_run_allocation() {
     let temp = tempfile::tempdir().unwrap();
     let config = test_config(temp.path());
     let (session_id, source_run_id, terminal_run_id) = {
@@ -616,11 +616,13 @@ fn hitl_resume_preflight_claim_precedes_run_allocation_and_blocks_ordinary_admis
                     state: starweaver_context::ResumableState::default(),
                     environment_state: None,
                     raw_records: Vec::new(),
+                    checkpoints: Vec::new(),
                     display_messages: Vec::new(),
                     display_snapshot: starweaver_stream::ReplaySnapshot::default(),
                     approvals: Vec::new(),
                     deferred_tools: Vec::new(),
                     status: RunStatus::Completed,
+                    terminal_error: None,
                 },
             )
             .unwrap();
@@ -636,35 +638,57 @@ fn hitl_resume_preflight_claim_precedes_run_allocation_and_blocks_ordinary_admis
                     state: starweaver_context::ResumableState::default(),
                     environment_state: None,
                     raw_records: Vec::new(),
+                    checkpoints: Vec::new(),
                     display_messages: Vec::new(),
                     display_snapshot: starweaver_stream::ReplaySnapshot::default(),
                     approvals: Vec::new(),
                     deferred_tools: Vec::new(),
                     status: RunStatus::Waiting,
+                    terminal_error: None,
                 },
             )
             .unwrap();
         (session_id, source_run_id, terminal_run_id)
     };
 
-    let mut winner = CliService::open(config.clone()).unwrap();
-    let _prepared = winner
+    let mut invalid = CliService::open(config.clone()).unwrap();
+    let error = invalid
         .prepare_prompt_run(
             &test_run_command(&session_id, Some(&source_run_id), true),
             None,
         )
-        .unwrap();
+        .err()
+        .expect("invalid durable waiting evidence must fail preflight");
+    assert!(error.to_string().contains("no resumable checkpoint"));
+
+    let source_id = RunId::from_string(&source_run_id);
+    let claim_id = deterministic_hitl_resume_claim_id(&session_id, &source_id);
+    run_hitl_resume_claim_operation(
+        config.clone(),
+        HitlResumeClaimOperation::Claim(HitlResumeClaim::new(
+            claim_id.clone(),
+            SessionId::from_string(&session_id),
+            source_id.clone(),
+            Utc::now(),
+        )),
+    )
+    .expect("failed validation must not acquire the deterministic claim");
+    run_hitl_resume_claim_operation(
+        config.clone(),
+        HitlResumeClaimOperation::Release {
+            session_id: SessionId::from_string(&session_id),
+            run_id: source_id,
+            claim_id,
+        },
+    )
+    .unwrap();
 
     let mut ordinary = CliService::open(config.clone()).unwrap();
     let ordinary_error = ordinary
         .prepare_prompt_run(&test_run_command(&session_id, None, false), None)
         .err()
         .expect("ordinary admission must be rejected");
-    assert!(
-        ordinary_error
-            .to_string()
-            .contains("continuing waiting run")
-    );
+    assert!(ordinary_error.to_string().contains("explicit HITL resume"));
 
     let mut explicit = CliService::open(config.clone()).unwrap();
     let explicit_error = explicit
@@ -673,22 +697,12 @@ fn hitl_resume_preflight_claim_precedes_run_allocation_and_blocks_ordinary_admis
             None,
         )
         .err()
-        .expect("explicit terminal restore must not bypass active HITL continuation");
+        .expect("explicit terminal restore must not bypass the waiting source");
     assert!(
         explicit_error
             .to_string()
             .contains("continuing waiting run")
     );
-
-    let mut duplicate = CliService::open(config.clone()).unwrap();
-    let duplicate_error = duplicate
-        .prepare_prompt_run(
-            &test_run_command(&session_id, Some(&source_run_id), true),
-            None,
-        )
-        .err()
-        .expect("duplicate HITL admission must be rejected");
-    assert!(duplicate_error.to_string().contains("active resume claim"));
 
     assert_eq!(
         LocalStore::open(&config)
@@ -696,8 +710,153 @@ fn hitl_resume_preflight_claim_precedes_run_allocation_and_blocks_ordinary_admis
             .list_run_records(&session_id)
             .unwrap()
             .len(),
-        3,
-        "rejected admissions must not allocate orphan runs"
+        2,
+        "rejected preflight paths must not allocate orphan runs"
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn hitl_resume_preflight_reconciles_expired_started_orphan_before_new_claim() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = test_config(temp.path());
+    let (session_id, source) = {
+        let mut store = LocalStore::open(&config).unwrap();
+        let session = store
+            .create_session("general", Some("Expired HITL orphan".to_string()))
+            .unwrap();
+        let mut source = store
+            .append_run(
+                session.session_id.as_str(),
+                "waiting source".to_string(),
+                None,
+                "general",
+            )
+            .unwrap();
+        store
+            .complete_run(
+                &mut source,
+                "waiting".to_string(),
+                crate::local_store::RunArtifacts {
+                    state: starweaver_context::ResumableState::default(),
+                    environment_state: None,
+                    raw_records: Vec::new(),
+                    checkpoints: Vec::new(),
+                    display_messages: Vec::new(),
+                    display_snapshot: starweaver_stream::ReplaySnapshot::default(),
+                    approvals: Vec::new(),
+                    deferred_tools: Vec::new(),
+                    status: RunStatus::Waiting,
+                    terminal_error: None,
+                },
+            )
+            .unwrap();
+        (session.session_id, source)
+    };
+    let claim_id = deterministic_hitl_resume_claim_id(session_id.as_str(), &source.run_id);
+    let mut replacement = RunRecord::new(
+        session_id.clone(),
+        RunId::from_string("expired-cli-hitl-replacement"),
+        starweaver_core::ConversationId::new(),
+    );
+    replacement.restore_from_run_id = Some(source.run_id.clone());
+    let request = starweaver_session::AcquireRunAdmission {
+        run: replacement,
+        namespace_id: starweaver_session::LOCAL_SESSION_NAMESPACE.to_string(),
+        host_instance_id: "expired-cli-host".to_string(),
+        admission_id: "expired-cli-admission".to_string(),
+        lease_expires_at: Utc::now() + chrono::Duration::seconds(30),
+        idempotency_key: "expired-cli-key".to_string(),
+        command_fingerprint: "expired-cli-fingerprint".to_string(),
+        replaces_waiting_run_id: Some(source.run_id.clone()),
+        hitl_resume_claim_id: Some(claim_id.clone()),
+    };
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let adapter = LocalSessionStore::new(config.clone()).unwrap();
+    runtime
+        .block_on(adapter.claim_hitl_resume(HitlResumeClaim::new(
+            claim_id.clone(),
+            session_id.clone(),
+            source.run_id.clone(),
+            Utc::now(),
+        )))
+        .unwrap();
+    let receipt = runtime
+        .block_on(adapter.acquire_run_admission(request.clone()))
+        .unwrap();
+    runtime
+        .block_on(adapter.start_hitl_resume_effect(&receipt.lease, &source.run_id, &claim_id))
+        .expect("start the admitted continuation before simulating process loss");
+    runtime
+        .block_on(
+            adapter
+                .heartbeat_run_admission(&receipt.lease, Utc::now() - chrono::Duration::seconds(1)),
+        )
+        .expect("expire the started continuation after its effect boundary");
+
+    let mut service = CliService::open(config.clone()).unwrap();
+    service
+        .prepare_prompt_run(
+            &test_run_command(session_id.as_str(), Some(source.run_id.as_str()), true),
+            None,
+        )
+        .err()
+        .expect("preflight must fail after terminalizing the expired started orphan");
+
+    let store = LocalStore::open(&config).unwrap();
+    for run_id in [&source.run_id, &receipt.run.run_id] {
+        assert_eq!(
+            store
+                .load_run(session_id.as_str(), run_id.as_str())
+                .unwrap()
+                .status,
+            RunStatus::Cancelled
+        );
+    }
+    assert!(
+        store
+            .load_session(session_id.as_str())
+            .unwrap()
+            .active_run_id
+            .is_none()
+    );
+    assert!(
+        runtime
+            .block_on(adapter.load_run_admission(&receipt.lease.target))
+            .unwrap()
+            .is_none()
+    );
+    runtime
+        .block_on(adapter.mark_hitl_resume_started(&session_id, &source.run_id, &claim_id))
+        .expect_err("preflight reconciliation must consume the started claim");
+    let replay = runtime
+        .block_on(adapter.acquire_run_admission(request))
+        .expect("exact retry must return only the durable receipt");
+    assert!(replay.idempotent_replay);
+    assert!(
+        runtime
+            .block_on(adapter.load_run_admission(&receipt.lease.target))
+            .unwrap()
+            .is_none(),
+        "exact retry must not restore the admission or replay the effect"
+    );
+    assert_eq!(
+        store.list_run_records(session_id.as_str()).unwrap().len(),
+        2
+    );
+}
+
+#[test]
+fn cli_hitl_resume_claim_identity_is_deterministic_per_waiting_source() {
+    let session_id = "session-deterministic";
+    let source = RunId::from_string("run-waiting");
+    assert_eq!(
+        deterministic_hitl_resume_claim_id(session_id, &source),
+        deterministic_hitl_resume_claim_id(session_id, &source)
+    );
+    assert_ne!(
+        deterministic_hitl_resume_claim_id(session_id, &source),
+        deterministic_hitl_resume_claim_id(session_id, &RunId::from_string("run-other"))
     );
 }
 
@@ -722,11 +881,13 @@ fn resume_terminal_head_continues_without_hitl_claim_or_orphan_run() {
                     state: starweaver_context::ResumableState::default(),
                     environment_state: None,
                     raw_records: Vec::new(),
+                    checkpoints: Vec::new(),
                     display_messages: Vec::new(),
                     display_snapshot: starweaver_stream::ReplaySnapshot::default(),
                     approvals: Vec::new(),
                     deferred_tools: Vec::new(),
                     status: RunStatus::Completed,
+                    terminal_error: None,
                 },
             )
             .unwrap();
@@ -759,6 +920,7 @@ fn resume_terminal_head_continues_without_hitl_claim_or_orphan_run() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn hitl_resume_claim_allows_only_one_continuation_and_consumes_source_atomically() {
     let temp = tempfile::tempdir().unwrap();
     let config = test_config(temp.path());
@@ -783,11 +945,13 @@ fn hitl_resume_claim_allows_only_one_continuation_and_consumes_source_atomically
                 state: starweaver_context::ResumableState::default(),
                 environment_state: None,
                 raw_records: Vec::new(),
+                checkpoints: Vec::new(),
                 display_messages: Vec::new(),
                 display_snapshot: starweaver_stream::ReplaySnapshot::default(),
                 approvals: Vec::new(),
                 deferred_tools: Vec::new(),
                 status: RunStatus::Waiting,
+                terminal_error: None,
             },
         )
         .unwrap();
@@ -813,24 +977,27 @@ fn hitl_resume_claim_allows_only_one_continuation_and_consumes_source_atomically
         )),
     );
     assert!(duplicate.is_err());
-    run_hitl_resume_claim_operation(
-        config,
-        HitlResumeClaimOperation::Start {
-            session_id: session_id.clone(),
-            run_id: source.run_id.clone(),
-            claim_id: claim_id.clone(),
-        },
-    )
-    .unwrap();
-
-    let mut continuation = store
-        .append_run(
+    let (mut continuation, admission) = store
+        .admit_run(
             session_id.as_str(),
             "continue".to_string(),
             Some(source.run_id.as_str().to_string()),
             "general",
+            serde_json::Map::new(),
+            "cli-test-host",
+            Some(source.run_id.clone()),
+            Some(claim_id.clone()),
         )
         .unwrap();
+    run_hitl_resume_claim_operation(
+        config,
+        HitlResumeClaimOperation::StartEffect {
+            lease: admission.clone(),
+            source_run_id: source.run_id.clone(),
+            claim_id: claim_id.clone(),
+        },
+    )
+    .expect("start the admitted continuation before committing its effect evidence");
     continuation.metadata.insert(
         HITL_RESUME_CLAIM_ID_METADATA_KEY.to_string(),
         json!(claim_id),
@@ -840,19 +1007,22 @@ fn hitl_resume_claim_allows_only_one_continuation_and_consumes_source_atomically
         json!(source.run_id.as_str()),
     );
     store
-        .complete_run(
+        .complete_run_fenced(
             &mut continuation,
             "continued".to_string(),
             crate::local_store::RunArtifacts {
                 state: starweaver_context::ResumableState::default(),
                 environment_state: None,
                 raw_records: Vec::new(),
+                checkpoints: Vec::new(),
                 display_messages: Vec::new(),
                 display_snapshot: starweaver_stream::ReplaySnapshot::default(),
                 approvals: Vec::new(),
                 deferred_tools: Vec::new(),
                 status: RunStatus::Completed,
+                terminal_error: None,
             },
+            &admission,
         )
         .unwrap();
 
@@ -914,6 +1084,7 @@ fn failed_run_complete_persists_restore_state_for_continuation() {
                 state,
                 environment_state: None,
                 raw_records: Vec::new(),
+                checkpoints: Vec::new(),
                 display_messages: vec![DisplayMessage::new(
                     0,
                     run_session_id,
@@ -924,12 +1095,21 @@ fn failed_run_complete_persists_restore_state_for_continuation() {
                 approvals: Vec::new(),
                 deferred_tools: Vec::new(),
                 status: RunStatus::Failed,
+                terminal_error: None,
             },
         )
         .unwrap();
 
     let saved_run = store.load_run(&session_id, run.run_id.as_str()).unwrap();
     assert_eq!(saved_run.status, RunStatus::Failed);
+    assert_eq!(saved_run.output_preview, None);
+    assert_eq!(
+        saved_run
+            .terminal_error
+            .as_ref()
+            .map(|error| error.message.as_str()),
+        Some("step limit exceeded after 1 steps")
+    );
     let saved_session = store.load_session(&session_id).unwrap();
     assert_eq!(saved_session.head_run_id.as_ref(), Some(&run.run_id));
     assert_eq!(saved_session.active_run_id, None);
@@ -978,11 +1158,13 @@ fn compatibility_mirror_failure_does_not_reclassify_canonical_completion() {
                 state: starweaver_context::ResumableState::default(),
                 environment_state: None,
                 raw_records: Vec::new(),
+                checkpoints: Vec::new(),
                 display_messages: display,
                 display_snapshot: starweaver_stream::ReplaySnapshot::default(),
                 approvals: Vec::new(),
                 deferred_tools: Vec::new(),
                 status: RunStatus::Completed,
+                terminal_error: None,
             },
         )
         .expect("canonical completion must not fail with its optional mirror");
@@ -1036,11 +1218,13 @@ fn complete_run_stores_source_attributed_display_messages_under_parent_run() {
                 state: starweaver_context::ResumableState::default(),
                 environment_state: None,
                 raw_records: Vec::new(),
+                checkpoints: Vec::new(),
                 display_messages: vec![message],
                 display_snapshot: starweaver_stream::ReplaySnapshot::default(),
                 approvals: Vec::new(),
                 deferred_tools: Vec::new(),
                 status: RunStatus::Completed,
+                terminal_error: None,
             },
         )
         .unwrap();
@@ -1106,11 +1290,13 @@ fn complete_run_persists_default_projector_source_records_under_parent_run() {
                 state: starweaver_context::ResumableState::default(),
                 environment_state: None,
                 raw_records: vec![raw_record],
+                checkpoints: Vec::new(),
                 display_messages: projected,
                 display_snapshot: starweaver_stream::ReplaySnapshot::default(),
                 approvals: Vec::new(),
                 deferred_tools: Vec::new(),
                 status: RunStatus::Completed,
+                terminal_error: None,
             },
         )
         .unwrap();
@@ -1369,11 +1555,13 @@ fn tui_session_reload_resolves_prefix_restores_snapshot_and_current_pointer() {
                     state: starweaver_context::ResumableState::default(),
                     environment_state: None,
                     raw_records: Vec::new(),
+                    checkpoints: Vec::new(),
                     display_messages: messages,
                     display_snapshot: starweaver_stream::ReplaySnapshot::default(),
                     approvals: Vec::new(),
                     deferred_tools: Vec::new(),
                     status: RunStatus::Completed,
+                    terminal_error: None,
                 },
             )
             .unwrap();

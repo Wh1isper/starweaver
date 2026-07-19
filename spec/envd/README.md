@@ -32,7 +32,7 @@ For the Starweaver SDK environment layer, read `../environment/README.md`.
 3. `03-rpc-protocol.md` — JSON-RPC method groups, stdio/http transports,
    request/response envelopes, errors, streaming, and idempotency.
 4. `04-provider-and-host-integration.md` — reference Starweaver integration:
-   how `EnvironmentProvider`, host RPC, CLI/TUI/Desktop, sessions, streams, and
+   how `EnvironmentProvider`, host RPC, CLI/TUI/external hosts, sessions, streams, and
    approvals can use envd without making envd Starweaver-only.
 5. `05-api-backlog.md` — unfinished envd API work that should wait for a
    concrete implementation or call site.

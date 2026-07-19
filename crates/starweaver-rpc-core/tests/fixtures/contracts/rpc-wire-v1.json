@@ -1,0 +1,2902 @@
+{
+  "schema": "starweaver.host.wire-corpus",
+  "major": 1,
+  "revision": "2026-07-19",
+  "methods": [
+    {
+      "method": "initialize",
+      "canonicalParams": {
+        "protocol": {
+          "name": "starweaver.host",
+          "major": 1,
+          "revision": "rpc-fixture"
+        }
+      },
+      "canonicalResult": {
+        "protocol": {
+          "name": "starweaver.host",
+          "major": 1,
+          "revision": "2026-07-14",
+          "features": [
+            "sessions",
+            "runs"
+          ]
+        },
+        "serverInfo": {
+          "name": "starweaver-rpc",
+          "version": "0.9.0"
+        },
+        "capabilities": {
+          "sessions": true,
+          "runs": true,
+          "management": true,
+          "profiles": true,
+          "clientModelSelection": true,
+          "blockingRunStart": true,
+          "blockingRunPrompt": true,
+          "nonBlockingRunStart": true,
+          "liveDisplay": true,
+          "streamReplay": true,
+          "streamSubscribe": true,
+          "cancel": true,
+          "steering": true,
+          "attach": true,
+          "environmentAttachments": true,
+          "environmentActiveMounts": true,
+          "defaultStreamPayload": "agui",
+          "approvals": true,
+          "deferred": true
+        },
+        "config": {
+          "projectDir": "/workspace",
+          "defaultProfile": "general"
+        }
+      },
+      "invalidParams": [
+        {
+          "protocol": 1
+        },
+        {
+          "protocol": {
+            "name": "starweaver.host",
+            "major": 1,
+            "revision": "rpc-fixture"
+          },
+          "unexpected": true
+        },
+        {
+          "protocol": {
+            "name": "starweaver.host",
+            "major": 2,
+            "revision": "rpc-fixture"
+          }
+        }
+      ],
+      "invalidResults": [
+        {
+          "protocol": {
+            "name": "starweaver.host",
+            "major": 1,
+            "revision": "2026-07-14",
+            "features": [
+              "sessions",
+              "runs"
+            ]
+          },
+          "serverInfo": {
+            "name": "starweaver-rpc",
+            "version": "0.9.0"
+          },
+          "capabilities": {
+            "sessions": true,
+            "runs": true,
+            "management": true,
+            "profiles": true,
+            "clientModelSelection": true,
+            "blockingRunStart": true,
+            "blockingRunPrompt": true,
+            "nonBlockingRunStart": true,
+            "liveDisplay": true,
+            "streamReplay": true,
+            "streamSubscribe": true,
+            "cancel": true,
+            "steering": true,
+            "attach": true,
+            "environmentAttachments": true,
+            "environmentActiveMounts": true,
+            "defaultStreamPayload": "agui",
+            "approvals": true,
+            "deferred": true
+          },
+          "config": {
+            "projectDir": "/workspace",
+            "defaultProfile": "general"
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "shutdown",
+      "canonicalParams": {},
+      "canonicalResult": {
+        "status": "shutdown"
+      },
+      "invalidParams": [
+        {
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "status": "shutdown",
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "diagnostics.get",
+      "canonicalParams": {},
+      "canonicalResult": {
+        "sdk": "starweaver",
+        "version": "0.9.0",
+        "configPath": "/config/rpc.toml",
+        "databasePath": "/state/sessions.db",
+        "stateDir": "/state",
+        "workspaceRoot": "/workspace",
+        "defaultProfile": "general"
+      },
+      "invalidParams": [
+        {
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "sdk": "starweaver",
+          "version": "0.9.0",
+          "configPath": "/config/rpc.toml",
+          "databasePath": "/state/sessions.db",
+          "stateDir": "/state",
+          "workspaceRoot": "/workspace",
+          "defaultProfile": "general",
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "profile.list",
+      "canonicalParams": {
+        "clientStateScope": "host_fixture"
+      },
+      "canonicalResult": {
+        "profiles": [
+          {
+            "name": "general",
+            "label": "General",
+            "modelId": "test:model",
+            "source": "project"
+          }
+        ],
+        "current": {
+          "clientStateScope": "host_fixture",
+          "selectedProfile": "general",
+          "modelId": "test:model"
+        }
+      },
+      "invalidParams": [
+        {
+          "clientStateScope": 1
+        },
+        {
+          "clientStateScope": "host_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "profiles": [
+            {
+              "name": "general",
+              "label": "General",
+              "modelId": "test:model",
+              "source": "project"
+            }
+          ],
+          "current": {
+            "clientStateScope": "host_fixture",
+            "selectedProfile": "general",
+            "modelId": "test:model"
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "model.list",
+      "canonicalParams": {
+        "clientStateScope": "host_fixture"
+      },
+      "canonicalResult": {
+        "profiles": [
+          {
+            "name": "general",
+            "label": "General",
+            "modelId": "test:model",
+            "source": "project"
+          }
+        ],
+        "current": {
+          "clientStateScope": "host_fixture",
+          "selectedProfile": "general",
+          "modelId": "test:model"
+        }
+      },
+      "invalidParams": [
+        {
+          "clientStateScope": 1
+        },
+        {
+          "clientStateScope": "host_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "profiles": [
+            {
+              "name": "general",
+              "label": "General",
+              "modelId": "test:model",
+              "source": "project"
+            }
+          ],
+          "current": {
+            "clientStateScope": "host_fixture",
+            "selectedProfile": "general",
+            "modelId": "test:model"
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "profile.get",
+      "canonicalParams": {
+        "name": "general"
+      },
+      "canonicalResult": {
+        "name": "general",
+        "profile": {
+          "label": "General",
+          "modelId": "test:model",
+          "instructions": [
+            "Be helpful."
+          ],
+          "toolsets": [
+            "filesystem"
+          ],
+          "subagents": []
+        }
+      },
+      "invalidParams": [
+        {},
+        {
+          "name": "general",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "name": "general",
+          "profile": {
+            "label": "General",
+            "modelId": "test:model",
+            "instructions": [
+              "Be helpful."
+            ],
+            "toolsets": [
+              "filesystem"
+            ],
+            "subagents": []
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "model.current",
+      "canonicalParams": {
+        "clientStateScope": "host_fixture"
+      },
+      "canonicalResult": {
+        "clientStateScope": "host_fixture",
+        "selectedProfile": "general",
+        "modelId": "test:model"
+      },
+      "invalidParams": [
+        {
+          "clientStateScope": 1
+        },
+        {
+          "clientStateScope": "host_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "clientStateScope": "host_fixture",
+          "selectedProfile": "general",
+          "modelId": "test:model",
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "model.select",
+      "canonicalParams": {
+        "profile": "general",
+        "clientStateScope": "host_fixture"
+      },
+      "canonicalResult": {
+        "clientStateScope": "host_fixture",
+        "selectedProfile": "general",
+        "modelId": "test:model"
+      },
+      "invalidParams": [
+        {},
+        {
+          "profile": "general",
+          "clientStateScope": "host_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "clientStateScope": "host_fixture",
+          "selectedProfile": "general",
+          "modelId": "test:model",
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "config.get",
+      "canonicalParams": {
+        "key": "default_profile"
+      },
+      "canonicalResult": {
+        "key": "default_profile",
+        "value": "general"
+      },
+      "invalidParams": [
+        {},
+        {
+          "key": "default_profile",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "key": "default_profile",
+          "value": "general",
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "storage.importLegacy",
+      "canonicalParams": {
+        "sourcePath": "/legacy/sessions.db",
+        "workspace": "/workspace"
+      },
+      "canonicalResult": {
+        "sourcePath": "/legacy/sessions.db",
+        "workspace": "/workspace",
+        "sessionsImported": 1,
+        "rowsImported": 2,
+        "imported": true
+      },
+      "invalidParams": [
+        {
+          "sourcePath": "/legacy/sessions.db"
+        },
+        {
+          "sourcePath": "/legacy/sessions.db",
+          "workspace": "/workspace",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "sourcePath": "/legacy/sessions.db",
+          "workspace": "/workspace",
+          "sessionsImported": 1,
+          "rowsImported": 2,
+          "imported": true,
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "session.create",
+      "canonicalParams": {
+        "profile": "general",
+        "title": "Fixture"
+      },
+      "canonicalResult": {
+        "session": {
+          "session_id": "session_fixture",
+          "created_at": "2026-07-19T00:00:00Z",
+          "updated_at": "2026-07-19T00:00:00Z"
+        }
+      },
+      "invalidParams": [
+        {
+          "profile": 1
+        },
+        {
+          "profile": "general",
+          "title": "Fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "session": {
+            "session_id": "session_fixture",
+            "created_at": "2026-07-19T00:00:00Z",
+            "updated_at": "2026-07-19T00:00:00Z"
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "session.list",
+      "canonicalParams": {
+        "limit": 20
+      },
+      "canonicalResult": {
+        "sessions": [
+          {
+            "session_id": "session_fixture",
+            "created_at": "2026-07-19T00:00:00Z",
+            "updated_at": "2026-07-19T00:00:00Z"
+          }
+        ]
+      },
+      "invalidParams": [
+        {
+          "limit": "many"
+        },
+        {
+          "limit": 20,
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "sessions": [
+            {
+              "session_id": "session_fixture",
+              "created_at": "2026-07-19T00:00:00Z",
+              "updated_at": "2026-07-19T00:00:00Z"
+            }
+          ],
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "session.search",
+      "canonicalParams": {
+        "query": "fixture",
+        "mode": "literal",
+        "filters": {},
+        "sources": [
+          "session_metadata"
+        ],
+        "granularity": "session",
+        "sort": "auto",
+        "limit": 20
+      },
+      "canonicalResult": {
+        "hits": [],
+        "coverage": {
+          "state": "complete",
+          "searchedSources": [
+            "session_metadata"
+          ],
+          "unavailableSources": []
+        }
+      },
+      "invalidParams": [
+        {
+          "limit": "many"
+        },
+        {
+          "query": "fixture",
+          "mode": "literal",
+          "filters": {},
+          "sources": [
+            "session_metadata"
+          ],
+          "granularity": "session",
+          "sort": "auto",
+          "limit": 20,
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "hits": [],
+          "coverage": {
+            "state": "complete",
+            "searchedSources": [
+              "session_metadata"
+            ],
+            "unavailableSources": []
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "session.get",
+      "canonicalParams": {
+        "sessionId": "session_fixture",
+        "runs": 20
+      },
+      "canonicalResult": {
+        "session": {
+          "session_id": "session_fixture",
+          "created_at": "2026-07-19T00:00:00Z",
+          "updated_at": "2026-07-19T00:00:00Z"
+        },
+        "runs": [
+          {
+            "session_id": "session_fixture",
+            "run_id": "run_fixture",
+            "conversation_id": "conversation_fixture",
+            "created_at": "2026-07-19T00:00:00Z",
+            "updated_at": "2026-07-19T00:00:00Z"
+          }
+        ]
+      },
+      "invalidParams": [
+        {},
+        {
+          "sessionId": "session_fixture",
+          "runs": 20,
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "session": {
+            "session_id": "session_fixture",
+            "created_at": "2026-07-19T00:00:00Z",
+            "updated_at": "2026-07-19T00:00:00Z"
+          },
+          "runs": [
+            {
+              "session_id": "session_fixture",
+              "run_id": "run_fixture",
+              "conversation_id": "conversation_fixture",
+              "created_at": "2026-07-19T00:00:00Z",
+              "updated_at": "2026-07-19T00:00:00Z"
+            }
+          ],
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "session.current.get",
+      "canonicalParams": {},
+      "canonicalResult": {
+        "sessionId": "session_fixture"
+      },
+      "invalidParams": [
+        {
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "sessionId": "session_fixture",
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "session.current.set",
+      "canonicalParams": {
+        "sessionId": "session_fixture"
+      },
+      "canonicalResult": {
+        "sessionId": "session_fixture"
+      },
+      "invalidParams": [
+        {},
+        {
+          "sessionId": "session_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "sessionId": "session_fixture",
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "session.delete",
+      "canonicalParams": {
+        "sessionId": "session_fixture"
+      },
+      "canonicalResult": {
+        "sessionId": "session_fixture",
+        "deleted": true,
+        "revision": 2
+      },
+      "invalidParams": [
+        {},
+        {
+          "sessionId": "session_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "sessionId": "session_fixture",
+          "deleted": true,
+          "revision": 2,
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "run.start",
+      "canonicalParams": {
+        "prompt": "hello",
+        "sessionId": "session_fixture",
+        "profile": "general",
+        "environmentAttachments": [
+          {
+            "id": "local",
+            "kind": "local",
+            "mode": "read_write",
+            "default": true,
+            "defaultForShell": true
+          }
+        ],
+        "continuationMode": "preserve",
+        "idempotencyKey": "start_fixture"
+      },
+      "canonicalResult": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "status": "running",
+        "idempotentReplay": false,
+        "payloadFormat": "display",
+        "environmentAttachments": [
+          {
+            "id": "local",
+            "kind": "local",
+            "mode": "read_write",
+            "default": true,
+            "defaultForShell": true
+          }
+        ],
+        "materialization": {
+          "version": 2,
+          "agentSpecDigest": "sha256:spec",
+          "modelProfileId": "general",
+          "toolsetIds": [
+            "filesystem"
+          ],
+          "policyVersion": "starweaver-agent-policy-v1",
+          "environmentBindingClass": "local:read_write",
+          "fingerprint": "sha256:materialization",
+          "runtimeBindingDigest": "sha256:runtime",
+          "workspaceRootDigest": "sha256:workspace"
+        },
+        "continuation": {
+          "mode": "preserve",
+          "sourceFingerprint": "sha256:source",
+          "targetFingerprint": "sha256:materialization",
+          "drift": [],
+          "allowed": true
+        }
+      },
+      "invalidParams": [
+        {
+          "unexpected": true
+        },
+        {
+          "prompt": "hello",
+          "sessionId": "session_fixture",
+          "profile": "general",
+          "environmentAttachments": [
+            {
+              "id": "local",
+              "kind": "local",
+              "mode": "read_write",
+              "default": true,
+              "defaultForShell": true
+            }
+          ],
+          "continuationMode": "preserve",
+          "idempotencyKey": "start_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "status": "running",
+          "idempotentReplay": false,
+          "payloadFormat": "display",
+          "environmentAttachments": [
+            {
+              "id": "local",
+              "kind": "local",
+              "mode": "read_write",
+              "default": true,
+              "defaultForShell": true
+            }
+          ],
+          "materialization": {
+            "version": 2,
+            "agentSpecDigest": "sha256:spec",
+            "modelProfileId": "general",
+            "toolsetIds": [
+              "filesystem"
+            ],
+            "policyVersion": "starweaver-agent-policy-v1",
+            "environmentBindingClass": "local:read_write",
+            "fingerprint": "sha256:materialization",
+            "runtimeBindingDigest": "sha256:runtime",
+            "workspaceRootDigest": "sha256:workspace"
+          },
+          "continuation": {
+            "mode": "preserve",
+            "sourceFingerprint": "sha256:source",
+            "targetFingerprint": "sha256:materialization",
+            "drift": [],
+            "allowed": true
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "run.resume",
+      "canonicalParams": {
+        "sessionId": "session_fixture",
+        "runId": "run_waiting",
+        "profile": "general",
+        "environmentAttachments": [
+          {
+            "id": "local",
+            "kind": "local",
+            "mode": "read_write",
+            "default": true,
+            "defaultForShell": true
+          }
+        ],
+        "continuationMode": "preserve",
+        "idempotencyKey": "resume_fixture"
+      },
+      "canonicalResult": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "sourceRunId": "run_waiting",
+        "status": "queued",
+        "environmentAttachments": [
+          {
+            "id": "local",
+            "kind": "local",
+            "mode": "read_write",
+            "default": true,
+            "defaultForShell": true
+          }
+        ],
+        "materialization": {
+          "version": 2,
+          "agentSpecDigest": "sha256:spec",
+          "modelProfileId": "general",
+          "toolsetIds": [
+            "filesystem"
+          ],
+          "policyVersion": "starweaver-agent-policy-v1",
+          "environmentBindingClass": "local:read_write",
+          "fingerprint": "sha256:materialization",
+          "runtimeBindingDigest": "sha256:runtime",
+          "workspaceRootDigest": "sha256:workspace"
+        },
+        "continuation": {
+          "mode": "preserve",
+          "sourceFingerprint": "sha256:source",
+          "targetFingerprint": "sha256:materialization",
+          "drift": [],
+          "allowed": true
+        },
+        "idempotentReplay": false
+      },
+      "invalidParams": [
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture"
+        },
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_waiting",
+          "profile": "general",
+          "environmentAttachments": [
+            {
+              "id": "local",
+              "kind": "local",
+              "mode": "read_write",
+              "default": true,
+              "defaultForShell": true
+            }
+          ],
+          "continuationMode": "preserve",
+          "idempotencyKey": "resume_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "sourceRunId": "run_waiting",
+          "status": "queued",
+          "environmentAttachments": [
+            {
+              "id": "local",
+              "kind": "local",
+              "mode": "read_write",
+              "default": true,
+              "defaultForShell": true
+            }
+          ],
+          "materialization": {
+            "version": 2,
+            "agentSpecDigest": "sha256:spec",
+            "modelProfileId": "general",
+            "toolsetIds": [
+              "filesystem"
+            ],
+            "policyVersion": "starweaver-agent-policy-v1",
+            "environmentBindingClass": "local:read_write",
+            "fingerprint": "sha256:materialization",
+            "runtimeBindingDigest": "sha256:runtime",
+            "workspaceRootDigest": "sha256:workspace"
+          },
+          "continuation": {
+            "mode": "preserve",
+            "sourceFingerprint": "sha256:source",
+            "targetFingerprint": "sha256:materialization",
+            "drift": [],
+            "allowed": true
+          },
+          "idempotentReplay": false,
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "run.prompt",
+      "canonicalParams": {
+        "prompt": "hello",
+        "sessionId": "session_fixture",
+        "profile": "general",
+        "continuationMode": "preserve"
+      },
+      "canonicalResult": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "status": "completed",
+        "output": "done",
+        "environmentAttachments": [],
+        "materialization": {
+          "version": 2,
+          "agentSpecDigest": "sha256:spec",
+          "modelProfileId": "general",
+          "toolsetIds": [
+            "filesystem"
+          ],
+          "policyVersion": "starweaver-agent-policy-v1",
+          "environmentBindingClass": "local:read_write",
+          "fingerprint": "sha256:materialization",
+          "runtimeBindingDigest": "sha256:runtime",
+          "workspaceRootDigest": "sha256:workspace"
+        }
+      },
+      "invalidParams": [
+        {
+          "unexpected": true
+        },
+        {
+          "prompt": "hello",
+          "sessionId": "session_fixture",
+          "profile": "general",
+          "continuationMode": "preserve",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "status": "completed",
+          "output": "done",
+          "environmentAttachments": [],
+          "materialization": {
+            "version": 2,
+            "agentSpecDigest": "sha256:spec",
+            "modelProfileId": "general",
+            "toolsetIds": [
+              "filesystem"
+            ],
+            "policyVersion": "starweaver-agent-policy-v1",
+            "environmentBindingClass": "local:read_write",
+            "fingerprint": "sha256:materialization",
+            "runtimeBindingDigest": "sha256:runtime",
+            "workspaceRootDigest": "sha256:workspace"
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "run.status",
+      "canonicalParams": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture"
+      },
+      "canonicalResult": {
+        "status": {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "status": "running"
+        }
+      },
+      "invalidParams": [
+        {},
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "status": {
+            "sessionId": "session_fixture",
+            "runId": "run_fixture",
+            "status": "running"
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "run.await",
+      "canonicalParams": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "timeoutMs": 1000
+      },
+      "canonicalResult": {
+        "status": {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "status": "completed",
+          "outputPreview": "done"
+        }
+      },
+      "invalidParams": [
+        {
+          "sessionId": "session_fixture"
+        },
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "timeoutMs": 1000,
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "status": {
+            "sessionId": "session_fixture",
+            "runId": "run_fixture",
+            "status": "completed",
+            "outputPreview": "done"
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "run.cancel",
+      "canonicalParams": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "reason": "user"
+      },
+      "canonicalResult": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "cancelled": true,
+        "controlId": "control_fixture",
+        "receiptId": "receipt_fixture",
+        "fencingGeneration": 1,
+        "idempotent": false
+      },
+      "invalidParams": [
+        {},
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "reason": "user",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "cancelled": true,
+          "controlId": "control_fixture",
+          "receiptId": "receipt_fixture",
+          "fencingGeneration": 1,
+          "idempotent": false,
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "run.steer",
+      "canonicalParams": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "text": "focus",
+        "steeringId": "steer_fixture"
+      },
+      "canonicalResult": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "steeringId": "steer_fixture",
+        "queued": true,
+        "receiptId": "receipt_fixture",
+        "fencingGeneration": 1,
+        "idempotent": false
+      },
+      "invalidParams": [
+        {},
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "text": "focus",
+          "steeringId": "steer_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "steeringId": "steer_fixture",
+          "queued": true,
+          "receiptId": "receipt_fixture",
+          "fencingGeneration": 1,
+          "idempotent": false,
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "run.attach",
+      "canonicalParams": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "after": 0,
+        "limit": 100
+      },
+      "canonicalResult": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "active": true,
+        "payloadFormat": "agui",
+        "events": [
+          {
+            "sessionId": "session_fixture",
+            "runId": "run_fixture",
+            "cursor": {
+              "family": "replay_event",
+              "scope": "run:run_fixture",
+              "sequence": 0
+            },
+            "event": {
+              "scope": "run:run_fixture",
+              "sequence": 0,
+              "timestamp": "2026-07-19T00:00:00Z",
+              "event": {
+                "kind": "heartbeat"
+              }
+            },
+            "projections": [
+              {
+                "payloadFormat": "agui",
+                "payload": {}
+              }
+            ],
+            "payloadFormat": "agui",
+            "payload": {}
+          }
+        ]
+      },
+      "invalidParams": [
+        {},
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "after": 0,
+          "limit": 100,
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "active": true,
+          "payloadFormat": "agui",
+          "events": [
+            {
+              "sessionId": "session_fixture",
+              "runId": "run_fixture",
+              "cursor": {
+                "family": "replay_event",
+                "scope": "run:run_fixture",
+                "sequence": 0
+              },
+              "event": {
+                "scope": "run:run_fixture",
+                "sequence": 0,
+                "timestamp": "2026-07-19T00:00:00Z",
+                "event": {
+                  "kind": "heartbeat"
+                }
+              },
+              "projections": [
+                {
+                  "payloadFormat": "agui",
+                  "payload": {}
+                }
+              ],
+              "payloadFormat": "agui",
+              "payload": {}
+            }
+          ],
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "session.output",
+      "canonicalParams": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "after": 0,
+        "limit": 100
+      },
+      "canonicalResult": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "active": false,
+        "payloadFormat": "agui",
+        "events": [
+          {
+            "sessionId": "session_fixture",
+            "runId": "run_fixture",
+            "cursor": {
+              "family": "replay_event",
+              "scope": "run:run_fixture",
+              "sequence": 0
+            },
+            "event": {
+              "scope": "run:run_fixture",
+              "sequence": 0,
+              "timestamp": "2026-07-19T00:00:00Z",
+              "event": {
+                "kind": "heartbeat"
+              }
+            },
+            "projections": [
+              {
+                "payloadFormat": "agui",
+                "payload": {}
+              }
+            ],
+            "payloadFormat": "agui",
+            "payload": {}
+          }
+        ]
+      },
+      "invalidParams": [
+        {},
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "after": 0,
+          "limit": 100,
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "active": false,
+          "payloadFormat": "agui",
+          "events": [
+            {
+              "sessionId": "session_fixture",
+              "runId": "run_fixture",
+              "cursor": {
+                "family": "replay_event",
+                "scope": "run:run_fixture",
+                "sequence": 0
+              },
+              "event": {
+                "scope": "run:run_fixture",
+                "sequence": 0,
+                "timestamp": "2026-07-19T00:00:00Z",
+                "event": {
+                  "kind": "heartbeat"
+                }
+              },
+              "projections": [
+                {
+                  "payloadFormat": "agui",
+                  "payload": {}
+                }
+              ],
+              "payloadFormat": "agui",
+              "payload": {}
+            }
+          ],
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "stream.replay",
+      "canonicalParams": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "after": 0,
+        "limit": 100
+      },
+      "canonicalResult": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "scope": "run:run_fixture",
+        "latestCursor": {
+          "family": "replay_event",
+          "scope": "run:run_fixture",
+          "sequence": 0
+        },
+        "nextSequence": 1,
+        "events": [
+          {
+            "scope": "run:run_fixture",
+            "sequence": 0,
+            "timestamp": "2026-07-19T00:00:00Z",
+            "event": {
+              "kind": "heartbeat"
+            }
+          }
+        ],
+        "messages": []
+      },
+      "invalidParams": [
+        {},
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "after": 0,
+          "limit": 100,
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "scope": "run:run_fixture",
+          "latestCursor": {
+            "family": "replay_event",
+            "scope": "run:run_fixture",
+            "sequence": 0
+          },
+          "nextSequence": 1,
+          "events": [
+            {
+              "scope": "run:run_fixture",
+              "sequence": 0,
+              "timestamp": "2026-07-19T00:00:00Z",
+              "event": {
+                "kind": "heartbeat"
+              }
+            }
+          ],
+          "messages": [],
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "session.replay",
+      "canonicalParams": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "after": 0,
+        "limit": 100
+      },
+      "canonicalResult": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "scope": "run:run_fixture",
+        "latestCursor": {
+          "family": "replay_event",
+          "scope": "run:run_fixture",
+          "sequence": 0
+        },
+        "nextSequence": 1,
+        "events": [
+          {
+            "scope": "run:run_fixture",
+            "sequence": 0,
+            "timestamp": "2026-07-19T00:00:00Z",
+            "event": {
+              "kind": "heartbeat"
+            }
+          }
+        ],
+        "messages": []
+      },
+      "invalidParams": [
+        {},
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "after": 0,
+          "limit": 100,
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "scope": "run:run_fixture",
+          "latestCursor": {
+            "family": "replay_event",
+            "scope": "run:run_fixture",
+            "sequence": 0
+          },
+          "nextSequence": 1,
+          "events": [
+            {
+              "scope": "run:run_fixture",
+              "sequence": 0,
+              "timestamp": "2026-07-19T00:00:00Z",
+              "event": {
+                "kind": "heartbeat"
+              }
+            }
+          ],
+          "messages": [],
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "approval.list",
+      "canonicalParams": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture"
+      },
+      "canonicalResult": {
+        "approvals": [
+          {
+            "approval_id": "approval_fixture",
+            "session_id": "session_fixture",
+            "run_id": "run_fixture",
+            "action_id": "call_fixture",
+            "action_name": "filesystem.write",
+            "created_at": "2026-07-19T00:00:00Z",
+            "updated_at": "2026-07-19T00:00:00Z"
+          }
+        ]
+      },
+      "invalidParams": [
+        {
+          "sessionId": 1
+        },
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "approvals": [
+            {
+              "approval_id": "approval_fixture",
+              "session_id": "session_fixture",
+              "run_id": "run_fixture",
+              "action_id": "call_fixture",
+              "action_name": "filesystem.write",
+              "created_at": "2026-07-19T00:00:00Z",
+              "updated_at": "2026-07-19T00:00:00Z"
+            }
+          ],
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "approval.show",
+      "canonicalParams": {
+        "approvalId": "approval_fixture"
+      },
+      "canonicalResult": {
+        "approval": {
+          "approval_id": "approval_fixture",
+          "session_id": "session_fixture",
+          "run_id": "run_fixture",
+          "action_id": "call_fixture",
+          "action_name": "filesystem.write",
+          "created_at": "2026-07-19T00:00:00Z",
+          "updated_at": "2026-07-19T00:00:00Z"
+        }
+      },
+      "invalidParams": [
+        {},
+        {
+          "approvalId": "approval_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "approval": {
+            "approval_id": "approval_fixture",
+            "session_id": "session_fixture",
+            "run_id": "run_fixture",
+            "action_id": "call_fixture",
+            "action_name": "filesystem.write",
+            "created_at": "2026-07-19T00:00:00Z",
+            "updated_at": "2026-07-19T00:00:00Z"
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "approval.decide",
+      "canonicalParams": {
+        "approvalId": "approval_fixture",
+        "status": "approved",
+        "decidedBy": "host_fixture",
+        "reason": "fixture"
+      },
+      "canonicalResult": {
+        "approval": {
+          "approval_id": "approval_fixture",
+          "session_id": "session_fixture",
+          "run_id": "run_fixture",
+          "action_id": "call_fixture",
+          "action_name": "filesystem.write",
+          "created_at": "2026-07-19T00:00:00Z",
+          "updated_at": "2026-07-19T00:00:00Z"
+        }
+      },
+      "invalidParams": [
+        {
+          "approvalId": "approval_fixture"
+        },
+        {
+          "approvalId": "approval_fixture",
+          "status": "approved",
+          "decidedBy": "host_fixture",
+          "reason": "fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "approval": {
+            "approval_id": "approval_fixture",
+            "session_id": "session_fixture",
+            "run_id": "run_fixture",
+            "action_id": "call_fixture",
+            "action_name": "filesystem.write",
+            "created_at": "2026-07-19T00:00:00Z",
+            "updated_at": "2026-07-19T00:00:00Z"
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "deferred.list",
+      "canonicalParams": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture"
+      },
+      "canonicalResult": {
+        "deferred": [
+          {
+            "deferred_id": "deferred_fixture",
+            "session_id": "session_fixture",
+            "run_id": "run_fixture",
+            "tool_call_id": "call_fixture",
+            "tool_name": "remote.call",
+            "status": "waiting",
+            "created_at": "2026-07-19T00:00:00Z",
+            "updated_at": "2026-07-19T00:00:00Z"
+          }
+        ]
+      },
+      "invalidParams": [
+        {
+          "runId": 1
+        },
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "deferred": [
+            {
+              "deferred_id": "deferred_fixture",
+              "session_id": "session_fixture",
+              "run_id": "run_fixture",
+              "tool_call_id": "call_fixture",
+              "tool_name": "remote.call",
+              "status": "waiting",
+              "created_at": "2026-07-19T00:00:00Z",
+              "updated_at": "2026-07-19T00:00:00Z"
+            }
+          ],
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "deferred.show",
+      "canonicalParams": {
+        "deferredId": "deferred_fixture"
+      },
+      "canonicalResult": {
+        "deferred": {
+          "deferred_id": "deferred_fixture",
+          "session_id": "session_fixture",
+          "run_id": "run_fixture",
+          "tool_call_id": "call_fixture",
+          "tool_name": "remote.call",
+          "status": "waiting",
+          "created_at": "2026-07-19T00:00:00Z",
+          "updated_at": "2026-07-19T00:00:00Z"
+        }
+      },
+      "invalidParams": [
+        {},
+        {
+          "deferredId": "deferred_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "deferred": {
+            "deferred_id": "deferred_fixture",
+            "session_id": "session_fixture",
+            "run_id": "run_fixture",
+            "tool_call_id": "call_fixture",
+            "tool_name": "remote.call",
+            "status": "waiting",
+            "created_at": "2026-07-19T00:00:00Z",
+            "updated_at": "2026-07-19T00:00:00Z"
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "deferred.complete",
+      "canonicalParams": {
+        "deferredId": "deferred_fixture",
+        "result": {
+          "ok": true
+        }
+      },
+      "canonicalResult": {
+        "deferred": {
+          "deferred_id": "deferred_fixture",
+          "session_id": "session_fixture",
+          "run_id": "run_fixture",
+          "tool_call_id": "call_fixture",
+          "tool_name": "remote.call",
+          "status": "waiting",
+          "created_at": "2026-07-19T00:00:00Z",
+          "updated_at": "2026-07-19T00:00:00Z"
+        }
+      },
+      "invalidParams": [
+        {},
+        {
+          "deferredId": "deferred_fixture",
+          "result": {
+            "ok": true
+          },
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "deferred": {
+            "deferred_id": "deferred_fixture",
+            "session_id": "session_fixture",
+            "run_id": "run_fixture",
+            "tool_call_id": "call_fixture",
+            "tool_name": "remote.call",
+            "status": "waiting",
+            "created_at": "2026-07-19T00:00:00Z",
+            "updated_at": "2026-07-19T00:00:00Z"
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "deferred.fail",
+      "canonicalParams": {
+        "deferredId": "deferred_fixture",
+        "error": "fixture failure"
+      },
+      "canonicalResult": {
+        "deferred": {
+          "deferred_id": "deferred_fixture",
+          "session_id": "session_fixture",
+          "run_id": "run_fixture",
+          "tool_call_id": "call_fixture",
+          "tool_name": "remote.call",
+          "status": "waiting",
+          "created_at": "2026-07-19T00:00:00Z",
+          "updated_at": "2026-07-19T00:00:00Z"
+        }
+      },
+      "invalidParams": [
+        {
+          "deferredId": "deferred_fixture"
+        },
+        {
+          "deferredId": "deferred_fixture",
+          "error": "fixture failure",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "deferred": {
+            "deferred_id": "deferred_fixture",
+            "session_id": "session_fixture",
+            "run_id": "run_fixture",
+            "tool_call_id": "call_fixture",
+            "tool_name": "remote.call",
+            "status": "waiting",
+            "created_at": "2026-07-19T00:00:00Z",
+            "updated_at": "2026-07-19T00:00:00Z"
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "environment.attach",
+      "canonicalParams": {
+        "scope": {
+          "kind": "connection"
+        },
+        "attachment": {
+          "id": "local",
+          "kind": "local",
+          "mode": "read_write",
+          "default": true,
+          "defaultForShell": true
+        },
+        "readiness": {
+          "policy": "required",
+          "timeoutMs": 1000
+        },
+        "idempotencyKey": "attach_fixture"
+      },
+      "canonicalResult": {
+        "attachment": {
+          "attachmentLeaseId": "lease_fixture",
+          "scope": {
+            "kind": "connection"
+          },
+          "id": "local",
+          "kind": "local",
+          "mode": "read_write",
+          "default": true,
+          "defaultForShell": true,
+          "mountRoot": "/environment/local",
+          "status": "ready",
+          "readiness": {
+            "transport": "ready",
+            "environment": "ready",
+            "capabilities": {
+              "files": [
+                "read",
+                "write"
+              ],
+              "command": [
+                "run"
+              ],
+              "process": [
+                "background"
+              ]
+            }
+          }
+        }
+      },
+      "invalidParams": [
+        {},
+        {
+          "scope": {
+            "kind": "connection"
+          },
+          "attachment": {
+            "id": "local",
+            "kind": "local",
+            "mode": "read_write",
+            "default": true,
+            "defaultForShell": true
+          },
+          "readiness": {
+            "policy": "required",
+            "timeoutMs": 1000
+          },
+          "idempotencyKey": "attach_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "attachment": {
+            "attachmentLeaseId": "lease_fixture",
+            "scope": {
+              "kind": "connection"
+            },
+            "id": "local",
+            "kind": "local",
+            "mode": "read_write",
+            "default": true,
+            "defaultForShell": true,
+            "mountRoot": "/environment/local",
+            "status": "ready",
+            "readiness": {
+              "transport": "ready",
+              "environment": "ready",
+              "capabilities": {
+                "files": [
+                  "read",
+                  "write"
+                ],
+                "command": [
+                  "run"
+                ],
+                "process": [
+                  "background"
+                ]
+              }
+            }
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "environment.detach",
+      "canonicalParams": {
+        "attachmentLeaseId": "lease_fixture",
+        "force": false,
+        "idempotencyKey": "detach_fixture"
+      },
+      "canonicalResult": {
+        "attachmentLeaseId": "lease_fixture",
+        "detached": true
+      },
+      "invalidParams": [
+        {},
+        {
+          "attachmentLeaseId": "lease_fixture",
+          "force": false,
+          "idempotencyKey": "detach_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "attachmentLeaseId": "lease_fixture",
+          "detached": true,
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "environment.list",
+      "canonicalParams": {
+        "scope": {
+          "kind": "connection"
+        },
+        "status": "ready",
+        "limit": 20
+      },
+      "canonicalResult": {
+        "attachments": [
+          {
+            "attachmentLeaseId": "lease_fixture",
+            "scope": {
+              "kind": "connection"
+            },
+            "id": "local",
+            "kind": "local",
+            "mode": "read_write",
+            "default": true,
+            "defaultForShell": true,
+            "mountRoot": "/environment/local",
+            "status": "ready",
+            "readiness": {
+              "transport": "ready",
+              "environment": "ready",
+              "capabilities": {
+                "files": [
+                  "read",
+                  "write"
+                ],
+                "command": [
+                  "run"
+                ],
+                "process": [
+                  "background"
+                ]
+              }
+            }
+          }
+        ],
+        "nextPageToken": null
+      },
+      "invalidParams": [
+        {
+          "limit": "many"
+        },
+        {
+          "scope": {
+            "kind": "connection"
+          },
+          "status": "ready",
+          "limit": 20,
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "attachments": [
+            {
+              "attachmentLeaseId": "lease_fixture",
+              "scope": {
+                "kind": "connection"
+              },
+              "id": "local",
+              "kind": "local",
+              "mode": "read_write",
+              "default": true,
+              "defaultForShell": true,
+              "mountRoot": "/environment/local",
+              "status": "ready",
+              "readiness": {
+                "transport": "ready",
+                "environment": "ready",
+                "capabilities": {
+                  "files": [
+                    "read",
+                    "write"
+                  ],
+                  "command": [
+                    "run"
+                  ],
+                  "process": [
+                    "background"
+                  ]
+                }
+              }
+            }
+          ],
+          "nextPageToken": null,
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "environment.health",
+      "canonicalParams": {
+        "attachmentLeaseId": "lease_fixture",
+        "timeoutMs": 1000
+      },
+      "canonicalResult": {
+        "status": "ready",
+        "readiness": {
+          "transport": "ready",
+          "environment": "ready",
+          "capabilities": {
+            "files": [
+              "read",
+              "write"
+            ],
+            "command": [
+              "run"
+            ],
+            "process": [
+              "background"
+            ]
+          }
+        }
+      },
+      "invalidParams": [
+        {
+          "timeoutMs": "soon"
+        },
+        {
+          "attachmentLeaseId": "lease_fixture",
+          "timeoutMs": 1000,
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "status": "ready",
+          "readiness": {
+            "transport": "ready",
+            "environment": "ready",
+            "capabilities": {
+              "files": [
+                "read",
+                "write"
+              ],
+              "command": [
+                "run"
+              ],
+              "process": [
+                "background"
+              ]
+            }
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "environment.active_mount",
+      "canonicalParams": {
+        "runId": "run_fixture",
+        "attachment": {
+          "id": "local",
+          "kind": "local",
+          "mode": "read_write",
+          "default": true,
+          "defaultForShell": true
+        },
+        "replace": false,
+        "injectContext": true,
+        "expectedBindingVersion": 0,
+        "idempotencyKey": "mount_fixture"
+      },
+      "canonicalResult": {
+        "runId": "run_fixture",
+        "operationId": "operation_fixture",
+        "mountId": "local",
+        "replace": false,
+        "mount": {
+          "id": "local",
+          "kind": "local",
+          "root": "/environment/local",
+          "mode": "read_write",
+          "default": true,
+          "defaultForShell": true,
+          "status": "ready"
+        },
+        "previousBindingVersion": 0,
+        "bindingVersion": 1,
+        "environment": {
+          "bindingVersion": 1,
+          "defaultMountId": "local",
+          "defaultShellMountId": "local",
+          "mounts": [
+            {
+              "id": "local",
+              "kind": "local",
+              "root": "/environment/local",
+              "mode": "read_write",
+              "default": true,
+              "defaultForShell": true,
+              "status": "ready"
+            }
+          ]
+        },
+        "eventCursor": {
+          "family": "replay_event",
+          "scope": "run:run_fixture",
+          "sequence": 0
+        },
+        "contextInjectionRequested": true,
+        "contextInjected": true
+      },
+      "invalidParams": [
+        {},
+        {
+          "runId": "run_fixture",
+          "attachment": {
+            "id": "local",
+            "kind": "local",
+            "mode": "read_write",
+            "default": true,
+            "defaultForShell": true
+          },
+          "replace": false,
+          "injectContext": true,
+          "expectedBindingVersion": 0,
+          "idempotencyKey": "mount_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "runId": "run_fixture",
+          "operationId": "operation_fixture",
+          "mountId": "local",
+          "replace": false,
+          "mount": {
+            "id": "local",
+            "kind": "local",
+            "root": "/environment/local",
+            "mode": "read_write",
+            "default": true,
+            "defaultForShell": true,
+            "status": "ready"
+          },
+          "previousBindingVersion": 0,
+          "bindingVersion": 1,
+          "environment": {
+            "bindingVersion": 1,
+            "defaultMountId": "local",
+            "defaultShellMountId": "local",
+            "mounts": [
+              {
+                "id": "local",
+                "kind": "local",
+                "root": "/environment/local",
+                "mode": "read_write",
+                "default": true,
+                "defaultForShell": true,
+                "status": "ready"
+              }
+            ]
+          },
+          "eventCursor": {
+            "family": "replay_event",
+            "scope": "run:run_fixture",
+            "sequence": 0
+          },
+          "contextInjectionRequested": true,
+          "contextInjected": true,
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "environment.active_unmount",
+      "canonicalParams": {
+        "runId": "run_fixture",
+        "mountId": "local",
+        "injectContext": true,
+        "expectedBindingVersion": 1,
+        "idempotencyKey": "unmount_fixture"
+      },
+      "canonicalResult": {
+        "runId": "run_fixture",
+        "operationId": "operation_fixture",
+        "mountId": "local",
+        "removedMount": {
+          "id": "local",
+          "kind": "local",
+          "root": "/environment/local",
+          "mode": "read_write",
+          "default": true,
+          "defaultForShell": true,
+          "status": "ready"
+        },
+        "previousBindingVersion": 1,
+        "bindingVersion": 2,
+        "environment": {
+          "bindingVersion": 2,
+          "mounts": []
+        },
+        "eventCursor": {
+          "family": "replay_event",
+          "scope": "run:run_fixture",
+          "sequence": 0
+        },
+        "contextInjectionRequested": true,
+        "contextInjected": true
+      },
+      "invalidParams": [
+        {},
+        {
+          "runId": "run_fixture",
+          "mountId": "local",
+          "injectContext": true,
+          "expectedBindingVersion": 1,
+          "idempotencyKey": "unmount_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "runId": "run_fixture",
+          "operationId": "operation_fixture",
+          "mountId": "local",
+          "removedMount": {
+            "id": "local",
+            "kind": "local",
+            "root": "/environment/local",
+            "mode": "read_write",
+            "default": true,
+            "defaultForShell": true,
+            "status": "ready"
+          },
+          "previousBindingVersion": 1,
+          "bindingVersion": 2,
+          "environment": {
+            "bindingVersion": 2,
+            "mounts": []
+          },
+          "eventCursor": {
+            "family": "replay_event",
+            "scope": "run:run_fixture",
+            "sequence": 0
+          },
+          "contextInjectionRequested": true,
+          "contextInjected": true,
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "environment.active_list",
+      "canonicalParams": {
+        "runId": "run_fixture"
+      },
+      "canonicalResult": {
+        "runId": "run_fixture",
+        "environment": {
+          "bindingVersion": 1,
+          "defaultMountId": "local",
+          "defaultShellMountId": "local",
+          "mounts": [
+            {
+              "id": "local",
+              "kind": "local",
+              "root": "/environment/local",
+              "mode": "read_write",
+              "default": true,
+              "defaultForShell": true,
+              "status": "ready"
+            }
+          ]
+        }
+      },
+      "invalidParams": [
+        {},
+        {
+          "runId": "run_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "runId": "run_fixture",
+          "environment": {
+            "bindingVersion": 1,
+            "defaultMountId": "local",
+            "defaultShellMountId": "local",
+            "mounts": [
+              {
+                "id": "local",
+                "kind": "local",
+                "root": "/environment/local",
+                "mode": "read_write",
+                "default": true,
+                "defaultForShell": true,
+                "status": "ready"
+              }
+            ]
+          },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "stream.subscribe",
+      "canonicalParams": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "subscriptionId": "subscription_fixture",
+        "after": 0,
+        "limit": 100,
+        "payloadFormat": "agui"
+      },
+      "canonicalResult": {
+        "subscriptionId": "subscription_fixture",
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "active": true,
+        "payloadFormat": "agui",
+        "events": [
+          {
+            "sessionId": "session_fixture",
+            "runId": "run_fixture",
+            "cursor": {
+              "family": "replay_event",
+              "scope": "run:run_fixture",
+              "sequence": 0
+            },
+            "event": {
+              "scope": "run:run_fixture",
+              "sequence": 0,
+              "timestamp": "2026-07-19T00:00:00Z",
+              "event": {
+                "kind": "heartbeat"
+              }
+            },
+            "projections": [
+              {
+                "payloadFormat": "agui",
+                "payload": {}
+              }
+            ],
+            "payloadFormat": "agui",
+            "payload": {}
+          }
+        ]
+      },
+      "invalidParams": [
+        {},
+        {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "subscriptionId": "subscription_fixture",
+          "after": 0,
+          "limit": 100,
+          "payloadFormat": "agui",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "subscriptionId": "subscription_fixture",
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "active": true,
+          "payloadFormat": "agui",
+          "events": [
+            {
+              "sessionId": "session_fixture",
+              "runId": "run_fixture",
+              "cursor": {
+                "family": "replay_event",
+                "scope": "run:run_fixture",
+                "sequence": 0
+              },
+              "event": {
+                "scope": "run:run_fixture",
+                "sequence": 0,
+                "timestamp": "2026-07-19T00:00:00Z",
+                "event": {
+                  "kind": "heartbeat"
+                }
+              },
+              "projections": [
+                {
+                  "payloadFormat": "agui",
+                  "payload": {}
+                }
+              ],
+              "payloadFormat": "agui",
+              "payload": {}
+            }
+          ],
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "stream.unsubscribe",
+      "canonicalParams": {
+        "subscriptionId": "subscription_fixture"
+      },
+      "canonicalResult": {
+        "subscriptionId": "subscription_fixture",
+        "closed": true,
+        "wasActive": true
+      },
+      "invalidParams": [
+        {},
+        {
+          "subscriptionId": "subscription_fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "subscriptionId": "subscription_fixture",
+          "closed": true,
+          "wasActive": true,
+          "unexpected": true
+        }
+      ]
+    }
+  ],
+  "notifications": [
+    {
+      "jsonrpc": "2.0",
+      "method": "subscription.ready",
+      "params": {
+        "subscriptionId": "subscription_fixture",
+        "scope": "run:run_fixture",
+        "cursor": {
+          "family": "replay_event",
+          "scope": "run:run_fixture",
+          "sequence": 0
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "stream.event",
+      "params": {
+        "subscriptionId": "subscription_fixture",
+        "scope": "run:run_fixture",
+        "cursor": {
+          "family": "replay_event",
+          "scope": "run:run_fixture",
+          "sequence": 0
+        },
+        "item": {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "cursor": {
+            "family": "replay_event",
+            "scope": "run:run_fixture",
+            "sequence": 0
+          },
+          "event": {
+            "scope": "run:run_fixture",
+            "sequence": 0,
+            "timestamp": "2026-07-19T00:00:00Z",
+            "event": {
+              "kind": "heartbeat"
+            }
+          },
+          "projections": [
+            {
+              "payloadFormat": "agui",
+              "payload": {}
+            }
+          ],
+          "payloadFormat": "agui",
+          "payload": {}
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "run.status",
+      "params": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "status": "completed",
+        "outputPreview": "done"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "diagnostic",
+      "params": {
+        "level": "warning",
+        "message": "fixture warning",
+        "subscriptionId": "subscription_fixture",
+        "code": "fixture"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "subscription.closed",
+      "params": {
+        "subscriptionId": "subscription_fixture",
+        "scope": "run:run_fixture",
+        "reason": "terminal"
+      }
+    }
+  ],
+  "errors": [
+    {
+      "name": "PARSE_ERROR",
+      "code": -32700,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32700,
+          "message": "parse error"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32701,
+            "message": "parse error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "INVALID_REQUEST",
+      "code": -32600,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32600,
+          "message": "invalid request"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32601,
+            "message": "invalid request"
+          }
+        }
+      ]
+    },
+    {
+      "name": "METHOD_NOT_FOUND",
+      "code": -32601,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32601,
+          "message": "method not found"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32602,
+            "message": "method not found"
+          }
+        }
+      ]
+    },
+    {
+      "name": "INVALID_PARAMS",
+      "code": -32602,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32602,
+          "message": "invalid params"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32603,
+            "message": "invalid params"
+          }
+        }
+      ]
+    },
+    {
+      "name": "SERVER_ERROR",
+      "code": -32000,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32000,
+          "message": "server error"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32001,
+            "message": "server error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "NOT_INITIALIZED",
+      "code": -32001,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32001,
+          "message": "not initialized"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32002,
+            "message": "not initialized"
+          }
+        }
+      ]
+    },
+    {
+      "name": "UNSUPPORTED_FEATURE",
+      "code": -32002,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32002,
+          "message": "unsupported feature"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32003,
+            "message": "unsupported feature"
+          }
+        }
+      ]
+    },
+    {
+      "name": "NOT_FOUND",
+      "code": -32010,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32010,
+          "message": "not found"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32011,
+            "message": "not found"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ALREADY_EXISTS",
+      "code": -32011,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32011,
+          "message": "already exists"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32012,
+            "message": "already exists"
+          }
+        }
+      ]
+    },
+    {
+      "name": "IDEMPOTENCY_CONFLICT",
+      "code": -32012,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32012,
+          "message": "idempotency conflict"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32013,
+            "message": "idempotency conflict"
+          }
+        }
+      ]
+    },
+    {
+      "name": "RUN_CONFLICT",
+      "code": -32013,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32013,
+          "message": "run conflict"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32014,
+            "message": "run conflict"
+          }
+        }
+      ]
+    },
+    {
+      "name": "STALE_FENCE",
+      "code": -32014,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32014,
+          "message": "stale fence"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32015,
+            "message": "stale fence"
+          }
+        }
+      ]
+    },
+    {
+      "name": "STORAGE_UNAVAILABLE",
+      "code": -32015,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32015,
+          "message": "storage unavailable"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32016,
+            "message": "storage unavailable"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ENVIRONMENT_UNAVAILABLE",
+      "code": -32031,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32031,
+          "message": "environment unavailable"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32032,
+            "message": "environment unavailable"
+          }
+        }
+      ]
+    },
+    {
+      "name": "SESSION_SEARCH_UNAVAILABLE",
+      "code": -32032,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32032,
+          "message": "session search unavailable"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32033,
+            "message": "session search unavailable"
+          }
+        }
+      ]
+    },
+    {
+      "name": "CONFIGURATION_FAILED",
+      "code": -32050,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "error_fixture",
+        "error": {
+          "code": -32050,
+          "message": "configuration failed"
+        }
+      },
+      "invalidResponses": [
+        {
+          "jsonrpc": "2.0",
+          "id": "error_fixture",
+          "error": {
+            "code": -32051,
+            "message": "configuration failed"
+          }
+        }
+      ]
+    }
+  ],
+  "invalidNotifications": [
+    {
+      "jsonrpc": "2.0",
+      "method": "subscription.ready",
+      "params": {
+        "subscriptionId": "subscription_fixture",
+        "scope": "run:run_fixture",
+        "cursor": {
+          "family": "replay_event",
+          "scope": "run:run_fixture",
+          "sequence": 0
+        }
+      },
+      "id": "notification_must_not_have_id"
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "stream.event",
+      "params": {
+        "subscriptionId": "subscription_fixture",
+        "scope": "run:run_fixture",
+        "cursor": {
+          "family": "replay_event",
+          "scope": "run:run_fixture",
+          "sequence": 0
+        },
+        "item": {
+          "sessionId": "session_fixture",
+          "runId": "run_fixture",
+          "cursor": {
+            "family": "replay_event",
+            "scope": "run:run_fixture",
+            "sequence": 0
+          },
+          "event": {
+            "scope": "run:run_fixture",
+            "sequence": 0,
+            "timestamp": "2026-07-19T00:00:00Z",
+            "event": {
+              "kind": "heartbeat"
+            }
+          },
+          "projections": [
+            {
+              "payloadFormat": "agui",
+              "payload": {}
+            }
+          ],
+          "payloadFormat": "agui",
+          "payload": {}
+        }
+      },
+      "id": "notification_must_not_have_id"
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "run.status",
+      "params": {
+        "sessionId": "session_fixture",
+        "runId": "run_fixture",
+        "status": "completed",
+        "outputPreview": "done"
+      },
+      "id": "notification_must_not_have_id"
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "diagnostic",
+      "params": {
+        "level": "warning",
+        "message": "fixture warning",
+        "subscriptionId": "subscription_fixture",
+        "code": "fixture"
+      },
+      "id": "notification_must_not_have_id"
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "subscription.closed",
+      "params": {
+        "subscriptionId": "subscription_fixture",
+        "scope": "run:run_fixture",
+        "reason": "terminal"
+      },
+      "id": "notification_must_not_have_id"
+    }
+  ]
+}

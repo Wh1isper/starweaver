@@ -5,6 +5,7 @@
 mod approval;
 mod background;
 mod claim;
+mod continuation;
 mod error;
 mod evidence;
 mod input;
@@ -32,7 +33,13 @@ pub use background::{
     DurableBackgroundSubagentResultRef, DurableBackgroundSubagentRetentionStatus,
     background_subagent_input_digest, background_subagent_result_digest,
 };
-pub use claim::{HitlResumeClaim, HitlResumeClaimState};
+pub use claim::{
+    CONTINUATION_EFFECT_METADATA_KEY, ContinuationEffectOutcome, ContinuationEffectPhase,
+    ContinuationEffectState, HitlResumeAbortOutcome, HitlResumeClaim, HitlResumeClaimState,
+};
+pub use continuation::{
+    ContinuationPreparationError, ContinuationPreparationMode, PreparedContinuation,
+};
 pub use error::{SessionStoreError, SessionStoreResult};
 pub use evidence::{RelatedRunUpdate, RunEvidenceCommit};
 pub use input::{BinaryRef, FileRef, InputConversionError, InputPart};
@@ -52,7 +59,8 @@ pub use publication::{
 };
 pub use records::{
     CheckpointRef, DurableRunStatus, EnvironmentStateRef, ExecutionStatus, QueuedRunStatus,
-    RunRecord, RunStatus, SessionRecord, SessionStatus, StreamCursorRef, StreamCursorRefError,
+    RunRecord, RunStatus, RunTerminalError, RunTerminalProjection, RunTerminalProjectionError,
+    SessionRecord, SessionStatus, StreamCursorRef, StreamCursorRefError,
 };
 pub use resume::SessionResumeSnapshot;
 pub use search::{

@@ -1,5 +1,5 @@
 {
-  "schema": "starweaver.host.desktop-conformance",
+  "schema": "starweaver.host.contract-catalog",
   "major": 1,
   "revision": "2026-07-18",
   "methods": [

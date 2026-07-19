@@ -1,0 +1,2 @@
+# Generated schema checks compare canonical text and must not be rewritten on checkout.
+crates/starweaver-rpc-core/schemas/rpc-wire-v1.schema.json text eol=lf

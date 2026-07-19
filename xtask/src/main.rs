@@ -12,10 +12,12 @@ mod architecture;
 mod capabilities;
 mod common;
 mod coverage;
-mod desktop_rpc_e2e;
 mod docs;
 mod fixtures;
 mod release;
+mod rpc_contracts;
+mod rpc_integration;
+mod rpc_interop_e2e;
 mod smoke;
 
 fn main() -> ExitCode {
@@ -38,7 +40,11 @@ fn run() -> Result<(), String> {
         "check-capabilities" => capabilities::check(&args),
         "check-cli-examples" => smoke::check_cli_examples(),
         "check-docs-examples" => docs::check_docs_examples(&args),
-        "check-desktop-rpc-e2e" => desktop_rpc_e2e::check(),
+        "check-rpc-contracts" => rpc_contracts::check(&args),
+        "check-rpc-integration" => rpc_integration::check(&args),
+        "check-rpc-transports" => rpc_contracts::check_transports(&args),
+        "check-rpc-interop-e2e" => rpc_interop_e2e::check(),
+        "generate-rpc-contracts" => rpc_contracts::generate(&args),
         "check-install-script" => smoke::check_install_script(),
         "check-repository-scripts" => smoke::check_repository_scripts(),
         "smoke-cli-release" => smoke::smoke_cli_release(),

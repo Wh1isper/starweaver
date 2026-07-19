@@ -30,6 +30,7 @@ clap.workspace = true
 clap_complete.workspace = true
 chrono.workspace = true
 crossterm.workspace = true
+fs2.workspace = true
 pulldown-cmark.workspace = true
 syntect.workspace = true
 ring.workspace = true

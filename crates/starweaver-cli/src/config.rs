@@ -33,7 +33,8 @@ pub use metadata::{mcp_servers, tool_need_approval};
 use metadata::{merge_json_value, read_mcp_config, read_tools_config};
 pub use state::{
     clear_current_session, ensure_config_dirs, read_current_session,
-    read_last_retention_maintenance, write_current_session, write_last_retention_maintenance,
+    read_last_retention_maintenance, remove_project_state, remove_project_state_if_current_session,
+    write_current_session, write_last_retention_maintenance,
 };
 use templates::default_config_template;
 pub use templates::{
@@ -49,10 +50,8 @@ pub struct CliConfig {
     pub global_dir: PathBuf,
     /// Project config root.
     pub project_dir: PathBuf,
-    /// TUI client state root.
+    /// TUI local state root.
     pub tui_state_dir: PathBuf,
-    /// Desktop client state root.
-    pub desktop_state_dir: PathBuf,
     /// `SQLite` database path.
     pub database_path: PathBuf,
     /// Local file store path.
@@ -529,7 +528,6 @@ impl ConfigResolver {
             global_dir: global_dir.clone(),
             project_dir: project_dir.clone(),
             tui_state_dir: global_dir.join("tui"),
-            desktop_state_dir: global_dir.join("desktop"),
             database_path: starweaver_storage::canonical_session_database_path(&global_dir),
             file_store_path: project_dir.join("store"),
             default_profile: "general".to_string(),
@@ -687,7 +685,7 @@ fn bootstrap_global_config_dir(global_dir: &Path) -> CliResult<()> {
             fs::write(&path, content).map_err(|error| io_error(&path, error))?;
         }
     }
-    for name in ["skills", "subagents", "tui", "desktop"] {
+    for name in ["skills", "subagents", "tui"] {
         let path = global_dir.join(name);
         fs::create_dir_all(&path).map_err(|error| io_error(path, error))?;
     }

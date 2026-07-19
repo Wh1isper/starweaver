@@ -327,3 +327,88 @@ fn infer_oauth_model_from_id(
     )?;
     Ok(Some(Arc::new(model)))
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::sync::Arc;
+
+    use starweaver_tools::{DynToolset, StaticToolset};
+
+    use super::*;
+
+    fn toolset(name: &str, id: Option<&str>) -> DynToolset {
+        let toolset = StaticToolset::new(name);
+        let toolset = match id {
+            Some(id) => toolset.with_id(id),
+            None => toolset,
+        };
+        Arc::new(toolset)
+    }
+
+    #[test]
+    fn resolved_toolset_ids_cover_all_explicit_wrapper_and_error_paths() {
+        let alpha = toolset("alpha", Some("alpha-id"));
+        let beta = toolset("beta", None);
+        let registry = AgentSpecRegistry::new()
+            .with_toolset(alpha.clone())
+            .with_toolset_alias("alpha-alias", alpha)
+            .with_toolset(beta);
+
+        let all = AgentSpec {
+            all_toolsets: true,
+            ..AgentSpec::default()
+        };
+        assert_eq!(
+            registry.resolved_toolset_ids(&all).unwrap(),
+            vec!["alpha-id".to_string(), "beta".to_string()]
+        );
+
+        let explicit = AgentSpec {
+            toolsets: vec!["alpha-alias".to_string(), "beta".to_string()],
+            toolset_wrappers: vec![
+                ToolsetWrapperSpec {
+                    kind: "filtered".to_string(),
+                    toolset: Some("alpha-id".to_string()),
+                    ..ToolsetWrapperSpec::default()
+                },
+                ToolsetWrapperSpec {
+                    kind: "custom".to_string(),
+                    ..ToolsetWrapperSpec::default()
+                },
+            ],
+            ..AgentSpec::default()
+        };
+        assert_eq!(
+            registry.resolved_toolset_ids(&explicit).unwrap(),
+            vec![
+                "beta".to_string(),
+                "wrapper:custom".to_string(),
+                "wrapper:filtered:alpha-id".to_string(),
+            ]
+        );
+
+        let unknown = AgentSpec {
+            toolsets: vec!["missing".to_string()],
+            ..AgentSpec::default()
+        };
+        assert!(matches!(
+            registry.resolved_toolset_ids(&unknown),
+            Err(AgentSpecError::UnknownToolset(value)) if value == "missing"
+        ));
+
+        let unknown_wrapper = AgentSpec {
+            toolset_wrappers: vec![ToolsetWrapperSpec {
+                kind: "filtered".to_string(),
+                toolset: Some("missing-wrapper-inner".to_string()),
+                ..ToolsetWrapperSpec::default()
+            }],
+            ..AgentSpec::default()
+        };
+        assert!(matches!(
+            registry.resolved_toolset_ids(&unknown_wrapper),
+            Err(AgentSpecError::UnknownToolset(value)) if value == "missing-wrapper-inner"
+        ));
+    }
+}

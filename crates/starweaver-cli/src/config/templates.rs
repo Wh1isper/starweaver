@@ -595,6 +595,7 @@ pub const DEFAULT_SUBAGENT_PRESETS: &[(&str, &str)] = &[
 ];
 
 pub const DEFAULT_PROJECT_GITIGNORE_TEMPLATE: &str = r"state.json
+state.lock
 state.*.json.tmp
 starweaver.sqlite
 starweaver.sqlite-*
@@ -606,9 +607,8 @@ message_history/
 worktrees/
 tui/state.json
 tui/state.*.json.tmp
-desktop/state.json
-desktop/state.*.json.tmp
 state.json
+state.lock
 state.*.json.tmp
 ";
 

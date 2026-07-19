@@ -501,4 +501,4 @@ Full plan is complete when:
 - Add an explicit transcript/raw overlay command if the TUI needs a copy-friendly full evidence view.
 - Add per-tool user preferences for concise detail verbosity.
 - Add terminal styling for concise summary categories after the semantic contract stabilizes.
-- Add structured display-message projections so Desktop can reuse the same summary model.
+- Add structured display-message projections so external hosts can reuse the same summary model.

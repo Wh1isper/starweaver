@@ -1673,19 +1673,19 @@ fn model_choice_label(choice: &crate::tui::ModelChoice) -> String {
 }
 
 fn read_tui_selected_profile(config: &CliConfig) -> CliResult<Option<String>> {
-    client_state::read_selected_profile(config, "tui")
+    client_state::read_selected_profile(config)
 }
 
 fn write_tui_selected_profile(config: &CliConfig, profile: &str) -> CliResult<()> {
-    client_state::write_selected_profile(config, "tui", profile)
+    client_state::write_selected_profile(config, profile)
 }
 
 fn read_tui_render_mode(config: &CliConfig) -> CliResult<Option<TuiRenderMode>> {
-    client_state::read_render_mode(config, "tui")
+    client_state::read_render_mode(config)
 }
 
 fn write_tui_render_mode(config: &CliConfig, render_mode: TuiRenderMode) -> CliResult<()> {
-    client_state::write_render_mode(config, "tui", render_mode)
+    client_state::write_render_mode(config, render_mode)
 }
 
 fn should_run_interactive_tui(command: &TuiCommand) -> bool {
@@ -1820,11 +1820,13 @@ mod tests {
                             state: starweaver_context::ResumableState::default(),
                             environment_state: None,
                             raw_records: Vec::new(),
+                            checkpoints: Vec::new(),
                             display_messages: messages,
                             display_snapshot: ReplaySnapshot::default(),
                             approvals: Vec::new(),
                             deferred_tools: Vec::new(),
                             status: RunStatus::Completed,
+                            terminal_error: None,
                         },
                     )
                     .unwrap();
@@ -1998,11 +2000,13 @@ mod tests {
                         state: starweaver_context::ResumableState::default(),
                         environment_state: None,
                         raw_records: Vec::new(),
+                        checkpoints: Vec::new(),
                         display_messages: Vec::new(),
                         display_snapshot: ReplaySnapshot::default(),
                         approvals: vec![approval],
                         deferred_tools: Vec::new(),
                         status: RunStatus::Waiting,
+                        terminal_error: None,
                     },
                 )
                 .unwrap();
@@ -2086,11 +2090,13 @@ mod tests {
                         state: starweaver_context::ResumableState::default(),
                         environment_state: None,
                         raw_records: Vec::new(),
+                        checkpoints: Vec::new(),
                         display_messages: Vec::new(),
                         display_snapshot: ReplaySnapshot::default(),
                         approvals: Vec::new(),
                         deferred_tools: Vec::new(),
                         status: RunStatus::Completed,
+                        terminal_error: None,
                     },
                 )
                 .unwrap();

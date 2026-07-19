@@ -29,7 +29,6 @@ pub use coordinator::{
     RpcHitlResumeRequest, RpcRunRequest, RpcRunStatus, RpcRuntimeCoordinator, RpcStartedRun,
 };
 pub use error::{RpcHostError, RpcHostResult};
-pub use service::{RpcNotificationMode, RpcService};
 
 /// Standalone RPC transport.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
