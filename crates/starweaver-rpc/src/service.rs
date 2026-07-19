@@ -1,10 +1,14 @@
 //! Standalone RPC method dispatch.
 
 use std::{
+    cell::Cell,
     collections::HashMap,
+    future::Future,
+    ops::Deref,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        mpsc as std_mpsc,
     },
     time::Duration,
 };
@@ -35,7 +39,7 @@ use starweaver_session::{
 use starweaver_storage::{LocalSessionSearchLimits, LocalSessionSearchProvider, SqliteStorage};
 use starweaver_stream::{ReplayCursor, ReplayScope};
 use tokio::{
-    runtime::Runtime,
+    runtime::{Builder as RuntimeBuilder, Handle, Runtime},
     sync::{mpsc, watch},
 };
 use uuid::Uuid;
@@ -51,6 +55,47 @@ const MAX_RUN_AWAIT: Duration = Duration::from_secs(30);
 const DEFAULT_CLIENT_STATE_SCOPE: &str = "rpc";
 const MAX_CONNECTION_SUBSCRIPTIONS: usize = 32;
 const SUBSCRIPTION_REPLAY_PAGE: usize = 256;
+const RPC_RUNTIME_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+std::thread_local! {
+    static RPC_RUNTIME_WORKER: Cell<bool> = const { Cell::new(false) };
+}
+
+struct RpcExecutionRuntime {
+    runtime: Option<Runtime>,
+}
+
+impl RpcExecutionRuntime {
+    const fn new(runtime: Runtime) -> Self {
+        Self {
+            runtime: Some(runtime),
+        }
+    }
+}
+
+impl Deref for RpcExecutionRuntime {
+    type Target = Runtime;
+
+    fn deref(&self) -> &Self::Target {
+        let Some(runtime) = self.runtime.as_ref() else {
+            unreachable!("RPC execution runtime is unavailable during shutdown");
+        };
+        runtime
+    }
+}
+
+impl Drop for RpcExecutionRuntime {
+    fn drop(&mut self) {
+        let Some(runtime) = self.runtime.take() else {
+            return;
+        };
+        if Handle::try_current().is_ok() {
+            runtime.shutdown_background();
+        } else {
+            drop(runtime);
+        }
+    }
+}
 
 async fn run_storage<T, F>(storage: SqliteStorage, operation: F) -> Result<T, RpcError>
 where
@@ -69,7 +114,7 @@ where
 
 /// Notification capability of the selected transport.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RpcNotificationMode {
+enum RpcNotificationMode {
     /// Transport can emit out-of-band notifications.
     Live,
     /// Transport supports request/response replay only.
@@ -77,26 +122,33 @@ pub enum RpcNotificationMode {
 }
 
 /// RPC-owned application service.
+#[derive(Clone)]
 pub struct RpcService {
-    config: RpcConfig,
-    catalog: RpcAgentCatalog,
+    config: Arc<RpcConfig>,
+    catalog: Arc<RpcAgentCatalog>,
     storage: SqliteStorage,
-    coordinator: RpcRuntimeCoordinator,
+    coordinator: Arc<RpcRuntimeCoordinator>,
     environment_manager: EnvironmentAttachmentManager,
     session_search: Option<Arc<dyn SessionSearchProvider>>,
     session_search_scope: SessionSearchScope,
     notifications: RpcNotificationMode,
     state: RpcStateRepository,
-    runtime: Arc<Runtime>,
+    runtime: Arc<RpcExecutionRuntime>,
 }
 
 /// Per-connection host protocol negotiation state.
-pub struct RpcConnection<'a> {
-    service: &'a RpcService,
+#[derive(Clone)]
+pub struct RpcConnection {
+    service: RpcService,
+    state: Arc<RpcConnectionState>,
+}
+
+struct RpcConnectionState {
     initialized: AtomicBool,
     connection_id: String,
     output: Option<mpsc::Sender<Value>>,
     subscriptions: Arc<Mutex<HashMap<String, ConnectionSubscription>>>,
+    environment_manager: EnvironmentAttachmentManager,
 }
 
 struct ConnectionSubscription {
@@ -106,10 +158,9 @@ struct ConnectionSubscription {
     ready: watch::Sender<bool>,
 }
 
-impl Drop for RpcConnection<'_> {
+impl Drop for RpcConnectionState {
     fn drop(&mut self) {
-        self.service
-            .environment_manager
+        self.environment_manager
             .release_connection_leases(&self.connection_id);
         if let Ok(mut subscriptions) = self.subscriptions.lock() {
             for subscription in subscriptions.values() {
@@ -120,11 +171,18 @@ impl Drop for RpcConnection<'_> {
     }
 }
 
-impl RpcConnection<'_> {
+impl RpcConnection {
     /// Handle one frame using this connection's initialization state.
     #[must_use]
     pub fn handle_text(&self, text: &str) -> JsonRpcOutcome {
-        self.service.runtime.block_on(self.handle_text_async(text))
+        let connection = self.clone();
+        let task_text = text.to_string();
+        match execute_on_runtime(&self.service.runtime, async move {
+            connection.handle_text_async(&task_text).await
+        }) {
+            Ok(outcome) => outcome,
+            Err(error) => runtime_failure_outcome(text, &error),
+        }
     }
 
     async fn handle_text_async(&self, text: &str) -> JsonRpcOutcome {
@@ -132,13 +190,13 @@ impl RpcConnection<'_> {
             if method == "initialize" {
                 let result = self
                     .service
-                    .initialize_result(&params, self.output.is_some());
+                    .initialize_result(&params, self.state.output.is_some());
                 if result.is_ok() {
-                    self.initialized.store(true, Ordering::Release);
+                    self.state.initialized.store(true, Ordering::Release);
                 }
                 return result;
             }
-            if !self.initialized.load(Ordering::Acquire) {
+            if !self.state.initialized.load(Ordering::Acquire) {
                 return Err(RpcError::new(
                     NOT_INITIALIZED,
                     "host protocol initialize must succeed before calling other methods",
@@ -149,7 +207,7 @@ impl RpcConnection<'_> {
                 "stream.unsubscribe" => self.stream_unsubscribe(&params),
                 _ => {
                     self.service
-                        .dispatch(&method, &params, Some(&self.connection_id))
+                        .dispatch(&method, &params, Some(&self.state.connection_id))
                         .await
                 }
             }
@@ -158,7 +216,7 @@ impl RpcConnection<'_> {
     }
 
     async fn stream_subscribe(&self, params: &Value) -> Result<Value, RpcError> {
-        let Some(output) = self.output.clone() else {
+        let Some(output) = self.state.output.clone() else {
             return Err(RpcError::new(
                 UNSUPPORTED_FEATURE,
                 "stream.subscribe requires a live notification transport",
@@ -176,6 +234,7 @@ impl RpcConnection<'_> {
             .map_or_else(|| format!("sub_{}", Uuid::new_v4()), ToString::to_string);
         {
             let subscriptions = self
+                .state
                 .subscriptions
                 .lock()
                 .map_err(subscription_registry_error)?;
@@ -201,6 +260,7 @@ impl RpcConnection<'_> {
         let (ready, ready_receiver) = watch::channel(false);
         {
             let mut subscriptions = self
+                .state
                 .subscriptions
                 .lock()
                 .map_err(subscription_registry_error)?;
@@ -239,7 +299,7 @@ impl RpcConnection<'_> {
     }
 
     fn stream_unsubscribe(&self, params: &Value) -> Result<Value, RpcError> {
-        if self.output.is_none() {
+        if self.state.output.is_none() {
             return Err(RpcError::new(
                 UNSUPPORTED_FEATURE,
                 "stream.unsubscribe requires a live notification transport",
@@ -247,6 +307,7 @@ impl RpcConnection<'_> {
         }
         let subscription_id = required_string(params, "subscriptionId")?;
         let removed = self
+            .state
             .subscriptions
             .lock()
             .map_err(|error| {
@@ -268,7 +329,7 @@ impl RpcConnection<'_> {
 
     /// Release notifications only after the corresponding JSON-RPC response was flushed.
     pub fn activate_pending_subscriptions(&self) {
-        if let Ok(subscriptions) = self.subscriptions.lock() {
+        if let Ok(subscriptions) = self.state.subscriptions.lock() {
             for subscription in subscriptions.values() {
                 let _ = subscription.ready.send(true);
             }
@@ -288,7 +349,7 @@ impl RpcConnection<'_> {
         output: mpsc::Sender<Value>,
     ) {
         let coordinator = self.service.coordinator.clone();
-        let subscriptions = Arc::clone(&self.subscriptions);
+        let subscriptions = Arc::clone(&self.state.subscriptions);
         self.service.runtime.spawn(async move {
             loop {
                 if *cancel.borrow() {
@@ -516,6 +577,45 @@ async fn send_subscription_frame(
     }
 }
 
+fn execute_on_runtime<T, F>(runtime: &Runtime, future: F) -> RpcHostResult<T>
+where
+    T: Send + 'static,
+    F: Future<Output = T> + Send + 'static,
+{
+    if RPC_RUNTIME_WORKER.with(Cell::get) {
+        return Err(RpcHostError::Runtime(
+            "blocking RPC service APIs cannot run on an RPC runtime worker".to_string(),
+        ));
+    }
+    // Tokio never polls a spawned future synchronously, so the caller waits only
+    // for completion and never carries the request state machine on its stack.
+    let (result_sender, result_receiver) = std_mpsc::sync_channel(1);
+    drop(runtime.spawn(async move {
+        let result = future.await;
+        let _ = result_sender.send(result);
+    }));
+    result_receiver.recv().map_err(|_| {
+        RpcHostError::Runtime("RPC runtime task stopped before returning a result".to_string())
+    })
+}
+
+fn runtime_failure_outcome(text: &str, error: &RpcHostError) -> JsonRpcOutcome {
+    let response = serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|request| request.get("id").cloned())
+        .map(|id| {
+            error_response(
+                &id,
+                starweaver_rpc_core::SERVER_ERROR,
+                &format!("RPC request execution failed: {error}"),
+            )
+        });
+    JsonRpcOutcome {
+        response,
+        shutdown: false,
+    }
+}
+
 impl RpcService {
     /// Construct a service for stdio/live transports.
     ///
@@ -543,12 +643,12 @@ impl RpcService {
         let storage = SqliteStorage::open(&config.database_path)?;
         let catalog = RpcAgentCatalog::new(config.clone())?;
         let environment_manager = EnvironmentAttachmentManager::new();
-        let coordinator = RpcRuntimeCoordinator::new(
+        let coordinator = Arc::new(RpcRuntimeCoordinator::new(
             config.clone(),
             catalog.clone(),
             storage.clone(),
             environment_manager.clone(),
-        );
+        ));
         let session_search_scope =
             SessionSearchScope::local(config.database_path.to_string_lossy().into_owned());
         let session_search = if config.session_search.enabled {
@@ -573,12 +673,23 @@ impl RpcService {
         } else {
             None
         };
-        let runtime = Runtime::new().map_err(|error| RpcHostError::Runtime(error.to_string()))?;
-        runtime.block_on(coordinator.reconcile_startup())?;
+        let runtime = RuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .thread_name("starweaver-rpc-runtime")
+            .thread_stack_size(RPC_RUNTIME_THREAD_STACK_SIZE)
+            .on_thread_start(|| RPC_RUNTIME_WORKER.with(|worker| worker.set(true)))
+            .on_thread_stop(|| RPC_RUNTIME_WORKER.with(|worker| worker.set(false)))
+            .build()
+            .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+        let runtime = Arc::new(RpcExecutionRuntime::new(runtime));
+        let startup_coordinator = Arc::clone(&coordinator);
+        execute_on_runtime(&runtime, async move {
+            startup_coordinator.reconcile_startup().await
+        })??;
         let state = RpcStateRepository::new(config.state_dir.clone());
         Ok(Self {
-            config,
-            catalog,
+            config: Arc::new(config),
+            catalog: Arc::new(catalog),
             storage,
             coordinator,
             environment_manager,
@@ -586,35 +697,40 @@ impl RpcService {
             session_search_scope,
             notifications,
             state,
-            runtime: Arc::new(runtime),
+            runtime,
         })
     }
 
     pub(crate) fn shutdown_owned_runtime(&self, timeout: Duration) -> RpcHostResult<()> {
-        self.runtime.block_on(self.coordinator.shutdown(timeout))
+        let coordinator = self.coordinator.clone();
+        execute_on_runtime(
+            &self.runtime,
+            async move { coordinator.shutdown(timeout).await },
+        )?
     }
 
     /// Open an uninitialized stateful protocol connection.
     #[must_use]
-    pub fn connection(&self) -> RpcConnection<'_> {
-        RpcConnection {
-            service: self,
-            initialized: AtomicBool::new(false),
-            connection_id: format!("connection_{}", Uuid::new_v4()),
-            output: None,
-            subscriptions: Arc::new(Mutex::new(HashMap::new())),
-        }
+    pub fn connection(&self) -> RpcConnection {
+        self.new_connection(None)
     }
 
     /// Open an uninitialized stdio connection with a bounded notification sink.
     #[must_use]
-    pub fn live_connection(&self, output: mpsc::Sender<Value>) -> RpcConnection<'_> {
+    pub fn live_connection(&self, output: mpsc::Sender<Value>) -> RpcConnection {
+        self.new_connection(Some(output))
+    }
+
+    fn new_connection(&self, output: Option<mpsc::Sender<Value>>) -> RpcConnection {
         RpcConnection {
-            service: self,
-            initialized: AtomicBool::new(false),
-            connection_id: format!("connection_{}", Uuid::new_v4()),
-            output: Some(output),
-            subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            service: self.clone(),
+            state: Arc::new(RpcConnectionState {
+                initialized: AtomicBool::new(false),
+                connection_id: format!("connection_{}", Uuid::new_v4()),
+                output,
+                subscriptions: Arc::new(Mutex::new(HashMap::new())),
+                environment_manager: self.environment_manager.clone(),
+            }),
         }
     }
 
@@ -1510,7 +1626,7 @@ impl RpcService {
     }
 }
 
-fn negotiate_unary_protocol(text: &str, connection: &RpcConnection<'_>) -> Option<JsonRpcOutcome> {
+fn negotiate_unary_protocol(text: &str, connection: &RpcConnection) -> Option<JsonRpcOutcome> {
     let value = serde_json::from_str::<Value>(text).ok()?;
     if value.get("method").and_then(Value::as_str) == Some("initialize") {
         return None;
@@ -1526,7 +1642,7 @@ fn negotiate_unary_protocol(text: &str, connection: &RpcConnection<'_>) -> Optio
         });
     match negotiated {
         Ok(()) => {
-            connection.initialized.store(true, Ordering::Release);
+            connection.state.initialized.store(true, Ordering::Release);
             None
         }
         Err(message) => Some(JsonRpcOutcome {
@@ -2055,6 +2171,80 @@ mod tests {
     }
 
     #[test]
+    fn run_start_executes_on_rpc_runtime_stack() {
+        let transport = std::thread::Builder::new()
+            .name("small-rpc-transport".to_string())
+            .stack_size(1024 * 1024)
+            .spawn(|| {
+                let temp = tempfile::tempdir().unwrap();
+                let service = RpcService::live(RpcConfig::for_tests(temp.path())).unwrap();
+                let started = service
+                    .handle_text(&request(
+                        1,
+                        "run.start",
+                        json!({
+                            "prompt": "small transport stack",
+                            "idempotencyKey": "small-transport-stack"
+                        }),
+                    ))
+                    .response
+                    .unwrap();
+                assert!(started.get("error").is_none(), "{started}");
+                let awaited = service
+                    .handle_text(&request(
+                        2,
+                        "run.await",
+                        json!({
+                            "sessionId": started["result"]["sessionId"],
+                            "runId": started["result"]["runId"],
+                            "timeoutMs": 5_000
+                        }),
+                    ))
+                    .response
+                    .unwrap();
+                assert_eq!(awaited["result"]["status"]["status"], "completed");
+            })
+            .unwrap();
+        transport.join().unwrap();
+    }
+
+    #[test]
+    fn blocking_service_entry_rejects_rpc_worker_reentry() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = RpcService::live(RpcConfig::for_tests(temp.path())).unwrap();
+        let nested_service = service.clone();
+        let outcome = execute_on_runtime(&service.runtime, async move {
+            nested_service.handle_text(&request(1, "diagnostics.get", json!({})))
+        })
+        .unwrap();
+        let response = outcome.response.unwrap();
+        assert_eq!(response["error"]["code"], starweaver_rpc_core::SERVER_ERROR);
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("cannot run on an RPC runtime worker")
+        );
+    }
+
+    #[test]
+    fn final_service_drop_is_safe_on_runtime_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = RpcService::live(RpcConfig::for_tests(temp.path())).unwrap();
+        let runtime = Arc::clone(&service.runtime);
+        let (release, released) = tokio::sync::oneshot::channel();
+        let (completed, completion) = std_mpsc::sync_channel(1);
+        drop(runtime.spawn(async move {
+            let _ = released.await;
+            drop(service);
+            let _ = completed.send(());
+        }));
+        drop(runtime);
+        release.send(()).unwrap();
+        completion.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
     fn run_start_restore_aliases_must_match() {
         let matching = decode_run_start_params(
             &json!({
@@ -2508,7 +2698,7 @@ mod tests {
 
         let (sender, mut receiver) = mpsc::channel(512);
         let connection = service.live_connection(sender);
-        connection.initialized.store(true, Ordering::Release);
+        connection.state.initialized.store(true, Ordering::Release);
         let subscribe = connection.handle_text(&request(
             1,
             "stream.subscribe",

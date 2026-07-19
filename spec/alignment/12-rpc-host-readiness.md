@@ -85,6 +85,32 @@ Production JSON-RPC dispatch validates registered DTO parameters before invoking
 
 Protocol negotiation uses the `starweaver.host` family and major version. Minor fixture revisions describe the v1 corpus without changing the supported major. HTTP authorization is scoped at the host boundary; replay-only transports do not gain connection-scoped environment authority.
 
+## Request Execution Boundary
+
+Transport threads own framing, authorization, request order, response writes, and flush barriers. They do not poll the agent materialization or run-coordination futures. Each accepted JSON-RPC frame is submitted as an owned task to the service runtime, and the transport waits only for its completion result.
+
+```mermaid
+flowchart LR
+    transport[stdio or HTTP control thread]
+    completion[synchronous request completion]
+    worker[RPC Tokio worker]
+    dispatch[JSON-RPC dispatch]
+    coordinator[run coordination and storage]
+
+    transport --> completion
+    completion --> worker
+    worker --> dispatch
+    dispatch --> coordinator
+    coordinator --> completion
+    completion --> transport
+```
+
+The service runtime uses an explicit worker-stack budget rather than the operating system stack of the process main thread or an HTTP connection thread. Startup reconciliation, normal request dispatch, subscription tails, and coordinated shutdown use the same runtime boundary. Blocking service entry points reject calls from an RPC runtime worker so internal code cannot re-enter the synchronous completion wait.
+
+A stdio connection still completes one request before reading the next. A subscription remains pending until its response has been written and flushed; only then does the transport activate its notification tail. Unary HTTP requests remain independently concurrent. When HTTP shutdown stops admission at the listener, the host performs a bounded drain of accepted connection handlers before final service shutdown.
+
+Connection initialization, environment leases, and subscription cancellation live in shared connection state. Temporary request-task ownership cannot release those resources; cleanup occurs only when the final connection-state owner is dropped.
+
 ## Replay, Recovery, and Environment Attachments
 
 Replay evidence is persisted before a cursor is published to a live cache. A replay write failure therefore cannot produce a published-but-undurable cursor or a false successful terminal result. Restart rebuilds replay state from durable cursors and retained event evidence.

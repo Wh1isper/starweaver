@@ -60,6 +60,7 @@ Planned areas live in `spec/` until their responsibilities, integration points, 
 - `starweaver-cli`: independent command-line/TUI product surface and local automation entry point; it must not host or depend on the RPC product.
 - `starweaver-rpc-core`: typed JSON-RPC host protocol definitions and framing/projection helpers only.
 - `starweaver-rpc`: independent standalone JSON-RPC host product; it owns `rpc.toml`, profile/model materialization, handlers, and active-run state, must not depend on CLI, and independently connects to shared storage, environment, and envd abstractions.
+- RPC transport threads own framing, authorization, request order, response writes, and flush barriers. Startup reconciliation, request dispatch, subscription tails, and coordinated shutdown execute on the RPC-owned Tokio runtime with an explicit worker-stack budget; blocking service entry points must not run on those runtime workers.
 - `starweaver-platform`: hosted orchestration and external protocol adapters such as A2A and AGUI.
 
 ## Documentation Workflow
