@@ -22,7 +22,7 @@ use crate::{
 };
 
 pub use approval::ApprovalRequiredToolset;
-pub use deferred::DeferredToolset;
+pub use deferred::{DeferredToolSpec, DeferredToolset};
 pub use renamed::RenamedToolset;
 
 /// Predicate used by [`FilteredToolset`].

@@ -20,6 +20,21 @@ use super::{
 };
 
 impl SqliteSessionStore {
+    pub(super) fn load_session_mutation_receipt_sync(
+        &self,
+        namespace_id: &str,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<Option<SessionRecord>> {
+        let connection = self.lock()?;
+        load_session_mutation_receipt(
+            &connection,
+            namespace_id,
+            idempotency_key,
+            command_fingerprint,
+        )
+    }
+
     pub(super) fn create_session_idempotent_sync(
         &self,
         mut session: SessionRecord,
@@ -865,7 +880,7 @@ fn has_active_background_ownership(
 }
 
 fn load_session_mutation_receipt(
-    transaction: &Transaction<'_>,
+    transaction: &rusqlite::Connection,
     namespace_id: &str,
     idempotency_key: &str,
     command_fingerprint: &str,

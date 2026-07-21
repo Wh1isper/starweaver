@@ -30,7 +30,10 @@ pub struct ServerInfo {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostCapabilities {
     pub sessions: bool,
+    pub session_fork: bool,
+    pub session_deferred_tools: bool,
     pub runs: bool,
+    pub mcp: bool,
     pub management: bool,
     pub profiles: bool,
     pub client_model_selection: bool,
@@ -59,6 +62,8 @@ pub struct HostInitializeConfig {
     pub global_dir: Option<PathBuf>,
     pub project_dir: PathBuf,
     pub default_profile: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_config_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -86,6 +91,8 @@ pub struct DiagnosticsGetResult {
     pub state_dir: PathBuf,
     pub workspace_root: PathBuf,
     pub default_profile: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_config_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -121,6 +128,8 @@ pub struct ProfileConfig {
     pub toolsets: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -176,19 +185,64 @@ pub struct ConfigGetResult {
     pub value: String,
 }
 
+/// One client-managed tool whose execution is deferred outside the RPC runtime.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeferredToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instructions: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Session-scoped tools executed by the client through deferred HITL resolution.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deferred_tools: Vec<DeferredToolDefinition>,
+    /// Stable create idempotency key. When omitted, each call creates a new session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeferredToolsetBindingSummary {
+    pub binding_id: String,
+    pub digest: String,
+    pub tool_names: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionCreateResult {
     pub session: SessionRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_toolset: Option<DeferredToolsetBindingSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionForkParams {
+    pub session_id: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub idempotency_key: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionForkResult {
+    pub session: SessionRecord,
+    pub source_session_id: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<RunId>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -831,6 +885,11 @@ pub const V1_METHOD_CONTRACTS: &[V1MethodContract] = &[
         result: "SessionCreateResult",
     },
     V1MethodContract {
+        name: "session.fork",
+        params: "SessionForkParams",
+        result: "SessionForkResult",
+    },
+    V1MethodContract {
         name: "session.list",
         params: "SessionListParams",
         result: "SessionListResult",
@@ -1049,6 +1108,7 @@ pub fn validate_v1_method_params(method: &str, value: &Value) -> Result<(), Stri
         "config.get" => params!(ConfigGetParams),
         "storage.importLegacy" => params!(crate::StorageImportLegacyParams),
         "session.create" => params!(SessionCreateParams),
+        "session.fork" => params!(SessionForkParams),
         "session.list" => params!(SessionListParams),
         "session.search" => params!(crate::SessionSearchParams),
         "session.get" => params!(SessionGetParams),
@@ -1104,6 +1164,7 @@ pub fn validate_v1_method_result(method: &str, value: &Value) -> Result<(), Stri
         "config.get" => result!(ConfigGetResult),
         "storage.importLegacy" => result!(crate::StorageImportLegacyResult),
         "session.create" => result!(SessionCreateResult),
+        "session.fork" => result!(SessionForkResult),
         "session.list" => result!(SessionListResult),
         "session.search" => result!(crate::SessionSearchResult),
         "session.get" => result!(SessionGetResult),

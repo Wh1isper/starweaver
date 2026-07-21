@@ -142,8 +142,8 @@ owner = "starweaver-stream"
 stability = "stable"
 status = "implemented"
 normative_spec = "spec/ops/02-shared-execution-components.md"
-implementation = ["crates/starweaver-stream/src/adapters.rs"]
-contract_tests = ["crates/starweaver-stream/tests/ui_adapters.rs"]
+implementation = ["crates/starweaver-stream/src/adapters.rs", "crates/starweaver-stream/src/display/custom.rs", "crates/starweaver-stream/src/display/types.rs"]
+contract_tests = ["crates/starweaver-stream/tests/ui_adapters.rs", "crates/starweaver-stream/src/tests.rs", "spec/fixtures/stream"]
 
 [[capability]]
 id = "environment.provider"
@@ -179,7 +179,34 @@ stability = "stable"
 status = "implemented"
 normative_spec = "spec/ops/06-json-rpc-host-protocol.md"
 implementation = ["crates/starweaver-rpc-core/src/lib.rs"]
-contract_tests = ["crates/starweaver-rpc-core/tests/protocol_contracts.rs", "crates/starweaver-rpc-core/tests/fixtures/contracts"]
+contract_tests = ["crates/starweaver-rpc-core/tests/protocol_contracts.rs", "crates/starweaver-rpc-core/tests/rpc_wire_conformance.rs", "crates/starweaver-rpc-core/tests/fixtures/contracts"]
+
+[[capability]]
+id = "rpc.session_fork"
+owner = "starweaver-rpc"
+stability = "provisional"
+status = "implemented"
+normative_spec = "spec/ops/06-json-rpc-host-protocol.md"
+implementation = ["crates/starweaver-rpc-core/src/dto.rs", "crates/starweaver-rpc/src/service.rs", "crates/starweaver-rpc/src/auth.rs"]
+contract_tests = ["crates/starweaver-rpc-core/tests/rpc_wire_conformance.rs", "crates/starweaver-rpc/src/service.rs"]
+
+[[capability]]
+id = "rpc.session_deferred_tools"
+owner = "starweaver-rpc"
+stability = "provisional"
+status = "implemented"
+normative_spec = "spec/ops/06-json-rpc-host-protocol.md"
+implementation = ["crates/starweaver-rpc-core/src/dto.rs", "crates/starweaver-rpc/src/session_tools.rs", "crates/starweaver-tools/src/combinators/deferred.rs", "crates/starweaver-runtime/src/agent/run_loop.rs"]
+contract_tests = ["crates/starweaver-rpc/src/service.rs", "crates/starweaver-rpc/src/session_tools.rs", "crates/starweaver-runtime/tests/tool_control_flow.rs", "crates/starweaver-tools/tests/control_flow.rs"]
+
+[[capability]]
+id = "rpc.mcp_config_file"
+owner = "starweaver-rpc"
+stability = "provisional"
+status = "implemented"
+normative_spec = "spec/ops/06-json-rpc-host-protocol.md"
+implementation = ["crates/starweaver-tools/src/mcp/config_file.rs", "crates/starweaver-rpc/src/config.rs", "crates/starweaver-rpc/src/agent_catalog.rs", "crates/starweaver-agent/src/mcp_live.rs", "crates/starweaver-agent/src/mcp_rmcp.rs"]
+contract_tests = ["crates/starweaver-tools/src/mcp/config_file.rs", "crates/starweaver-agent/tests/live_mcp.rs", "crates/starweaver-rpc/src/config.rs", "crates/starweaver-rpc/src/agent_catalog.rs"]
 
 [[capability]]
 id = "rpc.structured_input"

@@ -2,11 +2,11 @@
 
 Status: implemented normative profile
 
-Revision: 2026-07-14
+Revision: 2026-07-21
 
 The Starweaver host protocol is implemented by the standalone `starweaver-rpc` product. It is a local control plane for durable sessions, non-blocking runs, replay, HITL records, RPC-owned model profiles, and RPC-owned environment attachments.
 
-This document describes implemented v1 behavior. Proposed additional authorization roles, richer idempotency, sockets, WebSocket, and hosted deployment semantics live in `rfcs/host-protocol-future.md`. The stdio profile implements connection-owned live subscriptions; unary HTTP remains replay-only.
+This document describes implemented v1 behavior. `09-rpc-idl-and-client-generation.md` defines the accepted migration to a language-neutral OpenRPC/JSON Schema structural source that generates the Rust server boundary and TypeScript Desktop client without changing this v1 behavior. Until that migration is complete, the current Rust DTOs and corpus remain the implementation baseline. Proposed additional authorization roles, richer idempotency, sockets, WebSocket, and hosted deployment semantics live in `rfcs/host-protocol-future.md`. The stdio profile implements connection-owned live subscriptions; unary HTTP remains replay-only.
 
 ## Product Boundary
 
@@ -14,8 +14,9 @@ This document describes implemented v1 behavior. Proposed additional authorizati
 - Neither crate may depend on the other directly or transitively.
 - CLI/TUI is not an RPC frontend and does not reuse RPC handlers, configuration, coordinator state, or attachment leases.
 - Both products may independently use lower runtime, storage, stream, environment, and envd abstractions.
-- `starweaver-rpc-core` owns typed host wire contracts and projections.
-- `starweaver-rpc` owns configuration, model materialization, handlers, active runs, environment leases, and transports.
+- The checked-in host IDL defined by `09-rpc-idl-and-client-generation.md` becomes the structural wire source of truth and generates Rust and TypeScript peers.
+- `starweaver-rpc-core` owns the generated Rust host wire boundary plus narrow framing and projection helpers.
+- `starweaver-rpc` implements the generated server boundary and owns configuration, model materialization, handlers, active runs, environment leases, and transports.
 
 The permanent `make architecture-check` gate enforces the dependency boundary.
 
@@ -28,10 +29,13 @@ Initialization returns the shared identity shape:
   "protocol": {
     "name": "starweaver.host",
     "major": 1,
-    "revision": "2026-07-14",
+    "revision": "2026-07-21",
     "features": [
       "sessions",
+      "session.fork",
+      "session.deferred_tools",
       "runs",
+      "mcp.config_file",
       "stream.replay",
       "environment.attachments",
       "environment.active_mounts",
@@ -46,7 +50,9 @@ Initialization returns the shared identity shape:
 }
 ```
 
-Identity constants are owned by `starweaver-rpc-core`. Clients validate `name` and `major`, then use `features`. `session.search` appears only when the RPC-owned configuration installs a provider; it is omitted when search is disabled. They must not compare revision strings for ordering. The previous top-level `protocolVersion` date field is accepted as legacy response evidence but is no longer emitted.
+Identity constants are owned by `starweaver-rpc-core`. Clients validate `name` and `major`, then use `features`. In the implemented v1 handshake this list reports server-supported features; it is not yet a per-connection client/server intersection. `session.search` appears only when the RPC-owned configuration installs a provider; it is omitted when search is disabled. Clients must not compare revision strings for ordering. The previous top-level `protocolVersion` date field is accepted as legacy response evidence but is no longer emitted.
+
+The IDL migration preserves this closed v1 initialize shape. A new client uses request `protocol.features` for client-supported IDs; result `protocol.features` remains the server-supported set; required IDs remain local client policy; and both peers compute the intersection. An omitted protocol or empty/missing request feature list selects legacy-v1 mode, which preserves existing method admission and current v1 notifications rather than treating the intersection as empty authority. Only a newly introduced client-opt-in notification or interaction may require explicit intersection membership. Until this mode and per-connection intersection are implemented, adding a notification variant is a breaking protocol change even if the server could advertise a new feature. Richer capability objects or additional initialize members require a new protocol major because the current v1 params and result are closed.
 
 `stream.subscribe` is advertised only by stdio connections with an installed bounded notification sink. Unary HTTP returns `unsupported_feature` for subscribe/unsubscribe and uses replay/status polling.
 
@@ -61,6 +67,7 @@ RPC resolves `$STARWEAVER_CONFIG_DIR/rpc.toml` (default `~/.starweaver/rpc.toml`
 default_profile = "default"
 database_path = "starweaver.sqlite"
 workspace_root = "."
+mcp_config_path = "mcp.json" # relative to rpc.toml
 
 [server.session_search]
 enabled = true
@@ -83,13 +90,16 @@ scopes = ["read", "run", "approval", "admin", "shutdown"]
 [profiles.default]
 model_id = "openai-responses:gpt-5"
 toolsets = ["filesystem"]
+mcp_servers = ["docs"]
 
 [providers.openai]
 api_key_env = "OPENAI_API_KEY"
 base_url = "https://api.openai.com/v1"
 ```
 
-At run start RPC validates the profile/toolsets, resolves `protocol:model` or `provider@protocol:model`, reads the configured API-key environment variable, builds a production `ProtocolModelClient`, projects an `AgentSpec`, and constructs its own runtime. Deterministic models are private test fixtures and are not production management profiles. `model.select`, `model.list`, `model.current`, and run profile resolution all use the durable `rpc` client-state scope when `clientStateScope` (or the compatibility `client` alias) is omitted; an explicit scope continues to isolate another client's selection.
+At run start RPC validates the profile/toolsets, resolves `protocol:model` or `provider@protocol:model`, reads the configured API-key environment variable, builds a production `ProtocolModelClient`, projects an `AgentSpec`, and constructs its own runtime. Deterministic models are private test fixtures and are not production management profiles.
+
+`server.mcp_config_path` installs one explicit, strict JSON MCP document. A relative TOML path is resolved against the `rpc.toml` directory; `STARWEAVER_RPC_MCP_CONFIG` overrides it and resolves a relative value against the process working directory. Relative stdio `cwd` values resolve against the MCP document directory. Missing files, unknown fields or transports, transport-mismatched fields, non-string environment/header values, invalid URLs, zero timeouts, duplicate profile selections, unknown servers, and RPC-selected standalone SSE fail startup. RPC supports stdio and streamable HTTP. An empty profile `mcp_servers` selection means every server in the explicit document; a non-empty list is sorted and validated as a set. Every runtime gets lazy, run-scoped MCP discovery and closes its client on run exit. `init_timeout_ms` bounds connection/discovery, `read_timeout_ms` bounds each MCP tool request, and `exit_timeout_ms` bounds cleanup with a 10-second default. Deferred evidence projects only credential-free transport identity; it never serializes URLs, headers, stdio commands/arguments, working directories, or environments. Lifecycle evidence includes the server/transport, counts, and a credential-free discovered inventory digest. Static MCP configuration participates in continuation materialization, while live inventory is explicitly allowed to drift per run; its digest is diagnostic evidence and `Preserve` does not freeze it. `profile.get` returns effective `mcpServers`; initialize and diagnostics expose the installed config path, and `capabilities.mcp` reports whether a document is installed. The protocol feature `mcp.config_file` identifies vocabulary support independently of that per-process capability. `model.select`, `model.list`, `model.current`, and run profile resolution all use the durable `rpc` client-state scope when `clientStateScope` (or the compatibility `client` alias) is omitted; an explicit scope continues to isolate another client's selection.
 
 ## JSON-RPC Envelope
 
@@ -167,7 +177,7 @@ Messages are safe for client display and must not include credentials, provider 
 | Diagnostics            | `diagnostics.get`, `config.get`                                                                                                                                           |
 | Storage administration | `storage.importLegacy` (typed, explicit source/workspace, HTTP `admin` scope)                                                                                             |
 | Profiles               | `profile.list`, `profile.get`, `model.list`, `model.current`, `model.select`                                                                                              |
-| Sessions               | `session.create`, `session.list`, `session.search`, `session.get`, `session.current.get`, `session.current.set`, `session.delete`                                         |
+| Sessions               | `session.create`, `session.fork`, `session.list`, `session.search`, `session.get`, `session.current.get`, `session.current.set`, `session.delete`                         |
 | Runs                   | `run.start`, `run.resume`, `run.prompt`, `run.status`, `run.await`, `run.cancel`, `run.steer`, `run.attach`                                                               |
 | Streams                | `stream.replay`, stdio-only `stream.subscribe`, `stream.unsubscribe`                                                                                                      |
 | Compatibility aliases  | `session.output`, `session.replay`                                                                                                                                        |
@@ -175,6 +185,18 @@ Messages are safe for client display and must not include credentials, provider 
 | Environments           | `environment.attach`, `environment.detach`, `environment.list`, `environment.health`, `environment.active_mount`, `environment.active_unmount`, `environment.active_list` |
 
 A method not in this table is not part of implemented v1. Compatibility aliases are provisional and may be removed in the next host protocol major after clients migrate.
+
+### Session-scoped deferred tools
+
+`session.create` accepts optional `deferredTools` and `idempotencyKey`. Each tool is a closed definition containing `name`, `description`, object `inputSchema`, and optional string `instructions`; it cannot carry executable code, commands, transports, or arbitrary metadata. The host accepts at most 64 definitions and 256 KiB of encoded definitions, validates names and field limits, stores a versioned digest-bound snapshot in session metadata, and returns only its binding id, digest, and tool names. An exact create retry reads its durable receipt before current profile/config validation and returns the existing session even if that profile was later removed; omitting the key creates a fresh session.
+
+The toolset is restored from the owning session for ordinary runs, HITL preflight, continuations, and background continuations. A model call emits one `deferred_requested` sideband event with run id, normalized tool-call id, tool name, derived durable deferred id, and the client request payload, followed by `run_waiting`. Its stable display projection is `DEFERRED_REQUESTED`. The waiting worker commits checkpoint, stream, and deferred records, releases its admission without writing a terminal replay marker, and remains resumable. The client resolves records with `deferred.complete` or `deferred.fail`, then explicitly calls `run.resume`; resolution alone never starts execution.
+
+### `session.fork`
+
+`session.fork` requires `sessionId` and a non-empty `idempotencyKey`, accepts an optional title, and requires HTTP `run` scope. A deleted source is rejected on the first attempt. The target copies the source's namespace, owner, profile, workspace, session-scoped deferred-tool binding, and exact `head_success_run_id` context. Only a source with no runs may fork its initial session state; a source with failed or waiting runs but no successful run is rejected. A newer waiting or failed run never replaces the successful fork point.
+
+The target is an independent session with `parent_session_id` lineage. Run/task ids, pending returns, steering, deferred runtime metadata, usage, trace, message bus, and durable run metadata are reset; source run records and replay history are not copied. The target stores credential-free `rpc.fork` evidence containing the source session, optional source run, and source revision. Exact retries are receipt-first: they return the same target even if the source is later deleted or its run context is no longer retained; a changed fingerprint conflicts. The result returns the target plus typed source lineage, and subsequent `run.start` continues from the forked context.
 
 ### `session.search`
 
@@ -280,9 +302,9 @@ Envd remains the environment data/effect plane. Host attachment leases do not tr
 
 ## HITL
 
-Approval and deferred records are canonical `starweaver-session` durable records. Decisions persist before success is returned. Terminal conflicts fail rather than overwrite prior evidence.
+Approval and deferred records are canonical `starweaver-session` durable records. Decisions persist before success is returned. Terminal conflicts fail rather than overwrite prior evidence. A waiting run is a durable, non-terminal session state: it has no terminal replay marker, does not satisfy `run.await`, and can be replaced only through the fenced continuation admission flow. `run.resume` requires HTTP `run` scope because it starts execution; approval and deferred decisions require `approval` scope.
 
-Current v1 does not promise a general cross-method idempotency store. Ordinary `run.start` has durable command-fingerprint idempotency as described above. Active environment mutation uses operation-specific idempotency to prevent duplicate binding versions, lifecycle events, and steering injection. Richer method-wide idempotency remains an RFC.
+Current v1 does not promise a general cross-method idempotency store. `session.create`, `session.fork`, and ordinary `run.start` have durable command-fingerprint receipts with read-before-preflight exact replay. Active environment mutation uses operation-specific idempotency to prevent duplicate binding versions, lifecycle events, and steering injection. Richer method-wide idempotency remains an RFC.
 
 ## Proposed Agent-Facing Composition
 

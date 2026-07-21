@@ -11,7 +11,7 @@ The Desktop product consumes the same versioned host protocol, durable session r
 - Desktop is a separate product surface, not a mode of `starweaver-cli`.
 - Tauri 2 is the default native shell and privileged backend framework; changing it requires an explicit spec amendment after an implementation spike.
 - The UI never links `starweaver-runtime`, invokes CLI coordination, or reads SQLite directly.
-- Desktop v1 uses JSON-RPC over child-process stdio locally and over a supervised stdio stream carried by a system OpenSSH exec channel remotely.
+- Desktop v1 will use manifest-filtered, IDL-derived TypeScript bridge/client bindings. Its privileged Rust supervisor will carry JSON-RPC over child-process stdio locally and over a supervised stdio stream carried by a system OpenSSH exec channel remotely.
 - One Desktop backend supervisor manages optional least-authority catalog/control connections and at most one execution RPC process for each execution-domain/canonical-workspace pair.
 - RPC processes in one execution domain share that domain's canonical session database but receive distinct workspace roots, process state directories, and versioned public launch envelopes.
 - Closing a window does not implicitly terminate an active run. Explicit application quit performs coordinated RPC shutdown.
@@ -22,6 +22,7 @@ The Desktop product consumes the same versioned host protocol, durable session r
 - The Desktop supervisor owns a runtime update channel for `starweaver-rpc`. A runtime can be updated independently of the shell only when protocol and storage compatibility gates pass.
 - SSH targets are separate execution domains: their RPC, storage, OAuth, model requests, filesystem, and shell remain remote. Desktop uses a hardened public Starweaver component-update contract to provision the remote RPC through the remote user's login shell.
 - Remote native shell uses the authenticated remote account's full authority by default and is never represented as workspace-contained. Local native shell remains disabled by default without an enforceable sandbox.
+- The accepted language-neutral host IDL target will generate the Rust server boundary and safe, manifest-filtered TypeScript Desktop bindings; neither generated language surface is a separate protocol source.
 - CLI, RPC, and Desktop remain independent products. Shared behavior belongs in the existing product-neutral crates.
 
 ## Readiness Baseline
@@ -55,7 +56,9 @@ The repository now contains a non-executing Desktop foundation under `apps/starw
 
 The managed runtime remains explicitly `not_configured`. This scaffold does not weaken Phase 0: local execution must not locate a binary through `PATH`, read private CLI configuration, emit `rpc.toml`, open storage, or launch `starweaver-rpc` until the public launch-envelope, negotiation, authorization, and compatibility prerequisites are implemented. Future SSH startup uses the separately specified probe, exact managed runtime selector, and login-shell bootstrap rather than an unverified `PATH` fallback.
 
-## Product Shape
+## Target Product Shape
+
+The host IDL, generated bindings, RPC supervision, and execution connections below remain planned. The implemented Desktop foundation is still disconnected from RPC.
 
 ```mermaid
 flowchart TD
@@ -66,7 +69,9 @@ flowchart TD
     local_rpc[Local RPC child]
     ssh[System OpenSSH process]
     remote_rpc[Remote RPC process]
-    rpc_core[Versioned host and bootstrap protocols]
+    host_idl[Planned host OpenRPC and JSON Schema IDL]
+    ts_client[Planned manifest-filtered TypeScript bridge and client]
+    rpc_core[Target generated Rust host bindings and bootstrap protocols]
     local_store[(Local SQLite and OAuth)]
     remote_store[(Remote SQLite and OAuth)]
     local_runtime[Local runtime and workspace]
@@ -74,6 +79,9 @@ flowchart TD
     cli[Independent local or remote CLI]
 
     user --> shell
+    host_idl --> ts_client
+    host_idl --> rpc_core
+    ts_client --> shell
     shell --> supervisor
     shell --> updater
     supervisor -->|direct stdio JSON-RPC| local_rpc
@@ -91,24 +99,25 @@ flowchart TD
     cli --> remote_store
 ```
 
-## Ownership Map
+## Target Ownership Map
 
-| Concern                                                                   | Owner                                              |
-| ------------------------------------------------------------------------- | -------------------------------------------------- |
-| Windows, navigation, renderer state, notifications, shortcuts             | Desktop shell                                      |
-| Workspace-to-child routing, process lifecycle, restart, update activation | Desktop backend supervisor                         |
-| Runtime download, verification, version selection, rollback state         | Desktop runtime update manager                     |
-| JSON-RPC methods, notifications, authorization, live subscriptions        | `starweaver-rpc` and `starweaver-rpc-core`         |
-| Agent/model/tool execution                                                | `starweaver-agent` and `starweaver-runtime`        |
-| Session/run/replay contracts                                              | `starweaver-session` and `starweaver-stream`       |
-| SQLite schema, migrations, atomic evidence operations                     | `starweaver-storage`                               |
-| OAuth credential storage and provider construction                        | `starweaver-oauth` and `starweaver-oauth-provider` |
-| Local and envd-backed workspace authority                                 | `starweaver-environment` and envd crates           |
-| SSH process transport, host trust, remote routing, and prompt mediation   | Desktop backend supervisor                         |
-| Public RPC component install/update contract and shared updater mechanics | Starweaver installer/update path                   |
-| CLI commands and TUI coordination                                         | `starweaver-cli` only                              |
+| Concern                                                                   | Owner                                                  |
+| ------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Windows, navigation, renderer state, notifications, shortcuts             | Desktop shell                                          |
+| Workspace-to-child routing, process lifecycle, restart, update activation | Desktop backend supervisor                             |
+| Runtime download, verification, version selection, rollback state         | Desktop runtime update manager                         |
+| Host method/notification/error wire structure and generated bindings      | host OpenRPC/JSON Schema IDL and repository generators |
+| JSON-RPC server behavior, authorization, and live subscriptions           | `starweaver-rpc` and `starweaver-rpc-core`             |
+| Agent/model/tool execution                                                | `starweaver-agent` and `starweaver-runtime`            |
+| Session/run/replay contracts                                              | `starweaver-session` and `starweaver-stream`           |
+| SQLite schema, migrations, atomic evidence operations                     | `starweaver-storage`                                   |
+| OAuth credential storage and provider construction                        | `starweaver-oauth` and `starweaver-oauth-provider`     |
+| Local and envd-backed workspace authority                                 | `starweaver-environment` and envd crates               |
+| SSH process transport, host trust, remote routing, and prompt mediation   | Desktop backend supervisor                             |
+| Public RPC component install/update contract and shared updater mechanics | Starweaver installer/update path                       |
+| CLI commands and TUI coordination                                         | `starweaver-cli` only                                  |
 
-No Desktop crate should become a shared protocol or storage owner. Reusable protocol DTOs remain in `starweaver-rpc-core`; reusable storage and runtime contracts remain in their existing owning crates.
+No Desktop crate should become a shared protocol or storage owner. Under the accepted target, the repository-level host IDL owns reusable wire structure; generated Rust bindings will live in `starweaver-rpc-core`, IDL-derived safe TypeScript bindings will be consumed by Desktop, and reusable storage and runtime contracts remain in their existing owning crates. Until migration completes, current handwritten Rust DTOs and the v1 corpus remain the implementation baseline.
 
 ## Spec Map
 
@@ -137,6 +146,7 @@ The first Desktop implementation does not:
 
 ### Phase 0: protocol and release prerequisites
 
+- canonical host OpenRPC/JSON Schema IDL plus generated Rust server and TypeScript client parity;
 - RPC OAuth parity and safe auth methods;
 - client capability negotiation and typed clarification answers;
 - public versioned RPC launch-envelope schema and compatibility fixtures;

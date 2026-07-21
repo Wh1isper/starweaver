@@ -13,6 +13,7 @@ mod environment_manager;
 mod error;
 mod service;
 pub(crate) mod session_management;
+mod session_tools;
 mod state;
 mod transport;
 

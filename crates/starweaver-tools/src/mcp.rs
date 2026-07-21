@@ -1,6 +1,7 @@
 //! MCP toolset foundations.
 
 mod config;
+mod config_file;
 mod native;
 mod toolset;
 mod transport;
@@ -11,6 +12,7 @@ use starweaver_core::Metadata;
 use starweaver_model::ToolDefinition;
 
 pub use config::McpToolsetConfig;
+pub use config_file::{McpConfigDocument, McpConfigFileError, McpServerConfig};
 pub use native::NativeMcpServer;
 pub use toolset::McpToolset;
 pub use transport::McpTransport;

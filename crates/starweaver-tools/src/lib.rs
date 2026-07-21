@@ -14,8 +14,8 @@ pub mod tool_proxy;
 pub mod toolset;
 
 pub use combinators::{
-    ApprovalRequiredToolset, CombinedToolset, DeferredToolset, DynamicToolset, FilteredToolset,
-    LazyToolset, MetadataToolset, PreparedToolset, RenamedToolset, ToolPredicate,
+    ApprovalRequiredToolset, CombinedToolset, DeferredToolSpec, DeferredToolset, DynamicToolset,
+    FilteredToolset, LazyToolset, MetadataToolset, PreparedToolset, RenamedToolset, ToolPredicate,
 };
 pub use context::{ToolApprovalState, ToolContext};
 pub use error::{ToolError, error_return};
@@ -24,8 +24,9 @@ pub use execution_hooks::{
 };
 pub use instruction::ToolInstruction;
 pub use mcp::{
-    McpPromptSpec, McpResourceSpec, McpSamplingSpec, McpSubscriptionSpec, McpToolSpec, McpToolset,
-    McpToolsetConfig, McpTransport, NativeMcpServer, tool_definition_from_mcp_spec,
+    McpConfigDocument, McpConfigFileError, McpPromptSpec, McpResourceSpec, McpSamplingSpec,
+    McpServerConfig, McpSubscriptionSpec, McpToolSpec, McpToolset, McpToolsetConfig, McpTransport,
+    NativeMcpServer, tool_definition_from_mcp_spec,
 };
 pub use prefixed::{PrefixedTool, PrefixedToolset};
 pub use registry::{ToolAvailabilityReport, ToolRegistry};

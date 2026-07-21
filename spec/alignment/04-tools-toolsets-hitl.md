@@ -14,6 +14,7 @@ This document tracks only remaining tool, toolset, MCP, and HITL gaps.
 - SDK durable-store resume covers function-tool approvals and deferred tool results.
 - Host-backed live MCP durable-store resume covers approval records, deferred records, resumed execution, and resumed model history through `runtime_durable_store_resumes_live_mcp_approval_and_deferred_records`.
 - Protocol-level `rmcp` stdio durable-store resume covers approval records, required-task deferred records, resumed execution, and resumed model history through `runtime_durable_store_resumes_rmcp_stdio_approval_and_deferred_records`.
+- `DeferredToolset::from_specs` turns closed client definitions into dynamic-instruction tools that always suspend until the matching result is injected. RPC binds these definitions to one session, emits `deferred_requested`, commits a non-terminal waiting boundary, and requires explicit `run.resume` after resolution. `session_deferred_tool_completes_and_resumes_through_rpc` covers the complete wire-to-runtime lifecycle.
 
 ## MCP Gaps
 
@@ -27,7 +28,9 @@ Required direction:
 
 Current evidence:
 
-- Live MCP initialization and cleanup emit lifecycle reports with MCP identity metadata.
+- Live MCP initialization and cleanup emit lifecycle reports with MCP identity metadata, discovered counts, and a credential-free inventory digest.
+- RPC uses explicit strict MCP files, canonical profile server selections, lazy per-run clients, capability-aware discovery, explicit partial-failure cleanup, retryable close, and separate initialization/discovery versus tool-call timeout semantics.
+- `lazy_mcp_discovers_once_per_run_and_closes_each_run_once` proves no eager connection, one discovery per run, run isolation, and idempotent successful close.
 - MCP resource, prompt, sampling, and subscription discovery is represented in `McpToolsetConfig` and live lifecycle metadata.
 - `rmcp_stdio_client_discovers_executes_and_closes_fixture_server` proves the built-in `RmcpLiveMcpClient` discovers tools, resources, prompts, and server instructions over stdio, executes a tool through `rmcp`, preserves MCP metadata on the resulting `ToolResult`, and closes the child-process transport.
 - `rmcp_streamable_http_client_discovers_executes_and_closes_fixture_server` proves the built-in `RmcpLiveMcpClient` discovers and executes tools over streamable HTTP while preserving MCP metadata.

@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use starweaver_context::AgentContext;
+use starweaver_core::AgentId;
 use starweaver_model::{
     ModelAdapter, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, TestModel,
     ToolCallPart,
@@ -53,13 +55,14 @@ async fn runtime_records_approval_and_deferred_tool_returns() {
     );
 
     let agent_model: Arc<dyn ModelAdapter> = model.clone();
+    let mut context = AgentContext::new(AgentId::from_string("agent-control-flow"));
     let result = Agent::new(agent_model)
         .with_tools(
             ToolRegistry::new()
                 .with_tool(Arc::new(dangerous))
                 .with_tool(Arc::new(slow)),
         )
-        .run("run tools")
+        .run_with_context("run tools", &mut context)
         .await
         .unwrap();
 
@@ -90,6 +93,26 @@ async fn runtime_records_approval_and_deferred_tool_returns() {
     assert_eq!(
         result.state.deferred_tool_returns[0].metadata["control_flow"],
         "call_deferred"
+    );
+    let deferred_tool_call_id = result.state.deferred_tool_returns[0].tool_call_id.as_str();
+    let deferred_requested = context
+        .events
+        .events()
+        .iter()
+        .filter(|event| event.kind == "deferred_requested")
+        .collect::<Vec<_>>();
+    assert_eq!(deferred_requested.len(), 1);
+    let deferred_requested = deferred_requested[0];
+    assert_eq!(
+        deferred_requested.payload["tool_call_id"],
+        deferred_tool_call_id
+    );
+    assert_eq!(deferred_requested.payload["tool_name"], "slow");
+    assert_eq!(deferred_requested.payload["request"]["queue"], "durable");
+    assert!(
+        deferred_requested.payload["deferred_id"]
+            .as_str()
+            .is_some_and(|id| id.ends_with(deferred_tool_call_id))
     );
 }
 

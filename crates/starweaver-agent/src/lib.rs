@@ -74,8 +74,9 @@ pub use materialization::{
     environment_binding_class, safe_agent_spec_digest,
 };
 pub use mcp_live::{
-    DynLiveMcpClient, LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot, LiveMcpToolset,
-    live_mcp_toolset,
+    DynLiveMcpClient, LazyLiveMcpToolset, LiveMcpClient, LiveMcpClientFactory, LiveMcpError,
+    LiveMcpServerSnapshot, LiveMcpToolset, lazy_live_mcp_toolset, live_mcp_toolset,
+    live_mcp_toolset_with_config,
 };
 pub use mcp_rmcp::RmcpLiveMcpClient;
 pub use presets::{

@@ -301,6 +301,7 @@ pub(super) fn display_message_to_agui_event(message: &DisplayMessage) -> Option<
             custom_agui_event("starweaver.run_cancelled", message, &message.payload)
         }
         DisplayMessageKind::ApprovalRequested
+        | DisplayMessageKind::DeferredRequested
         | DisplayMessageKind::ApprovalResolved
         | DisplayMessageKind::HitlResolved
         | DisplayMessageKind::HitlDiagnostic
@@ -371,6 +372,7 @@ fn custom_agui_event(name: &str, message: &DisplayMessage, value: &Value) -> Val
 const fn display_extension_name(kind: DisplayMessageKind) -> &'static str {
     match kind {
         DisplayMessageKind::ApprovalRequested => "starweaver.approval_requested",
+        DisplayMessageKind::DeferredRequested => "starweaver.deferred_requested",
         DisplayMessageKind::ApprovalResolved => "starweaver.approval_resolved",
         DisplayMessageKind::HitlResolved => "starweaver.hitl_resolved",
         DisplayMessageKind::HitlDiagnostic => "starweaver.hitl_diagnostic",
@@ -522,6 +524,17 @@ pub(super) fn render_display_text(messages: &[DisplayMessage]) -> String {
                     output.push('\n');
                 }
                 output.push_str("approval=requested\n");
+                last_was_text = false;
+            }
+            DisplayMessageKind::DeferredRequested => {
+                if last_was_text && !output.ends_with('\n') {
+                    output.push('\n');
+                }
+                let preview = message
+                    .preview
+                    .as_deref()
+                    .unwrap_or("external tool execution requested");
+                let _ = writeln!(output, "deferred=requested message={preview}");
                 last_was_text = false;
             }
             DisplayMessageKind::RunFailed => {

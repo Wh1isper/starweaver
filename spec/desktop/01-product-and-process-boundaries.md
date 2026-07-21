@@ -21,7 +21,8 @@ The Desktop product must not depend on `starweaver-cli`. The CLI must not depend
 
 Allowed implementation dependencies:
 
-- Desktop backend to a generated or handwritten client over `starweaver-rpc-core` wire contracts;
+- Desktop renderer TypeScript only to the manifest-filtered `DesktopHostClient`, safe bridge request/result/notification DTOs and decoders, and safe operation/notification maps derived from the IDL;
+- Desktop backend to IDL-generated Rust bindings in `starweaver-rpc-core` plus narrow handwritten transport and projection helpers;
 - Desktop backend to narrow product-neutral helpers needed for version parsing, signed-manifest verification, component installation, checksums, and platform paths;
 - Desktop backend to a least-authority system OpenSSH process adapter and native askpass/host-trust bridge;
 - `starweaver-rpc` to existing Agent SDK, storage, OAuth, environment, and envd crates;
@@ -33,7 +34,8 @@ Prohibited dependencies:
 - Desktop to CLI command handlers, TUI state, CLI config types, launcher state, or `CliRuntimeCoordinator`; a remote external process may expose only the public versioned component-install machine contract;
 - CLI to Desktop or RPC implementation crates;
 - RPC to Desktop or CLI implementation crates;
-- frontend code reading `auth.json`, `rpc.toml`, or `starweaver.sqlite` directly.
+- frontend code reading `auth.json`, `rpc.toml`, or `starweaver.sqlite` directly;
+- Desktop renderer must not import the complete generated host protocol model, raw host params/result maps, transport-neutral `HostRpcClient`, raw host codecs, or unfiltered notification unions.
 
 If Desktop and another product need the same logic, that logic moves only when a product-neutral owner is clear. A new broad shared “desktop runtime” crate is not the default answer.
 
@@ -111,7 +113,7 @@ Desktop must not configure one RPC process with the user home directory solely t
 
 ## Shell and Backend Separation
 
-The renderer receives safe view models and sends user intents. It must not construct arbitrary JSON-RPC requests or receive raw secrets.
+The renderer receives safe view models and sends user intents through IDL-derived bridge request/result/notification DTOs selected by a reviewed Desktop operation-surface manifest. TypeScript implements the typed Desktop client experience, but the renderer must not construct arbitrary JSON-RPC requests, submit complete host params objects, choose authority-bearing wire metadata, or receive raw secrets. The generated TypeScript client and generated Rust server bindings share the language-neutral source defined by `../ops/09-rpc-idl-and-client-generation.md`; the Desktop manifest adds authority ownership and safe projection without redefining host wire types.
 
 The backend supervisor owns:
 
@@ -123,6 +125,8 @@ The backend supervisor owns:
 - pending approval, deferred, and clarifying-question coordination;
 - update staging and activation;
 - Desktop-local preferences and window-to-session routing.
+
+The backend decodes only generated safe bridge DTOs, constructs the complete generated Rust host params, and independently validates connection state, negotiated feature intersection, workspace routing, and authority. It must strip, construct, or override request IDs, idempotency keys, client scopes, routing identities, execution-domain bindings, and retry metadata rather than trusting renderer values. It projects and redacts host results and notifications before sending generated safe DTOs to TypeScript. Request IDs, idempotency keys, replay recovery, and transport frames never originate as free-form renderer JSON.
 
 This split allows renderer reloads without losing child processes or active runs.
 
@@ -178,6 +182,8 @@ Observable methods, metadata, bundle identifiers, and file names use Starweaver-
 ## Acceptance Gates
 
 - Architecture tooling rejects direct product dependencies among CLI, RPC, and Desktop.
+- IDL tooling proves generated Rust server and TypeScript Desktop client bindings share one protocol identity and structural contract.
+- Renderer boundary checks reject free-form JSON-RPC and complete host params, prevent injection of supervisor-owned fields, and prove that raw paths, credentials, and private diagnostics are absent from generated bridge results and notifications.
 - The renderer has no direct storage, OAuth-file, or process authority.
 - A second Desktop launch forwards to the authenticated existing supervisor and cannot create duplicate workspace children.
 - Local shell-enabled release profiles use an enforceable sandbox; tests prove that absolute paths, parent traversal, symlinks, and subprocesses cannot access a sibling workspace. Native unsandboxed local shell is disabled by default.

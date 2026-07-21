@@ -110,6 +110,7 @@ pub fn display_to_vercel_data_stream(message: &DisplayMessage) -> Vec<VercelData
         | DisplayMessageKind::ToolsetRefreshed
         | DisplayMessageKind::ToolsetClosed
         | DisplayMessageKind::ApprovalRequested
+        | DisplayMessageKind::DeferredRequested
         | DisplayMessageKind::ApprovalResolved
         | DisplayMessageKind::HitlResolved
         | DisplayMessageKind::HitlDiagnostic
@@ -207,6 +208,7 @@ const fn display_event_type(kind: DisplayMessageKind) -> &'static str {
         DisplayMessageKind::ToolsetRefreshed => "TOOLSET_REFRESHED",
         DisplayMessageKind::ToolsetClosed => "TOOLSET_CLOSED",
         DisplayMessageKind::ApprovalRequested => "APPROVAL_REQUESTED",
+        DisplayMessageKind::DeferredRequested => "DEFERRED_REQUESTED",
         DisplayMessageKind::ApprovalResolved => "APPROVAL_RESOLVED",
         DisplayMessageKind::HitlResolved => "HITL_RESOLVED",
         DisplayMessageKind::HitlDiagnostic => "HITL_DIAGNOSTIC",

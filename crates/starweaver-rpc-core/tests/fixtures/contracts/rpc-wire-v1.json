@@ -1,7 +1,7 @@
 {
   "schema": "starweaver.host.wire-corpus",
   "major": 1,
-  "revision": "2026-07-19",
+  "revision": "2026-07-21",
   "methods": [
     {
       "method": "initialize",
@@ -16,10 +16,13 @@
         "protocol": {
           "name": "starweaver.host",
           "major": 1,
-          "revision": "2026-07-14",
+          "revision": "2026-07-21",
           "features": [
             "sessions",
-            "runs"
+            "session.fork",
+            "session.deferred_tools",
+            "runs",
+            "mcp.config_file"
           ]
         },
         "serverInfo": {
@@ -28,7 +31,10 @@
         },
         "capabilities": {
           "sessions": true,
+          "sessionFork": true,
+          "sessionDeferredTools": true,
           "runs": true,
+          "mcp": false,
           "management": true,
           "profiles": true,
           "clientModelSelection": true,
@@ -422,13 +428,41 @@
       "method": "session.create",
       "canonicalParams": {
         "profile": "general",
-        "title": "Fixture"
+        "title": "Fixture",
+        "idempotencyKey": "session-create-fixture",
+        "deferredTools": [
+          {
+            "name": "client_lookup",
+            "description": "Execute a lookup in the client",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "query": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "query"
+              ]
+            },
+            "instructions": [
+              "Use this tool for client-owned lookups."
+            ]
+          }
+        ]
       },
       "canonicalResult": {
         "session": {
           "session_id": "session_fixture",
-          "created_at": "2026-07-19T00:00:00Z",
-          "updated_at": "2026-07-19T00:00:00Z"
+          "created_at": "2026-07-21T00:00:00Z",
+          "updated_at": "2026-07-21T00:00:00Z"
+        },
+        "deferredToolset": {
+          "bindingId": "rpc.deferred.sha256:fixture",
+          "digest": "sha256:fixture",
+          "toolNames": [
+            "client_lookup"
+          ]
         }
       },
       "invalidParams": [
@@ -448,6 +482,48 @@
             "created_at": "2026-07-19T00:00:00Z",
             "updated_at": "2026-07-19T00:00:00Z"
           },
+          "unexpected": true
+        }
+      ]
+    },
+    {
+      "method": "session.fork",
+      "canonicalParams": {
+        "sessionId": "session_fixture",
+        "title": "Forked Fixture",
+        "idempotencyKey": "session-fork-fixture"
+      },
+      "canonicalResult": {
+        "session": {
+          "session_id": "session_fork_fixture",
+          "created_at": "2026-07-21T00:00:00Z",
+          "updated_at": "2026-07-21T00:00:00Z",
+          "parent_session_id": "session_fixture"
+        },
+        "sourceSessionId": "session_fixture"
+      },
+      "invalidParams": [
+        {
+          "sessionId": "session_fixture"
+        },
+        {
+          "sessionId": 1,
+          "idempotencyKey": "session-fork-fixture"
+        },
+        {
+          "sessionId": "session_fixture",
+          "idempotencyKey": "session-fork-fixture",
+          "unexpected": true
+        }
+      ],
+      "invalidResults": [
+        {
+          "session": {
+            "session_id": "session_fork_fixture",
+            "created_at": "2026-07-21T00:00:00Z",
+            "updated_at": "2026-07-21T00:00:00Z"
+          },
+          "sourceSessionId": "session_fixture",
           "unexpected": true
         }
       ]

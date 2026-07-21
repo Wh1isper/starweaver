@@ -16,16 +16,19 @@ use std::{
 use serde_json::{Value, json};
 use starweaver_agent::{
     ContinuationMaterialization, ContinuationMaterializationMode, ResolvedAgentMaterialization,
+    Usage,
 };
-use starweaver_core::{ProtocolIdentity, RunId, SessionId};
+use starweaver_context::MessageBus;
+use starweaver_core::{ProtocolIdentity, RunId, SessionId, TraceContext};
 use starweaver_rpc_core::{
     AgentMaterialization, ContinuationAssessment, ContinuationMode, DiagnosticLevel,
     DiagnosticNotificationParams, EnvironmentAttachmentRef, HostInitializeParams,
     HostNotificationKind, HostRunStatus, INVALID_PARAMS, JsonRpcOutcome, METHOD_NOT_FOUND,
     NOT_INITIALIZED, ProfileConfig, ProfileGetResult, RpcError, RunPromptResult, RunResumeParams,
-    RunResumeResult, RunStartParams, RunStartResult, SessionSearchFeatureCapabilities,
-    SessionSearchParams, SessionSearchResult, StorageImportLegacyParams, StorageImportLegacyResult,
-    StreamEventParams, StreamPayloadFormat, SubscriptionClosedParams, SubscriptionClosedReason,
+    RunResumeResult, RunStartParams, RunStartResult, SessionCreateParams, SessionCreateResult,
+    SessionForkParams, SessionForkResult, SessionSearchFeatureCapabilities, SessionSearchParams,
+    SessionSearchResult, StorageImportLegacyParams, StorageImportLegacyResult, StreamEventParams,
+    StreamPayloadFormat, SubscriptionClosedParams, SubscriptionClosedReason,
     SubscriptionReadyParams, UNSUPPORTED_FEATURE, attachment_result, error_response,
     handle_json_rpc_text_async, host_protocol_identity_with_session_search, output_item,
     replay_cursor_from_params, replay_result, stream_payload_format, typed_notification,
@@ -33,8 +36,9 @@ use starweaver_rpc_core::{
 };
 use starweaver_runtime::AgentInput;
 use starweaver_session::{
-    ApprovalStatus, ExecutionStatus, InputPart, RunRecord, SessionFilter, SessionSearchError,
-    SessionSearchProvider, SessionSearchScope, SessionStore, SessionStoreResult,
+    ApprovalStatus, ExecutionStatus, InputPart, RunRecord, SessionFilter, SessionRecord,
+    SessionSearchError, SessionSearchProvider, SessionSearchScope, SessionStatus, SessionStore,
+    SessionStoreResult,
 };
 use starweaver_storage::{LocalSessionSearchLimits, LocalSessionSearchProvider, SqliteStorage};
 use starweaver_stream::{ReplayCursor, ReplayScope};
@@ -48,7 +52,7 @@ use crate::{
     RpcAgentCatalog, RpcConfig, RpcHitlResumeRequest, RpcHostError, RpcHostResult, RpcRunRequest,
     RpcRuntimeCoordinator, environment::effective_rpc_environment_attachments,
     environment_manager::EnvironmentAttachmentManager, session_management::command_fingerprint,
-    state::RpcStateRepository,
+    session_tools::bind_deferred_tools, state::RpcStateRepository,
 };
 
 const MAX_RUN_AWAIT: Duration = Duration::from_secs(30);
@@ -774,6 +778,7 @@ impl RpcService {
                 "stateDir": self.config.state_dir,
                 "workspaceRoot": self.config.workspace_root,
                 "defaultProfile": self.config.default_profile,
+                "mcpConfigPath": self.config.mcp_config_path,
             })),
             "profile.list" | "model.list" => {
                 let scope = resolved_client_state_scope(params)?;
@@ -801,6 +806,7 @@ impl RpcService {
                         instructions: profile.instructions.clone(),
                         toolsets: profile.toolsets.clone(),
                         subagents: profile.subagents.clone(),
+                        mcp_servers: self.catalog.effective_mcp_server_names(profile),
                     },
                 }))
             }
@@ -875,31 +881,71 @@ impl RpcService {
                 })
             }
             "session.create" => {
+                let params = serde_json::from_value::<SessionCreateParams>(params.clone())
+                    .map_err(|error| {
+                        RpcError::new(
+                            INVALID_PARAMS,
+                            format!("invalid session.create params: {error}"),
+                        )
+                    })?;
+                let fingerprint_value = serde_json::to_value(&params).map_err(|error| {
+                    RpcError::new(
+                        INVALID_PARAMS,
+                        format!("invalid session.create params: {error}"),
+                    )
+                })?;
+                let fingerprint = command_fingerprint("rpc_session_create", &fingerprint_value)
+                    .map_err(|error| RpcError::new(INVALID_PARAMS, error.to_string()))?;
+                let idempotency_key = params
+                    .idempotency_key
+                    .clone()
+                    .unwrap_or_else(|| format!("session-create-{}", Uuid::new_v4()));
+                if idempotency_key.trim().is_empty() {
+                    return Err(RpcError::new(
+                        INVALID_PARAMS,
+                        "session.create idempotencyKey must not be empty",
+                    ));
+                }
+                if let Some(session) = self
+                    .storage
+                    .session_store()
+                    .load_session_mutation_receipt(
+                        starweaver_session::LOCAL_SESSION_NAMESPACE,
+                        &idempotency_key,
+                        &fingerprint,
+                    )
+                    .await
+                    .map_err(rpc_error)?
+                {
+                    return encode_session_create_result(session);
+                }
                 let profile = params
-                    .get("profile")
-                    .and_then(Value::as_str)
-                    .unwrap_or(&self.config.default_profile);
-                self.catalog.profile(profile)?;
-                let title = params
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string);
-                let profile = profile.to_string();
+                    .profile
+                    .clone()
+                    .unwrap_or_else(|| self.config.default_profile.clone());
+                self.catalog.profile(&profile)?;
                 let workspace = std::fs::canonicalize(&self.config.workspace_root)
                     .unwrap_or_else(|_| self.config.workspace_root.clone())
                     .to_string_lossy()
                     .into_owned();
-                let session = run_storage(self.storage.clone(), move |storage| {
-                    storage.create_session_for_product(
-                        Some(profile),
-                        title,
-                        Some(workspace),
-                        Some("rpc"),
-                    )
-                })
-                .await?;
-                Ok(json!({"session": session}))
+                let mut session = SessionRecord::new(SessionId::new());
+                session.profile = Some(profile);
+                session.title = params.title;
+                session.workspace = Some(workspace);
+                session.metadata.insert(
+                    starweaver_storage::SESSION_SOURCE_PRODUCT_METADATA_KEY.to_string(),
+                    json!("rpc"),
+                );
+                bind_deferred_tools(&mut session, params.deferred_tools).map_err(rpc_error)?;
+                let session = self
+                    .storage
+                    .session_store()
+                    .create_session_idempotent(session, &idempotency_key, &fingerprint)
+                    .await
+                    .map_err(rpc_error)?;
+                encode_session_create_result(session)
             }
+            "session.fork" => self.session_fork(params).await,
             "session.list" => {
                 let limit = optional_usize(params, "limit")?.unwrap_or(50);
                 let sessions = self
@@ -1200,6 +1246,142 @@ impl RpcService {
             ));
         }
         Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn session_fork(&self, params: &Value) -> Result<Value, RpcError> {
+        let params =
+            serde_json::from_value::<SessionForkParams>(params.clone()).map_err(|error| {
+                RpcError::new(
+                    INVALID_PARAMS,
+                    format!("invalid session.fork params: {error}"),
+                )
+            })?;
+        if params.idempotency_key.trim().is_empty() {
+            return Err(RpcError::new(
+                INVALID_PARAMS,
+                "session.fork idempotencyKey must not be empty",
+            ));
+        }
+        let fingerprint_value = serde_json::to_value(&params).map_err(|error| {
+            RpcError::new(
+                INVALID_PARAMS,
+                format!("invalid session.fork params: {error}"),
+            )
+        })?;
+        let fingerprint = command_fingerprint("rpc_session_fork", &fingerprint_value)
+            .map_err(|error| RpcError::new(INVALID_PARAMS, error.to_string()))?;
+        if let Some(session) = self
+            .storage
+            .session_store()
+            .load_session_mutation_receipt(
+                starweaver_session::LOCAL_SESSION_NAMESPACE,
+                &params.idempotency_key,
+                &fingerprint,
+            )
+            .await
+            .map_err(rpc_error)?
+        {
+            return encode_session_fork_result(session);
+        }
+        let source = self
+            .storage
+            .session_store()
+            .load_session(&params.session_id)
+            .await
+            .map_err(rpc_error)?;
+        if source.status == SessionStatus::Deleted {
+            return Err(RpcError::new(
+                INVALID_PARAMS,
+                "deleted sessions cannot be forked",
+            ));
+        }
+        let source_run_id = source.head_success_run_id.clone();
+        let mut state = match source_run_id.as_ref() {
+            Some(run_id) => {
+                let storage = self.storage.clone();
+                let session_id = source.session_id.clone();
+                let run_id = run_id.clone();
+                run_storage(storage, move |storage| {
+                    storage.load_run_context(&session_id, &run_id)
+                })
+                .await?
+                .ok_or_else(|| {
+                    RpcError::new(
+                        starweaver_rpc_core::NOT_FOUND,
+                        "source session head context is unavailable",
+                    )
+                })?
+            }
+            None if source.head_run_id.is_none() => source.state.clone(),
+            None => {
+                return Err(RpcError::new(
+                    INVALID_PARAMS,
+                    "sessions with runs but no successful run cannot be forked",
+                ));
+            }
+        };
+        let mut target = SessionRecord::new(SessionId::new());
+        target.namespace_id.clone_from(&source.namespace_id);
+        target.owner_id.clone_from(&source.owner_id);
+        target.profile.clone_from(&source.profile);
+        target.workspace.clone_from(&source.workspace);
+        target.parent_session_id = Some(source.session_id.clone());
+        target.title = params.title.clone().or_else(|| {
+            source
+                .title
+                .as_deref()
+                .map(|title| format!("Fork of {title}"))
+        });
+
+        state.run_id = None;
+        state.session_id = Some(target.session_id.clone());
+        state.parent_run_id = None;
+        state.parent_task_id = None;
+        state.pending_tool_returns.clear();
+        state.user_prompts = None;
+        state.steering_messages.clear();
+        state.deferred_tool_metadata.clear();
+        state.usage = Usage::default();
+        state.usage_snapshot_entries.clear();
+        state.message_bus = MessageBus::default();
+        state.trace_snapshot = TraceContext::default();
+        state.started_at = chrono::Utc::now();
+        state.metadata.remove("starweaver.durable_run_id");
+        state.metadata.insert(
+            "starweaver.durable_session_id".to_string(),
+            json!(target.session_id.as_str()),
+        );
+        target.state = state;
+        target.metadata.insert(
+            starweaver_storage::SESSION_SOURCE_PRODUCT_METADATA_KEY.to_string(),
+            json!("rpc"),
+        );
+        if let Some(binding) = source
+            .metadata
+            .get(crate::session_tools::RPC_DEFERRED_TOOLSET_METADATA_KEY)
+        {
+            target.metadata.insert(
+                crate::session_tools::RPC_DEFERRED_TOOLSET_METADATA_KEY.to_string(),
+                binding.clone(),
+            );
+        }
+        target.metadata.insert(
+            "rpc.fork".to_string(),
+            json!({
+                "kind": "session_forked",
+                "source_session_id": source.session_id,
+                "source_run_id": source_run_id,
+                "source_revision": source.revision,
+            }),
+        );
+        let session = self
+            .storage
+            .session_store()
+            .create_session_idempotent(target, &params.idempotency_key, &fingerprint)
+            .await
+            .map_err(rpc_error)?;
+        encode_session_fork_result(session)
     }
 
     async fn run_start(
@@ -1597,7 +1779,10 @@ impl RpcService {
             },
             "capabilities": {
                 "sessions": true,
+                "sessionFork": true,
+                "sessionDeferredTools": true,
                 "runs": true,
+                "mcp": self.config.mcp_config_path.is_some(),
                 "management": true,
                 "profiles": true,
                 "clientModelSelection": true,
@@ -1621,6 +1806,7 @@ impl RpcService {
                 "globalDir": self.config.state_dir.parent(),
                 "projectDir": self.config.workspace_root,
                 "defaultProfile": self.config.default_profile,
+                "mcpConfigPath": self.config.mcp_config_path,
             },
         }))
     }
@@ -1954,6 +2140,59 @@ fn run_identity(params: &Value) -> Result<(SessionId, RunId), RpcError> {
     ))
 }
 
+fn encode_session_create_result(session: SessionRecord) -> Result<Value, RpcError> {
+    let deferred_toolset =
+        crate::session_tools::deferred_toolset_summary(&session).map_err(rpc_error)?;
+    serde_json::to_value(SessionCreateResult {
+        session,
+        deferred_toolset,
+    })
+    .map_err(|error| {
+        RpcError::new(
+            starweaver_rpc_core::SERVER_ERROR,
+            format!("failed to encode session.create result: {error}"),
+        )
+    })
+}
+
+fn encode_session_fork_result(session: SessionRecord) -> Result<Value, RpcError> {
+    let lineage = session
+        .metadata
+        .get("rpc.fork")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            RpcError::new(
+                starweaver_rpc_core::SERVER_ERROR,
+                "forked session is missing durable lineage evidence",
+            )
+        })?;
+    let source_session_id = lineage
+        .get("source_session_id")
+        .and_then(Value::as_str)
+        .map(SessionId::from_string)
+        .ok_or_else(|| {
+            RpcError::new(
+                starweaver_rpc_core::SERVER_ERROR,
+                "forked session has invalid source session lineage",
+            )
+        })?;
+    let source_run_id = lineage
+        .get("source_run_id")
+        .and_then(Value::as_str)
+        .map(RunId::from_string);
+    serde_json::to_value(SessionForkResult {
+        session,
+        source_session_id,
+        source_run_id,
+    })
+    .map_err(|error| {
+        RpcError::new(
+            starweaver_rpc_core::SERVER_ERROR,
+            format!("failed to encode session.fork result: {error}"),
+        )
+    })
+}
+
 fn optional_session_id(params: &Value, key: &str) -> Option<SessionId> {
     params
         .get(key)
@@ -2129,7 +2368,68 @@ fn session_search_error(error: SessionSearchError) -> RpcError {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use std::{path::Path, sync::atomic::AtomicUsize};
+
+    use starweaver_agent::{AgentRuntimeBuilder, TestModel};
+    use starweaver_model::tool_call_response;
+
     use super::*;
+
+    fn service_with_test_runtime_factory(
+        root: &Path,
+        factory: Arc<crate::agent_catalog::TestRuntimeFactory>,
+    ) -> RpcService {
+        let config = RpcConfig::for_tests(root);
+        let mut service = RpcService::live(config.clone()).unwrap();
+        let catalog = RpcAgentCatalog::new(config.clone())
+            .unwrap()
+            .with_test_runtime_factory(factory);
+        service.coordinator = Arc::new(RpcRuntimeCoordinator::new(
+            config,
+            catalog.clone(),
+            service.storage.clone(),
+            service.environment_manager.clone(),
+        ));
+        service.catalog = Arc::new(catalog);
+        service
+    }
+
+    fn await_rpc_run_status(
+        service: &RpcService,
+        session_id: &str,
+        run_id: &str,
+        expected: &str,
+    ) -> Value {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let response = service
+                .handle_text(&request(
+                    999,
+                    "run.status",
+                    json!({"sessionId": session_id, "runId": run_id}),
+                ))
+                .response
+                .unwrap();
+            if response["result"]["status"]["status"] == expected {
+                return response;
+            }
+            if response["result"]["status"]["status"] == "failed" {
+                let run = service
+                    .storage
+                    .load_run(
+                        &SessionId::from_string(session_id),
+                        &RunId::from_string(run_id),
+                    )
+                    .unwrap();
+                panic!("run failed before reaching {expected}: {response}; durable run: {run:?}");
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "run did not reach {expected}: {response}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     #[allow(clippy::needless_pass_by_value)]
     fn request(id: usize, method: &str, params: Value) -> String {
@@ -2392,6 +2692,445 @@ mod tests {
             loaded.response.unwrap()["result"]["session"]["title"],
             "RPC session"
         );
+    }
+
+    #[test]
+    fn session_create_exact_retry_survives_profile_removal() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut initial_config = RpcConfig::for_tests(temp.path());
+        let transient_profile = initial_config.profiles["default"].clone();
+        initial_config
+            .profiles
+            .insert("transient".to_string(), transient_profile);
+        let service = RpcService::live(initial_config).unwrap();
+        let params = json!({
+            "profile": "transient",
+            "title": "receipt-first session",
+            "idempotencyKey": "session-profile-removal-retry"
+        });
+        let created = service
+            .handle_text(&request(1, "session.create", params.clone()))
+            .response
+            .unwrap();
+        assert!(created.get("error").is_none(), "{created}");
+        let session_id = created["result"]["session"]["session_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        drop(service);
+
+        let restarted = RpcService::live(RpcConfig::for_tests(temp.path())).unwrap();
+        let replay = restarted
+            .handle_text(&request(2, "session.create", params))
+            .response
+            .unwrap();
+        assert!(replay.get("error").is_none(), "{replay}");
+        assert_eq!(replay["result"]["session"]["session_id"], session_id);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn session_deferred_tool_completes_and_resumes_through_rpc() {
+        let temp = tempfile::tempdir().unwrap();
+        let materializations_for_factory = Arc::new(AtomicUsize::new(0));
+        let factory: Arc<crate::agent_catalog::TestRuntimeFactory> = Arc::new(move |_profile| {
+            let model = if materializations_for_factory.fetch_add(1, Ordering::SeqCst) == 0 {
+                TestModel::with_responses(vec![tool_call_response(
+                    "client-call-1",
+                    "client_lookup",
+                    json!({"value": "needle"}),
+                )])
+            } else {
+                TestModel::with_text("deferred result accepted")
+            };
+            Ok(AgentRuntimeBuilder::new(Arc::new(model)))
+        });
+        let service = service_with_test_runtime_factory(temp.path(), factory);
+
+        let created = service
+            .handle_text(&request(
+                1,
+                "session.create",
+                json!({
+                    "profile": "default",
+                    "title": "deferred RPC test",
+                    "idempotencyKey": "deferred-session-create",
+                    "deferredTools": [{
+                        "name": "client_lookup",
+                        "description": "Look up a value in the client",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"value": {"type": "string"}},
+                            "required": ["value"]
+                        },
+                        "instructions": ["Use client_lookup for client-owned data."]
+                    }]
+                }),
+            ))
+            .response
+            .unwrap();
+        assert!(created.get("error").is_none(), "{created}");
+        assert_eq!(
+            created["result"]["deferredToolset"]["toolNames"],
+            json!(["client_lookup"])
+        );
+        let session_id = created["result"]["session"]["session_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let started = service
+            .handle_text(&request(
+                2,
+                "run.start",
+                json!({
+                    "sessionId": session_id,
+                    "prompt": "look up the requested value",
+                    "idempotencyKey": "deferred-run-start"
+                }),
+            ))
+            .response
+            .unwrap();
+        assert!(started.get("error").is_none(), "{started}");
+        let source_run_id = started["result"]["runId"].as_str().unwrap().to_string();
+        await_rpc_run_status(&service, &session_id, &source_run_id, "waiting");
+
+        let listed = service
+            .handle_text(&request(
+                3,
+                "deferred.list",
+                json!({"sessionId": session_id, "runId": source_run_id}),
+            ))
+            .response
+            .unwrap();
+        assert_eq!(listed["result"]["deferred"].as_array().unwrap().len(), 1);
+        let deferred = &listed["result"]["deferred"][0];
+        assert_eq!(deferred["tool_name"], "client_lookup");
+        assert_eq!(deferred["status"], "waiting");
+        assert_eq!(deferred["request"]["arguments"]["value"], "needle");
+        let deferred_id = deferred["deferred_id"].as_str().unwrap().to_string();
+
+        let completed = service
+            .handle_text(&request(
+                4,
+                "deferred.complete",
+                json!({
+                    "deferredId": deferred_id,
+                    "result": {"resolved": "client-value"}
+                }),
+            ))
+            .response
+            .unwrap();
+        assert_eq!(completed["result"]["deferred"]["status"], "completed");
+        assert_eq!(
+            completed["result"]["deferred"]["response"]["resolved"],
+            "client-value"
+        );
+
+        let resumed = service
+            .handle_text(&request(
+                5,
+                "run.resume",
+                json!({
+                    "sessionId": session_id,
+                    "runId": source_run_id,
+                    "idempotencyKey": "deferred-run-resume"
+                }),
+            ))
+            .response
+            .unwrap();
+        assert!(resumed.get("error").is_none(), "{resumed}");
+        let continuation_run_id = resumed["result"]["runId"].as_str().unwrap().to_string();
+        assert_ne!(continuation_run_id, source_run_id);
+        assert_eq!(resumed["result"]["sourceRunId"], source_run_id);
+
+        let terminal = service
+            .handle_text(&request(
+                6,
+                "run.await",
+                json!({
+                    "sessionId": session_id,
+                    "runId": continuation_run_id,
+                    "timeoutMs": 30_000
+                }),
+            ))
+            .response
+            .unwrap();
+        assert_eq!(terminal["result"]["status"]["status"], "completed");
+        assert_eq!(
+            terminal["result"]["status"]["outputPreview"],
+            "deferred result accepted"
+        );
+        await_run_admission_release(&service, &session_id, &continuation_run_id);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn session_fork_uses_latest_successful_context_and_is_idempotent_and_isolated() {
+        use starweaver_context::ResumableState;
+        use starweaver_core::ConversationId;
+        use starweaver_session::{RunEvidenceCommit, RunRecord, RunStatus, RunTerminalError};
+
+        let temp = tempfile::tempdir().unwrap();
+        let service = RpcService::live(RpcConfig::for_tests(temp.path())).unwrap();
+        let created = service
+            .handle_text(&request(
+                1,
+                "session.create",
+                json!({
+                    "title": "fork source",
+                    "idempotencyKey": "fork-source-create",
+                    "deferredTools": [{
+                        "name": "client_lookup",
+                        "description": "Look up client data",
+                        "inputSchema": {"type": "object"},
+                        "instructions": ["Use the client lookup tool."]
+                    }]
+                }),
+            ))
+            .response
+            .unwrap();
+        let source_session_id =
+            SessionId::from_string(created["result"]["session"]["session_id"].as_str().unwrap());
+        let source_binding = created["result"]["session"]["metadata"]
+            [crate::session_tools::RPC_DEFERRED_TOOLSET_METADATA_KEY]
+            .clone();
+        service.runtime.block_on(async {
+            let store = service.storage.session_store();
+            let mut source = store.load_session(&source_session_id).await.unwrap();
+            source
+                .metadata
+                .insert("source_only_marker".to_string(), json!(true));
+            store.save_session(source).await.unwrap();
+        });
+
+        let success_run_id = RunId::from_string("run-fork-success");
+        let mut success_run = RunRecord::new(
+            source_session_id.clone(),
+            success_run_id.clone(),
+            ConversationId::new(),
+        );
+        success_run.status = RunStatus::Completed;
+        success_run.output_preview = Some("successful context".to_string());
+        let success_run = service
+            .storage
+            .session_store()
+            .append_run_allocated(success_run)
+            .unwrap();
+        let mut success_state = ResumableState {
+            session_id: Some(source_session_id.clone()),
+            run_id: Some(success_run_id.clone()),
+            conversation_id: Some(success_run.conversation_id.clone()),
+            ..ResumableState::default()
+        };
+        success_state
+            .metadata
+            .insert("fork_context_marker".to_string(), json!("latest-success"));
+        service
+            .storage
+            .commit_run_evidence(RunEvidenceCommit::new(success_run, success_state))
+            .unwrap();
+
+        let failed_run_id = RunId::from_string("run-fork-newer-failed");
+        let mut failed_run = RunRecord::new(
+            source_session_id.clone(),
+            failed_run_id.clone(),
+            ConversationId::new(),
+        );
+        failed_run.status = RunStatus::Failed;
+        failed_run.terminal_error = Some(RunTerminalError::new("fixture", "newer failed run"));
+        let failed_run = service
+            .storage
+            .session_store()
+            .append_run_allocated(failed_run)
+            .unwrap();
+        let mut failed_state = ResumableState {
+            session_id: Some(source_session_id.clone()),
+            run_id: Some(failed_run_id),
+            conversation_id: Some(failed_run.conversation_id.clone()),
+            ..ResumableState::default()
+        };
+        failed_state
+            .metadata
+            .insert("fork_context_marker".to_string(), json!("newer-failed"));
+        service
+            .storage
+            .commit_run_evidence(RunEvidenceCommit::new(failed_run, failed_state))
+            .unwrap();
+
+        let fork_params = json!({
+            "sessionId": source_session_id.as_str(),
+            "title": "fork target",
+            "idempotencyKey": "fork-once"
+        });
+        let forked = service
+            .handle_text(&request(2, "session.fork", fork_params.clone()))
+            .response
+            .unwrap();
+        assert!(forked.get("error").is_none(), "{forked}");
+        assert_eq!(
+            forked["result"]["sourceSessionId"],
+            source_session_id.as_str()
+        );
+        assert_eq!(forked["result"]["sourceRunId"], success_run_id.as_str());
+        let target_session_id =
+            SessionId::from_string(forked["result"]["session"]["session_id"].as_str().unwrap());
+        assert_ne!(target_session_id, source_session_id);
+
+        let target = service.runtime.block_on(async {
+            service
+                .storage
+                .session_store()
+                .load_session(&target_session_id)
+                .await
+                .unwrap()
+        });
+        assert_eq!(target.parent_session_id.as_ref(), Some(&source_session_id));
+        assert_eq!(
+            target.state.metadata.get("fork_context_marker"),
+            Some(&json!("latest-success"))
+        );
+        assert_eq!(target.state.session_id.as_ref(), Some(&target_session_id));
+        assert!(target.state.run_id.is_none());
+        assert!(target.state.pending_tool_returns.is_empty());
+        assert!(target.state.deferred_tool_metadata.is_empty());
+        assert!(target.state.steering_messages.is_empty());
+        assert!(!target.metadata.contains_key("source_only_marker"));
+        assert_eq!(
+            target
+                .metadata
+                .get(crate::session_tools::RPC_DEFERRED_TOOLSET_METADATA_KEY),
+            Some(&source_binding)
+        );
+
+        let continued = service
+            .handle_text(&request(
+                3,
+                "run.start",
+                json!({
+                    "sessionId": target_session_id.as_str(),
+                    "prompt": "continue the forked discussion",
+                    "idempotencyKey": "fork-target-run"
+                }),
+            ))
+            .response
+            .unwrap();
+        assert!(continued.get("error").is_none(), "{continued}");
+        let continued_run_id = RunId::from_string(continued["result"]["runId"].as_str().unwrap());
+        let terminal = service
+            .handle_text(&request(
+                4,
+                "run.await",
+                json!({
+                    "sessionId": target_session_id.as_str(),
+                    "runId": continued_run_id.as_str(),
+                    "timeoutMs": 5_000
+                }),
+            ))
+            .response
+            .unwrap();
+        assert_eq!(terminal["result"]["status"]["status"], "completed");
+        let continued_state = service
+            .storage
+            .load_run_context(&target_session_id, &continued_run_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            continued_state.metadata.get("fork_context_marker"),
+            Some(&json!("latest-success"))
+        );
+
+        service.runtime.block_on(async {
+            let store = service.storage.session_store();
+            let mut source = store.load_session(&source_session_id).await.unwrap();
+            source.status = SessionStatus::Deleted;
+            store.save_session(source).await.unwrap();
+        });
+        let replay = service
+            .handle_text(&request(3, "session.fork", fork_params))
+            .response
+            .unwrap();
+        assert_eq!(
+            replay["result"]["session"]["session_id"],
+            target_session_id.as_str()
+        );
+        let conflict = service
+            .handle_text(&request(
+                4,
+                "session.fork",
+                json!({
+                    "sessionId": source_session_id.as_str(),
+                    "title": "different title",
+                    "idempotencyKey": "fork-once"
+                }),
+            ))
+            .response
+            .unwrap();
+        assert!(conflict.get("error").is_some(), "{conflict}");
+    }
+
+    #[test]
+    fn session_fork_rejects_sources_with_runs_but_no_successful_context() {
+        use starweaver_context::ResumableState;
+        use starweaver_core::ConversationId;
+        use starweaver_session::{RunEvidenceCommit, RunRecord, RunStatus, RunTerminalError};
+
+        let temp = tempfile::tempdir().unwrap();
+        let service = RpcService::live(RpcConfig::for_tests(temp.path())).unwrap();
+        for (suffix, status) in [
+            ("failed", RunStatus::Failed),
+            ("waiting", RunStatus::Waiting),
+        ] {
+            let created = service
+                .handle_text(&request(
+                    1,
+                    "session.create",
+                    json!({"idempotencyKey": format!("fork-no-success-{suffix}")}),
+                ))
+                .response
+                .unwrap();
+            let session_id = SessionId::from_string(
+                created["result"]["session"]["session_id"].as_str().unwrap(),
+            );
+            let run_id = RunId::from_string(format!("run-no-success-{suffix}"));
+            let mut run = RunRecord::new(session_id.clone(), run_id.clone(), ConversationId::new());
+            run.status = status;
+            if status == RunStatus::Failed {
+                run.terminal_error = Some(RunTerminalError::new("fixture", "failed first run"));
+            }
+            let run = service
+                .storage
+                .session_store()
+                .append_run_allocated(run)
+                .unwrap();
+            let state = ResumableState {
+                session_id: Some(session_id.clone()),
+                run_id: Some(run_id),
+                conversation_id: Some(run.conversation_id.clone()),
+                ..ResumableState::default()
+            };
+            service
+                .storage
+                .commit_run_evidence(RunEvidenceCommit::new(run, state))
+                .unwrap();
+
+            let response = service
+                .handle_text(&request(
+                    2,
+                    "session.fork",
+                    json!({
+                        "sessionId": session_id.as_str(),
+                        "idempotencyKey": format!("fork-no-success-attempt-{suffix}")
+                    }),
+                ))
+                .response
+                .unwrap();
+            assert!(response.get("error").is_some(), "{response}");
+            assert_eq!(
+                response["error"]["message"],
+                "sessions with runs but no successful run cannot be forked"
+            );
+        }
     }
 
     #[test]

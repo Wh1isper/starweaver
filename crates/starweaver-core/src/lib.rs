@@ -17,7 +17,7 @@ mod xml;
 
 pub use attachments::RunAttachments;
 pub use cancellation::CancellationToken;
-pub use events::{AgentEvent, TASK_SNAPSHOT_EVENT_KIND};
+pub use events::{AgentEvent, DEFERRED_TOOL_REQUESTED_EVENT_KIND, TASK_SNAPSHOT_EVENT_KIND};
 pub use ids::{AgentId, CheckpointId, ConversationId, RunId, SessionId, SubagentAttemptId, TaskId};
 pub use lifecycle::{AgentExecutionNode, RunLifecycle};
 pub use protocol::{

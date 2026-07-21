@@ -995,6 +995,9 @@
                       "management": {
                         "type": "boolean"
                       },
+                      "mcp": {
+                        "type": "boolean"
+                      },
                       "nonBlockingRunStart": {
                         "type": "boolean"
                       },
@@ -1002,6 +1005,12 @@
                         "type": "boolean"
                       },
                       "runs": {
+                        "type": "boolean"
+                      },
+                      "sessionDeferredTools": {
+                        "type": "boolean"
+                      },
+                      "sessionFork": {
                         "type": "boolean"
                       },
                       "sessions": {
@@ -1030,9 +1039,12 @@
                       "environmentAttachments",
                       "liveDisplay",
                       "management",
+                      "mcp",
                       "nonBlockingRunStart",
                       "profiles",
                       "runs",
+                      "sessionDeferredTools",
+                      "sessionFork",
                       "sessions",
                       "steering",
                       "streamReplay",
@@ -1769,6 +1781,77 @@
               "canonicalParams": {
                 "additionalProperties": false,
                 "properties": {
+                  "deferredTools": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "description": {
+                          "type": "string"
+                        },
+                        "inputSchema": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "properties": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "query": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "type": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type"
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "required": [
+                                "query"
+                              ],
+                              "type": "object"
+                            },
+                            "required": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "type": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "properties",
+                            "required",
+                            "type"
+                          ],
+                          "type": "object"
+                        },
+                        "instructions": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "description",
+                        "inputSchema",
+                        "instructions",
+                        "name"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "idempotencyKey": {
+                    "type": "string"
+                  },
                   "profile": {
                     "type": "string"
                   },
@@ -1777,6 +1860,8 @@
                   }
                 },
                 "required": [
+                  "deferredTools",
+                  "idempotencyKey",
                   "profile",
                   "title"
                 ],
@@ -1785,6 +1870,29 @@
               "canonicalResult": {
                 "additionalProperties": false,
                 "properties": {
+                  "deferredToolset": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "bindingId": {
+                        "type": "string"
+                      },
+                      "digest": {
+                        "type": "string"
+                      },
+                      "toolNames": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "bindingId",
+                      "digest",
+                      "toolNames"
+                    ],
+                    "type": "object"
+                  },
                   "session": {
                     "additionalProperties": false,
                     "properties": {
@@ -1807,6 +1915,7 @@
                   }
                 },
                 "required": [
+                  "deferredToolset",
                   "session"
                 ],
                 "type": "object"
@@ -1823,6 +1932,89 @@
               },
               "method": {
                 "const": "session.create"
+              }
+            },
+            "required": [
+              "canonicalParams",
+              "canonicalResult",
+              "invalidParams",
+              "invalidResults",
+              "method"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "canonicalParams": {
+                "additionalProperties": false,
+                "properties": {
+                  "idempotencyKey": {
+                    "type": "string"
+                  },
+                  "sessionId": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "idempotencyKey",
+                  "sessionId",
+                  "title"
+                ],
+                "type": "object"
+              },
+              "canonicalResult": {
+                "additionalProperties": false,
+                "properties": {
+                  "session": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "created_at": {
+                        "type": "string"
+                      },
+                      "parent_session_id": {
+                        "type": "string"
+                      },
+                      "session_id": {
+                        "type": "string"
+                      },
+                      "updated_at": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "created_at",
+                      "parent_session_id",
+                      "session_id",
+                      "updated_at"
+                    ],
+                    "type": "object"
+                  },
+                  "sourceSessionId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "session",
+                  "sourceSessionId"
+                ],
+                "type": "object"
+              },
+              "invalidParams": {
+                "items": {},
+                "minItems": 1,
+                "type": "array"
+              },
+              "invalidResults": {
+                "items": {},
+                "minItems": 1,
+                "type": "array"
+              },
+              "method": {
+                "const": "session.fork"
               }
             },
             "required": [
@@ -5752,8 +5944,8 @@
           }
         ]
       },
-      "maxItems": 44,
-      "minItems": 44,
+      "maxItems": 45,
+      "minItems": 45,
       "type": "array"
     },
     "notifications": {
@@ -6099,7 +6291,7 @@
       "type": "array"
     },
     "revision": {
-      "const": "2026-07-19"
+      "const": "2026-07-21"
     },
     "schema": {
       "const": "starweaver.host.wire-corpus"

@@ -7,9 +7,10 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use starweaver_agent::materialization::STARWEAVER_AGENT_POLICY_VERSION;
 use starweaver_agent::{
-    AgentRuntimeBuilder, AgentSpec, AgentSpecRegistry, ModelPreset, ResolvedAgentMaterialization,
-    SubagentConfig, SubagentToolInheritancePolicy, agent_session_control_tools,
-    agent_session_query_tools, core_toolsets, user_input_tools,
+    AgentRuntimeBuilder, AgentSpec, AgentSpecRegistry, DynToolset, McpServerSpec, ModelPreset,
+    ResolvedAgentMaterialization, RmcpLiveMcpClient, SubagentConfig, SubagentToolInheritancePolicy,
+    agent_session_control_tools, agent_session_query_tools, core_toolsets, lazy_live_mcp_toolset,
+    user_input_tools,
 };
 use starweaver_model::{
     HttpModelConfig, ModelAdapter, ModelProfile, ProtocolFamily, ProtocolModelClient,
@@ -106,6 +107,43 @@ impl RpcAgentCatalog {
             .ok_or_else(|| RpcHostError::Invalid(format!("unknown RPC profile: {name}")))
     }
 
+    /// Resolve MCP server names selected by a profile. An empty selection means every server in
+    /// the explicitly configured MCP file.
+    #[must_use]
+    pub(crate) fn effective_mcp_server_names(&self, profile: &RpcProfileConfig) -> Vec<String> {
+        let mut names = if profile.mcp_servers.is_empty() {
+            self.config.mcp_servers.keys().cloned().collect()
+        } else {
+            profile.mcp_servers.clone()
+        };
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    fn mcp_toolsets(&self, profile: &RpcProfileConfig) -> RpcHostResult<Vec<DynToolset>> {
+        self.effective_mcp_server_names(profile)
+            .into_iter()
+            .map(|name| {
+                let server = self.config.mcp_servers.get(&name).ok_or_else(|| {
+                    RpcHostError::Invalid(format!("unknown RPC MCP server: {name}"))
+                })?;
+                let config = server
+                    .to_toolset_config(&name)
+                    .map_err(|error| RpcHostError::Invalid(error.to_string()))?;
+                if config.transport.kind() == "sse" {
+                    return Err(RpcHostError::Invalid(format!(
+                        "RPC MCP server {name} uses unsupported standalone SSE transport"
+                    )));
+                }
+                let factory: starweaver_agent::LiveMcpClientFactory = Arc::new(|| {
+                    Arc::new(RmcpLiveMcpClient::new()) as starweaver_agent::DynLiveMcpClient
+                });
+                Ok(lazy_live_mcp_toolset(config, factory))
+            })
+            .collect()
+    }
+
     /// Materialize an owned runtime builder from the selected RPC profile.
     ///
     /// This is deliberately RPC-owned. It consumes only public SDK/model abstractions and does not
@@ -121,7 +159,12 @@ impl RpcAgentCatalog {
         }
         let profile = self.profile(name)?;
         let model = self.materialize_model(profile)?;
-        let spec = agent_spec(name, profile, self.clarifying_questions_enabled());
+        let spec = agent_spec(
+            name,
+            profile,
+            self.clarifying_questions_enabled(),
+            self.effective_mcp_server_names(profile),
+        );
         let mut registry = self.registry_with_model(profile, model);
         for subagent_name in &profile.subagents {
             let declaration = self.config.subagents.get(subagent_name).ok_or_else(|| {
@@ -136,13 +179,17 @@ impl RpcAgentCatalog {
                 &declaration.profile,
                 child_profile,
                 self.clarifying_questions_enabled(),
+                self.effective_mcp_server_names(child_profile),
             );
             child_spec.subagents.clear();
             child_spec.all_subagents = false;
-            let child = child_spec
+            let mut child_builder = child_spec
                 .builder(&child_registry)
-                .map_err(|error| RpcHostError::Invalid(error.to_string()))?
-                .build();
+                .map_err(|error| RpcHostError::Invalid(error.to_string()))?;
+            for toolset in self.mcp_toolsets(child_profile)? {
+                child_builder = child_builder.toolset(&toolset);
+            }
+            let child = child_builder.build();
             let mut configured = SubagentConfig::new(subagent_name, Arc::new(child))
                 .with_tool_inheritance(SubagentToolInheritancePolicy::new(
                     declaration.required_tools.clone(),
@@ -153,8 +200,13 @@ impl RpcAgentCatalog {
             }
             registry = registry.with_subagent(configured);
         }
-        spec.runtime_builder(&registry)
-            .map_err(|error| RpcHostError::Invalid(error.to_string()))
+        let mut builder = spec
+            .runtime_builder(&registry)
+            .map_err(|error| RpcHostError::Invalid(error.to_string()))?;
+        for toolset in self.mcp_toolsets(profile)? {
+            builder = builder.toolset(&toolset);
+        }
+        Ok(builder)
     }
 
     fn registry_with_model(
@@ -172,6 +224,20 @@ impl RpcAgentCatalog {
         }
         for toolset in toolsets {
             registry = registry.with_toolset(toolset);
+        }
+        for name in self.effective_mcp_server_names(profile) {
+            if let Some(server) = self.config.mcp_servers.get(&name)
+                && let Ok(config) = server.to_toolset_config(&name)
+            {
+                registry = registry.with_mcp_server(
+                    &name,
+                    McpServerSpec {
+                        name: name.clone(),
+                        transport: config.transport.kind().to_string(),
+                        metadata: serde_json::Map::new(),
+                    },
+                );
+            }
         }
         registry
     }
@@ -191,7 +257,12 @@ impl RpcAgentCatalog {
         environment_binding_class: impl Into<String>,
     ) -> RpcHostResult<ResolvedAgentMaterialization> {
         let profile = self.profile(name)?;
-        let spec = agent_spec(name, profile, self.clarifying_questions_enabled());
+        let spec = agent_spec(
+            name,
+            profile,
+            self.clarifying_questions_enabled(),
+            self.effective_mcp_server_names(profile),
+        );
         let registry = self.registry_with_model(
             profile,
             Arc::new(starweaver_model::TestModel::with_text("identity-only")),
@@ -201,9 +272,19 @@ impl RpcAgentCatalog {
             STARWEAVER_AGENT_POLICY_VERSION,
             environment_binding_class,
         )
-        .map(|materialization| {
+        .map(|mut materialization| {
+            let mcp_server_names = self.effective_mcp_server_names(profile);
+            for server in &mcp_server_names {
+                materialization =
+                    materialization.with_additional_toolset_identity(format!("mcp:{server}"));
+            }
             materialization.with_host_bindings(
-                rpc_runtime_binding_digest(profile, &self.config.providers),
+                rpc_runtime_binding_digest(
+                    profile,
+                    &self.config.providers,
+                    &self.config.mcp_servers,
+                    &mcp_server_names,
+                ),
                 workspace_root_digest(&self.config.workspace_root),
             )
         })
@@ -259,6 +340,16 @@ impl RpcAgentCatalog {
                     )));
                 }
             }
+            let unique_mcp_servers = profile
+                .mcp_servers
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            if unique_mcp_servers.len() != profile.mcp_servers.len() {
+                return Err(RpcHostError::Invalid(format!(
+                    "RPC profile {name} contains duplicate MCP server selections"
+                )));
+            }
+            self.mcp_toolsets(profile)?;
             for subagent in &profile.subagents {
                 let declaration = self.config.subagents.get(subagent).ok_or_else(|| {
                     RpcHostError::Invalid(format!(
@@ -382,6 +473,7 @@ fn agent_spec(
     name: &str,
     profile: &RpcProfileConfig,
     enable_clarifying_questions: bool,
+    mcp_servers: Vec<String>,
 ) -> AgentSpec {
     let mut toolsets = profile.toolsets.clone();
     if enable_clarifying_questions && !toolsets.iter().any(|name| name == "user_input") {
@@ -399,6 +491,7 @@ fn agent_spec(
         }),
         toolsets,
         subagents: profile.subagents.clone(),
+        mcp_servers,
         ..AgentSpec::default()
     }
 }
@@ -415,6 +508,8 @@ fn apply_http_overrides(config: &mut HttpModelConfig, provider: &RpcProviderConf
 fn rpc_runtime_binding_digest(
     profile: &RpcProfileConfig,
     providers: &std::collections::BTreeMap<String, RpcProviderConfig>,
+    mcp_servers: &std::collections::BTreeMap<String, starweaver_tools::McpServerConfig>,
+    selected_mcp_servers: &[String],
 ) -> String {
     let provider = RpcModelId::parse(&profile.model_id).ok().and_then(|model| {
         providers.get(&model.provider_key).map(|provider| {
@@ -428,14 +523,23 @@ fn rpc_runtime_binding_digest(
             })
         })
     });
+    let mcp = selected_mcp_servers
+        .iter()
+        .filter_map(|name| {
+            mcp_servers
+                .get(name)
+                .map(|server| json!({"name": name, "config": server}))
+        })
+        .collect::<Vec<_>>();
     digest_binding(
-        b"starweaver.rpc.materialization.runtime-binding/v1",
+        b"starweaver.rpc.materialization.runtime-binding/v2",
         &json!({
             "modelId": profile.model_id,
             "modelSettings": profile.model_settings,
             "modelConfig": profile.model_config,
             "testModel": profile.test_response.is_some(),
             "provider": provider,
+            "mcp": mcp,
         }),
     )
 }
@@ -547,6 +651,53 @@ mod tests {
                 .to_string()
                 .contains("STARWEAVER_RPC_TEST_CREDENTIAL_THAT_MUST_NOT_EXIST")
         );
+    }
+
+    #[test]
+    fn mcp_selection_is_canonical_and_rejects_duplicates_unknowns_and_sse() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = RpcConfig::for_tests(temp.path());
+        config.mcp_servers = starweaver_tools::McpConfigDocument::from_slice(
+            br#"{
+                "servers": {
+                    "zeta": {"command": "zeta-server"},
+                    "alpha": {"transport": "http", "url": "https://example.test/mcp"}
+                }
+            }"#,
+        )
+        .unwrap()
+        .servers;
+        config.profiles.get_mut("default").unwrap().mcp_servers =
+            vec!["zeta".to_string(), "alpha".to_string()];
+        let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
+        assert_eq!(
+            catalog.effective_mcp_server_names(catalog.profile("default").unwrap()),
+            vec!["alpha", "zeta"]
+        );
+        let selected = catalog
+            .materialization("default", "local:read_write")
+            .unwrap();
+
+        config.profiles.get_mut("default").unwrap().mcp_servers = vec!["alpha".to_string()];
+        let subset = RpcAgentCatalog::new(config.clone())
+            .unwrap()
+            .materialization("default", "local:read_write")
+            .unwrap();
+        assert_ne!(selected.fingerprint, subset.fingerprint);
+
+        config.profiles.get_mut("default").unwrap().mcp_servers =
+            vec!["alpha".to_string(), "alpha".to_string()];
+        assert!(RpcAgentCatalog::new(config.clone()).is_err());
+        config.profiles.get_mut("default").unwrap().mcp_servers = vec!["missing".to_string()];
+        assert!(RpcAgentCatalog::new(config.clone()).is_err());
+
+        config.mcp_servers = starweaver_tools::McpConfigDocument::from_slice(
+            br#"{"servers":{"events":{"transport":"sse","url":"https://example.test/sse"}}}"#,
+        )
+        .unwrap()
+        .servers;
+        config.profiles.get_mut("default").unwrap().mcp_servers = vec!["events".to_string()];
+        assert!(RpcAgentCatalog::new(config).is_err());
     }
 
     #[test]

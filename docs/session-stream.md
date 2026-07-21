@@ -157,6 +157,29 @@ be released and is consumed only by the atomic continuation commit. This policy
 fails closed after an uncertain side effect: recovery may require operator
 repair, but the store does not silently execute the approved tool twice.
 
+## RPC deferred tools and session forks
+
+`session.create` may bind client-managed deferred tools by supplying a name,
+description, object input schema, and model instructions. These definitions are
+digest-bound to that session and restored for every run. When the model calls
+one, RPC persists the request, emits `deferred_requested` (display type
+`DEFERRED_REQUESTED`), and leaves the run in durable `waiting` state. The client
+calls `deferred.complete` or `deferred.fail` and then explicitly calls
+`run.resume`; resolving a record never resumes execution implicitly. Waiting is
+non-terminal, does not emit a terminal replay marker, and does not satisfy
+`run.await`.
+
+`session.fork` creates an independent session from the source's most recent
+successful context. A source with no runs may fork its initial state; a source
+with failed or waiting runs but no successful run is rejected. The target retains
+profile/workspace ownership and session-scoped deferred-tool definitions, records
+`parent_session_id` and durable source lineage, but does not copy source runs,
+replay history, pending HITL, usage, trace, or runtime ownership. A required
+idempotency key makes exact fork retries receipt-first, so they return the same
+target even if the source is later deleted or its context is no longer retained.
+A normal `run.start` on the target continues the forked discussion without
+mutating the source.
+
 ## Durable app shape
 
 `SessionStore` persists session/run state, checkpoint evidence, approvals, deferred records, compact traces, and stable stream cursor references. `StreamArchive`, `ReplayEventLog`, and `ReplayTransport` handle raw runtime records, display messages, replay buffers, live subscriptions, compaction snapshots, and protocol envelopes. Custom stores that do not implement transactional publication or exclusive HITL claims inherit fail-closed default methods; they can support ordinary persistence but cannot claim those durability guarantees until they implement the contracts.

@@ -195,6 +195,16 @@ pub trait SessionStore: Send + Sync {
         management_unsupported()
     }
 
+    /// Read a session mutation receipt without creating or changing durable state.
+    async fn load_session_mutation_receipt(
+        &self,
+        _namespace_id: &str,
+        _idempotency_key: &str,
+        _command_fingerprint: &str,
+    ) -> SessionStoreResult<Option<SessionRecord>> {
+        management_unsupported()
+    }
+
     /// Apply an allowlisted session patch with expected-revision and idempotency checks.
     async fn update_managed_session(
         &self,

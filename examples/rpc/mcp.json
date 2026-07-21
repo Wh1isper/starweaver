@@ -1,0 +1,16 @@
+{
+  "servers": {
+    "docs": {
+      "transport": "stdio",
+      "command": "docs-mcp",
+      "args": ["--serve"],
+      "cwd": "workspace",
+      "tool_prefix": "docs",
+      "include_instructions": true,
+      "instructions": "Prefer documentation evidence for documentation questions.",
+      "init_timeout_ms": 10000,
+      "read_timeout_ms": 30000,
+      "exit_timeout_ms": 10000
+    }
+  }
+}
