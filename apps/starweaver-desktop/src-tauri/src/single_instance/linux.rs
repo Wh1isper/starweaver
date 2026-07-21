@@ -59,7 +59,7 @@ pub fn init<R: Runtime>(callback: Box<ActivationCallback<R>>) -> TauriPlugin<R> 
             Ok(())
         })
         .on_event(|app, event| {
-            if let RunEvent::Exit = event {
+            if matches!(event, RunEvent::Exit) {
                 destroy(app);
             }
         })
