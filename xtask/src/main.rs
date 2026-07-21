@@ -12,6 +12,7 @@ mod architecture;
 mod capabilities;
 mod common;
 mod coverage;
+mod desktop;
 mod docs;
 mod fixtures;
 mod release;
@@ -39,6 +40,7 @@ fn run() -> Result<(), String> {
         "check-architecture" => architecture::check_boundaries(),
         "check-capabilities" => capabilities::check(&args),
         "check-cli-examples" => smoke::check_cli_examples(),
+        "check-desktop" => desktop::check(),
         "check-docs-examples" => docs::check_docs_examples(&args),
         "check-rpc-contracts" => rpc_contracts::check(&args),
         "check-rpc-integration" => rpc_integration::check(&args),

@@ -7,7 +7,7 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::common::{root, run_capture, run_command};
+use crate::common::{read_json, root, run_capture, run_command, write_json};
 
 const WORKSPACE_DEPENDENCIES: [&str; 18] = [
     "starweaver-agent",
@@ -86,6 +86,7 @@ pub fn upversion(args: &[String]) -> Result<(), String> {
     }
     fs::write(&manifest, text).map_err(|error| error.to_string())?;
     update_python_package_versions(&root, version)?;
+    update_desktop_package_versions(&root, version)?;
     run_command(
         Command::new("cargo")
             .arg("metadata")
@@ -96,6 +97,24 @@ pub fn upversion(args: &[String]) -> Result<(), String> {
     crate::capabilities::update_verified_release(&root, version)?;
     crate::capabilities::check_at(&root, true)?;
     println!("Updated workspace version to {version}");
+    Ok(())
+}
+
+fn update_desktop_package_versions(root: &std::path::Path, version: &str) -> Result<(), String> {
+    for path in [
+        root.join("apps/starweaver-desktop/package.json"),
+        root.join("apps/starweaver-desktop/src-tauri/tauri.conf.json"),
+    ] {
+        if !path.exists() {
+            continue;
+        }
+        let mut value = read_json(&path)?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| format!("{} root must be a JSON object", path.display()))?;
+        object.insert("version".to_string(), version.into());
+        write_json(&path, &value, false)?;
+    }
     Ok(())
 }
 

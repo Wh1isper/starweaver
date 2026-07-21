@@ -15,6 +15,7 @@ one workspace.
 - Durable execution foundations: context export/restore, checkpoints, session records, replay streams, and SQLite storage adapters.
 - First-party SDK bundles for filesystem, shell, skills, task tracking, host search/scrape/media adapters, MCP, and subagents.
 - A CLI launcher with profile-based local runs, install/update flow, display messages, local storage, and release artifacts.
+- A three-platform Tauri 2 Desktop foundation with a least-authority renderer bridge, single-instance lifecycle, and native CI matrix.
 
 ## Install
 
@@ -151,6 +152,7 @@ Starweaver is organized as focused crates:
 - `starweaver-cli`: local CLI product surface, launcher dispatch, profiles, TUI, storage, install, and update workflows.
 - `starweaver-rpc-core`: shared JSON-RPC host protocol helpers and stream/replay projections.
 - `starweaver-rpc`: standalone JSON-RPC host process for local and external host integrations.
+- `apps/starweaver-desktop`: Tauri 2 shell foundation for Linux, macOS, and Windows; RPC supervision remains gated on the public launch contract.
 - `packages/starweaver-py`: in-process Python SDK bindings, Python tool injection, live run control, message bus facades, typed HITL helpers, deterministic test models, sessions, and Python distribution artifacts.
 
 ## Validation
@@ -161,6 +163,13 @@ make check
 make test
 make docs-check
 make docs-build
+make desktop-check
+```
+
+Build the current-platform Desktop shell without an installer:
+
+```bash
+make desktop-build
 ```
 
 Full local gate:

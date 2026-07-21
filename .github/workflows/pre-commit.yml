@@ -25,6 +25,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Tauri Linux dependencies
+        uses: ./.github/actions/setup-tauri-linux
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

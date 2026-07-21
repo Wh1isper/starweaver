@@ -1,4 +1,6 @@
 XTASK = cargo run -p xtask --locked --
+PNPM = corepack pnpm
+DESKTOP_PACKAGE = apps/starweaver-desktop
 PY_PACKAGE = packages/starweaver-py
 PY_SOURCES = $(PY_PACKAGE)/python $(PY_PACKAGE)/tests scripts/check_python_api.py scripts/python_wheel_smoke.py examples/python
 PY_DIST_DIR ?= dist/python
@@ -56,8 +58,13 @@ agent-api-check: ## Validate the reviewed starweaver-agent root/prelude/advanced
 	@echo "Checking starweaver-agent API snapshot"
 	@$(XTASK) check-agent-api
 
+.PHONY: desktop-boundaries-check
+desktop-boundaries-check: ## Validate Desktop target, renderer, and Tauri security boundaries
+	@echo "Checking Desktop boundaries"
+	@$(XTASK) check-desktop
+
 .PHONY: check
-check: agent-api-check architecture-check capability-check ## Run repository quality checks
+check: agent-api-check architecture-check capability-check desktop-boundaries-check ## Run repository quality checks
 	@echo "Checking Rust workspace"
 	@cargo check --workspace --all-targets --all-features --locked
 	@echo "Running clippy"
@@ -112,6 +119,31 @@ coverage-ci: ## Collect coverage once and run all grouped CI gates
 build: ## Build the workspace
 	@echo "Building Rust workspace"
 	@cargo build --workspace --all-targets --all-features --locked
+
+.PHONY: desktop-sync
+desktop-sync: ## Install locked Desktop frontend dependencies
+	@$(PNPM) install --frozen-lockfile
+
+.PHONY: desktop-format
+desktop-format: desktop-sync ## Format Desktop frontend files
+	@$(PNPM) desktop:format
+
+.PHONY: desktop-frontend-check
+desktop-frontend-check: desktop-sync ## Run Desktop frontend format, lint, type, test, and build gates
+	@$(PNPM) desktop:check
+
+.PHONY: desktop-rust-check
+desktop-rust-check: ## Check, lint, and test the Desktop Rust crate
+	@cargo check -p starweaver-desktop --all-targets --locked
+	@cargo clippy -p starweaver-desktop --all-targets --locked -- -D warnings
+	@cargo test -p starweaver-desktop --all-targets --locked
+
+.PHONY: desktop-build
+desktop-build: desktop-sync ## Build the current-platform Desktop shell without bundling
+	@$(PNPM) --filter @starweaver/desktop tauri build --ci --no-bundle
+
+.PHONY: desktop-check
+desktop-check: desktop-boundaries-check desktop-frontend-check desktop-rust-check ## Run all local Desktop quality gates
 
 .PHONY: py-sync
 py-sync: ## Sync Python dependencies without building workspace packages
@@ -245,7 +277,7 @@ rpc-ci-check: test ## Run ordered workspace and shared-binary RPC integration te
 	@$(MAKE) --no-print-directory rpc-integration-check
 
 .PHONY: scripts-check
-scripts-check: architecture-check capability-check cli-examples-check install-script-check ## Validate repository automation scripts through xtask
+scripts-check: architecture-check capability-check desktop-boundaries-check cli-examples-check install-script-check ## Validate repository automation scripts through xtask
 	@echo "Checking repository scripts"
 	@$(XTASK) check-repository-scripts
 

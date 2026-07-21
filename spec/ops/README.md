@@ -75,7 +75,7 @@ flowchart TD
 - `01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
 - `02-shared-execution-components.md` — shared session storage and stream protocol contracts
 - `03-durable-service-runtime.md` — durable sessions, `SessionStore`, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
-- `04-cli-product.md` — independent CLI/TUI product surface with headless stdio display streams, session restore, direct envd connectivity, launcher dispatch, and install/update flow
+- `04-cli-product.md` — independent CLI/TUI product surface with headless stdio display streams, session restore, direct envd connectivity, launcher dispatch, install/update flow, and the planned hardened public RPC component contract
 - `05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 - `06-json-rpc-host-protocol.md` — independent standalone RPC product protocol, transport profiles, typed method/event/error contracts, stream replay/subscription semantics, projections, idempotency, and acceptance gates
 - `07-session-search.md` — optional product-neutral session search contract, local SQLite/filesystem provider, external index ingestion, and independent CLI/RPC integration

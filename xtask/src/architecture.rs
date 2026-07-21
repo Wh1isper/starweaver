@@ -4,8 +4,10 @@ use serde_json::Value;
 
 use crate::common::root;
 
+const DESKTOP_PACKAGE: &str = "starweaver-desktop";
 const CLI_PACKAGE: &str = "starweaver-cli";
 const RPC_PACKAGE: &str = "starweaver-rpc";
+const AGENT_PACKAGE: &str = "starweaver-agent";
 const SESSION_PACKAGE: &str = "starweaver-session";
 const STORAGE_PACKAGE: &str = "starweaver-storage";
 const STREAM_PACKAGE: &str = "starweaver-stream";
@@ -36,8 +38,10 @@ pub fn check_boundaries() -> Result<(), String> {
     ensure_workspace_packages(
         &workspace_names,
         &[
+            DESKTOP_PACKAGE,
             CLI_PACKAGE,
             RPC_PACKAGE,
+            AGENT_PACKAGE,
             SESSION_PACKAGE,
             STORAGE_PACKAGE,
             STREAM_PACKAGE,
@@ -94,13 +98,22 @@ pub fn check_boundaries() -> Result<(), String> {
     }
     ensure_no_path(&graph, CLI_PACKAGE, RPC_PACKAGE)?;
     ensure_no_path(&graph, RPC_PACKAGE, CLI_PACKAGE)?;
+    for forbidden in [
+        CLI_PACKAGE,
+        RPC_PACKAGE,
+        AGENT_PACKAGE,
+        RUNTIME_PACKAGE,
+        STORAGE_PACKAGE,
+    ] {
+        ensure_no_path(&graph, DESKTOP_PACKAGE, forbidden)?;
+    }
     ensure_no_direct_dependency(&graph, SESSION_PACKAGE, RUNTIME_PACKAGE)?;
     ensure_no_path(&normal_dependency_graph, SESSION_PACKAGE, RUNTIME_PACKAGE)?;
     ensure_no_path(&normal_dependency_graph, STORAGE_PACKAGE, RUNTIME_PACKAGE)?;
     ensure_direct_dependency(&normal_dependency_graph, RUNTIME_PACKAGE, STREAM_PACKAGE)?;
     ensure_no_path(&graph, STREAM_PACKAGE, RUNTIME_PACKAGE)?;
     println!(
-        "architecture boundaries passed: CLI and RPC are independent; CLI has no direct rusqlite dependency; session has no normal dependency path or direct dependency of any kind to runtime and no direct environment implementation dependency; storage has no normal dependency path to runtime; runtime directly consumes stream-owned protocol contracts; stream has no direct mutable context dependency and no dependency path to runtime"
+        "architecture boundaries passed: CLI and RPC are independent; Desktop does not link CLI, RPC host, agent, runtime, or storage implementations; CLI has no direct rusqlite dependency; session has no normal dependency path or direct dependency of any kind to runtime and no direct environment implementation dependency; storage has no normal dependency path to runtime; runtime directly consumes stream-owned protocol contracts; stream has no direct mutable context dependency and no dependency path to runtime"
     );
     Ok(())
 }
