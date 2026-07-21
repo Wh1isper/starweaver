@@ -4252,8 +4252,14 @@ def test_stream_adapter_consumes_shared_raw_display_replay_golden_corpus() -> No
     assert replay["raw_records"] == fixture["raw_records"]
     assert replay["terminal"] == fixture["raw_records"][-1]
     assert replay["cursor_range"] == {
-        "first": {"scope": fixture["replay"]["scope"], "sequence": 0},
-        "last": {"scope": fixture["replay"]["scope"], "sequence": 2},
+        "first": {
+            "scope": fixture["replay"]["scope"],
+            "sequence": fixture["raw_records"][0]["sequence"],
+        },
+        "last": {
+            "scope": fixture["replay"]["scope"],
+            "sequence": fixture["raw_records"][-1]["sequence"],
+        },
     }
 
     cancelled_adapter = StreamAdapter([fixture["cancelled"]["raw_record"]])
