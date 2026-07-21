@@ -6,7 +6,7 @@ The Desktop migration goal is that existing CLI users see their durable history 
 
 ## Shared Data Principle
 
-When CLI and Desktop resolve the same canonical database, no data migration occurs. Desktop RPC children open the existing database through `starweaver-storage` and preserve all canonical identifiers and evidence.
+When CLI and Desktop resolve the same canonical database in one execution domain, no data migration occurs. Local Desktop RPC children open the existing local database; an SSH-hosted RPC process independently opens the remote user's canonical database and shares it with remote CLI/RPC products. Desktop never merges or synchronizes local and remote canonical databases.
 
 Shared durable data includes:
 
@@ -84,7 +84,7 @@ Unknown CLI fields are preserved in the source and ignored safely. A failed or p
 
 ## OAuth Migration
 
-The CLI and RPC should use the shared OAuth credential store through `starweaver-oauth`. Desktop does not copy access or refresh tokens.
+The CLI and RPC should use the shared OAuth credential store through `starweaver-oauth` within one execution domain. Desktop does not copy access or refresh tokens. An SSH-hosted RPC uses the remote OAuth store and remote provider environment; local OAuth credentials are never forwarded.
 
 On first launch:
 
@@ -108,7 +108,7 @@ A matching profile name does not prove that two products resolved the same agent
 - environment attachment identities;
 - protocol-relevant feature versions.
 
-Desktop runs typed continuation preflight before resuming CLI history.
+Desktop runs typed continuation preflight before resuming CLI history. Crossing local/remote execution domains, authenticated remote principals, database identities, or account/sandbox authority modes is materialization drift and never auto-switches.
 
 | Outcome                     | Desktop behavior                                          |
 | --------------------------- | --------------------------------------------------------- |
@@ -155,6 +155,8 @@ The release matrix must cover at least:
 
 Every CLI, RPC, and Desktop runtime path that can apply pending migrations participates in the same product-neutral maintenance barrier. A standalone CLI or RPC startup cannot bypass the barrier and silently migrate the database while Desktop children are active.
 
+Remote component updates use the same compatibility declarations and maintenance barrier against the remote canonical database; they do not inspect or migrate the local database.
+
 Every storage release declares:
 
 - current schema generation;
@@ -198,7 +200,7 @@ A session remains browsable even when its original workspace, profile, provider,
 - Default CLI history appears in Desktop without copy/export.
 - Candidate collection inspects custom history before selecting or creating an empty canonical store, so discovery cannot create a misleading parallel database.
 - Legacy import is idempotent and provenance-preserving, and byte/schema checks prove the original source database remains unchanged.
-- OAuth reuse is tested without token projection into the renderer.
+- Local and remote OAuth reuse is tested without token projection into the renderer or credential forwarding between execution domains.
 - Current-version CLI/RPC bidirectional subprocess interoperability remains green.
 - N/N-1 database and protocol fixtures run in CI using released binaries or immutable fixtures, including the shared maintenance barrier.
 - Preserve, switch, blocked, waiting, and foreign-owner continuation outcomes have typed contract tests.

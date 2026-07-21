@@ -2,7 +2,7 @@
 
 Status: accepted architecture baseline; protocol additions planned
 
-This document defines how the Desktop backend consumes the Starweaver host protocol and names the additions required before a public Desktop release. `../ops/06-json-rpc-host-protocol.md` remains the normative current RPC v1 contract.
+This document defines how the Desktop backend consumes the Starweaver host protocol and names the additions required before a public Desktop release. `../ops/06-json-rpc-host-protocol.md` remains the normative current RPC v1 contract. SSH transport adds probe, provisioning, and supervised-bootstrap states before `Handshaking` as specified in `07-ssh-remote-workspaces.md`; once accepted, the same client contract applies.
 
 ## Connection State Machine
 
@@ -24,7 +24,7 @@ stateDiagram-v2
     Failed --> Starting: explicit retry
 ```
 
-The supervisor must not send any method except initialize before a successful handshake. It must reject a child whose protocol major, required feature set, runtime identity, or storage compatibility range is incompatible with the Desktop shell.
+The supervisor must not send any JSON-RPC method except initialize before a successful handshake. A supervised SSH connection first completes its non-JSON-RPC nonce marker and launch-envelope bootstrap; that preface is not an RPC method and cannot admit runs. The supervisor must reject a host whose protocol major, required feature set, runtime identity, or storage compatibility range is incompatible with the Desktop shell.
 
 ## Initialize Contract
 
@@ -139,13 +139,13 @@ Raw provider responses, SQL text, credentials, authorization headers, unrestrict
 
 ## Restart and Recovery
 
-When a child exits unexpectedly, the supervisor:
+When a local child exits or an SSH-carried remote process/channel fails unexpectedly, the supervisor:
 
 1. marks the child unavailable and stops sending requests;
 2. records the last acknowledged cursors and uncertain mutations;
-3. waits for the old process to terminate and closes inherited pipes;
-4. restarts only within a bounded backoff/retry budget;
-5. performs initialize and startup reconciliation;
+3. waits for a local child to terminate or reaps the failed local OpenSSH handle/pipes without treating that as proof of remote process death;
+4. restarts or reconnects only within a bounded backoff/retry budget;
+5. revalidates SSH route, host key, principal, stable execution-domain binding, and runtime probe when applicable, then performs bootstrap; a replacement becomes execution-capable only after acquiring the domain/workspace host lock, otherwise it reports a foreign live owner and uses catalog/control observation;
 6. queries receipts/status for uncertain mutations;
 7. replays from acknowledged cursors;
 8. restores pending interactions and active-run status;
@@ -172,7 +172,9 @@ Update activation follows the same drain barrier and is specified in `06-runtime
 Before public Desktop release, the host protocol must provide or explicitly standardize:
 
 - per-connection client capability negotiation using the existing protocol name/major/revision plus required feature model;
-- runtime build, launch-envelope schema, and storage compatibility metadata;
+- runtime build, launch-envelope schema, storage compatibility, and stable execution-domain metadata;
+- a bounded supervised-stdio bootstrap that validates remote launch configuration before database open, plus a no-database identity/capability probe;
+- stable execution-domain routing identity separated from mutable host-key/runtime evidence, plus a storage-owned stable database/workspace execution-host lock namespace independent of per-client state directories and a typed foreign-owner outcome;
 - typed continuation preflight;
 - OAuth status/login/refresh/logout methods and safe notifications;
 - durable clarifying-question query/decision contracts if not represented by existing deferred records;
@@ -190,5 +192,5 @@ These additions belong in `starweaver-rpc-core` and `starweaver-rpc`; they do no
 - Retry tests prove receipt-backed idempotent mutation behavior after response loss for every covered effect class.
 - Replay tests cover disconnect before response, notification gaps, duplicate delivery, cursor-family mismatch, and renderer reload.
 - HITL tests cover two windows, stale decisions, reconnect, unresolved records, and explicit resume.
-- Child crash tests prove bounded restart and no duplicate run ownership.
+- Child crash and SSH disconnect tests prove bounded restart/reconnect, receipt/status recovery, and no duplicate run ownership.
 - Shutdown tests prove no new admission after drain begins and classify forced termination as uncertain until reconciled.

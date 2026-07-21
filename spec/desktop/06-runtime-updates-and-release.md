@@ -4,7 +4,7 @@ Status: accepted architecture baseline; implementation planned
 
 The Desktop shell and the Starweaver RPC runtime have separate lifecycles. The Desktop backend supervisor owns a runtime update channel so execution can receive compatible fixes without requiring every renderer or shell change to ship in the same transaction.
 
-This design extends the existing GitHub Release path. It does not invoke `starweaver update`, execute a downloaded shell installer, or replace a running binary in place.
+This design extends the existing GitHub Release path. For the local managed runtime it does not invoke `starweaver update`, execute a downloaded shell installer, or replace a running binary in place. SSH targets use the public non-interactive RPC component-management contract defined in `07-ssh-remote-workspaces.md`; that remote provisioning exception does not expose CLI-private configuration or coordination to Desktop.
 
 ## Version Identities
 
@@ -39,7 +39,7 @@ This is useful bootstrap evidence but is not the final Desktop updater contract:
 - there is no quiesced shared-database migration transaction;
 - there is no versioned runtime directory or tested Desktop rollback state machine.
 
-Desktop therefore gets a dedicated runtime component channel even when the bytes originate from the same workspace release.
+Desktop therefore gets a dedicated runtime component channel even when the bytes originate from the same workspace release. The download, manifest verification, locking, versioned installation, activation, and rollback mechanics should have one product-neutral implementation shared by the local Desktop updater and the hardened `starweaver`/`sw` component updater.
 
 ## Runtime Bundle
 
@@ -259,13 +259,27 @@ After a shell update:
 
 Shell and runtime updates may be offered together, but remain two compatibility-checked transactions.
 
-## CLI Relationship
+## CLI and Installer Relationship
 
-CLI continues to use its launcher/install path. Desktop does not call `starweaver update` and does not replace binaries in the CLI install directory.
+CLI continues to use its launcher/install path. Desktop does not call `starweaver update` for its local managed runtime and does not replace binaries in the local CLI install directory.
 
-CLI and Desktop may install the same RPC version in different locations. Shared durable compatibility is governed by protocol/storage ranges and CI, not by requiring both products to execute the same filesystem binary.
+SSH provisioning is deliberately different: Desktop may invoke a fixed, public, versioned, non-interactive RPC component ensure/update operation on the remote account. This is an external process/install protocol, not a crate dependency on CLI handlers, CLI configuration, TUI state, or run coordination. Its machine-readable schema, exact-version behavior, trust verification, lock, and versioned layout are release contracts.
 
-The release process may derive both CLI and Desktop runtime bundles from the same `starweaver-rpc` build to avoid drift.
+If CLI/launcher and Desktop need the same updater mechanics, those mechanics move to a product-neutral owner. Desktop must not copy the current shell installer or parse human CLI output into a second implementation.
+
+CLI, local Desktop, and remote Desktop targets may install the same RPC version in different locations. Shared durable compatibility is governed by protocol/storage ranges and CI, not by requiring products or execution domains to use one filesystem binary or database.
+
+The release process may derive CLI, local Desktop, and remote-managed runtime bundles from the same `starweaver-rpc` build to avoid drift.
+
+## Managed SSH Targets
+
+A managed SSH target has its own runtime channel/pin, versioned user-owned installation, update lock, current/previous pointers, and remote transaction state. It does not reuse the local Desktop runtime pointer.
+
+Desktop probes the remote target without opening its real database, resolves one exact signed candidate for that target, and performs install/update on a separate SSH provisioning channel. The remote component manager emits bounded typed output. Existing execution channels continue using their exact build until drained; installer output never shares the RPC stdout stream.
+
+Remote candidates that do not migrate storage may activate for future children after verification. Candidates that can migrate storage require the same drain-to-exclusive maintenance barrier against the remote canonical database, including foreign remote CLI/RPC owner detection, release of every workspace execution-host lock, backup, integrity validation, and rollback classification. A partitioned old host holding its OS lock blocks replacement and exclusive migration even if the local OpenSSH process is gone. Database rename, restore, or atomic replacement updates the stable database UUID-to-file binding in the platform-canonical coordination registry while the maintenance barrier is exclusive; it never changes the workspace lock key. Network loss is a transaction failure/recovery event, never evidence of successful activation.
+
+The initial automatic bootstrap uses a locally verified signed bootstrap asset sent over SSH, not an unpinned network shell pipeline. `scripts/install.sh` remains a manual/recovery route only after it supports a hardened exact-version `rpc` component.
 
 ## Release and CI Changes
 
@@ -278,7 +292,9 @@ When implementation begins, release automation must add:
 - platform signing/notarization and provenance publication;
 - immutable update-channel metadata;
 - current/previous runtime fixture retention;
-- Desktop package artifacts and native updater metadata.
+- Desktop package artifacts and native updater metadata;
+- a signed non-interactive RPC component bootstrap/update contract for supported SSH target triples;
+- installer JSON-schema fixtures, exact-version tests, lock/activation/rollback fault injection, and remote target compatibility fixtures.
 
 Release-event workflows remain packaging-only. Compatibility, migration, updater fault injection, and smoke validation run before the release commit is merged.
 
@@ -296,5 +312,6 @@ The update feed advertises only targets that the release workflow actually build
 - Older runtimes are never launched outside their declared storage range.
 - Windows versioned-directory activation works without replacing an executing file.
 - Stable, preview, pin, explicit downgrade, revoked build, and offline behavior have deterministic tests.
-- CLI current/previous and Desktop runtime current/previous interoperability matrices pass before release.
+- CLI current/previous, local Desktop runtime current/previous, and managed remote runtime current/previous interoperability matrices pass before release.
+- Remote probe, bootstrap, update, concurrent-install, disconnect, drain, migration, and rollback fault-injection tests preserve one valid current runtime and classify uncertain outcomes.
 - Public macOS/Windows bundles pass signing/notarization verification; Linux bundles pass required digest/provenance verification.

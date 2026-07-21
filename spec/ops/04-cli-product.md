@@ -80,6 +80,20 @@ The launcher update path checks the current CLI package version before installin
 
 The launcher update path downloads `scripts/install.sh`, runs it through `sh` with environment variables passed through `Command::env`, and avoids shell interpolation for real updates. Dry-run output may render a shell command for copy/paste diagnostics and must shell-quote paths.
 
+### Planned RPC component contract
+
+Desktop-managed SSH targets require this install/update path to become a stable public component-management boundary rather than a best-effort shell wrapper. The planned `rpc` component and exact-version non-interactive ensure/update operation must provide:
+
+- stable typed JSON progress/result/error output;
+- signed manifest/provenance and mandatory archive digest verification;
+- immutable build selection, target verification, and component-scoped installed/current identity independent of the full CLI package version;
+- owner-only versioned installation, one check-to-activation lock, atomic current/previous pointers, exact-build retention leases, and compatible rollback;
+- bounded download/extraction, exact staged-asset input for Desktop-relayed bundles, and no shell-profile mutation in managed mode;
+- no implicit database open or migration during binary installation;
+- a verified bootstrap asset for machines that do not yet have the component manager.
+
+The launcher/CLI and Desktop may both consume product-neutral installer/update mechanics, but Desktop does not link CLI handlers, parse CLI configuration, or use CLI run coordination. SSH-specific invocation and trust boundaries are specified in `../desktop/07-ssh-remote-workspaces.md`. The existing `cli` archive and optional-checksum installer remain current implementation evidence, not evidence that this stronger `rpc` contract is complete.
+
 ## Current Implementation Status
 
 Current landed CLI foundations:

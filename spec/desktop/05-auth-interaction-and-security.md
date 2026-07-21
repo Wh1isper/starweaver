@@ -12,7 +12,8 @@ The design must account for:
 - malformed JSON-RPC frames or notifications;
 - a compromised model attempting unauthorized tool use;
 - another local process reading credentials or connecting to an HTTP endpoint;
-- symlink/path confusion across workspace roots;
+- SSH route spoofing, host-key replacement, malicious login-shell output, credential-prompt confusion, or remote bootstrap injection;
+- symlink/path confusion across workspace roots and execution domains;
 - stale or duplicated approval and clarification decisions;
 - runtime update tampering or downgrade;
 - crash/restart races that duplicate effects;
@@ -24,20 +25,20 @@ Desktop does not claim isolation from an already fully compromised user account.
 
 The renderer receives a narrow application API. It cannot:
 
-- spawn RPC/runtime processes;
-- choose arbitrary runtime binary paths;
+- spawn local or SSH-carried RPC/runtime processes;
+- choose arbitrary runtime or OpenSSH binary paths;
 - send arbitrary JSON-RPC methods;
 - read environment variables, OAuth files, RPC token files, or SQLite;
 - select unrestricted workspace paths without a native backend grant flow;
 - decide authorization scopes;
 - install or activate runtime updates;
-- access raw stderr or internal error chains.
+- access raw stderr, SSH prompts, provisioning channels, or internal error chains.
 
 All external links, file reveals, shell actions, and credential flows pass through explicit backend commands and platform validation.
 
 ## OAuth Contract
 
-RPC owns provider authentication by using `starweaver-oauth` and `starweaver-oauth-provider`. Desktop receives only typed safe projections.
+RPC owns provider authentication by using `starweaver-oauth` and `starweaver-oauth-provider` in its execution domain. A remote RPC uses remote credentials and provider environment; Desktop receives only typed safe projections and never forwards the local OAuth store over SSH.
 
 Required methods or equivalent typed operations:
 
@@ -111,9 +112,11 @@ Deferred resolution follows the same durable discipline:
 
 ## Workspace and Tool Authority
 
-Each execution child receives one canonical workspace root. Local filesystem tools use path/capability grants intersected with host policy and cannot infer authority from historical session metadata.
+Each execution host receives one canonical workspace identity. Local filesystem tools use path/capability grants intersected with host policy and cannot infer authority from historical session metadata. Remote paths are canonicalized by the remote RPC and never by local filesystem APIs.
 
-A canonical root and process boundary do not restrict a native shell running as the user. Public shell-enabled profiles must use an enforceable sandboxed environment/process provider that confines filesystem, process, and inherited-resource effects to the granted workspace/resources. When no supported sandbox is available, native local shell is disabled by default. Any explicit unsafe native-shell mode is labeled as full user-account authority and is excluded from containment claims.
+A canonical root and process boundary do not restrict a native shell running as the user. Public local shell-enabled profiles must use an enforceable sandboxed environment/process provider that confines filesystem, process, and inherited-resource effects to the granted workspace/resources. When no supported sandbox is available, native local shell is disabled by default.
+
+An explicitly granted SSH execution domain uses a different accepted default: native remote shell may be enabled with the full authenticated remote account's authority. The target grant must show that this permits access outside the selected workspace, and the UI must label it `remote account authority`, not sandboxed. A dedicated account, container, VM, or proved remote sandbox is required when repository containment is desired. Managed policy may disable this default.
 
 Desktop displays effective authority before a sensitive decision:
 
@@ -128,7 +131,7 @@ Changing workspace, environment, tool grants, or model/provider during continuat
 
 ## Stdio Framing and Process Security
 
-The stdio transport must have an inbound byte limit before allocating a complete line. An unbounded `lines()` decoder is not sufficient for the Desktop boundary.
+The local and SSH-carried stdio transports must have an inbound byte limit before allocating a complete line. An unbounded `lines()` decoder is not sufficient for the Desktop boundary.
 
 Required controls:
 
@@ -139,8 +142,10 @@ Required controls:
 - no inherited stdin/stdout handles beyond the intended child;
 - clean environment allowlist rather than forwarding all Desktop environment variables;
 - bounded stderr capture with secret scrubbing;
-- no shell interpolation in child launch arguments;
-- process-tree termination on forced shutdown.
+- no shell interpolation in local child launch arguments;
+- SSH remote commands are fixed backend-owned templates; workspace paths, provider/profile values, launch envelopes, and renderer text travel only in bounded typed frames;
+- login-shell output is bounded and ignored until an exact nonce-bound RPC marker, after which stdout purity is strict;
+- process-tree or SSH-channel termination on forced shutdown.
 
 The Desktop backend avoids long blocking calls on the command connection. It uses non-blocking `run.start` plus subscription/replay. RPC should eventually support concurrent dispatch with an ordered response writer, but Desktop must not depend on `run.await`, blocking `run.prompt`, or long environment probes for responsive stop/steer/shutdown behavior.
 
@@ -158,6 +163,12 @@ Before Desktop public release, RPC must close these host-side gaps:
 - session/run/interaction list queries are storage-bounded and paginated.
 
 These are implementation prerequisites discovered by the Desktop readiness review, not optional UI polish.
+
+## SSH Transport Security
+
+System OpenSSH transport, host-key verification, askpass mediation, effective-config restrictions, provisioning isolation, account-authority disclosure, and reconnect behavior are normative in `07-ssh-remote-workspaces.md`.
+
+Agent, X11, port, socket, local/remote-command, multiplexing, and environment forwarding are disabled. V1 invokes OpenSSH only with a generated least-authority configuration produced by a non-executing allowlist importer; it rejects `Match exec`, command/helper/provider loaders, `SetEnv`/`SendEnv`, recursive `Include`, and other non-allowlisted directives before OpenSSH parses them. The local SSH agent may authenticate but is never forwarded. Unknown keys require explicit native confirmation; changed keys fail closed. Remote component installation runs on a separate bounded provisioning channel and uses the signed, exact-version public Starweaver installer contract rather than renderer-authored commands or unpinned `curl | sh`.
 
 ## HTTP and Future Transports
 
@@ -195,14 +206,16 @@ Runtime update trust, checksums, staged activation, downgrade policy, and rollba
 
 ## Acceptance Gates
 
-- Existing OAuth credentials can be reused without token projection into frontend IPC.
+- Existing local and remote OAuth credentials can be reused without token projection into frontend IPC or copying between execution domains.
 - Full login, refresh, expiry, logout, restart, and concurrent multi-child refresh flows pass deterministic tests.
 - Question → typed answer → durable decision → resume → model-visible result passes RPC subprocess E2E.
 - Approval-only HTTP credentials receive authorization failure for `run.resume` and all execution methods.
 - Renderer compromise tests cannot send arbitrary RPC or read credentials/storage.
-- Sandboxed shell tests reject absolute-path, parent-traversal, symlink, subprocess, and sibling-root escapes; unsandboxed native shell remains disabled by default.
+- Local sandboxed shell tests reject absolute-path, parent-traversal, symlink, subprocess, and sibling-root escapes; unsandboxed native local shell remains disabled by default.
+- Remote native shell tests and UI fixtures consistently disclose full authenticated-account authority and never claim workspace containment.
 - Path-checked filesystem traversal and changed-authority continuation fail closed independently of shell policy.
 - Oversized stdio frames, slow consumers, duplicate subscription IDs, and immediate resubscribe remain bounded and deterministic.
 - Blocking state-file locks do not stall run heartbeat or shutdown workers.
 - Live and terminal errors pass secret-sentinel projection tests.
+- SSH host-key, askpass, static-config allowlist/denylist, forwarding/environment disablement, login-shell bootstrap, command-injection, execution-host exclusivity, provisioning, and partition/reconnect tests pass before remote public readiness.
 - Windows token-file ACL policy is implemented before Windows public readiness.

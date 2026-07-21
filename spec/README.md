@@ -69,7 +69,7 @@ Operations and products:
 - `ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
 - `ops/02-shared-execution-components.md` — shared session storage and stream protocol contracts
 - `ops/03-durable-service-runtime.md` — durable sessions, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
-- `ops/04-cli-product.md` — CLI-first product surface, display-message rendering, launcher dispatch, and GitHub install/update flow
+- `ops/04-cli-product.md` — CLI-first product surface, display-message rendering, launcher dispatch, GitHub install/update flow, and the planned hardened RPC component contract
 - `ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 - `ops/06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP transport profiles, typed method/event/error contracts, replay subscriptions, projections, and idempotency
 - `ops/07-session-search.md` — optional product-neutral session search, local SQLite/filesystem discovery, external index ingestion, and independent CLI/RPC integration
@@ -84,6 +84,7 @@ Desktop product specs:
 - `desktop/04-workspaces-sessions-and-runs.md` — workspace routing, global history, run ownership, multi-window behavior, and bounded pagination
 - `desktop/05-auth-interaction-and-security.md` — renderer isolation, OAuth, approval/clarification semantics, authority scopes, framing, and security gates
 - `desktop/06-runtime-updates-and-release.md` — dedicated runtime channels, manifests, staging, compatibility, storage migration, activation, and rollback
+- `desktop/07-ssh-remote-workspaces.md` — SSH execution domains, system OpenSSH transport, login-shell RPC bootstrap, account authority, remote provisioning, updates, and reconnect
 
 `capabilities.toml` is the single source for current capability implementation status. `capability-status.md` is generated from it and is the normative human-readable status view. Feature maps, roadmaps, and backlogs are non-normative design views and must defer current status to that generated file. Implemented registry entries must name an owning workspace crate, normative spec, implementation paths, and contract-test evidence; `make capability-check` validates the registry, verifies those references, and rejects a stale generated status view.
 
@@ -178,13 +179,13 @@ flowchart TD
 - CLI/TUI and standalone RPC are independent product surfaces. Neither depends on, hosts, or routes execution through the other; both may independently consume shared storage, stream, environment, and envd abstractions.
 - `starweaver-cli` owns local/headless command and TUI coordination.
 - `starweaver-rpc-core` owns typed JSON-RPC protocol contracts; `starweaver-rpc` owns the standalone server, handlers, authorization, subscriptions, coordination, and transports.
-- Starweaver Desktop is a separate product with an implemented cross-platform shell foundation. Its future execution backend supervises workspace-scoped RPC children and runtime updates; its renderer never links runtime/storage implementations or reads shared storage directly.
+- Starweaver Desktop is a separate product with an implemented cross-platform shell foundation. Its future execution backend supervises local child and SSH-hosted RPC processes plus runtime updates; its renderer never links runtime/storage implementations, controls SSH directly, or reads local/remote shared storage.
 - Platform adapters graduate from specs after responsibilities, call sites, and validation commands are clear.
 
 ## Current Priorities
 
 - Close the RPC recovery, interaction, authorization, framing, pagination, and compatibility prerequisites recorded under `desktop/` before connecting the Desktop shell foundation to an execution host.
-- Define the verified Desktop-managed RPC runtime update channel without coupling Desktop to the CLI installer.
+- Define the verified Desktop-managed RPC runtime update channel and a hardened product-neutral RPC component installer/update contract shared with `sw`/CLI and SSH provisioning, without linking Desktop to CLI-private handlers or configuration.
 - Build envd as a standalone environment service with a reusable client crate.
 - Keep Starweaver environment integration at the `EnvironmentProvider` adapter boundary.
 - Keep unfinished envd API work in `envd/05-api-backlog.md` instead of reviving
