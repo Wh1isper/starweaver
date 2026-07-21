@@ -139,6 +139,8 @@ fn custom_display_kind(normalized: &str) -> Option<DisplayMessageKind> {
         Some(DisplayMessageKind::ToolsetClosed)
     } else if custom_event_kind_matches(normalized, &["approval_requested"]) {
         Some(DisplayMessageKind::ApprovalRequested)
+    } else if custom_event_kind_matches(normalized, &["deferred_requested"]) {
+        Some(DisplayMessageKind::DeferredRequested)
     } else if custom_event_kind_matches(normalized, &["approval_resolved"]) {
         Some(DisplayMessageKind::ApprovalResolved)
     } else if custom_event_kind_matches(
@@ -296,6 +298,11 @@ fn custom_display_preview(kind: DisplayMessageKind, payload: &Value) -> String {
             .map_or_else(
                 || "approval requested".to_string(),
                 |tool| format!("approval requested: {tool}"),
+            ),
+        DisplayMessageKind::DeferredRequested => payload_string(payload, &["tool_name", "name"])
+            .map_or_else(
+                || "external tool execution requested".to_string(),
+                |tool| format!("external tool execution requested: {tool}"),
             ),
         DisplayMessageKind::ApprovalResolved => payload_string(payload, &["status", "decision"])
             .map_or_else(

@@ -15,10 +15,13 @@ The operations layer turns core runtime evidence and SDK contracts into validate
 - Langfuse-friendly OTLP export
 - CLI product
 - JSON-RPC host protocol
+- language-neutral RPC IDL plus generated Rust server and safe manifest-filtered TypeScript Desktop bindings
 - platform integration
 - release acceptance
 
-## Operations Shape
+## Target Operations Shape
+
+The host-IDL and Desktop-client nodes below are accepted targets. Current RPC execution remains on handwritten Rust DTOs and the v1 corpus until the parity migration in `09-rpc-idl-and-client-generation.md` completes.
 
 ```mermaid
 flowchart TD
@@ -33,7 +36,9 @@ flowchart TD
     storage[Shared SQLite storage]
     cli[CLI and TUI product]
     rpc[Standalone RPC product]
-    hostrpc[Typed JSON-RPC host protocol]
+    hostidl[Planned OpenRPC and JSON Schema IDL]
+    hostrpc[Target generated typed host contracts]
+    desktop[Planned Desktop TypeScript client and Rust supervisor]
     service[Future service adapters]
     observability[Observability]
     platform[Platform]
@@ -59,7 +64,10 @@ flowchart TD
     management --> rpc
     session --> rpc
     stream --> rpc
+    hostidl --> hostrpc
     hostrpc --> rpc
+    hostidl --> desktop
+    hostrpc --> desktop
     hostrpc --> service
     session --> service
     stream --> service
@@ -80,6 +88,7 @@ flowchart TD
 - `06-json-rpc-host-protocol.md` — independent standalone RPC product protocol, transport profiles, typed method/event/error contracts, stream replay/subscription semantics, projections, idempotency, and acceptance gates
 - `07-session-search.md` — optional product-neutral session search contract, local SQLite/filesystem provider, external index ingestion, and independent CLI/RPC integration
 - `08-agent-session-management.md` — agent-facing query/control bundles, composite identity and ownership, query-only CLI policy, grant-gated RPC CRUD/run control, and lifecycle prerequisites
+- `09-rpc-idl-and-client-generation.md` — OpenRPC/JSON Schema source of truth, generated Rust server boundary, safe manifest-filtered TypeScript Desktop bridge/client, compatibility rules, migration, and validation gates
 
 ## Readiness Model
 

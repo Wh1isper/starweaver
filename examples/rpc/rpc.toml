@@ -1,0 +1,13 @@
+[server]
+default_profile = "default"
+database_path = "starweaver.sqlite"
+workspace_root = "."
+mcp_config_path = "mcp.json"
+
+[profiles.default]
+model_id = "openai-responses:gpt-5"
+mcp_servers = ["docs"]
+
+[providers.openai]
+api_key_env = "OPENAI_API_KEY"
+base_url = "https://api.openai.com/v1"

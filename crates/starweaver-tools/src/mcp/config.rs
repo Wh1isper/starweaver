@@ -28,6 +28,9 @@ pub struct McpToolsetConfig {
     /// Optional initialization timeout in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub init_timeout_ms: Option<u64>,
+    /// Optional exit and transport cleanup timeout in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_timeout_ms: Option<u64>,
     /// Server instructions captured during initialization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
@@ -60,6 +63,7 @@ impl McpToolsetConfig {
             tool_prefix: None,
             read_timeout_ms: None,
             init_timeout_ms: None,
+            exit_timeout_ms: None,
             instructions: None,
             tools: Vec::new(),
             resources: Vec::new(),
@@ -101,6 +105,13 @@ impl McpToolsetConfig {
     #[must_use]
     pub const fn with_init_timeout_ms(mut self, timeout_ms: u64) -> Self {
         self.init_timeout_ms = Some(timeout_ms);
+        self
+    }
+
+    /// Set exit and transport cleanup timeout.
+    #[must_use]
+    pub const fn with_exit_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.exit_timeout_ms = Some(timeout_ms);
         self
     }
 

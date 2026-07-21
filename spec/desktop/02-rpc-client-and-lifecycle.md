@@ -2,7 +2,7 @@
 
 Status: accepted architecture baseline; protocol additions planned
 
-This document defines how the Desktop backend consumes the Starweaver host protocol and names the additions required before a public Desktop release. `../ops/06-json-rpc-host-protocol.md` remains the normative current RPC v1 contract. SSH transport adds probe, provisioning, and supervised-bootstrap states before `Handshaking` as specified in `07-ssh-remote-workspaces.md`; once accepted, the same client contract applies.
+This document defines how the Desktop backend consumes the Starweaver host protocol and names the additions required before a public Desktop release. `../ops/06-json-rpc-host-protocol.md` remains the normative current RPC v1 contract, while `../ops/09-rpc-idl-and-client-generation.md` defines the accepted generated Rust server and manifest-filtered TypeScript Desktop client structure. The TypeScript application owns typed client behavior, but the privileged Rust supervisor retains physical transport, request identity, routing, recovery, and authority. SSH transport adds probe, provisioning, and supervised-bootstrap states before `Handshaking` as specified in `07-ssh-remote-workspaces.md`; once accepted, the same client contract applies.
 
 ## Connection State Machine
 
@@ -28,34 +28,38 @@ The supervisor must not send any JSON-RPC method except initialize before a succ
 
 ## Initialize Contract
 
-Desktop initialize requests must declare:
+The IDL migration does not add fields to the closed host v1 initialize DTOs. Under v1:
 
-- client name and version;
-- protocol name, major, and known non-ordered revision;
-- client capabilities;
-- required and optional feature IDs;
-- renderer/display contract versions;
-- optional reconnect identity.
+- the request carries the existing client name/version and protocol name/major/revision fields;
+- request `protocol.features` contains client-supported feature IDs, including supported display/interaction contract IDs;
+- result `protocol.features` remains the server-supported set;
+- client-required feature IDs are Desktop-local policy checked against that result; and
+- both peers compute the same intersection, while omitted/empty request features select legacy-v1 mode.
 
-The initialize result must expose:
+Legacy-v1 mode preserves existing method admission and current notification behavior. It does not turn an old client's missing declaration into an empty authority set. A new notification or interaction variant is emitted only when its feature is explicitly present in the non-legacy negotiated intersection.
+
+The richer public Desktop initialize contract cannot be added to the closed v1 DTOs. It requires the next host protocol major and must expose:
 
 - server and runtime build identity;
-- negotiated protocol name/major/revision and feature set;
+- negotiated protocol name/major/revision plus server-supported and effective feature sets;
 - effective host capabilities;
 - storage schema current/read/write compatibility range and maintenance-barrier generation;
 - effective workspace identity without exposing unnecessary absolute paths to the renderer;
 - whether startup reconciliation changed any run state;
-- update/runtime channel diagnostics safe for the client.
+- update/runtime channel diagnostics safe for the client; and
+- optional reconnect identity under explicit expiry and fencing rules.
 
-Capability negotiation is per connection. RPC configuration can cap available capabilities, but it cannot claim that a client supports clarifying questions, approvals, rich tool events, or notifications merely because a server flag is enabled.
+Capability negotiation is per connection. RPC configuration can cap available capabilities, but it cannot claim that a client supports clarifying questions, approvals, rich tool events, or notifications merely because a server flag is enabled. Desktop rejects initialization when any locally required feature is absent. Old-client/new-host, new-client/old-host, omitted/empty feature, missing-required-feature, and reconnect fixtures are required.
 
 ## Request Discipline
 
-The Desktop backend, not the renderer, owns wire requests.
+The Desktop backend, not the renderer, owns wire requests. The IDL-derived Desktop operation manifest generates separate safe bridge DTOs; the backend must never deserialize renderer input as a complete host params type and must project host results/notifications before they cross the bridge.
 
 - Every effectful operation covered by the host mutation contract uses a stable idempotency key generated before the first send and retained across retry.
 - The required set includes run start/resume, session create/update/delete, approval decisions, deferred/clarification resolution, environment mutations, and OAuth login/refresh/logout state changes.
-- JSON-RPC request IDs are unique per connection and are not used as durable operation identities.
+- JSON-RPC request IDs are unique per connection, generated by the backend, and are not used as durable operation identities.
+- Idempotency keys, routing identities, client scopes, execution-domain bindings, and retry metadata are backend-constructed or backend-overridden fields; renderer payloads cannot inject them.
+- Raw host paths, credentials, private diagnostics, and wire fields absent from the safe bridge result/notification schema never cross into TypeScript state.
 - Each covered mutation returns a durable, secret-free receipt containing the operation kind, request fingerprint, idempotency key identity, state, and target/result reference.
 - After response loss, the backend queries the receipt by scoped operation key before retrying. Methods outside the receipt contract are not blindly retried; the client uses explicitly documented target-state recovery or asks the user to reconcile.
 - The backend never retries a covered mutation with a new idempotency key.
@@ -171,8 +175,8 @@ Update activation follows the same drain barrier and is specified in `06-runtime
 
 Before public Desktop release, the host protocol must provide or explicitly standardize:
 
-- per-connection client capability negotiation using the existing protocol name/major/revision plus required feature model;
-- runtime build, launch-envelope schema, storage compatibility, and stable execution-domain metadata;
+- compatible v1 client-supported semantics for request `protocol.features`, Desktop-local required-feature checks, legacy-v1 mode, and a persisted negotiated intersection for new client-opt-in notifications;
+- a next-major initialize contract for runtime build, launch-envelope schema, storage compatibility, reconnect, and stable execution-domain metadata;
 - a bounded supervised-stdio bootstrap that validates remote launch configuration before database open, plus a no-database identity/capability probe;
 - stable execution-domain routing identity separated from mutable host-key/runtime evidence, plus a storage-owned stable database/workspace execution-host lock namespace independent of per-client state directories and a typed foreign-owner outcome;
 - typed continuation preflight;
@@ -183,12 +187,12 @@ Before public Desktop release, the host protocol must provide or explicitly stan
 - structured incompatible/update-required errors;
 - a migration/preflight mode usable by the runtime updater without starting ordinary runs.
 
-These additions belong in `starweaver-rpc-core` and `starweaver-rpc`; they do not belong in Desktop-only DTOs.
+These structural additions belong first in the host IDL and its generated `starweaver-rpc-core` boundary, with behavior implemented by `starweaver-rpc`; they do not originate in Desktop-only host wire DTOs. The Desktop operation manifest may define only safe renderer bridge projections over those host contracts.
 
 ## Acceptance Gates
 
-- A generated/current-version client passes the RPC wire corpus over stdio.
-- Initialize rejects wrong protocol names/majors, absent required features, unsupported launch/storage ranges, and malformed capability declarations; revisions are fixture identities, not ordered minor versions.
+- IDL-generated Rust server bindings and manifest-filtered safe TypeScript Desktop bridge/client bindings share one protocol identity, pass the RPC wire corpus, and expose no free-form renderer JSON-RPC or complete host params path.
+- v1 initialize fixtures cover old-client/new-host, new-client/old-host, omitted/empty request features, missing locally required features, and the negotiated intersection; the next-major contract rejects wrong protocol names/majors, unsupported launch/storage ranges, and malformed capability declarations. Revisions remain fixture identities, not ordered minor versions.
 - Retry tests prove receipt-backed idempotent mutation behavior after response loss for every covered effect class.
 - Replay tests cover disconnect before response, notification gaps, duplicate delivery, cursor-family mismatch, and renderer reload.
 - HITL tests cover two windows, stale decisions, reconnect, unresolved records, and explicit resume.

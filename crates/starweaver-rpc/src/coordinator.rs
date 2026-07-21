@@ -59,6 +59,7 @@ use crate::{
     },
     environment_manager::EnvironmentAttachmentManager,
     session_management::{RpcAgentSessionAdapter, command_fingerprint},
+    session_tools::{deferred_toolset_for_session, deferred_toolset_summary},
 };
 
 const DURABLE_SESSION_ID_METADATA_KEY: &str = "starweaver.durable_session_id";
@@ -311,6 +312,7 @@ impl RpcRuntimeCoordinator {
         &self,
         profile: &str,
         attachments: &[EnvironmentAttachmentRef],
+        additional_toolset_identity: Option<&str>,
         source: Option<&RunRecord>,
         mode: ContinuationMaterializationMode,
     ) -> RpcHostResult<(
@@ -324,7 +326,10 @@ impl RpcRuntimeCoordinator {
             };
             (attachment.kind.clone(), mode.to_string())
         }));
-        let materialization = self.catalog.materialization(profile, binding_class)?;
+        let mut materialization = self.catalog.materialization(profile, binding_class)?;
+        if let Some(identity) = additional_toolset_identity {
+            materialization = materialization.with_additional_toolset_identity(identity);
+        }
         let continuation = source
             .map(|source| {
                 let source_materialization =
@@ -554,6 +559,8 @@ impl RpcRuntimeCoordinator {
                 request.source_run_id.as_str()
             )));
         }
+        let deferred_toolset_summary = deferred_toolset_summary(&snapshot.session)?;
+        let deferred_toolset = deferred_toolset_for_session(&snapshot.session)?;
         let prepared = PreparedContinuation::waiting_hitl(snapshot)
             .map_err(|error| RpcHostError::Invalid(error.to_string()))?;
         let checkpoint_state = prepared
@@ -573,13 +580,18 @@ impl RpcRuntimeCoordinator {
         let (materialization, continuation) = self.materialization_plan(
             &request.profile,
             &request.environment_attachments,
+            deferred_toolset_summary
+                .as_ref()
+                .map(|summary| summary.binding_id.as_str()),
             Some(&snapshot.run),
             request.continuation_mode,
         )?;
         let preflight_context = AgentContext::from_state(snapshot.state.clone());
-        let preflight_runtime = self
-            .catalog
-            .runtime_builder(&request.profile)?
+        let mut preflight_builder = self.catalog.runtime_builder(&request.profile)?;
+        if let Some(toolset) = deferred_toolset.as_ref() {
+            preflight_builder = preflight_builder.toolset(toolset);
+        }
+        let preflight_runtime = preflight_builder
             .context(preflight_context)
             .environment(resolved_environment.provider)
             .build();
@@ -925,6 +937,8 @@ impl RpcRuntimeCoordinator {
                 .await?
         };
         let session_id = session.session_id.clone();
+        let deferred_toolset_summary = deferred_toolset_summary(&session)?;
+        let deferred_toolset = deferred_toolset_for_session(&session)?;
         let materialization_plan = if preadmitted.is_none() {
             let source = match request.restore_from_run_id.as_ref() {
                 Some(run_id) => Some(
@@ -935,12 +949,17 @@ impl RpcRuntimeCoordinator {
                 ),
                 None => None,
             };
-            Some(self.materialization_plan(
-                &request.profile,
-                &request.environment_attachments,
-                source.as_ref(),
-                request.continuation_mode,
-            )?)
+            Some(
+                self.materialization_plan(
+                    &request.profile,
+                    &request.environment_attachments,
+                    deferred_toolset_summary
+                        .as_ref()
+                        .map(|summary| summary.binding_id.as_str()),
+                    source.as_ref(),
+                    request.continuation_mode,
+                )?,
+            )
         } else {
             None
         };
@@ -1185,9 +1204,11 @@ impl RpcRuntimeCoordinator {
                 }
             }
             let terminal_replay_sequence = Arc::new(AtomicUsize::new(0));
-            let mut runtime = self
-                .catalog
-                .runtime_builder(&request.profile)?
+            let mut runtime_builder = self.catalog.runtime_builder(&request.profile)?;
+            if let Some(toolset) = deferred_toolset.as_ref() {
+                runtime_builder = runtime_builder.toolset(toolset);
+            }
+            let mut runtime = runtime_builder
                 .subagent_delegation_mode(SubagentDelegationMode::Async)
                 .background_subagent_supervisor(supervisor.clone())
                 .context(context)
@@ -1656,17 +1677,32 @@ impl RpcRuntimeCoordinator {
                 final_status.error =
                     Some("atomic HITL terminal evidence requires reconciliation".to_string());
             }
-            if publish_committed_terminal_events(&active, &replay_log, &worker_target, marker)
-                .await
-                .is_err()
-            {
-                final_status.error.get_or_insert_with(|| {
-                    "failed to load committed terminal replay events".to_string()
-                });
-            }
             let terminal_durable = if hitl_evidence_error.is_some() {
                 false
+            } else if durable_status == RunStatus::Waiting {
+                // `finish_stream` has already committed the resumable Waiting snapshot and HITL
+                // records. Waiting ends this worker but is not a terminal run or replay marker.
+                if store.release_run_admission(&worker_lease).await.is_ok() {
+                    true
+                } else {
+                    final_status.error.get_or_insert_with(|| {
+                        "waiting evidence committed but admission release requires reconciliation"
+                            .to_string()
+                    });
+                    matches!(
+                        store.load_run(&worker_session_id, &worker_run_id).await,
+                        Ok(run) if run.status == RunStatus::Waiting
+                    )
+                }
             } else {
+                if publish_committed_terminal_events(&active, &replay_log, &worker_target, marker)
+                    .await
+                    .is_err()
+                {
+                    final_status.error.get_or_insert_with(|| {
+                        "failed to load committed terminal replay events".to_string()
+                    });
+                }
                 match store
                     .finalize_run_admission(&worker_lease, finalized_terminal.clone())
                     .await
@@ -2319,9 +2355,13 @@ impl RpcRuntimeCoordinator {
             )
             .await
             .map_err(|error| RpcHostError::Invalid(error.message))?;
+        let deferred_toolset_summary = deferred_toolset_summary(&session)?;
         let (materialization, continuation) = self.materialization_plan(
             &background.profile,
             &environment_attachments,
+            deferred_toolset_summary
+                .as_ref()
+                .map(|summary| summary.binding_id.as_str()),
             Some(&source),
             ContinuationMaterializationMode::Preserve,
         )?;

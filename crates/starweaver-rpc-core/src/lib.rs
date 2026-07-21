@@ -144,13 +144,16 @@ pub const HOST_PROTOCOL_NAME: &str = "starweaver.host";
 /// Supported breaking host-control protocol generation.
 pub const HOST_PROTOCOL_MAJOR: u32 = 1;
 /// Current host-control protocol documentation and fixture revision.
-pub const HOST_PROTOCOL_REVISION: &str = "2026-07-14";
+pub const HOST_PROTOCOL_REVISION: &str = "2026-07-21";
 /// Optional feature id advertised only when a session-search provider is installed.
 pub const SESSION_SEARCH_FEATURE: &str = "session.search";
 /// Implemented host-control feature vocabulary.
 pub const HOST_PROTOCOL_FEATURES: &[&str] = &[
     "sessions",
+    "session.fork",
+    "session.deferred_tools",
     "runs",
+    "mcp.config_file",
     "stream.replay",
     "environment.attachments",
     "environment.active_mounts",

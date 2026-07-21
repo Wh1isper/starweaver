@@ -36,6 +36,7 @@ fn rpc_replay_result_consumes_shared_stream_golden_corpus() {
         },
     ));
 
+    let terminal_index = events.len() - 1;
     let result = replay_result(
         fixture["session_id"].as_str().expect("session id"),
         fixture["run_id"].as_str(),
@@ -71,10 +72,13 @@ fn rpc_replay_result_consumes_shared_stream_golden_corpus() {
             .clone()
     );
     assert_eq!(
-        result["events"][3]["event"]["marker"],
+        result["events"][terminal_index]["event"]["marker"],
         fixture["replay"]["terminal"]
     );
-    assert_eq!(result["events"][3]["event"]["kind"], "terminal");
+    assert_eq!(
+        result["events"][terminal_index]["event"]["kind"],
+        "terminal"
+    );
 
     let source = &fixture["display"]["source"];
     let display_index = usize::try_from(source["display_index"].as_u64().expect("display index"))
@@ -86,7 +90,7 @@ fn rpc_replay_result_consumes_shared_stream_golden_corpus() {
         sourced["metadata"]["source_sequence"],
         source["source_sequence"]
     );
-    assert_eq!(result["latestCursor"]["sequence"], 3);
+    assert_eq!(result["latestCursor"]["sequence"], terminal_index);
     assert_eq!(result["latestCursor"]["scope"], fixture["replay"]["scope"]);
 
     let cancelled_record: AgentStreamRecord =

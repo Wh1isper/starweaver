@@ -2,10 +2,13 @@
   "identity": {
     "name": "starweaver.host",
     "major": 1,
-    "revision": "2026-07-14",
+    "revision": "2026-07-21",
     "features": [
       "sessions",
+      "session.fork",
+      "session.deferred_tools",
       "runs",
+      "mcp.config_file",
       "stream.replay",
       "environment.attachments",
       "environment.active_mounts",

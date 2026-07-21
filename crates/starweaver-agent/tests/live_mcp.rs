@@ -24,12 +24,13 @@ use rmcp::{
     },
 };
 use starweaver_agent::{
-    AgentBuilder, AgentContext, LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot, McpPromptSpec,
-    McpResourceSpec, McpSamplingSpec, McpSubscriptionSpec, McpToolSpec, McpTransport,
-    RmcpLiveMcpClient, TOOLSET_CLOSED_EVENT_KIND, TOOLSET_INITIALIZED_EVENT_KIND, TestModel,
-    ToolContext, ToolRegistry, ToolResult, live_mcp_toolset,
+    AgentBuilder, AgentContext, DynLiveMcpClient, LiveMcpClient, LiveMcpError,
+    LiveMcpServerSnapshot, McpPromptSpec, McpResourceSpec, McpSamplingSpec, McpSubscriptionSpec,
+    McpToolSpec, McpToolsetConfig, McpTransport, RmcpLiveMcpClient, TOOLSET_CLOSED_EVENT_KIND,
+    TOOLSET_INITIALIZED_EVENT_KIND, TestModel, ToolContext, ToolRegistry, ToolResult,
+    lazy_live_mcp_toolset, live_mcp_toolset,
 };
-use starweaver_core::{ConversationId, RunId};
+use starweaver_core::{AgentId, ConversationId, RunId};
 use starweaver_model::ToolCallPart;
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -57,7 +58,10 @@ async fn live_mcp_adapter_discovers_toolset() {
     let toolset = live_mcp_toolset(
         Arc::new(FakeMcp),
         "local",
-        McpTransport::stdio("fake-server"),
+        McpTransport::stdio("fake-server").with_env(serde_json::Map::from_iter([(
+            "MCP_SECRET".to_string(),
+            serde_json::json!("must-not-leak"),
+        )])),
     )
     .await
     .unwrap();
@@ -65,6 +69,123 @@ async fn live_mcp_adapter_discovers_toolset() {
     assert_eq!(toolset.name(), "local");
     assert_eq!(toolset.get_tools()[0].name(), "lookup");
     assert_eq!(toolset.get_instructions().len(), 1);
+}
+
+#[tokio::test]
+async fn lazy_mcp_discovers_once_per_run_and_closes_each_run_once() {
+    struct CountingMcp {
+        discoveries: Arc<AtomicUsize>,
+        closes: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl LiveMcpClient for CountingMcp {
+        async fn discover(
+            &self,
+            id: &str,
+            _transport: &McpTransport,
+        ) -> Result<LiveMcpServerSnapshot, LiveMcpError> {
+            self.discoveries.fetch_add(1, Ordering::SeqCst);
+            Ok(LiveMcpServerSnapshot::new(id).with_tool(McpToolSpec::new(
+                "lookup",
+                serde_json::json!({"type": "object"}),
+            )))
+        }
+
+        async fn close(&self, _id: &str, _transport: &McpTransport) -> Result<(), LiveMcpError> {
+            self.closes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    let discoveries = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let factory = {
+        let discoveries = discoveries.clone();
+        let closes = closes.clone();
+        Arc::new(move || {
+            Arc::new(CountingMcp {
+                discoveries: discoveries.clone(),
+                closes: closes.clone(),
+            }) as DynLiveMcpClient
+        })
+    };
+    let toolset = lazy_live_mcp_toolset(
+        McpToolsetConfig::new("lazy", McpTransport::stdio("fixture")),
+        factory,
+    );
+    assert_eq!(discoveries.load(Ordering::SeqCst), 0);
+    assert_eq!(toolset.lifecycle_policy().exit_timeout_ms, Some(10_000));
+
+    let mut first = AgentContext::new(AgentId::from_string("agent-lazy"));
+    first.run_id = Some(RunId::from_string("run-lazy-a"));
+    let first_preparation = toolset.prepare_with_context(&first).await.unwrap();
+    assert_eq!(first_preparation.tools.len(), 1);
+    toolset.prepare_with_context(&first).await.unwrap();
+    assert_eq!(discoveries.load(Ordering::SeqCst), 1);
+
+    let mut second = first.clone();
+    second.run_id = Some(RunId::from_string("run-lazy-b"));
+    toolset.prepare_with_context(&second).await.unwrap();
+    assert_eq!(discoveries.load(Ordering::SeqCst), 2);
+
+    toolset.exit_with_context(&first).await.unwrap();
+    toolset.exit_with_context(&first).await.unwrap();
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+    toolset.prepare_with_context(&second).await.unwrap();
+    assert_eq!(discoveries.load(Ordering::SeqCst), 2);
+    toolset.exit_with_context(&second).await.unwrap();
+    assert_eq!(closes.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn lazy_mcp_close_failure_remains_retryable() {
+    struct RetryCloseMcp {
+        closes: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl LiveMcpClient for RetryCloseMcp {
+        async fn discover(
+            &self,
+            id: &str,
+            _transport: &McpTransport,
+        ) -> Result<LiveMcpServerSnapshot, LiveMcpError> {
+            Ok(LiveMcpServerSnapshot::new(id).with_tool(McpToolSpec::new(
+                "lookup",
+                serde_json::json!({"type": "object"}),
+            )))
+        }
+
+        async fn close(&self, _id: &str, _transport: &McpTransport) -> Result<(), LiveMcpError> {
+            if self.closes.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(LiveMcpError::Adapter("injected close failure".to_string()));
+            }
+            Ok(())
+        }
+    }
+
+    let closes = Arc::new(AtomicUsize::new(0));
+    let factory = {
+        let closes = closes.clone();
+        Arc::new(move || {
+            Arc::new(RetryCloseMcp {
+                closes: closes.clone(),
+            }) as DynLiveMcpClient
+        })
+    };
+    let toolset = lazy_live_mcp_toolset(
+        McpToolsetConfig::new("retry-close", McpTransport::stdio("fixture")),
+        factory,
+    );
+    let mut context = AgentContext::new(AgentId::from_string("agent-retry-close"));
+    context.run_id = Some(RunId::from_string("run-retry-close"));
+    toolset.prepare_with_context(&context).await.unwrap();
+
+    assert!(toolset.exit_with_context(&context).await.is_err());
+    toolset.exit_with_context(&context).await.unwrap();
+    toolset.exit_with_context(&context).await.unwrap();
+    assert_eq!(closes.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -88,7 +209,10 @@ async fn live_mcp_discovered_tool_defers_with_mcp_metadata() {
     let toolset = live_mcp_toolset(
         Arc::new(FakeMcp),
         "local",
-        McpTransport::stdio("fake-server"),
+        McpTransport::stdio("fake-server").with_env(serde_json::Map::from_iter([(
+            "MCP_SECRET".to_string(),
+            serde_json::json!("must-not-leak"),
+        )])),
     )
     .await
     .unwrap();
@@ -111,8 +235,14 @@ async fn live_mcp_discovered_tool_defers_with_mcp_metadata() {
     assert_eq!(result.metadata["control_flow"], "call_deferred");
     assert_eq!(result.metadata["deferred"]["kind"], "mcp_tool_call");
     assert_eq!(result.metadata["deferred"]["server_id"], "local");
+    assert_eq!(result.metadata["deferred"]["transport"], "stdio");
     assert_eq!(result.metadata["deferred"]["tool_name"], "lookup");
     assert_eq!(result.metadata["deferred"]["arguments"]["query"], "docs");
+    assert!(
+        !result.metadata["deferred"]
+            .to_string()
+            .contains("must-not-leak")
+    );
 }
 
 #[tokio::test]
@@ -161,7 +291,10 @@ async fn live_mcp_discovered_tool_executes_through_host_client() {
             calls: calls.clone(),
         }),
         "local",
-        McpTransport::stdio("fake-server"),
+        McpTransport::stdio("fake-server").with_env(serde_json::Map::from_iter([(
+            "MCP_SECRET".to_string(),
+            serde_json::json!("must-not-leak"),
+        )])),
     )
     .await
     .unwrap();
@@ -541,7 +674,10 @@ async fn live_mcp_toolset_closes_host_client_on_run_exit() {
             closed: closed.clone(),
         }),
         "local",
-        McpTransport::stdio("fake-server"),
+        McpTransport::stdio("fake-server").with_env(serde_json::Map::from_iter([(
+            "MCP_SECRET".to_string(),
+            serde_json::json!("must-not-leak"),
+        )])),
     )
     .await
     .unwrap();
@@ -562,6 +698,10 @@ async fn live_mcp_toolset_closes_host_client_on_run_exit() {
             && event.payload["metadata"]["mcp_server_id"] == serde_json::json!("local")
             && event.payload["metadata"]["mcp_transport"] == serde_json::json!("stdio")
             && event.payload["metadata"]["live_mcp"] == serde_json::json!(true)
+            && event.payload["metadata"]["mcp_tool_count"] == serde_json::json!(1)
+            && event.payload["metadata"]["mcp_inventory_digest"]
+                .as_str()
+                .is_some_and(|digest| digest.starts_with("sha256:"))
             && event.payload["metadata"]["mcp_resource_count"] == serde_json::json!(1)
             && event.payload["metadata"]["mcp_prompt_count"] == serde_json::json!(1)
             && event.payload["metadata"]["mcp_sampling"] == serde_json::json!(true)

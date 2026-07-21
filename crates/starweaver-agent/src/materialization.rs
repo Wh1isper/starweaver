@@ -154,6 +154,16 @@ impl ResolvedAgentMaterialization {
         evidence
     }
 
+    /// Add one host-materialized toolset identity and refresh the fingerprint.
+    #[must_use]
+    pub fn with_additional_toolset_identity(mut self, identity: impl Into<String>) -> Self {
+        self.toolset_ids.push(identity.into());
+        self.toolset_ids.sort();
+        self.toolset_ids.dedup();
+        self.fingerprint = self.calculate_fingerprint();
+        self
+    }
+
     /// Bind credential-free host runtime and workspace identities before persisting evidence.
     #[must_use]
     pub fn with_host_bindings(

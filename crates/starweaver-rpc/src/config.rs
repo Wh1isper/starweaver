@@ -37,6 +37,9 @@ pub struct RpcProfileConfig {
     /// RPC-owned subagent declarations available to this parent profile.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<String>,
+    /// MCP server names selected from the explicit RPC MCP config file. Empty selects all servers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<String>,
     /// Unit-test-only deterministic response. Never deserialized from RPC config.
     #[serde(skip)]
     pub(crate) test_response: Option<String>,
@@ -52,6 +55,7 @@ impl Default for RpcProfileConfig {
             instructions: Vec::new(),
             toolsets: Vec::new(),
             subagents: Vec::new(),
+            mcp_servers: Vec::new(),
             test_response: None,
         }
     }
@@ -200,6 +204,10 @@ pub struct RpcConfig {
     pub providers: BTreeMap<String, RpcProviderConfig>,
     /// RPC-owned named subagent declarations.
     pub subagents: BTreeMap<String, RpcSubagentConfig>,
+    /// Explicit MCP configuration file, when installed.
+    pub mcp_config_path: Option<PathBuf>,
+    /// Validated MCP servers loaded from the explicit file.
+    pub mcp_servers: BTreeMap<String, starweaver_tools::McpServerConfig>,
     /// Client interaction capabilities explicitly supported by the RPC frontend.
     pub client_capabilities: RpcClientCapabilitiesConfig,
     /// HTTP transport authentication and request-origin policy.
@@ -223,6 +231,7 @@ struct FileServerConfig {
     state_dir: Option<PathBuf>,
     workspace_root: Option<PathBuf>,
     default_profile: Option<String>,
+    mcp_config_path: Option<PathBuf>,
     http_auth: Option<FileHttpAuthConfig>,
     session_search: Option<RpcSessionSearchConfig>,
 }
@@ -272,9 +281,10 @@ impl RpcConfig {
             || global_dir.join("rpc"),
             |path| resolve_path(config_dir, path),
         );
-        let workspace_root = server
-            .workspace_root
-            .map_or(current_dir, |path| resolve_path(config_dir, path));
+        let workspace_root = server.workspace_root.map_or_else(
+            || current_dir.clone(),
+            |path| resolve_path(config_dir, path),
+        );
         let http_auth = resolve_http_auth(config_dir, server.http_auth)?;
         let mut session_search = server.session_search.unwrap_or_default();
         session_search.display_root = session_search
@@ -291,6 +301,17 @@ impl RpcConfig {
                 }
             };
         }
+        let mcp_config_path = resolve_mcp_config_path(
+            &current_dir,
+            config_dir,
+            env::var_os("STARWEAVER_RPC_MCP_CONFIG").map(PathBuf::from),
+            server.mcp_config_path,
+        );
+        let mcp_servers = mcp_config_path
+            .as_deref()
+            .map(load_mcp_servers)
+            .transpose()?
+            .unwrap_or_default();
         if session_search.max_query_bytes == 0
             || session_search.max_page_size == 0
             || session_search.max_display_files == 0
@@ -330,6 +351,8 @@ impl RpcConfig {
             profiles,
             providers,
             subagents,
+            mcp_config_path,
+            mcp_servers,
             client_capabilities,
             http_auth,
             session_search,
@@ -354,6 +377,8 @@ impl RpcConfig {
             profiles: BTreeMap::from([(DEFAULT_PROFILE_NAME.to_string(), profile)]),
             providers: default_provider_configs(),
             subagents: BTreeMap::new(),
+            mcp_config_path: None,
+            mcp_servers: BTreeMap::new(),
             client_capabilities: RpcClientCapabilitiesConfig::default(),
             http_auth: RpcHttpAuthConfig::default(),
             session_search: RpcSessionSearchConfig::default(),
@@ -405,6 +430,38 @@ fn read_file_config(path: &Path) -> RpcHostResult<FileConfig> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(FileConfig::default()),
         Err(error) => Err(RpcHostError::Io(error)),
     }
+}
+
+fn resolve_mcp_config_path(
+    current_dir: &Path,
+    config_dir: &Path,
+    environment_path: Option<PathBuf>,
+    file_path: Option<PathBuf>,
+) -> Option<PathBuf> {
+    environment_path
+        .map(|path| resolve_path(current_dir, path))
+        .or_else(|| file_path.map(|path| resolve_path(config_dir, path)))
+}
+
+fn load_mcp_servers(
+    path: &Path,
+) -> RpcHostResult<BTreeMap<String, starweaver_tools::McpServerConfig>> {
+    let mut servers = starweaver_tools::McpConfigDocument::from_path(path)
+        .map_err(|error| RpcHostError::Invalid(error.to_string()))?
+        .servers;
+    let mcp_config_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    for server in servers.values_mut() {
+        if let Some(cwd) = server.cwd.as_deref().map(PathBuf::from)
+            && cwd.is_relative()
+        {
+            server.cwd = Some(
+                resolve_path(mcp_config_dir, cwd)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    Ok(servers)
 }
 
 fn resolve_path(base: &Path, path: PathBuf) -> PathBuf {
@@ -542,6 +599,49 @@ base_url = "https://models.example.test/v1"
         assert_eq!(
             file.providers.unwrap()["homelab"].api_key_env.as_deref(),
             Some("HOMELAB_API_KEY")
+        );
+    }
+
+    #[test]
+    fn resolves_mcp_config_sources_against_their_own_base() {
+        let current_dir = Path::new("/process/workspace");
+        let config_dir = Path::new("/config/root");
+        assert_eq!(
+            resolve_mcp_config_path(
+                current_dir,
+                config_dir,
+                None,
+                Some(PathBuf::from("mcp.json")),
+            ),
+            Some(config_dir.join("mcp.json"))
+        );
+        assert_eq!(
+            resolve_mcp_config_path(
+                current_dir,
+                config_dir,
+                Some(PathBuf::from("override.json")),
+                Some(PathBuf::from("mcp.json")),
+            ),
+            Some(current_dir.join("override.json"))
+        );
+    }
+
+    #[test]
+    fn loads_mcp_config_relative_to_its_own_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_dir = temp.path().join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+        let path = config_dir.join("mcp.json");
+        fs::write(
+            &path,
+            r#"{"servers":{"local":{"command":"server","cwd":"workspace"}}}"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_servers(&path).unwrap();
+        assert_eq!(
+            servers["local"].cwd.as_deref(),
+            Some(config_dir.join("workspace").to_string_lossy().as_ref())
         );
     }
 

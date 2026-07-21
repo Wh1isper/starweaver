@@ -149,15 +149,15 @@ pub fn required_scope(method: &str) -> Option<RpcHttpScope> {
         | "run.prompt"
         | "run.cancel"
         | "run.steer"
+        | "run.resume"
         | "session.create"
+        | "session.fork"
         | "environment.attach"
         | "environment.detach"
         | "environment.health"
         | "environment.active_mount"
         | "environment.active_unmount" => RpcHttpScope::Run,
-        "approval.decide" | "deferred.complete" | "deferred.fail" | "run.resume" => {
-            RpcHttpScope::Approval
-        }
+        "approval.decide" | "deferred.complete" | "deferred.fail" => RpcHttpScope::Approval,
         "model.select" | "session.current.set" | "session.delete" | "storage.importLegacy" => {
             RpcHttpScope::Admin
         }

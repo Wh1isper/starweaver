@@ -82,6 +82,9 @@ pub enum DisplayMessageKind {
     /// Approval requested.
     #[serde(rename = "APPROVAL_REQUESTED")]
     ApprovalRequested,
+    /// External client tool execution requested.
+    #[serde(rename = "DEFERRED_REQUESTED")]
+    DeferredRequested,
     /// Approval decision recorded.
     #[serde(rename = "APPROVAL_RESOLVED")]
     ApprovalResolved,

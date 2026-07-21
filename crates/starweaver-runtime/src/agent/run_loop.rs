@@ -1918,6 +1918,22 @@ impl Agent {
                     ExecuteToolsTransition::AwaitExternal => {
                         let AwaitExternalTransition::Suspend { node, reason } =
                             Self::await_external_phase(&mut state, context);
+                        for deferred in &state.deferred_tool_returns {
+                            context.publish_event(AgentEvent::new(
+                                starweaver_core::DEFERRED_TOOL_REQUESTED_EVENT_KIND,
+                                serde_json::json!({
+                                    "run_id": run_id.as_str(),
+                                    "tool_call_id": deferred.tool_call_id.as_str(),
+                                    "tool_name": deferred.name.as_str(),
+                                    "deferred_id": format!(
+                                        "deferred_{}_{}",
+                                        run_id.as_str(),
+                                        deferred.tool_call_id.as_str()
+                                    ),
+                                    "request": deferred.metadata.get("deferred"),
+                                }),
+                            ));
+                        }
                         context.publish_event(AgentEvent::new(
                             "run_waiting",
                             serde_json::json!({

@@ -1,6 +1,6 @@
 # RPC Host Architecture
 
-Date: 2026-07-19
+Date: 2026-07-21
 
 Scope: the standalone `starweaver-rpc` host, its durable execution boundary, its JSON-RPC v1 wire contract, and its interoperability with the independent CLI product.
 
@@ -73,9 +73,11 @@ A continuation also persists a `ContinuationMaterialization` assessment. `preser
 
 ## JSON-RPC v1 Contract
 
-`starweaver-rpc-core` owns the v1 protocol surface:
+The implemented baseline remains Rust-first. `../ops/09-rpc-idl-and-client-generation.md` records the accepted migration to one OpenRPC/JSON Schema structural source that generates the Rust server boundary and manifest-filtered TypeScript Desktop client; none of the generated target is claimed as current evidence in this review.
 
-- concrete request and result DTOs for every registered method;
+`starweaver-rpc-core` owns the current v1 protocol surface:
+
+- concrete request and result DTOs for every registered method, including `session.fork` and session-scoped deferred tool definitions;
 - typed notification unions and stable error-code catalog;
 - strict camel-case decoding, defaults, optionals, bounds, and unknown-field rejection;
 - canonical and invalid wire vectors; and
@@ -84,6 +86,16 @@ A continuation also persists a `ContinuationMaterialization` assessment. `preser
 Production JSON-RPC dispatch validates registered DTO parameters before invoking a handler and validates handler results before serializing a successful response. The same corpus exercises Rust serde, in-process JSON-RPC dispatch, stdio transport, and loopback HTTP transport. The corpus is a protocol artifact, not a client binding or a client-product dependency.
 
 Protocol negotiation uses the `starweaver.host` family and major version. Minor fixture revisions describe the v1 corpus without changing the supported major. HTTP authorization is scoped at the host boundary; replay-only transports do not gain connection-scoped environment authority.
+
+## Session Fork and Client-Managed Deferred Tools
+
+`session.fork` snapshots the source session's latest successful durable context into an independent target session. A source with no runs may fork its initial state; failed/waiting-only sources are rejected. It preserves profile/workspace ownership and session-scoped deferred-tool definitions, records parent/source lineage, resets runtime ownership and pending evidence, and uses receipt-first idempotent session creation. Service-level tests prove latest-success selection in the presence of a newer failed run, failed/waiting-only rejection, exact retry after source deletion, conflict behavior, binding isolation, and continued discussion on the target.
+
+`session.create` accepts strictly bounded client-managed deferred tool schemas. A domain-separated digest binds those definitions to the session and contributes a stable toolset identity to run materialization. The runtime emits one `deferred_requested` HITL sideband event per external call and then commits a non-terminal waiting boundary. RPC releases the worker admission without manufacturing a terminal marker. The tested client flow is `deferred.list` -> `deferred.complete`/`deferred.fail` -> explicit `run.resume` -> completed continuation.
+
+## Explicit MCP Configuration
+
+RPC may load one explicit strict MCP JSON document through `rpc.toml` or `STARWEAVER_RPC_MCP_CONFIG`. Profile selections are canonical duplicate-free sets. Stdio and streamable HTTP clients are discovered lazily per run without serializing unrelated run discovery; server capability declarations gate inventory requests; partial discovery failures close the service; calls share a read fence while close/replacement is exclusive. Initialization, request, and exit/cleanup each have bounded timeout policy, and close failures retain retryable ownership. Initialization lifecycle evidence carries a credential-free discovered inventory digest, while durable materialization binds the selected static configuration. Deferred records and events expose only server/tool identity, transport kind, and arguments; they never expose URLs, headers, commands, process arguments, environments, credentials, or transport-owned paths. Live inventory is deliberately dynamic per run and its digest is diagnostic rather than a `Preserve` continuation constraint.
 
 ## Request Execution Boundary
 

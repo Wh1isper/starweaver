@@ -69,7 +69,7 @@ fn rpc_catalog_covers_every_v1_method_and_notification_exactly() {
         .expect("parse RPC contract catalog");
     assert_eq!(fixture.schema, "starweaver.host.contract-catalog");
     assert_eq!(fixture.major, HOST_PROTOCOL_MAJOR);
-    assert_eq!(fixture.revision, "2026-07-18");
+    assert_eq!(fixture.revision, "2026-07-21");
 
     let expected = V1_METHOD_CONTRACTS
         .iter()
@@ -95,6 +95,7 @@ fn rpc_catalog_covers_every_v1_method_and_notification_exactly() {
         .collect::<BTreeSet<_>>();
     assert_eq!(methods.len(), fixture.methods.len(), "duplicate RPC method");
     assert!(methods.contains("storage.importLegacy"));
+    assert!(methods.contains("session.fork"));
     assert!(methods.contains("environment.active_mount"));
     assert!(!methods.contains("storage.import_legacy"));
     assert!(!methods.contains("environment.activeMount"));
@@ -147,6 +148,7 @@ fn every_catalog_entry_names_concrete_serde_dtos() {
     serde_contract::<ConfigGetParams, ConfigGetResult>();
     serde_contract::<StorageImportLegacyParams, StorageImportLegacyResult>();
     serde_contract::<SessionCreateParams, SessionCreateResult>();
+    serde_contract::<SessionForkParams, SessionForkResult>();
     serde_contract::<SessionListParams, SessionListResult>();
     serde_contract::<SessionSearchParams, SessionSearchResult>();
     serde_contract::<SessionGetParams, SessionGetResult>();
@@ -362,7 +364,7 @@ fn concrete_rpc_wire_corpus_is_complete_and_rust_conformant() {
     let corpus = serde_json::from_str::<WireCorpus>(RPC_WIRE).expect("parse wire corpus");
     assert_eq!(corpus.schema, "starweaver.host.wire-corpus");
     assert_eq!(corpus.major, HOST_PROTOCOL_MAJOR);
-    assert_eq!(corpus.revision, "2026-07-19");
+    assert_eq!(corpus.revision, "2026-07-21");
     assert_eq!(corpus.methods.len(), V1_METHOD_CONTRACTS.len());
 
     for (fixture, contract) in corpus.methods.iter().zip(V1_METHOD_CONTRACTS) {

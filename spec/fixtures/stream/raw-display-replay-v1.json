@@ -37,6 +37,25 @@
     {
       "sequence": 2,
       "event": {
+        "kind": "custom",
+        "event": {
+          "kind": "deferred_requested",
+          "payload": {
+            "run_id": "run-golden",
+            "tool_call_id": "call-client-lookup",
+            "tool_name": "client_lookup",
+            "deferred_id": "deferred_run-golden_call-client-lookup",
+            "request": {
+              "kind": "client_tool_call",
+              "arguments": {"query": "fixtures"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "sequence": 3,
+      "event": {
         "kind": "run_complete",
         "run_id": "run-golden",
         "output": "fixture complete"
@@ -44,14 +63,24 @@
     }
   ],
   "display": {
-    "sequences": [0, 1, 2],
-    "types": ["RUN_STARTED", "SUBAGENT_STARTED", "RUN_FINISHED"],
+    "sequences": [0, 1, 2, 3],
+    "types": ["RUN_STARTED", "SUBAGENT_STARTED", "DEFERRED_REQUESTED", "RUN_FINISHED"],
     "payloads": [
       {"conversation_id": "conversation-golden"},
       {
         "agent_name": "researcher",
         "child_run_id": "run-child-golden",
         "task": "inspect fixtures"
+      },
+      {
+        "run_id": "run-golden",
+        "tool_call_id": "call-client-lookup",
+        "tool_name": "client_lookup",
+        "deferred_id": "deferred_run-golden_call-client-lookup",
+        "request": {
+          "kind": "client_tool_call",
+          "arguments": {"query": "fixtures"}
+        }
       },
       {"output": "fixture complete"}
     ],
@@ -65,14 +94,14 @@
     }
   },
   "replay": {
-    "sequences": [0, 1, 2, 3],
-    "kinds": ["raw", "raw", "raw", "terminal"],
+    "sequences": [0, 1, 2, 3, 4],
+    "kinds": ["raw", "raw", "raw", "raw", "terminal"],
     "scope": "run:run-golden",
     "terminal": {"kind": "run_completed"}
   },
   "cancelled": {
     "raw_record": {
-      "sequence": 4,
+      "sequence": 5,
       "event": {
         "kind": "run_cancelled",
         "run_id": "run-golden",
@@ -80,7 +109,7 @@
       }
     },
     "display": {
-      "sequence": 4,
+      "sequence": 5,
       "type": "RUN_CANCELLED",
       "payload": {"reason": "cancelled by fixture"}
     },

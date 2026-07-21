@@ -800,6 +800,27 @@ impl SessionStore for SqliteSessionStore {
         .map_err(SessionStoreError::Failed)?
     }
 
+    async fn load_session_mutation_receipt(
+        &self,
+        namespace_id: &str,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<Option<SessionRecord>> {
+        let store = self.clone();
+        let namespace_id = namespace_id.to_string();
+        let idempotency_key = idempotency_key.to_string();
+        let command_fingerprint = command_fingerprint.to_string();
+        crate::blocking::run(move || {
+            store.load_session_mutation_receipt_sync(
+                &namespace_id,
+                &idempotency_key,
+                &command_fingerprint,
+            )
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
     async fn update_managed_session(
         &self,
         command: UpdateManagedSession,

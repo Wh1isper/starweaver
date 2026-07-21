@@ -1670,6 +1670,25 @@ impl SessionStore for InMemorySessionStore {
         Ok(session)
     }
 
+    async fn load_session_mutation_receipt(
+        &self,
+        namespace_id: &str,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<Option<SessionRecord>> {
+        let inner = self.inner.lock().map_err(store_failed)?;
+        let key = (namespace_id.to_string(), idempotency_key.to_string());
+        let Some((fingerprint, session)) = inner.session_idempotency.get(&key) else {
+            return Ok(None);
+        };
+        if fingerprint != command_fingerprint {
+            return Err(SessionStoreError::IdempotencyConflict(
+                idempotency_key.to_string(),
+            ));
+        }
+        Ok(Some(session.clone()))
+    }
+
     async fn update_managed_session(
         &self,
         command: UpdateManagedSession,

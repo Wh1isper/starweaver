@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     process::Stdio,
+    sync::Arc,
 };
 
 use async_trait::async_trait;
@@ -20,16 +21,20 @@ use serde_json::{Map, Value};
 use starweaver_tools::{
     McpPromptSpec, McpResourceSpec, McpToolSpec, McpTransport, ToolContext, ToolResult,
 };
-use tokio::{process::Command, sync::Mutex};
+use tokio::{
+    process::Command,
+    sync::{Mutex, RwLock},
+};
 
 use crate::{LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot};
 
 type RmcpRunningService = RunningService<RoleClient, ()>;
+type SharedRmcpRunningService = Arc<RwLock<RmcpRunningService>>;
 
 /// Official `rmcp` SDK client adapter for live MCP servers.
 #[derive(Default)]
 pub struct RmcpLiveMcpClient {
-    clients: Mutex<BTreeMap<String, RmcpRunningService>>,
+    clients: Mutex<BTreeMap<String, SharedRmcpRunningService>>,
 }
 
 impl RmcpLiveMcpClient {
@@ -47,48 +52,78 @@ impl LiveMcpClient for RmcpLiveMcpClient {
         id: &str,
         transport: &McpTransport,
     ) -> Result<LiveMcpServerSnapshot, LiveMcpError> {
-        let client = connect_rmcp_client(transport).await?;
-        let instructions = client
-            .peer_info()
+        let mut client = connect_rmcp_client(transport).await?;
+        let peer_info = client.peer_info();
+        let instructions = peer_info
+            .as_ref()
             .and_then(|info| info.instructions.clone());
-        let tools = client
-            .list_all_tools()
-            .await
-            .map_err(|error| rmcp_service_error(&error))?
-            .into_iter()
-            .map(mcp_tool_spec_from_rmcp)
-            .collect();
-        let resources = client
-            .list_all_resources()
-            .await
-            .map_err(|error| rmcp_service_error(&error))?
-            .into_iter()
-            .map(|resource| mcp_resource_spec_from_rmcp(&resource))
-            .collect();
-        let prompts = client
-            .list_all_prompts()
-            .await
-            .map_err(|error| rmcp_service_error(&error))?
-            .into_iter()
-            .map(mcp_prompt_spec_from_rmcp)
-            .collect();
+        let supports_tools = peer_info
+            .as_ref()
+            .is_some_and(|info| info.capabilities.tools.is_some());
+        let supports_resources = peer_info
+            .as_ref()
+            .is_some_and(|info| info.capabilities.resources.is_some());
+        let supports_prompts = peer_info
+            .as_ref()
+            .is_some_and(|info| info.capabilities.prompts.is_some());
+        let discovery = async {
+            let tools = if supports_tools {
+                client
+                    .list_all_tools()
+                    .await
+                    .map_err(|error| rmcp_service_error(&error))?
+                    .into_iter()
+                    .map(mcp_tool_spec_from_rmcp)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let resources = if supports_resources {
+                client
+                    .list_all_resources()
+                    .await
+                    .map_err(|error| rmcp_service_error(&error))?
+                    .into_iter()
+                    .map(|resource| mcp_resource_spec_from_rmcp(&resource))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let prompts = if supports_prompts {
+                client
+                    .list_all_prompts()
+                    .await
+                    .map_err(|error| rmcp_service_error(&error))?
+                    .into_iter()
+                    .map(mcp_prompt_spec_from_rmcp)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            Ok::<_, LiveMcpError>((tools, resources, prompts))
+        }
+        .await;
+        let (tools, resources, prompts) = match discovery {
+            Ok(discovery) => discovery,
+            Err(error) => {
+                let _ = client.close().await;
+                return Err(error);
+            }
+        };
         let mut snapshot = LiveMcpServerSnapshot::new(id);
         snapshot.instructions = instructions;
         snapshot.tools = tools;
         snapshot.resources = resources;
         snapshot.prompts = prompts;
 
-        let previous = {
-            let mut clients = self.clients.lock().await;
-            clients.remove(id)
-        };
-        if let Some(mut previous) = previous {
-            let _ = previous.close().await;
+        if let Err(error) = self.close(id, transport).await {
+            let _ = client.close().await;
+            return Err(error);
         }
-        {
-            let mut clients = self.clients.lock().await;
-            clients.insert(id.to_string(), client);
-        }
+        self.clients
+            .lock()
+            .await
+            .insert(id.to_string(), Arc::new(RwLock::new(client)));
         Ok(snapshot)
     }
 
@@ -102,20 +137,17 @@ impl LiveMcpClient for RmcpLiveMcpClient {
     ) -> Result<ToolResult, LiveMcpError> {
         let arguments = json_object_arguments(arguments)?;
         let client = {
-            let mut clients = self.clients.lock().await;
-            clients.remove(id).ok_or_else(|| {
+            let clients = self.clients.lock().await;
+            clients.get(id).cloned().ok_or_else(|| {
                 LiveMcpError::Adapter(format!("rmcp client for server {id} was not discovered"))
             })?
         };
+        let client = client.read().await;
         let result = client
             .call_tool(CallToolRequestParams::new(tool_name.to_string()).with_arguments(arguments))
             .await
-            .map_err(|error| rmcp_service_error(&error));
-        {
-            let mut clients = self.clients.lock().await;
-            clients.insert(id.to_string(), client);
-        }
-        let result = result?;
+            .map_err(|error| rmcp_service_error(&error))?;
+        drop(client);
         if result.is_error == Some(true) {
             return Err(LiveMcpError::Adapter(format!(
                 "rmcp tool {id}/{tool_name} returned an error: {}",
@@ -134,15 +166,25 @@ impl LiveMcpClient for RmcpLiveMcpClient {
     }
 
     async fn close(&self, id: &str, _transport: &McpTransport) -> Result<(), LiveMcpError> {
-        let client = {
-            let mut clients = self.clients.lock().await;
-            clients.remove(id)
+        let client = self.clients.lock().await.get(id).cloned();
+        let Some(client) = client else {
+            return Ok(());
         };
-        if let Some(mut client) = client {
-            client.close().await.map_err(|error| {
+        {
+            let mut service = client.write().await;
+            service.close().await.map_err(|error| {
                 LiveMcpError::Adapter(format!("rmcp client close failed: {error}"))
             })?;
+            drop(service);
         }
+        let mut clients = self.clients.lock().await;
+        if clients
+            .get(id)
+            .is_some_and(|current| Arc::ptr_eq(current, &client))
+        {
+            clients.remove(id);
+        }
+        drop(clients);
         Ok(())
     }
 }

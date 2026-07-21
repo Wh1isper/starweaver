@@ -37,5 +37,8 @@ impl AgentEvent {
     }
 }
 
+/// Custom event kind emitted when a tool call is handed to an external client.
+pub const DEFERRED_TOOL_REQUESTED_EVENT_KIND: &str = "deferred_requested";
+
 /// Custom event kind emitted with a full task board snapshot.
 pub const TASK_SNAPSHOT_EVENT_KIND: &str = "task_snapshot";

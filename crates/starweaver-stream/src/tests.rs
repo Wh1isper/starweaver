@@ -126,6 +126,7 @@ fn all_display_message_kinds_serialize_to_agui_event_names() {
         (DisplayMessageKind::ToolsetRefreshed, "TOOLSET_REFRESHED"),
         (DisplayMessageKind::ToolsetClosed, "TOOLSET_CLOSED"),
         (DisplayMessageKind::ApprovalRequested, "APPROVAL_REQUESTED"),
+        (DisplayMessageKind::DeferredRequested, "DEFERRED_REQUESTED"),
         (DisplayMessageKind::ApprovalResolved, "APPROVAL_RESOLVED"),
         (DisplayMessageKind::HitlResolved, "HITL_RESOLVED"),
         (DisplayMessageKind::HitlDiagnostic, "HITL_DIAGNOSTIC"),
@@ -369,10 +370,19 @@ async fn default_projector_maps_hitl_sideband_custom_events() {
     let context = sideband_display_context();
     let approval_requested =
         custom_stream_record(37, "approval_requested", &json!({"tool_name": "edit"}));
+    let deferred_requested = custom_stream_record(
+        38,
+        "deferred_requested",
+        &json!({
+            "tool_name": "client_lookup",
+            "tool_call_id": "call-client-lookup",
+            "deferred_id": "deferred_fixture"
+        }),
+    );
     let approval_resolved =
-        custom_stream_record(38, "approval_resolved", &json!({"status": "approved"}));
+        custom_stream_record(39, "approval_resolved", &json!({"status": "approved"}));
     let hitl_resolved = custom_stream_record(
-        39,
+        40,
         "hitl_resolved",
         &json!({
             "tool_returns": 3,
@@ -384,12 +394,13 @@ async fn default_projector_maps_hitl_sideband_custom_events() {
         }),
     );
     let hitl_diagnostic = custom_stream_record(
-        40,
+        41,
         "hitl_decision_diagnostic",
         &json!({"error_kind": "duplicate_decision", "decision_id": "call_duplicate"}),
     );
 
     let approval_requested_messages = projector.project(&context, &approval_requested).await;
+    let deferred_requested_messages = projector.project(&context, &deferred_requested).await;
     let approval_resolved_messages = projector.project(&context, &approval_resolved).await;
     let hitl_messages = projector.project(&context, &hitl_resolved).await;
     let hitl_diagnostic_messages = projector.project(&context, &hitl_diagnostic).await;
@@ -401,6 +412,14 @@ async fn default_projector_maps_hitl_sideband_custom_events() {
     assert_eq!(
         approval_requested_messages[0].preview.as_deref(),
         Some("approval requested: edit")
+    );
+    assert_eq!(
+        deferred_requested_messages[0].kind,
+        DisplayMessageKind::DeferredRequested
+    );
+    assert_eq!(
+        deferred_requested_messages[0].preview.as_deref(),
+        Some("external tool execution requested: client_lookup")
     );
     assert_eq!(
         approval_resolved_messages[0].kind,

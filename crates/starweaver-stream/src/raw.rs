@@ -100,7 +100,14 @@ impl AgentSidebandEvent {
             "tool_search_loaded" | "tool_search_initialized" | "tool_search_refreshed" => {
                 Some(AgentSidebandEventCategory::ToolSearch)
             }
-            "hitl_resolved" => Some(AgentSidebandEventCategory::Hitl),
+            "approval_requested"
+            | "approval_resolved"
+            | "deferred_requested"
+            | "deferred_completed"
+            | "deferred_failed"
+            | "deferred_cancelled"
+            | "hitl_resolved"
+            | "hitl_decision_diagnostic" => Some(AgentSidebandEventCategory::Hitl),
             "skills_scanned" | "skill_activated" | "skills_reloaded" => {
                 Some(AgentSidebandEventCategory::Skill)
             }

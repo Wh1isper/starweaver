@@ -1,16 +1,51 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use starweaver_context::AgentContext;
 use starweaver_core::Metadata;
 use starweaver_model::ToolDefinition;
 
 use crate::{
-    DynTool, DynToolset, Tool, ToolContext, ToolError, ToolInstruction, ToolKind, ToolResult,
-    ToolUserInputPreprocessResult, Toolset, ToolsetLifecycleError, ToolsetLifecyclePolicy,
-    ToolsetLifecycleReport, ToolsetPreparation, set_tool_metadata_kind,
+    DynTool, DynToolset, StaticToolset, Tool, ToolContext, ToolError, ToolInstruction, ToolKind,
+    ToolResult, ToolUserInputPreprocessResult, Toolset, ToolsetLifecycleError,
+    ToolsetLifecyclePolicy, ToolsetLifecycleReport, ToolsetPreparation, set_tool_metadata_kind,
 };
+
+/// Declarative model-facing tool that is always executed by an external client.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DeferredToolSpec {
+    /// Unique model-facing tool name.
+    pub name: String,
+    /// Model-facing tool description.
+    pub description: String,
+    /// JSON schema for tool arguments.
+    pub parameters: Value,
+    /// Additional model instructions associated with this tool.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instructions: Vec<String>,
+}
+
+impl DeferredToolSpec {
+    /// Build a declarative deferred tool specification.
+    #[must_use]
+    pub fn new(name: impl Into<String>, description: impl Into<String>, parameters: Value) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters,
+            instructions: Vec::new(),
+        }
+    }
+
+    /// Add one model instruction for this tool.
+    #[must_use]
+    pub fn with_instruction(mut self, instruction: impl Into<String>) -> Self {
+        self.instructions.push(instruction.into());
+        self
+    }
+}
 
 /// Toolset wrapper that marks matching tools as deferred external work.
 pub struct DeferredToolset {
@@ -35,6 +70,35 @@ impl DeferredToolset {
             deferred: deferred.into_iter().map(Into::into).collect(),
             reason: "configured deferred tool policy".to_string(),
         }
+    }
+
+    /// Build a toolset directly from client-supplied declarative tool definitions.
+    ///
+    /// Calls are never executed in-process. The first call suspends the run, while a resumed call
+    /// returns the matching externally supplied deferred result.
+    #[must_use]
+    pub fn from_specs(
+        name: impl Into<String>,
+        specs: impl IntoIterator<Item = DeferredToolSpec>,
+    ) -> Self {
+        let name = name.into();
+        let mut inner = StaticToolset::new(&name).with_id(&name);
+        for spec in specs {
+            for (index, instruction) in spec.instructions.iter().enumerate() {
+                inner = inner.with_instruction(
+                    ToolInstruction::new(
+                        format!("{name}.{}.{}", spec.name, index + 1),
+                        instruction,
+                    )
+                    .with_dynamic(true),
+                );
+            }
+            inner = inner.with_tool(Arc::new(DeclaredDeferredTool { spec }));
+        }
+        Self::all(Arc::new(inner))
+            .with_name(name.clone())
+            .with_id(name)
+            .with_reason("client-managed deferred tool")
     }
 
     /// Defer all tools in the inner toolset.
@@ -163,6 +227,43 @@ impl Toolset for DeferredToolset {
     }
 }
 
+struct DeclaredDeferredTool {
+    spec: DeferredToolSpec,
+}
+
+#[async_trait]
+impl Tool for DeclaredDeferredTool {
+    fn name(&self) -> &str {
+        &self.spec.name
+    }
+
+    fn description(&self) -> Option<&str> {
+        Some(&self.spec.description)
+    }
+
+    fn parameters_schema(&self) -> Value {
+        self.spec.parameters.clone()
+    }
+
+    fn metadata(&self) -> Metadata {
+        let mut metadata = Metadata::default();
+        metadata.insert("deferred_call".to_string(), Value::Bool(true));
+        set_tool_metadata_kind(&mut metadata, ToolKind::Deferred);
+        metadata
+    }
+
+    async fn call(
+        &self,
+        _context: ToolContext,
+        _arguments: Value,
+    ) -> Result<ToolResult, ToolError> {
+        Err(ToolError::Execution {
+            tool: self.spec.name.clone(),
+            message: "declared deferred tool must be wrapped by DeferredToolset".to_string(),
+        })
+    }
+}
+
 struct DeferredTool {
     inner: DynTool,
     toolset_key: String,
@@ -260,9 +361,16 @@ impl Tool for DeferredTool {
             );
             return Ok(tool_result);
         }
+        let tool_call_id = context.metadata.get("tool_call_id").and_then(Value::as_str);
+        let deferred_id = tool_call_id
+            .map(|tool_call_id| format!("deferred_{}_{}", context.run_id.as_str(), tool_call_id));
         Err(ToolError::CallDeferred {
             tool: self.name().to_string(),
             metadata: serde_json::json!({
+                "kind": "client_tool_call",
+                "deferred_id": deferred_id,
+                "tool_call_id": tool_call_id,
+                "tool_name": self.name(),
                 "arguments": arguments,
                 "reason": self.reason,
                 "toolset": self.toolset_key,
