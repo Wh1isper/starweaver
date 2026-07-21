@@ -14,6 +14,7 @@ This document is the normative ownership and dependency decision for the Starwea
 - CLI/TUI and RPC may share lower-level library contracts and implementations. Shared code must be product-neutral and must not encode CLI commands, TUI state, RPC methods, or transport behavior.
 - CLI/TUI and RPC can each connect to envd independently through `starweaver-environment`, `starweaver-envd-core`, and `starweaver-envd-client`.
 - Packaging may distribute CLI and RPC binaries together. Packaging does not imply a runtime or crate dependency between them.
+- The planned Desktop product is an RPC protocol client and process supervisor specified in `../desktop/`. Shipping and supervising an exact RPC binary does not make RPC a CLI implementation detail or permit Desktop to link RPC implementation/runtime/storage crates into its renderer.
 
 ## Product Shape
 
@@ -107,6 +108,8 @@ It may embed the Agent SDK and connect directly to local or remote envd provider
 - RPC process startup and shutdown.
 
 It may embed the Agent SDK and connect directly to local or remote envd providers. It must not depend on `starweaver-cli`.
+
+The RPC binary remains independently runnable even when a Desktop release bundles and supervises it. Desktop communicates through the versioned host protocol and process lifecycle only; RPC does not import Desktop state or APIs.
 
 ### RPC Core
 

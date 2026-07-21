@@ -31,6 +31,7 @@ Current workspace members:
 - `crates/starweaver-cli` — independent CLI/TUI product surface for headless runs, terminal interaction, display rendering, session restore, launcher dispatch, direct environment/envd connectivity, and install/update workflows
 - `crates/starweaver-rpc-core` — typed JSON-RPC host protocol contracts, envelopes, errors, stream payload projection, and replay result helpers
 - `crates/starweaver-rpc` — independent standalone JSON-RPC host product for local and external host integrations, owning `rpc.toml`, AgentSpec/profile/model materialization, handlers, coordination, authorization, subscriptions, environment attachments, and transports
+- `apps/starweaver-desktop/src-tauri` — Tauri 2 Desktop shell foundation with process-owned state, single-instance activation, least-authority renderer IPC, and Linux/macOS/Windows build gates; RPC execution remains disabled until Phase 0 contracts are implemented
 - `packages/starweaver-py` — in-process Python SDK bindings, Python tool injection, live `AgentRun` control, message bus facades, typed HITL helpers, deterministic test models, sessions, stream records, and Python distribution artifacts
 
 Planned areas live in `spec/` until their responsibilities, integration points, and validation paths are clear:
@@ -60,6 +61,7 @@ Planned areas live in `spec/` until their responsibilities, integration points, 
 - `starweaver-cli`: independent command-line/TUI product surface and local automation entry point; it must not host or depend on the RPC product.
 - `starweaver-rpc-core`: typed JSON-RPC host protocol definitions and framing/projection helpers only.
 - `starweaver-rpc`: independent standalone JSON-RPC host product; it owns `rpc.toml`, profile/model materialization, handlers, and active-run state, must not depend on CLI, and independently connects to shared storage, environment, and envd abstractions.
+- Starweaver Desktop uses a Tauri 2 privileged Rust backend and a renderer restricted to a typed application bridge. The implemented shell foundation owns process state and application-owned single-instance transports that carry only a fixed activation frame; argv and working directories must not be read or forwarded. Renderer activation uses a dedicated typed IPC channel, never a general Tauri event-listener grant. The foundation intentionally has no RPC/storage/OAuth/environment authority yet. Future execution supervises one stdio RPC child per canonical workspace plus a least-authority catalog path. Desktop must not link CLI, RPC host, agent, runtime, or storage implementations, parse CLI private configuration as a runtime dependency, read SQLite/OAuth files, or send arbitrary renderer RPC. Desktop launches hosts only through a public versioned RPC launch envelope, not private `rpc.toml`. Per-workspace processes isolate coordination but are not an OS sandbox; shell-enabled release profiles require an enforceable sandboxed environment/process provider, otherwise native shell is disabled by default. The supervisor owns verified, compatibility-gated RPC runtime updates.
 - RPC transport threads own framing, authorization, request order, response writes, and flush barriers. Startup reconciliation, request dispatch, subscription tails, and coordinated shutdown execute on the RPC-owned Tokio runtime with an explicit worker-stack budget; blocking service entry points must not run on those runtime workers.
 - `starweaver-platform`: hosted orchestration and external protocol adapters such as A2A and AGUI.
 
@@ -150,6 +152,13 @@ Current specs:
 - `spec/alignment/10-session-search-evidence.md` — Phase 1 session-search implementation, conformance, and boundary evidence
 - `spec/alignment/11-tui-ui-ux-completion.md` — complete TUI interaction, status, task, history, and validation evidence
 - `spec/alignment/12-rpc-host-readiness.md` — RPC host contract, durability, recovery, and interoperability readiness
+- `spec/desktop/README.md` — Desktop architecture baseline, ownership map, prerequisites, and delivery phases
+- `spec/desktop/01-product-and-process-boundaries.md` — Desktop shell/supervisor boundary, workspace-scoped RPC child topology, stdio transport, and lifetime rules
+- `spec/desktop/02-rpc-client-and-lifecycle.md` — Desktop RPC handshake, replay/recovery, run/HITL control, and required host protocol additions
+- `spec/desktop/03-cli-migration-and-compatibility.md` — shared CLI history, custom database discovery, OAuth/profile migration, continuation preflight, and version skew
+- `spec/desktop/04-workspaces-sessions-and-runs.md` — global history, workspace routing, active-run ownership, multi-window behavior, and pagination
+- `spec/desktop/05-auth-interaction-and-security.md` — renderer isolation, OAuth, approvals, clarifying questions, authority scopes, transport bounds, and security gates
+- `spec/desktop/06-runtime-updates-and-release.md` — Desktop-managed RPC runtime channel, manifests, staging, storage migration, activation, and rollback
 
 Use `spec/alignment/` for readiness notes, design comparisons, implementation evidence, and roadmap reminders. Keep unfinished work in the spec that owns the changed contract.
 
@@ -170,6 +179,8 @@ After changing repository structure, workspace boundaries, command behavior, CI,
 `make architecture-check` enforces that `starweaver-cli` and `starweaver-rpc` have no direct or transitive dependency path in either direction, CLI has no direct `rusqlite` dependency, durable session contracts have no normal dependency path or direct dependency of any kind to runtime and no direct environment implementation dependency, shared storage has no normal dependency path to runtime, and stream contracts have no dependency path to runtime or direct dependency on mutable agent context. It is included in `make check` and `make scripts-check`.
 
 `make capability-check` validates `spec/capabilities.toml`, including registry/release versions, required capability IDs, workspace owners, normative specs, implementation paths, and contract-test evidence. It is included in `make check`.
+
+`make desktop-boundaries-check` validates the Desktop target registry, native CI matrix, renderer bridge confinement, generated command permissions, CSP, and Tauri capabilities. `make desktop-check` adds pnpm 11 supply-chain-verified frontend checks plus Desktop Rust check, Clippy, and tests. `make desktop-build` builds the current-platform shell without bundling.
 
 After changing code, run:
 
@@ -269,6 +280,7 @@ make lint
 - Use English for code, documentation, commit messages, and file names.
 - Keep workspace metadata consistent across `Cargo.toml`, crate manifests, `pyproject.toml`, package manifests under `packages/*`, `Makefile`, `.pre-commit-config.yaml`, and `.github/workflows/ci.yml`.
 - Use `uv` for Python dependency sync, lock validation, test execution, and package builds. Do not add pip/poetry/hatch workflows unless the Python packaging boundary is explicitly redesigned.
+- Use the Corepack-pinned pnpm 11 workspace for Desktop frontend dependencies. Keep the 24-hour release-age gate, trust-policy verification, exotic-transitive blocking, strict lifecycle-script review, and committed `pnpm-lock.yaml`; do not add npm/yarn/bun lockfiles.
 - Keep Python package support constrained to CPython 3.11 through 3.13, with local and single-version CI defaults on Python 3.13.
 - Keep early abstractions minimal and add SDK concepts as concrete needs emerge.
 - Treat runtime primitives as first-class: `AgentContext`, typed dependencies, `StateStore`, `EventBus`, `MessageBus`, executor checkpoints, trace context, `SessionStore` contracts, stream contracts, and environment resources.

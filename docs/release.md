@@ -1,7 +1,7 @@
 # Release
 
-Starweaver uses one workspace version for crates, CLI artifacts, and Python distributions. The
-repository development version should stay on a pre-release version such as `X.Y.Z-dev.0`. A release
+Starweaver uses one workspace version for crates, CLI artifacts, Python distributions, and Desktop
+shell package metadata. The repository development version should stay on a pre-release version such as `X.Y.Z-dev.0`. A release
 commit promotes that version to the public release version `X.Y.Z`.
 
 Publishing a GitHub Release for a `vX.Y.Z` tag is the publishing trigger. The tag must point at a
@@ -54,7 +54,7 @@ The workflow:
 
 1. validates the requested semver version,
 2. installs the pinned `cargo-semver-checks` `0.48.0`,
-3. runs `make upversion VERSION=X.Y.Z`,
+3. runs `make upversion VERSION=X.Y.Z`, updating Rust, Python, and Desktop shell metadata,
 4. runs the fast preparation checks plus `make release-api-check`,
 5. pushes `release/vX.Y.Z`,
 6. writes the manual pull request URL to the workflow summary.
@@ -88,7 +88,8 @@ make release-api-check
 make cli-smoke
 make py-wheel-smoke
 make publish-dry-run
-git add Cargo.toml Cargo.lock pyproject.toml uv.lock packages/starweaver-py
+git add Cargo.toml Cargo.lock pyproject.toml uv.lock packages/starweaver-py \
+  apps/starweaver-desktop/package.json apps/starweaver-desktop/src-tauri/tauri.conf.json
 git commit -m "Prepare release vX.Y.Z"
 git push
 gh release create vX.Y.Z --target "$(git rev-parse HEAD)" --title "Starweaver vX.Y.Z" --generate-notes
@@ -103,6 +104,10 @@ Publishing the GitHub Release triggers `.github/workflows/release.yml`:
 3. upload binary archives, Python distributions, and `checksums.txt` to the GitHub Release,
 4. publish all workspace crates in dependency order through the `Release` environment,
 5. publish the Python package to PyPI through the `Release` environment.
+
+The Desktop shell version participates in unified preparation, but the current shell foundation is
+not uploaded by this workflow. Desktop installers, signing/notarization, native updater metadata,
+and managed runtime artifacts remain gated by `spec/desktop/06-runtime-updates-and-release.md`.
 
 Release-event publishing is packaging-only. Run validation before merging the release pull request,
 not inside `.github/workflows/release.yml`.
