@@ -6,7 +6,7 @@ Revision: 2026-07-21
 
 The Starweaver host protocol is implemented by the standalone `starweaver-rpc` product. It is a local control plane for durable sessions, non-blocking runs, replay, HITL records, RPC-owned model profiles, and RPC-owned environment attachments.
 
-This document describes implemented v1 behavior. `09-rpc-idl-and-client-generation.md` defines the accepted migration to a language-neutral OpenRPC/JSON Schema structural source that generates the Rust server boundary and TypeScript Desktop client without changing this v1 behavior. Until that migration is complete, the current Rust DTOs and corpus remain the implementation baseline. Proposed additional authorization roles, richer idempotency, sockets, WebSocket, and hosted deployment semantics live in `rfcs/host-protocol-future.md`. The stdio profile implements connection-owned live subscriptions; unary HTTP remains replay-only.
+This document describes implemented major-1 behavior. `09-rpc-idl-and-client-generation.md` defines the accepted IDL-first JSON-RPC major-2 target. Major 2 is a clean OpenRPC/JSON Schema contract with generated Rust and TypeScript boundaries; it does not preserve every v1 frame or extend this closed v1 shape. Until major 2 is implemented and cut over, the current Rust DTOs and v1 corpus remain the implementation authority for major 1. Proposed additions that are not incorporated into the major-2 target remain in `rfcs/host-protocol-future.md`. The v1 stdio profile implements connection-owned live subscriptions; unary HTTP remains replay-only.
 
 ## Product Boundary
 
@@ -14,9 +14,10 @@ This document describes implemented v1 behavior. `09-rpc-idl-and-client-generati
 - Neither crate may depend on the other directly or transitively.
 - CLI/TUI is not an RPC frontend and does not reuse RPC handlers, configuration, coordinator state, or attachment leases.
 - Both products may independently use lower runtime, storage, stream, environment, and envd abstractions.
-- The checked-in host IDL defined by `09-rpc-idl-and-client-generation.md` becomes the structural wire source of truth and generates Rust and TypeScript peers.
-- `starweaver-rpc-core` owns the generated Rust host wire boundary plus narrow framing and projection helpers.
-- `starweaver-rpc` implements the generated server boundary and owns configuration, model materialization, handlers, active runs, environment leases, and transports.
+- For major 1, `starweaver-rpc-core` continues to own the handwritten DTO and corpus authority documented here.
+- For major 2, the checked-in host IDL defined by `09-rpc-idl-and-client-generation.md` is the structural source of truth and generates Rust and TypeScript peers.
+- `starweaver-rpc-core` will own the generated major-2 Rust wire boundary plus narrow framing and projection helpers.
+- `starweaver-rpc` will implement the generated major-2 server boundary and continues to own configuration, model materialization, handlers, active runs, environment leases, and transports.
 
 The permanent `make architecture-check` gate enforces the dependency boundary.
 
@@ -52,7 +53,7 @@ Initialization returns the shared identity shape:
 
 Identity constants are owned by `starweaver-rpc-core`. Clients validate `name` and `major`, then use `features`. In the implemented v1 handshake this list reports server-supported features; it is not yet a per-connection client/server intersection. `session.search` appears only when the RPC-owned configuration installs a provider; it is omitted when search is disabled. Clients must not compare revision strings for ordering. The previous top-level `protocolVersion` date field is accepted as legacy response evidence but is no longer emitted.
 
-The IDL migration preserves this closed v1 initialize shape. A new client uses request `protocol.features` for client-supported IDs; result `protocol.features` remains the server-supported set; required IDs remain local client policy; and both peers compute the intersection. An omitted protocol or empty/missing request feature list selects legacy-v1 mode, which preserves existing method admission and current v1 notifications rather than treating the intersection as empty authority. Only a newly introduced client-opt-in notification or interaction may require explicit intersection membership. Until this mode and per-connection intersection are implemented, adding a notification variant is a breaking protocol change even if the server could advertise a new feature. Richer capability objects or additional initialize members require a new protocol major because the current v1 params and result are closed.
+Major 2 does not reinterpret these v1 fields. Its initialize request explicitly carries client-supported and client-required features, and its result explicitly carries server-supported and negotiated features together with runtime and storage compatibility. A v1 frame is never decoded as major 2, and a major-2 client must not depend on implicit legacy mode. See `09-rpc-idl-and-client-generation.md` for the canonical next-major handshake.
 
 `stream.subscribe` is advertised only by stdio connections with an installed bounded notification sink. Unary HTTP returns `unsupported_feature` for subscribe/unsubscribe and uses replay/status polling.
 

@@ -2,7 +2,7 @@
 
 Status: non-normative RFC archive
 
-Implemented host protocol behavior is defined only by `../06-json-rpc-host-protocol.md`. This document preserves proposed long-connection transports, subscription semantics, authorization roles, pagination, full idempotency, and other future extensions. Statements using normative language here are design proposals and must not be interpreted as implemented v1 behavior.
+Implemented host major-1 behavior is defined only by `../06-json-rpc-host-protocol.md`. The accepted IDL-first JSON-RPC major-2 target is defined by `../09-rpc-idl-and-client-generation.md`. This archive preserves proposals not yet incorporated into that target, including additional transports, authorization roles, and hosted concerns. Where this archive conflicts with the major-2 spec, the major-2 spec controls. Statements using normative language here are design history and must not be interpreted as implemented behavior or as major-2 requirements.
 
 The Starweaver host protocol is the independent control plane implemented by the standalone `starweaver-rpc` product for host clients, automation hosts, and future product surfaces that need durable sessions, run orchestration, replay, live stream subscriptions, HITL decisions, model profile selection, configuration reads, and diagnostics.
 

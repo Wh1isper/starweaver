@@ -21,8 +21,8 @@ The Desktop product must not depend on `starweaver-cli`. The CLI must not depend
 
 Allowed implementation dependencies:
 
-- Desktop renderer TypeScript only to the manifest-filtered `DesktopHostClient`, safe bridge request/result/notification DTOs and decoders, and safe operation/notification maps derived from the IDL;
-- Desktop backend to IDL-generated Rust bindings in `starweaver-rpc-core` plus narrow handwritten transport and projection helpers;
+- Desktop renderer TypeScript only to the major-2 manifest-filtered `DesktopHostClient`, safe bridge request/result/notification DTOs and decoders, and safe operation/notification maps derived from the IDL;
+- Desktop backend to IDL-generated major-2 Rust bindings in `starweaver-rpc-core` plus narrow handwritten transport and projection helpers;
 - Desktop backend to narrow product-neutral helpers needed for version parsing, signed-manifest verification, component installation, checksums, and platform paths;
 - Desktop backend to a least-authority system OpenSSH process adapter and native askpass/host-trust bridge;
 - `starweaver-rpc` to existing Agent SDK, storage, OAuth, environment, and envd crates;
@@ -41,7 +41,7 @@ If Desktop and another product need the same logic, that logic moves only when a
 
 ## Process Topology
 
-The accepted local v1 topology is one Desktop backend supervisor with one optional least-authority catalog/control child and zero or more workspace-scoped execution RPC children. SSH adds origin-scoped remote catalog and execution connections while preserving the same supervisor/RPC boundary.
+The accepted initial topology is one Desktop backend supervisor with one optional least-authority catalog/control child and zero or more workspace-scoped execution RPC children. Every Desktop execution connection requires the IDL-first host major 2. SSH adds origin-scoped remote catalog and execution connections while preserving the same supervisor/RPC boundary.
 
 ```mermaid
 flowchart LR
@@ -69,7 +69,7 @@ flowchart LR
 
 A local execution-child key is the canonical local workspace identity. A remote execution key is the composite execution-domain identity and canonical remote workspace identity defined in `07-ssh-remote-workspaces.md`. The entry records the selected runtime and configuration generation. The supervisor reuses one healthy host process/connection for multiple windows showing the same domain/workspace key and must not run two execution-authorized hosts for that key at once. Local creation is serialized by the supervisor; SSH execution additionally requires the storage-owned cross-client remote OS lock and fenced owner generation in `07-ssh-remote-workspaces.md`. Its stable database/workspace lock namespace lives under a non-overridable platform-canonical per-OS-user coordination root and is independent of config roots, database locators, and every child/process state directory. A catalog/control process may coexist because it has no run/effect authority. A runtime/config change drains or retires the old execution generation before its replacement becomes ready.
 
-Desktop uses one local backend supervisor per user and selected Desktop data root. The selected local Starweaver config root identifies only the local execution domain; each SSH target resolves its own remote config, storage, and OAuth domain. A second application launch forwards open-workspace/session intents to the existing supervisor through a platform-authenticated single-instance channel and exits. If the instance lock is held but the owner cannot be authenticated as live, recovery must resolve stale state before another supervisor starts children. Public v1 does not allow two unrelated Desktop supervisors to compete for process-local control of the same workspace runs.
+Desktop uses one local backend supervisor per user and selected Desktop data root. The selected local Starweaver config root identifies only the local execution domain; each SSH target resolves its own remote config, storage, and OAuth domain. A second application launch forwards open-workspace/session intents to the existing supervisor through a platform-authenticated single-instance channel and exits. If the instance lock is held but the owner cannot be authenticated as live, recovery must resolve stale state before another supervisor starts children. The initial public Desktop contract does not allow two unrelated Desktop supervisors to compete for process-local control of the same workspace runs.
 
 Every local RPC child receives:
 
@@ -113,11 +113,11 @@ Desktop must not configure one RPC process with the user home directory solely t
 
 ## Shell and Backend Separation
 
-The renderer receives safe view models and sends user intents through IDL-derived bridge request/result/notification DTOs selected by a reviewed Desktop operation-surface manifest. TypeScript implements the typed Desktop client experience, but the renderer must not construct arbitrary JSON-RPC requests, submit complete host params objects, choose authority-bearing wire metadata, or receive raw secrets. The generated TypeScript client and generated Rust server bindings share the language-neutral source defined by `../ops/09-rpc-idl-and-client-generation.md`; the Desktop manifest adds authority ownership and safe projection without redefining host wire types.
+The renderer receives safe view models and sends user intents through major-2 IDL-derived bridge request/result/notification DTOs selected by a reviewed Desktop operation-surface manifest. TypeScript implements the typed Desktop client experience, but the renderer must not construct arbitrary JSON-RPC requests, submit complete host params objects, choose authority-bearing wire metadata, or receive raw secrets. The generated TypeScript client and generated Rust server bindings share the language-neutral source defined by `../ops/09-rpc-idl-and-client-generation.md`; the Desktop manifest adds authority ownership and safe projection without redefining host wire types.
 
 The backend supervisor owns:
 
-- request IDs and idempotency keys;
+- non-empty string request IDs and durable idempotency keys;
 - protocol initialization and capability checks;
 - child process handles and stderr diagnostics;
 - local workspace canonicalization, remote canonical-identity validation, and host routing;

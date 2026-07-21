@@ -11,7 +11,7 @@ The Desktop product consumes the same versioned host protocol, durable session r
 - Desktop is a separate product surface, not a mode of `starweaver-cli`.
 - Tauri 2 is the default native shell and privileged backend framework; changing it requires an explicit spec amendment after an implementation spike.
 - The UI never links `starweaver-runtime`, invokes CLI coordination, or reads SQLite directly.
-- Desktop v1 will use manifest-filtered, IDL-derived TypeScript bridge/client bindings. Its privileged Rust supervisor will carry JSON-RPC over child-process stdio locally and over a supervised stdio stream carried by a system OpenSSH exec channel remotely.
+- Desktop execution requires the IDL-first `starweaver.host` major-2 contract and manifest-filtered TypeScript bridge/client bindings. Its privileged Rust supervisor carries JSON-RPC over child-process stdio locally and over a supervised stdio stream carried by a system OpenSSH exec channel remotely.
 - One Desktop backend supervisor manages optional least-authority catalog/control connections and at most one execution RPC process for each execution-domain/canonical-workspace pair.
 - RPC processes in one execution domain share that domain's canonical session database but receive distinct workspace roots, process state directories, and versioned public launch envelopes.
 - Closing a window does not implicitly terminate an active run. Explicit application quit performs coordinated RPC shutdown.
@@ -22,7 +22,7 @@ The Desktop product consumes the same versioned host protocol, durable session r
 - The Desktop supervisor owns a runtime update channel for `starweaver-rpc`. A runtime can be updated independently of the shell only when protocol and storage compatibility gates pass.
 - SSH targets are separate execution domains: their RPC, storage, OAuth, model requests, filesystem, and shell remain remote. Desktop uses a hardened public Starweaver component-update contract to provision the remote RPC through the remote user's login shell.
 - Remote native shell uses the authenticated remote account's full authority by default and is never represented as workspace-contained. Local native shell remains disabled by default without an enforceable sandbox.
-- The accepted language-neutral host IDL target will generate the Rust server boundary and safe, manifest-filtered TypeScript Desktop bindings; neither generated language surface is a separate protocol source.
+- The accepted major-2 OpenRPC/JSON Schema source generates the Rust server boundary and safe, manifest-filtered TypeScript Desktop bindings; neither generated language surface is a separate protocol source.
 - CLI, RPC, and Desktop remain independent products. Shared behavior belongs in the existing product-neutral crates.
 
 ## Readiness Baseline
@@ -35,7 +35,7 @@ The existing repository provides enough foundation to begin Desktop specificatio
 - RPC provides typed initialize, session/run control, stream replay/subscription, HITL, environment attachment, startup reconciliation, and bounded shutdown;
 - release archives already contain `starweaver-rpc` and publish SHA-256 checksums.
 
-The Desktop release gate still requires OAuth parity, custom database discovery, a public versioned RPC launch envelope, typed continuation preflight, explicit client capability negotiation, receipt-backed mutation recovery, enforceable local shell sandboxing, cross-version storage tests, and a transactional runtime updater. It also requires periodic ordinary-run lease reconciliation, typed clarification answers, correct `run.resume` authorization, generation-safe subscriptions, bounded stdio framing, non-blocking state I/O, safe live error projection, and storage-backed pagination.
+The Desktop release gate still requires the IDL-first host major, generated Rust and safe TypeScript boundaries, OAuth parity, custom database discovery, a public versioned RPC launch envelope, typed continuation preflight, explicit client capability negotiation, receipt-backed mutation recovery, enforceable local shell sandboxing, cross-version storage tests, and a transactional runtime updater. It also requires periodic ordinary-run lease reconciliation, typed clarification answers, correct continuation authorization, atomic state/outbox/event publication, scope/view-bound cursors, feature/authorization-consistent replay and live delivery, gap-free durable subscriptions, bounded stdio framing with terminal-control recovery, non-blocking state I/O, typed safe error projection, and storage-backed pagination.
 
 SSH release readiness additionally requires the system-OpenSSH process boundary, host-key/askpass mediation, static configuration allowlisting, stable remote execution-domain identity, login-shell supervised bootstrap, cross-client execution-host exclusivity, origin-scoped history, partition reconciliation, and the hardened exact-version RPC component installer/update contract in `07-ssh-remote-workspaces.md`. These are planned requirements, not descriptions of current implementation.
 
@@ -69,9 +69,9 @@ flowchart TD
     local_rpc[Local RPC child]
     ssh[System OpenSSH process]
     remote_rpc[Remote RPC process]
-    host_idl[Planned host OpenRPC and JSON Schema IDL]
-    ts_client[Planned manifest-filtered TypeScript bridge and client]
-    rpc_core[Target generated Rust host bindings and bootstrap protocols]
+    host_idl[Planned host major-2 OpenRPC and JSON Schema IDL]
+    ts_client[Planned major-2 manifest-filtered TypeScript bridge and client]
+    rpc_core[Target generated major-2 Rust host bindings and bootstrap protocols]
     local_store[(Local SQLite and OAuth)]
     remote_store[(Remote SQLite and OAuth)]
     local_runtime[Local runtime and workspace]
@@ -117,7 +117,7 @@ flowchart TD
 | Public RPC component install/update contract and shared updater mechanics | Starweaver installer/update path                       |
 | CLI commands and TUI coordination                                         | `starweaver-cli` only                                  |
 
-No Desktop crate should become a shared protocol or storage owner. Under the accepted target, the repository-level host IDL owns reusable wire structure; generated Rust bindings will live in `starweaver-rpc-core`, IDL-derived safe TypeScript bindings will be consumed by Desktop, and reusable storage and runtime contracts remain in their existing owning crates. Until migration completes, current handwritten Rust DTOs and the v1 corpus remain the implementation baseline.
+No Desktop crate should become a shared protocol or storage owner. Under the accepted target, the repository-level major-2 host IDL owns reusable wire structure; generated Rust bindings live in `starweaver-rpc-core`, IDL-derived safe TypeScript bindings are consumed by Desktop, and reusable storage and runtime contracts remain in their existing owning crates. Current handwritten major-1 DTOs remain isolated implementation history and do not define the Desktop bridge.
 
 ## Spec Map
 
@@ -146,7 +146,7 @@ The first Desktop implementation does not:
 
 ### Phase 0: protocol and release prerequisites
 
-- canonical host OpenRPC/JSON Schema IDL plus generated Rust server and TypeScript client parity;
+- canonical host major-2 OpenRPC/JSON Schema IDL plus generated Rust server, complete TypeScript protocol, and manifest-filtered safe Desktop bridge/client parity;
 - RPC OAuth parity and safe auth methods;
 - client capability negotiation and typed clarification answers;
 - public versioned RPC launch-envelope schema and compatibility fixtures;

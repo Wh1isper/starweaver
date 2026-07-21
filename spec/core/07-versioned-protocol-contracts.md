@@ -121,6 +121,8 @@ Runtime-internal resume counters such as model attempt, tool batch, message inde
 
 Display archive rows and typed replay-event rows use separate persistence families. `display_message_records` stores the display projection while `replay_events` stores RPC/product replay events. Each family has its own monotonic sequence. A `ReplayEvent::DisplayMessage` therefore carries an event-family sequence outside a nested `DisplayMessage` that retains its display-family sequence.
 
+The IDL-first host major 2 exposes a separate public `HostEventCursor`, not a serialized `ReplayCursor`. It uses family `host_event`, a typed session/run/global scope, and an opaque token bound to the scope, event-view digest, and internal backend position. The view-independent durable `EventRecord` contains no host cursor; replay/live projection pairs it with a generated cursor in an `EventDelivery`, allowing one stable event identity to appear in multiple admitted views without sharing cursor identity. Clients never compare or increment that token. Product adapters may translate it to internal cursor families, but start/fence/next/live/terminal cursors must retain one exact family, scope, and view binding; mismatch fails closed without cross-scope disclosure. Each subscription generation advertises `nextDeliverySequence: "1"`; the first event must use `"1"`, later events increment without gaps or wraparound, and filtered/non-delivered records consume no values. Per-subscription `deliverySequence`, not opaque cursor arithmetic, detects live transport gaps.
+
 ## Protocol Identity
 
 All Starweaver-owned local protocols use:
@@ -143,7 +145,7 @@ Rules:
 - Clients reject an unexpected name or unsupported major.
 - Implementations must not expose a second date/version string with conflicting semantics.
 
-The current identities are `starweaver.host` major 1 and `starweaver.envd` major 1. Their implemented feature lists come from typed constants in their protocol-core crates.
+The currently implemented identities are `starweaver.host` major 1 and `starweaver.envd` major 1. Their implemented feature lists come from typed constants in their protocol-core crates. The accepted next host contract is the IDL-first `starweaver.host` major 2 defined by `../ops/09-rpc-idl-and-client-generation.md`; its OpenRPC bundle, generated constants, and explicit supported/required/negotiated feature sets replace handwritten host identity authority for that major without reinterpreting major-1 frames.
 
 ## Wire Compatibility
 

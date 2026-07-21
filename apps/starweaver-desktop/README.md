@@ -3,8 +3,8 @@
 Starweaver Desktop is the Tauri 2 native shell for Starweaver. The current implementation is a
 cross-platform foundation: it establishes the privileged Rust boundary, typed renderer bridge,
 process-owned application state, single-instance activation, target registry, and native build
-matrix. It intentionally does not launch `starweaver-rpc` until the public launch-envelope and
-compatibility contracts in `spec/desktop/` are implemented.
+matrix. It intentionally does not launch `starweaver-rpc` until the public launch-envelope,
+IDL-first host major-2 bindings, and compatibility contracts in `spec/desktop/` are implemented.
 
 ## Supported Targets
 
@@ -95,4 +95,5 @@ processes to smoke-test fixed-signal single-instance routing.
 The status screen reports the managed runtime as `not_configured`. Production code must not search
 `PATH`, read private CLI configuration, generate `rpc.toml`, or launch an unverified host as a
 temporary fallback. RPC supervision begins only through the public versioned launch envelope and
-compatibility handshake specified under `spec/desktop/`.
+IDL-first `starweaver.host` major-2 compatibility handshake specified under `spec/desktop/` and
+`spec/ops/09-rpc-idl-and-client-generation.md`.

@@ -73,7 +73,7 @@ A continuation also persists a `ContinuationMaterialization` assessment. `preser
 
 ## JSON-RPC v1 Contract
 
-The implemented baseline remains Rust-first. `../ops/09-rpc-idl-and-client-generation.md` records the accepted migration to one OpenRPC/JSON Schema structural source that generates the Rust server boundary and manifest-filtered TypeScript Desktop client; none of the generated target is claimed as current evidence in this review.
+The implemented major-1 baseline remains Rust-first. `../ops/09-rpc-idl-and-client-generation.md` records the accepted clean `starweaver.host` major-2 target: one OpenRPC/JSON Schema source generates the Rust server boundary and manifest-filtered TypeScript Desktop client without treating v1 frames as wire-compatibility requirements. None of the generated major-2 target is claimed as current evidence in this review.
 
 `starweaver-rpc-core` owns the current v1 protocol surface:
 

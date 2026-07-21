@@ -150,9 +150,9 @@ Starweaver is organized as focused crates:
 - `starweaver-environment`: local and virtual filesystem/shell providers, policies, resources, and environment snapshots.
 - `starweaver-session`, `starweaver-stream`, `starweaver-storage`: durable session, replay, display stream, and SQLite storage contracts.
 - `starweaver-cli`: local CLI product surface, launcher dispatch, profiles, TUI, storage, install, and update workflows.
-- `starweaver-rpc-core`: shared JSON-RPC host protocol helpers and stream/replay projections.
-- `starweaver-rpc`: standalone JSON-RPC host process for local and external host integrations.
-- `apps/starweaver-desktop`: Tauri 2 shell foundation for Linux, macOS, and Windows; RPC supervision remains gated on the public launch contract.
+- `starweaver-rpc-core`: current major-1 JSON-RPC helpers plus the planned generated IDL-first major-2 wire boundary and stream/replay projections.
+- `starweaver-rpc`: standalone JSON-RPC host process for local and external host integrations and future implementer of the generated major-2 server contract.
+- `apps/starweaver-desktop`: Tauri 2 shell foundation for Linux, macOS, and Windows; RPC supervision remains gated on the public launch contract and IDL-first host major 2.
 - `packages/starweaver-py`: in-process Python SDK bindings, Python tool injection, live run control, message bus facades, typed HITL helpers, deterministic test models, sessions, and Python distribution artifacts.
 
 ## Validation
