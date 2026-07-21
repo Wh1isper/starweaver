@@ -2375,6 +2375,10 @@ mod tests {
 
     use super::*;
 
+    // File-backed SQLite has a long latency tail under parallel Windows CI load; production
+    // run-await limits remain owned by the RPC service policy.
+    const TEST_RUN_AWAIT_TIMEOUT_MS: u64 = 30_000;
+
     fn service_with_test_runtime_factory(
         root: &Path,
         factory: Arc<crate::agent_catalog::TestRuntimeFactory>,
@@ -2497,7 +2501,7 @@ mod tests {
                         json!({
                             "sessionId": started["result"]["sessionId"],
                             "runId": started["result"]["runId"],
-                            "timeoutMs": 5_000
+                            "timeoutMs": TEST_RUN_AWAIT_TIMEOUT_MS
                         }),
                     ))
                     .response
@@ -2851,7 +2855,7 @@ mod tests {
                 json!({
                     "sessionId": session_id,
                     "runId": continuation_run_id,
-                    "timeoutMs": 30_000
+                    "timeoutMs": TEST_RUN_AWAIT_TIMEOUT_MS
                 }),
             ))
             .response
@@ -3024,7 +3028,7 @@ mod tests {
                 json!({
                     "sessionId": target_session_id.as_str(),
                     "runId": continued_run_id.as_str(),
-                    "timeoutMs": 5_000
+                    "timeoutMs": TEST_RUN_AWAIT_TIMEOUT_MS
                 }),
             ))
             .response
@@ -3201,7 +3205,7 @@ mod tests {
             json!({
                 "sessionId": session.session_id.as_str(),
                 "runId": continued_run_id,
-                "timeoutMs": 5_000
+                "timeoutMs": TEST_RUN_AWAIT_TIMEOUT_MS
             }),
         ));
         let awaited = awaited.response.unwrap();
@@ -3614,7 +3618,7 @@ mod tests {
                 json!({
                     "sessionId": session_id,
                     "runId": run_id,
-                    "timeoutMs": 5_000
+                    "timeoutMs": TEST_RUN_AWAIT_TIMEOUT_MS
                 }),
             ))
             .response
@@ -3900,11 +3904,12 @@ mod tests {
                 json!({
                     "sessionId": session_id,
                     "runId": run_id,
-                    "timeoutMs": 5_000
+                    "timeoutMs": TEST_RUN_AWAIT_TIMEOUT_MS
                 }),
             ))
             .response
             .unwrap();
+        assert!(awaited.get("error").is_none(), "{awaited}");
         assert_eq!(awaited["result"]["status"]["status"], "completed");
 
         let replay = service
@@ -3978,7 +3983,7 @@ mod tests {
                 json!({
                     "sessionId": session_id,
                     "runId": run_id,
-                    "timeoutMs": 5_000
+                    "timeoutMs": TEST_RUN_AWAIT_TIMEOUT_MS
                 }),
             ))
             .response
@@ -4035,7 +4040,7 @@ mod tests {
                 json!({
                     "sessionId": session_id,
                     "runId": source_run_id,
-                    "timeoutMs": 5_000
+                    "timeoutMs": TEST_RUN_AWAIT_TIMEOUT_MS
                 }),
             ))
             .response
@@ -4071,7 +4076,7 @@ mod tests {
                 json!({
                     "sessionId": session_id,
                     "runId": exact_run_id,
-                    "timeoutMs": 5_000
+                    "timeoutMs": TEST_RUN_AWAIT_TIMEOUT_MS
                 }),
             ))
             .response
