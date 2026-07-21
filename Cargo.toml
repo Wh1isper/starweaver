@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "apps/starweaver-desktop/src-tauri",
     "crates/starweaver-cli",
     "crates/starweaver-rpc",
     "crates/starweaver-rpc-core",

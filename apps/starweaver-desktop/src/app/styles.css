@@ -1,0 +1,226 @@
+:root {
+  color: #17202a;
+  background: #f4f1ea;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --ink: #17202a;
+  --muted: #687078;
+  --line: rgba(23, 32, 42, 0.12);
+  --paper: rgba(255, 255, 255, 0.78);
+  --accent: #9b4e32;
+  --accent-soft: #f0ddd4;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 12% 18%, rgba(155, 78, 50, 0.13), transparent 30rem),
+    linear-gradient(145deg, #f8f5ee 0%, #eee8df 100%);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.app-shell {
+  width: min(920px, calc(100% - 48px));
+  margin: 0 auto;
+  padding: 72px 0 36px;
+}
+
+.hero {
+  max-width: 680px;
+  margin-bottom: 40px;
+}
+
+.eyebrow,
+.section-label {
+  margin: 0 0 10px;
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  max-width: 620px;
+  margin-bottom: 18px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(2.8rem, 7vw, 5.4rem);
+  font-weight: 500;
+  letter-spacing: -0.055em;
+  line-height: 0.96;
+}
+
+h2 {
+  margin-bottom: 0;
+  font-size: 1.35rem;
+  font-weight: 680;
+  letter-spacing: -0.02em;
+}
+
+.hero-copy {
+  max-width: 610px;
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1.65;
+}
+
+.panel {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: var(--paper);
+  box-shadow: 0 24px 70px rgba(41, 34, 28, 0.08);
+  backdrop-filter: blur(18px);
+}
+
+.panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 28px 30px;
+  border-bottom: 1px solid var(--line);
+}
+
+.platform-badge {
+  border: 1px solid rgba(155, 78, 50, 0.24);
+  border-radius: 999px;
+  padding: 7px 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.status-grid > div {
+  min-height: 116px;
+  padding: 25px 30px;
+  border-bottom: 1px solid var(--line);
+}
+
+.status-grid > div:nth-child(odd) {
+  border-right: 1px solid var(--line);
+}
+
+.status-grid > div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+dt {
+  margin-bottom: 9px;
+  color: var(--muted);
+  font-size: 0.77rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+dd {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+}
+
+.status-muted {
+  color: var(--muted);
+}
+
+.status-message,
+.notice {
+  margin: 0;
+  padding: 30px;
+  color: var(--muted);
+}
+
+.notice-error {
+  color: #7c2d21;
+  background: #f8e2dc;
+}
+
+footer {
+  max-width: 720px;
+  margin: 22px 4px 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+@media (max-width: 620px) {
+  .app-shell {
+    width: min(100% - 28px, 920px);
+    padding-top: 44px;
+  }
+
+  .panel-heading {
+    align-items: flex-start;
+    padding: 24px;
+  }
+
+  .status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .status-grid > div,
+  .status-grid > div:nth-child(odd),
+  .status-grid > div:nth-last-child(-n + 2) {
+    min-height: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 22px 24px;
+  }
+
+  .status-grid > div:last-child {
+    border-bottom: 0;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #eee9e1;
+    background: #15181b;
+    --ink: #eee9e1;
+    --muted: #a8afb4;
+    --line: rgba(255, 255, 255, 0.11);
+    --paper: rgba(29, 33, 37, 0.86);
+    --accent: #e39b7d;
+    --accent-soft: rgba(155, 78, 50, 0.2);
+  }
+
+  body {
+    background:
+      radial-gradient(circle at 12% 18%, rgba(155, 78, 50, 0.22), transparent 30rem),
+      linear-gradient(145deg, #1b1e21 0%, #101214 100%);
+  }
+}

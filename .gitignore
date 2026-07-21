@@ -1,5 +1,7 @@
 /target/
 /dist/
+/node_modules/
+/.pnpm-store/
 /packages/*/target/
 /packages/*/dist/
 /packages/*/python/**/*.so

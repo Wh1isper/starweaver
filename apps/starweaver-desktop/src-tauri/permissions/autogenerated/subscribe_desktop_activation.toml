@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-subscribe-desktop-activation"
+description = "Enables the subscribe_desktop_activation command without any pre-configured scope."
+commands.allow = ["subscribe_desktop_activation"]
+
+[[permission]]
+identifier = "deny-subscribe-desktop-activation"
+description = "Denies the subscribe_desktop_activation command without any pre-configured scope."
+commands.deny = ["subscribe_desktop_activation"]

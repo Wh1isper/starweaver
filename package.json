@@ -1,0 +1,16 @@
+{
+  "name": "starweaver-workspace",
+  "private": true,
+  "packageManager": "pnpm@11.15.1",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "desktop:build": "corepack pnpm --filter @starweaver/desktop build",
+    "desktop:check": "corepack pnpm --filter @starweaver/desktop check",
+    "desktop:dev": "corepack pnpm --filter @starweaver/desktop tauri dev",
+    "desktop:format": "corepack pnpm --filter @starweaver/desktop format",
+    "desktop:test": "corepack pnpm --filter @starweaver/desktop test",
+    "desktop:typecheck": "corepack pnpm --filter @starweaver/desktop typecheck"
+  }
+}
