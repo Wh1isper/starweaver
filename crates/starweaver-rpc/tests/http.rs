@@ -5,6 +5,7 @@ use std::{
     io::{Read as _, Write as _},
     net::{TcpListener, TcpStream},
     process::{Child, Command, Stdio},
+    sync::{Mutex, MutexGuard, PoisonError},
     thread,
     time::{Duration, Instant},
 };
@@ -15,9 +16,17 @@ use starweaver_rpc_core::generated::PROTOCOL_IDENTITY;
 mod common;
 
 const HTTP_TOKEN: &str = "test-token-0123456789abcdef-0123456789abcdef";
+static HTTP_PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_http_process_test() -> MutexGuard<'static, ()> {
+    HTTP_PROCESS_TEST_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 #[test]
 fn standalone_http_process_serves_initialize_and_shutdown() {
+    let _test_guard = lock_http_process_test();
     let temp = tempfile::tempdir().expect("temp dir");
     let port = free_port();
     let store = temp.path().join("starweaver.sqlite");
@@ -25,6 +34,7 @@ fn standalone_http_process_serves_initialize_and_shutdown() {
         Command::new(env!("CARGO_BIN_EXE_starweaver-rpc"))
             .current_dir(temp.path())
             .env("HOME", temp.path())
+            .env("STARWEAVER_CONFIG_DIR", temp.path())
             .env("STARWEAVER_RPC_TOKEN", HTTP_TOKEN)
             .arg("--store")
             .arg(&store)
@@ -78,13 +88,18 @@ fn standalone_http_process_serves_initialize_and_shutdown() {
 
 #[test]
 fn authenticated_http_malformed_requests_share_the_stdio_error_contract() {
+    let _test_guard = lock_http_process_test();
     let temp = tempfile::tempdir().expect("temp dir");
     let port = free_port();
+    let store = temp.path().join("starweaver.sqlite");
     let mut child = ChildGuard::spawn(
         Command::new(env!("CARGO_BIN_EXE_starweaver-rpc"))
             .current_dir(temp.path())
             .env("HOME", temp.path())
+            .env("STARWEAVER_CONFIG_DIR", temp.path())
             .env("STARWEAVER_RPC_TOKEN", HTTP_TOKEN)
+            .arg("--store")
+            .arg(&store)
             .arg("http")
             .arg("--host")
             .arg("127.0.0.1")
@@ -215,14 +230,19 @@ fn post_rpc_text(port: u16, body: &str, token: &str) -> Value {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn http_rejects_missing_credentials_browser_blind_writes_and_insufficient_scopes() {
+    let _test_guard = lock_http_process_test();
     let temp = tempfile::tempdir().expect("temp dir");
     let port = free_port();
+    let store = temp.path().join("starweaver.sqlite");
     let mut child = ChildGuard::spawn(
         Command::new(env!("CARGO_BIN_EXE_starweaver-rpc"))
             .current_dir(temp.path())
             .env("HOME", temp.path())
+            .env("STARWEAVER_CONFIG_DIR", temp.path())
             .env("STARWEAVER_RPC_TOKEN", HTTP_TOKEN)
             .env("STARWEAVER_RPC_SCOPES", "read")
+            .arg("--store")
+            .arg(&store)
             .arg("http")
             .arg("--host")
             .arg("127.0.0.1")
