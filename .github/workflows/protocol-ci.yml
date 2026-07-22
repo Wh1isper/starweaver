@@ -52,6 +52,12 @@ jobs:
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - run: make rpc-idl-drift-check
       - name: Prove check mode is read-only
         run: git diff --exit-code && test -z "$(git status --short)"

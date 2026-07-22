@@ -50,7 +50,7 @@ const MAX_RETIRED_OPERATION_TOMBSTONES: usize = 512;
 const MAX_RETIRED_OPERATION_TOMBSTONE_BYTES: usize = 2 * 1024 * 1024;
 const CRASH_BUDGET: usize = 3;
 const CRASH_BUDGET_WINDOW: Duration = Duration::from_secs(30);
-#[cfg(test)]
+#[cfg(all(test, unix))]
 const PROCESS_REAP_TIMEOUT: Duration = Duration::from_secs(5);
 const DESKTOP_STORAGE_GENERATION: u64 = 1;
 
@@ -2206,39 +2206,19 @@ fn persist_windows_tempfile_write_through(
     destination: &Path,
     replace: bool,
 ) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_NORMAL, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-        SetFileAttributesW,
+    // `keep` normalizes tempfile's FILE_ATTRIBUTE_TEMPORARY before publication. Atomicwrites owns
+    // the audited unsafe Windows boundary and adds MOVEFILE_WRITE_THROUGH to the atomic rename.
+    let (temporary_file, temporary_path) = temporary.keep().map_err(|error| error.error)?;
+    let result = if replace {
+        atomicwrites::replace_atomic(&temporary_path, destination)
+    } else {
+        atomicwrites::move_atomic(&temporary_path, destination)
     };
-
-    let mut temporary_path = temporary.into_temp_path();
-    let source_wide = temporary_path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let destination_wide = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    // NamedTempFile uses FILE_ATTRIBUTE_TEMPORARY on Windows. Normalize it before publication so
-    // the final ledger record has ordinary durable-file semantics.
-    if unsafe { SetFileAttributesW(source_wide.as_ptr(), FILE_ATTRIBUTE_NORMAL) } == 0 {
-        return Err(std::io::Error::last_os_error());
+    drop(temporary_file);
+    if result.is_err() {
+        let _ = std::fs::remove_file(temporary_path);
     }
-    let mut flags = MOVEFILE_WRITE_THROUGH;
-    if replace {
-        flags |= MOVEFILE_REPLACE_EXISTING;
-    }
-    if unsafe { MoveFileExW(source_wide.as_ptr(), destination_wide.as_ptr(), flags) } == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // The source path no longer exists after MoveFileExW. Disable TempPath cleanup so dropping it
-    // cannot report or attempt cleanup against the published destination.
-    temporary_path.disable_cleanup(true);
-    Ok(())
+    result
 }
 
 fn publish_durable_operation(
@@ -3982,6 +3962,28 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn process_is_executing(pid: i32) -> bool {
+        match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
+            Err(nix::errno::Errno::ESRCH) => false,
+            Err(_) => true,
+            Ok(()) => {
+                let output = std::process::Command::new("ps")
+                    .args(["-o", "stat=", "-p", &pid.to_string()])
+                    .output();
+                match output {
+                    Ok(output) if output.status.success() => {
+                        let state = String::from_utf8_lossy(&output.stdout);
+                        let state = state.trim();
+                        !state.is_empty() && !state.starts_with('Z')
+                    }
+                    Ok(_) => false,
+                    Err(_) => true,
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn process_tree_barrier_terminates_descendants() {
         let temp = tempfile::tempdir().expect("temporary directory");
@@ -4015,10 +4017,13 @@ mod tests {
             .await
             .expect("process tree reap timeout")
             .expect("process tree wait");
-        assert!(matches!(
-            nix::sys::signal::kill(nix::unistd::Pid::from_raw(descendant), None),
-            Err(nix::errno::Errno::ESRCH)
-        ));
+        timeout(PROCESS_REAP_TIMEOUT, async {
+            while process_is_executing(descendant) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("descendant termination timeout");
     }
 
     #[cfg(unix)]

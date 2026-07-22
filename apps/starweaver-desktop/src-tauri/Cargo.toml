@@ -34,11 +34,11 @@ nix = { version = "0.31.3", features = ["process", "signal", "socket", "user"] }
 zbus = "5.18.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+atomicwrites = "0.4.4"
 interprocess = "2.4.2"
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 uuid.workspace = true
 widestring = "1.2.1"
-windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
 
 [lints]
 workspace = true
