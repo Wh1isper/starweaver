@@ -3,6 +3,8 @@ use std::{
     io::{BufRead as _, BufReader, Write as _},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 use serde_json::{Value, json};
@@ -56,7 +58,7 @@ pub fn check_with_binaries(cli: &Path, rpc: &Path) -> Result<(), String> {
     })();
     let _ = fs::remove_dir_all(&temp);
     result?;
-    println!("CLI/RPC bidirectional subprocess interoperability validated");
+    println!("CLI/generated-RPC bidirectional subprocess interoperability validated");
     Ok(())
 }
 
@@ -66,15 +68,16 @@ fn check_native_default_paths(cli: &Path, rpc: &Path, root: &Path) -> Result<(),
     fs::create_dir_all(&home).map_err(|error| error.to_string())?;
     fs::create_dir_all(&workspace).map_err(|error| error.to_string())?;
     let expected = home.join(".starweaver").join("starweaver.sqlite");
-    let mut cli_command = Command::new(cli);
-    cli_command
+
+    let mut cli_diagnostics_command = Command::new(cli);
+    cli_diagnostics_command
         .current_dir(&workspace)
         .env_remove("STARWEAVER_CONFIG_DIR")
         .env_remove("STARWEAVER_SESSION_DB")
         .env_remove("STARWEAVER_STORE")
         .arg("diagnostics");
-    set_native_home(&mut cli_command, &home);
-    let cli_diagnostics = run_capture(&mut cli_command)?;
+    set_native_home(&mut cli_diagnostics_command, &home);
+    let cli_diagnostics = run_capture(&mut cli_diagnostics_command)?;
     if !cli_diagnostics.contains(&format!("database_path={}", expected.display())) {
         return Err(format!(
             "CLI native default database did not resolve to {}: {cli_diagnostics}",
@@ -95,14 +98,35 @@ fn check_native_default_paths(cli: &Path, rpc: &Path, root: &Path) -> Result<(),
     set_native_home(&mut rpc_command, &home);
     let mut host = RpcHost::spawn_command(&mut rpc_command)?;
     host.initialize()?;
-    let diagnostics = host.request(2, "diagnostics.get", json!({}))?;
-    assert_no_rpc_error(&diagnostics)?;
-    if diagnostics["result"]["databasePath"] != expected.to_string_lossy().as_ref() {
+    let created = host.request(
+        2,
+        "session.create",
+        json!({
+            "deferredTools": [],
+            "idempotencyKey": "native-default-shared-storage",
+            "title": "Native default path evidence"
+        }),
+    )?;
+    assert_no_rpc_error(&created)?;
+    let session_id = required_json_string(&created["result"]["session"], "sessionId")?;
+    host.shutdown()?;
+
+    let mut cli_list_command = Command::new(cli);
+    cli_list_command
+        .current_dir(&workspace)
+        .env_remove("STARWEAVER_CONFIG_DIR")
+        .env_remove("STARWEAVER_SESSION_DB")
+        .env_remove("STARWEAVER_STORE")
+        .args(["session", "list", "--output", "json"]);
+    set_native_home(&mut cli_list_command, &home);
+    let cli_sessions = run_capture(&mut cli_list_command)?;
+    if !cli_sessions.contains(&session_id) {
         return Err(format!(
-            "RPC native default database did not match CLI default: {diagnostics}"
+            "CLI and generated RPC did not share native default storage at {}: {cli_sessions}",
+            expected.display()
         ));
     }
-    host.shutdown()
+    Ok(())
 }
 
 fn set_native_home(command: &mut Command, home: &Path) {
@@ -116,14 +140,11 @@ fn set_native_home(command: &mut Command, home: &Path) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn run_e2e(cli: &Path, rpc: &Path, root: &Path) -> Result<(), String> {
     let global = root.join("config");
     let workspace = root.join("workspace");
     let project = workspace.join(".starweaver");
     let store = global.join("starweaver.sqlite");
-    let legacy_store = project.join("starweaver.sqlite");
-    let rpc_legacy_store = root.join("rpc-legacy.sqlite");
     fs::create_dir_all(&global).map_err(|error| error.to_string())?;
     fs::create_dir_all(&project).map_err(|error| error.to_string())?;
     fs::write(
@@ -139,81 +160,6 @@ fn run_e2e(cli: &Path, rpc: &Path, root: &Path) -> Result<(), String> {
         ),
     )
     .map_err(|error| error.to_string())?;
-
-    let legacy_seed = cli_capture(
-        cli,
-        &workspace,
-        &global,
-        &project,
-        &legacy_store,
-        [
-            "run",
-            "--prompt",
-            "legacy seed",
-            "--new-session",
-            "--output",
-            "json",
-        ],
-    )?;
-    let legacy_seed = parse_single_json(&legacy_seed, "legacy CLI seed")?;
-    let legacy_session_id = required_json_string(&legacy_seed, "sessionId")?;
-    let before_import = cli_capture(
-        cli,
-        &workspace,
-        &global,
-        &project,
-        &store,
-        ["session", "list", "--output", "json"],
-    )?;
-    if before_import.contains(&legacy_session_id) {
-        return Err(
-            "opening canonical CLI storage imported legacy evidence implicitly".to_string(),
-        );
-    }
-    let source_arg = legacy_store.to_string_lossy().into_owned();
-    let workspace_arg = workspace.to_string_lossy().into_owned();
-    let imported = cli_capture(
-        cli,
-        &workspace,
-        &global,
-        &project,
-        &store,
-        [
-            "storage",
-            "import-legacy",
-            "--source",
-            &source_arg,
-            "--workspace",
-            &workspace_arg,
-            "--output",
-            "json",
-        ],
-    )?;
-    let imported = parse_single_json(&imported, "explicit CLI legacy import")?;
-    if imported["sessionsImported"] != 1 || imported["imported"] != true {
-        return Err(format!("explicit CLI import failed: {imported}"));
-    }
-    let retried = cli_capture(
-        cli,
-        &workspace,
-        &global,
-        &project,
-        &store,
-        [
-            "storage",
-            "import-legacy",
-            "--source",
-            &source_arg,
-            "--workspace",
-            &workspace_arg,
-            "--output",
-            "json",
-        ],
-    )?;
-    let retried = parse_single_json(&retried, "idempotent CLI legacy import")?;
-    if retried["sessionsImported"] != 0 || retried["imported"] != false {
-        return Err(format!("CLI import retry was not idempotent: {retried}"));
-    }
 
     let cli_seed = cli_capture(
         cli,
@@ -237,112 +183,69 @@ fn run_e2e(cli: &Path, rpc: &Path, root: &Path) -> Result<(), String> {
         return Err(format!("CLI seed did not complete: {cli_seed}"));
     }
 
-    let rpc_legacy_seed = cli_capture(
-        cli,
-        &workspace,
-        &global,
-        &project,
-        &rpc_legacy_store,
-        [
-            "run",
-            "--prompt",
-            "rpc import seed",
-            "--new-session",
-            "--output",
-            "json",
-        ],
-    )?;
-    let rpc_legacy_seed = parse_single_json(&rpc_legacy_seed, "RPC legacy seed")?;
-    let rpc_legacy_session_id = required_json_string(&rpc_legacy_seed, "sessionId")?;
-
     let mut host = RpcHost::spawn(rpc, &workspace, &global, &store)?;
     host.initialize()?;
-    let rpc_source_arg = rpc_legacy_store.to_string_lossy().into_owned();
-    let imported_by_rpc = host.request(
-        2,
-        "storage.importLegacy",
-        json!({"sourcePath": rpc_source_arg, "workspace": workspace_arg}),
-    )?;
-    assert_no_rpc_error(&imported_by_rpc)?;
-    if imported_by_rpc["result"]["sessionsImported"] != 1
-        || imported_by_rpc["result"]["imported"] != true
-    {
-        return Err(format!("typed RPC import failed: {imported_by_rpc}"));
-    }
-    let retried_by_rpc = host.request(
-        3,
-        "storage.importLegacy",
-        json!({"sourcePath": rpc_source_arg, "workspace": workspace_arg}),
-    )?;
-    assert_no_rpc_error(&retried_by_rpc)?;
-    if retried_by_rpc["result"]["sessionsImported"] != 0
-        || retried_by_rpc["result"]["imported"] != false
-    {
-        return Err(format!(
-            "typed RPC import retry was not idempotent: {retried_by_rpc}"
-        ));
-    }
-    let listed = host.request(4, "session.list", json!({"limit": 50}))?;
+    let listed = host.request(2, "session.list", json!({"limit": 50}))?;
     assert_no_rpc_error(&listed)?;
     if !listed["result"]["sessions"]
         .as_array()
         .is_some_and(|sessions| {
-            [legacy_session_id.as_str(), rpc_legacy_session_id.as_str()]
+            sessions
                 .iter()
-                .all(|expected| {
-                    sessions
-                        .iter()
-                        .any(|session| session["session_id"] == *expected)
-                })
+                .any(|session| session["sessionId"] == session_id)
         })
     {
         return Err(format!(
-            "RPC could not read explicitly imported legacy sessions: {listed}"
+            "generated RPC could not read CLI session: {listed}"
         ));
     }
     let loaded = host.request(
-        5,
+        3,
         "session.get",
-        json!({"sessionId": session_id, "runs": 20}),
+        json!({"sessionId": session_id, "runLimit": 20}),
     )?;
     assert_no_rpc_error(&loaded)?;
-    if loaded["result"]["session"]["session_id"] != session_id {
-        return Err(format!("RPC could not read CLI session: {loaded}"));
-    }
-    let replayed = host.request(
-        6,
-        "stream.replay",
-        json!({"sessionId": session_id, "runId": cli_run_id}),
-    )?;
-    assert_no_rpc_error(&replayed)?;
-    if replayed["result"]["messages"]
-        .as_array()
-        .is_none_or(Vec::is_empty)
+    if loaded["result"]["session"]["sessionId"] != session_id
+        || !loaded["result"]["runs"]
+            .as_array()
+            .is_some_and(|runs| runs.iter().any(|run| run["runId"] == cli_run_id))
     {
-        return Err(format!("RPC could not replay CLI evidence: {replayed}"));
+        return Err(format!(
+            "generated RPC could not read CLI session/run evidence: {loaded}"
+        ));
     }
+
     let started = host.request(
-        7,
+        4,
         "run.start",
         json!({
-            "sessionId": session_id,
-            "restoreFromRunId": cli_run_id,
-            "profile": "local",
             "continuationMode": "switch",
-            "prompt": "rpc continues cli",
-            "idempotencyKey": "rpc-interop-e2e-cli-to-rpc"
+            "environmentAttachments": [],
+            "idempotencyKey": "rpc-interop-e2e-cli-to-rpc",
+            "input": [{"kind": "text", "text": "rpc continues cli"}],
+            "profile": "local",
+            "restoreFromRunId": cli_run_id,
+            "sessionId": session_id
         }),
     )?;
     assert_no_rpc_error(&started)?;
-    let rpc_run_id = required_json_string(&started["result"], "runId")?;
-    let awaited = host.request(
-        8,
-        "run.await",
-        json!({"sessionId": session_id, "runId": rpc_run_id, "timeoutMs": 10_000}),
-    )?;
-    assert_no_rpc_error(&awaited)?;
-    if awaited["result"]["status"]["status"] != "completed" {
-        return Err(format!("RPC continuation did not complete: {awaited}"));
+    let rpc_run_id = required_json_string(&started["result"]["run"], "runId")?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = host.request(
+            5,
+            "run.status",
+            json!({"sessionId": session_id, "runId": rpc_run_id}),
+        )?;
+        assert_no_rpc_error(&status)?;
+        match status["result"]["run"]["status"].as_str() {
+            Some("completed") => break,
+            Some("failed" | "cancelled") => {
+                return Err(format!("generated RPC continuation failed: {status}"));
+            }
+            _ if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
+            _ => return Err(format!("generated RPC continuation timed out: {status}")),
+        }
     }
     host.shutdown()?;
 
@@ -359,7 +262,7 @@ fn run_e2e(cli: &Path, rpc: &Path, root: &Path) -> Result<(), String> {
         .as_array()
         .is_some_and(|runs| runs.iter().any(|run| run["run_id"] == rpc_run_id))
     {
-        return Err(format!("CLI could not read RPC run: {cli_show}"));
+        return Err(format!("CLI could not read generated RPC run: {cli_show}"));
     }
     let cli_replay = cli_capture(
         cli,
@@ -377,9 +280,11 @@ fn run_e2e(cli: &Path, rpc: &Path, root: &Path) -> Result<(), String> {
             "json",
         ],
     )?;
-    let cli_replay = parse_single_json(&cli_replay, "CLI RPC replay")?;
+    let cli_replay = parse_single_json(&cli_replay, "CLI generated-RPC replay")?;
     if cli_replay["messages"].as_array().is_none_or(Vec::is_empty) {
-        return Err(format!("CLI could not replay RPC evidence: {cli_replay}"));
+        return Err(format!(
+            "CLI could not replay generated RPC evidence: {cli_replay}"
+        ));
     }
     let cli_continued = cli_capture(
         cli,
@@ -462,13 +367,33 @@ impl RpcHost {
     }
 
     fn initialize(&mut self) -> Result<(), String> {
-        let response = self.request(1, "initialize", json!({}))?;
-        assert_no_rpc_error(&response)
+        let example: Value = serde_json::from_str(include_str!(
+            "../../protocol/host/examples/initialize.request.json"
+        ))
+        .map_err(|error| format!("parse canonical initialize example: {error}"))?;
+        let mut params = example
+            .get("params")
+            .cloned()
+            .ok_or("canonical initialize example is missing params")?;
+        *params
+            .get_mut("supportedFeatures")
+            .ok_or("canonical initialize example is missing supportedFeatures")? =
+            json!(["host.shutdown", "runs", "sessions"]);
+        let response = self.request(1, "initialize", params)?;
+        assert_no_rpc_error(&response)?;
+        if response.pointer("/result/protocol") != example.pointer("/params/protocol") {
+            return Err(format!(
+                "RPC initialize identity does not match canonical generated contract: {response}"
+            ));
+        }
+        Ok(())
     }
 
     #[allow(clippy::needless_pass_by_value)]
     fn request(&mut self, id: u64, method: &str, params: Value) -> Result<Value, String> {
-        let request = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        let request_id = format!("interop-{id}");
+        let request =
+            json!({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params});
         writeln!(self.stdin, "{request}").map_err(|error| error.to_string())?;
         self.stdin.flush().map_err(|error| error.to_string())?;
         let mut line = String::new();
@@ -478,11 +403,16 @@ impl RpcHost {
         if line.is_empty() {
             return Err(format!("RPC exited before responding to {method}"));
         }
-        serde_json::from_str(line.trim()).map_err(|error| format!("invalid RPC response: {error}"))
+        let response: Value = serde_json::from_str(line.trim())
+            .map_err(|error| format!("invalid RPC response: {error}"))?;
+        if response.get("id").and_then(Value::as_str) != Some(request_id.as_str()) {
+            return Err(format!("RPC response id mismatch for {method}: {response}"));
+        }
+        Ok(response)
     }
 
     fn shutdown(mut self) -> Result<(), String> {
-        let response = self.request(99, "shutdown", json!({}))?;
+        let response = self.request(99, "shutdown", json!({"deadlineMs": 2_000}))?;
         assert_no_rpc_error(&response)?;
         let status = self.child.wait().map_err(|error| error.to_string())?;
         if status.success() {
@@ -518,5 +448,5 @@ fn required_json_string(value: &Value, key: &str) -> Result<String, String> {
         .get(key)
         .and_then(Value::as_str)
         .map(ToString::to_string)
-        .ok_or_else(|| format!("missing {key} in {value}"))
+        .ok_or_else(|| format!("missing string field {key} in {value}"))
 }

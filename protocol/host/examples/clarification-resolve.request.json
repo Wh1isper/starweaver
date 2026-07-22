@@ -1,0 +1,20 @@
+{
+  "jsonrpc": "2.0",
+  "id": "req_clarification_resolve",
+  "method": "clarification.resolve",
+  "params": {
+    "answers": [
+      {
+        "freeText": null,
+        "question": "Which database should be used?",
+        "selectedOptions": [
+          "PostgreSQL"
+        ]
+      }
+    ],
+    "clarificationId": "clarification_example",
+    "expectedRevision": "3",
+    "idempotencyKey": "clarification-resolve-example",
+    "response": null
+  }
+}

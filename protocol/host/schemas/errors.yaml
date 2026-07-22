@@ -1,0 +1,1013 @@
+{
+  "components": {
+    "errors": {
+      "AlreadyExists": {
+        "code": -32011,
+        "data": {
+          "$ref": "#/components/schemas/AlreadyExistsData"
+        },
+        "message": "AlreadyExists",
+        "x-starweaver-error-data": "AlreadyExistsData"
+      },
+      "AuthorizationDenied": {
+        "code": -32017,
+        "data": {
+          "$ref": "#/components/schemas/AuthorizationDeniedData"
+        },
+        "message": "AuthorizationDenied",
+        "x-starweaver-error-data": "AuthorizationDeniedData"
+      },
+      "ConfigurationFailed": {
+        "code": -32050,
+        "data": {
+          "$ref": "#/components/schemas/ConfigurationFailedData"
+        },
+        "message": "ConfigurationFailed",
+        "x-starweaver-error-data": "ConfigurationFailedData"
+      },
+      "CursorInvalid": {
+        "code": -32016,
+        "data": {
+          "$ref": "#/components/schemas/CursorInvalidData"
+        },
+        "message": "CursorInvalid",
+        "x-starweaver-error-data": "CursorInvalidData"
+      },
+      "EnvironmentUnavailable": {
+        "code": -32031,
+        "data": {
+          "$ref": "#/components/schemas/EnvironmentUnavailableData"
+        },
+        "message": "EnvironmentUnavailable",
+        "x-starweaver-error-data": "EnvironmentUnavailableData"
+      },
+      "IdempotencyConflict": {
+        "code": -32012,
+        "data": {
+          "$ref": "#/components/schemas/IdempotencyConflictData"
+        },
+        "message": "IdempotencyConflict",
+        "x-starweaver-error-data": "IdempotencyConflictData"
+      },
+      "InternalError": {
+        "code": -32000,
+        "data": {
+          "$ref": "#/components/schemas/InternalErrorData"
+        },
+        "message": "InternalError",
+        "x-starweaver-error-data": "InternalErrorData"
+      },
+      "InvalidParams": {
+        "code": -32602,
+        "data": {
+          "$ref": "#/components/schemas/InvalidParamsData"
+        },
+        "message": "InvalidParams",
+        "x-starweaver-error-data": "InvalidParamsData"
+      },
+      "InvalidRequest": {
+        "code": -32600,
+        "data": {
+          "$ref": "#/components/schemas/InvalidRequestData"
+        },
+        "message": "InvalidRequest",
+        "x-starweaver-error-data": "InvalidRequestData"
+      },
+      "MethodNotFound": {
+        "code": -32601,
+        "data": {
+          "$ref": "#/components/schemas/MethodNotFoundData"
+        },
+        "message": "MethodNotFound",
+        "x-starweaver-error-data": "MethodNotFoundData"
+      },
+      "NotFound": {
+        "code": -32010,
+        "data": {
+          "$ref": "#/components/schemas/NotFoundData"
+        },
+        "message": "NotFound",
+        "x-starweaver-error-data": "NotFoundData"
+      },
+      "NotInitialized": {
+        "code": -32001,
+        "data": {
+          "$ref": "#/components/schemas/NotInitializedData"
+        },
+        "message": "NotInitialized",
+        "x-starweaver-error-data": "NotInitializedData"
+      },
+      "ParseError": {
+        "code": -32700,
+        "data": {
+          "$ref": "#/components/schemas/ParseErrorData"
+        },
+        "message": "ParseError",
+        "x-starweaver-error-data": "ParseErrorData"
+      },
+      "RunConflict": {
+        "code": -32013,
+        "data": {
+          "$ref": "#/components/schemas/RunConflictData"
+        },
+        "message": "RunConflict",
+        "x-starweaver-error-data": "RunConflictData"
+      },
+      "SessionSearchUnavailable": {
+        "code": -32032,
+        "data": {
+          "$ref": "#/components/schemas/SessionSearchUnavailableData"
+        },
+        "message": "SessionSearchUnavailable",
+        "x-starweaver-error-data": "SessionSearchUnavailableData"
+      },
+      "StaleFence": {
+        "code": -32014,
+        "data": {
+          "$ref": "#/components/schemas/StaleFenceData"
+        },
+        "message": "StaleFence",
+        "x-starweaver-error-data": "StaleFenceData"
+      },
+      "StorageUnavailable": {
+        "code": -32015,
+        "data": {
+          "$ref": "#/components/schemas/StorageUnavailableData"
+        },
+        "message": "StorageUnavailable",
+        "x-starweaver-error-data": "StorageUnavailableData"
+      },
+      "UnsupportedFeature": {
+        "code": -32002,
+        "data": {
+          "$ref": "#/components/schemas/UnsupportedFeatureData"
+        },
+        "message": "UnsupportedFeature",
+        "x-starweaver-error-data": "UnsupportedFeatureData"
+      }
+    },
+    "schemas": {
+      "AlreadyExistsData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "already_exists",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "AuthorizationDeniedData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "authorization_denied",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "ConfigurationFailedData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "configuration_failed",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "CursorInvalidReason": {
+        "enum": [
+          "malformed",
+          "integrity_failed",
+          "scope_mismatch",
+          "view_mismatch",
+          "storage_mismatch",
+          "retention_gap"
+        ],
+        "type": "string"
+      },
+      "CursorInvalidData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "cursor_invalid",
+            "type": "string"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/CursorInvalidReason"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "reason",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "EnvironmentUnavailableData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "environment_unavailable",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "IdempotencyConflictData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "idempotency_conflict",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "InternalErrorData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "internal_error",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "InvalidParamsData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "invalid_params",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "InvalidRequestData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "invalid_request",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "MethodNotFoundData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "method_not_found",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "NotFoundData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "not_found",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "NotInitializedData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "not_initialized",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "ParseErrorData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "parse_error",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "RunConflictData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "run_conflict",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "SessionSearchUnavailableData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "session_search_unavailable",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "StaleFenceData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "stale_fence",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "StorageUnavailableData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "storage_unavailable",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "UnsupportedFeatureData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "unsupported_feature",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

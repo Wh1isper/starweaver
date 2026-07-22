@@ -74,7 +74,7 @@ Operations and products:
 - `ops/06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP transport profiles, typed method/event/error contracts, replay subscriptions, projections, and idempotency
 - `ops/07-session-search.md` — optional product-neutral session search, local SQLite/filesystem discovery, external index ingestion, and independent CLI/RPC integration
 - `ops/08-agent-session-management.md` — agent-facing session query/control tools, query-only CLI policy, grant-gated RPC mutations, and lifecycle-safe run creation/steering/interruption
-- `ops/09-rpc-idl-and-client-generation.md` — clean IDL-first JSON-RPC major 2, OpenRPC/JSON Schema source, generated Rust server bindings, safe manifest-filtered TypeScript Desktop bridge/client, compatibility, cutover, and validation
+- `ops/09-rpc-idl-and-client-generation.md` — single IDL-first JSON-RPC major-1 contract, `protocol/host/` source, generated Rust and safe Desktop TypeScript boundaries, on-demand external TypeScript generation, exact revision/digest admission, atomic replacement, and validation
 
 Desktop product specs:
 
@@ -91,7 +91,7 @@ Desktop product specs:
 
 ## Target Architecture Shape
 
-The diagram includes the accepted but unimplemented IDL-first host major-2 target. Handwritten Rust DTOs and the v1 corpus remain authoritative only for the implemented major 1; they are behavioral inventory rather than wire constraints for major 2. The Desktop foundation remains disconnected until it can require the generated next-major contract.
+The diagram includes the implemented atomic IDL-first host replacement. `protocol/host/` is the sole structural authority for `starweaver.host` major 1; the handwritten Rust DTOs and old fixtures were removed without a compatibility lane. Desktop consumes the manifest-filtered generated bridge through its privileged supervisor and requires the exact generated revision and schema digest; normal runtime activation remains gated on a configured, verified managed runtime.
 
 ```mermaid
 flowchart TD
@@ -114,10 +114,10 @@ flowchart TD
     stream[starweaver-stream]
     storage[starweaver-storage]
     cli[starweaver-cli]
-    host_idl[Planned host major-2 OpenRPC and JSON Schema IDL]
-    rpc_core[starweaver-rpc-core target generated major-2 Rust bindings]
+    host_idl[Single host OpenRPC and JSON Schema IDL]
+    rpc_core[starweaver-rpc-core generated major-1 Rust bindings]
     rpc[starweaver-rpc]
-    desktop_client[Planned major-2 manifest-filtered TypeScript Desktop client]
+    desktop_client[Manifest-filtered TypeScript Desktop client]
     desktop[Starweaver Desktop shell and Rust supervisor]
     platform[future platform adapters]
 
@@ -186,14 +186,14 @@ flowchart TD
 - Durable state is split between `starweaver-session`, `starweaver-stream`, and `starweaver-storage`.
 - CLI/TUI and standalone RPC are independent product surfaces. Neither depends on, hosts, or routes execution through the other; both may independently consume shared storage, stream, environment, and envd abstractions.
 - `starweaver-cli` owns local/headless command and TUI coordination.
-- The accepted next host-protocol target is `starweaver.host` major 2 with a checked-in OpenRPC/JSON Schema IDL as the structural wire source of truth. It generates the Rust boundary owned by `starweaver-rpc-core` and the manifest-filtered safe TypeScript client consumed by Desktop; neither generated language surface is an independent protocol definition.
-- `starweaver-rpc-core` continues to own handwritten major-1 JSON-RPC contracts while v1 is supported. Major-2 wire types, validators, server trait, and dispatcher are generated independently; `starweaver-rpc` implements that generated boundary while retaining handlers, authorization, subscriptions, coordination, and transports.
-- Starweaver Desktop is a separate product with an implemented cross-platform shell foundation. Its execution path requires host major 2 and consumes IDL-derived safe bridge bindings, while its privileged Rust backend retains local child and SSH-hosted transport, routing, string request identity, replay recovery, authority, safe projection, and runtime-update ownership. The renderer never sends arbitrary JSON-RPC or complete host params, links runtime/storage implementations, controls SSH directly, or reads local/remote shared storage.
+- The sole host-protocol target is the atomically replaced `starweaver.host` major 1 with checked-in `protocol/host/` OpenRPC/JSON Schema source as structural wire truth. It generates the Rust boundary owned by `starweaver-rpc-core` and the manifest-filtered safe TypeScript client consumed by Desktop; neither generated language surface is an independent protocol definition.
+- `starweaver-rpc-core` owns generated major-1 wire types, validators, server trait, dispatcher, and narrow framing/projection helpers after atomic replacement. Handwritten DTOs, registries, aliases, fixtures, and fallback dispatch are removed; `starweaver-rpc` retains handlers, authorization, subscriptions, coordination, and transports.
+- Starweaver Desktop is a separate product with an implemented cross-platform shell foundation. Its execution path requires exact host major-1 revision/schema-digest agreement and consumes IDL-derived safe bridge bindings, while its privileged Rust backend retains local child and SSH-hosted transport, routing, string request identity, replay recovery, authority, safe projection, and runtime-update ownership. The renderer never sends arbitrary JSON-RPC or complete host params, links runtime/storage implementations, controls SSH directly, or reads local/remote shared storage.
 - Platform adapters graduate from specs after responsibilities, call sites, and validation commands are clear.
 
 ## Current Priorities
 
-- Establish the clean host major-2 IDL, generated Rust/TypeScript parity, typed errors, explicit feature negotiation, and durable unified event surface before connecting the Desktop shell foundation to an execution host.
+- Establish the single host IDL, generated Rust/TypeScript parity, typed errors, exact revision/digest validation, explicit feature negotiation, and durable unified event surface before connecting the Desktop shell foundation to an execution host.
 - Close the RPC recovery, interaction, authorization, framing, pagination, and compatibility prerequisites recorded under `desktop/` before connecting the Desktop shell foundation to an execution host.
 - Define the verified Desktop-managed RPC runtime update channel and a hardened product-neutral RPC component installer/update contract shared with `sw`/CLI and SSH provisioning, without linking Desktop to CLI-private handlers or configuration.
 - Build envd as a standalone environment service with a reusable client crate.

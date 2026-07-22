@@ -55,7 +55,7 @@ The workflow:
 1. validates the requested semver version,
 2. installs the pinned `cargo-semver-checks` `0.48.0`,
 3. runs `make upversion VERSION=X.Y.Z`, updating Rust, Python, and Desktop shell metadata,
-4. runs the fast preparation checks plus `make release-api-check`,
+4. runs the IDL, RPC, independent-client, Desktop-boundary, Python, documentation, publish-dry-run, and `make release-api-check` gates,
 5. pushes `release/vX.Y.Z`,
 6. writes the manual pull request URL to the workflow summary.
 
@@ -100,10 +100,11 @@ gh release create vX.Y.Z --target "$(git rev-parse HEAD)" --title "Starweaver vX
 Publishing the GitHub Release triggers `.github/workflows/release.yml`:
 
 1. build CLI launcher binaries from the release tag,
-2. build Python source and wheel distributions for `packages/starweaver-py`,
-3. upload binary archives, Python distributions, and `checksums.txt` to the GitHub Release,
-4. publish all workspace crates in dependency order through the `Release` environment,
-5. publish the Python package to PyPI through the `Release` environment.
+2. package the self-contained public host OpenRPC bundle, generated manifest, and canonical source schemas,
+3. build Python source and wheel distributions for `packages/starweaver-py`,
+4. upload binary archives, protocol artifacts, Python distributions, and `checksums.txt` to the GitHub Release,
+5. publish all workspace crates in dependency order through the `Release` environment,
+6. publish the Python package to PyPI through the `Release` environment.
 
 The Desktop shell version participates in unified preparation, but the current shell foundation is
 not uploaded by this workflow. Desktop installers, signing/notarization, native updater metadata,
@@ -137,8 +138,16 @@ sw.exe
 starweaver-rpc.exe
 ```
 
-The release also includes `checksums.txt` with SHA-256 checksums for all archives and Python
-distributions.
+The release also includes:
+
+- `starweaver-host-X.Y.Z.openrpc.json`, the self-contained public OpenRPC bundle;
+- `starweaver-host-X.Y.Z.manifest.json`, the generated protocol identity and inventory manifest;
+- `starweaver-host-X.Y.Z-schemas.tar.gz`, the canonical split source schemas and pinned tooling profile; and
+- `checksums.txt` with SHA-256 checksums for all binary, protocol, and Python artifacts.
+
+External TypeScript consumers generate complete bindings from the public contract with
+`make rpc-typescript-generate OUTPUT=<empty-or-generator-owned-directory>`. Starweaver does not
+publish or maintain a separate TypeScript package.
 
 Python distributions include an sdist plus wheels for CPython 3.11, 3.12, and 3.13 on the configured
 Linux, macOS, and Windows targets.

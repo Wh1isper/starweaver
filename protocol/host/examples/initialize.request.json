@@ -1,0 +1,23 @@
+{
+  "id": "req_1",
+  "jsonrpc": "2.0",
+  "method": "initialize",
+  "params": {
+    "clientInfo": {
+      "name": "example-client",
+      "version": "0.10.0"
+    },
+    "protocol": {
+      "major": 1,
+      "name": "starweaver.host",
+      "revision": "2026-07-21",
+      "schemaDigest": "sha256:69d2b33653ad2c5eed6b23afb4e19abd14c431240634f30ac3fe756cd4a907b5"
+    },
+    "requiredFeatures": [
+      "sessions"
+    ],
+    "supportedFeatures": [
+      "sessions"
+    ]
+  }
+}

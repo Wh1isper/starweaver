@@ -18,19 +18,27 @@ tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+process-wrap = { version = "9.1.0", default-features = false, features = ["job-object", "kill-on-drop", "process-group", "tokio1"] }
+starweaver-rpc-core.workspace = true
 tauri = { version = "2.11.5", features = [] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util", "process"] }
+uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", features = ["process", "signal", "socket", "user"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5.18.0"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-nix = { version = "0.31.3", features = ["socket", "user"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 interprocess = "2.4.2"
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 uuid.workspace = true
 widestring = "1.2.1"
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
 
 [lints]
 workspace = true

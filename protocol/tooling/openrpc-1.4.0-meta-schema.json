@@ -1,0 +1,625 @@
+{
+  "$id": "https://raw.githubusercontent.com/open-rpc/meta-schema/master/schema.json",
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "contactObject": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {
+          "$ref": "#/definitions/vendorExtensionObject"
+        }
+      },
+      "properties": {
+        "email": {
+          "title": "contactEmail",
+          "type": "string"
+        },
+        "name": {
+          "title": "contactName",
+          "type": "string"
+        },
+        "url": {
+          "title": "contactUrl",
+          "type": "string"
+        }
+      },
+      "title": "contactObject",
+      "type": "object"
+    },
+    "contentDescriptorObject": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {
+          "$ref": "#/definitions/vendorExtensionObject"
+        }
+      },
+      "properties": {
+        "description": {
+          "title": "contentDescriptorDescription",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "contentDescriptorName",
+          "type": "string"
+        },
+        "required": {
+          "title": "contentDescriptorRequired",
+          "type": "boolean"
+        },
+        "schema": {
+          "$ref": "#/definitions/schema"
+        },
+        "summary": {
+          "title": "contentDescriptorSummary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "schema"
+      ],
+      "title": "contentDescriptorObject",
+      "type": "object"
+    },
+    "errorObject": {
+      "additionalProperties": false,
+      "description": "Defines an application level error.",
+      "properties": {
+        "code": {
+          "description": "A Number that indicates the error type that occurred. This MUST be an integer. The error codes from and including -32768 to -32000 are reserved for pre-defined errors. These pre-defined errors SHOULD be assumed to be returned from any JSON-RPC api.",
+          "title": "errorCode",
+          "type": "integer"
+        },
+        "data": {
+          "description": "A Primitive or Structured value that contains additional information about the error. This may be omitted. The value of this member is defined by the Server (e.g. detailed error information, nested errors etc.).",
+          "title": "errorData"
+        },
+        "message": {
+          "description": "A String providing a short description of the error. The message SHOULD be limited to a concise single sentence.",
+          "title": "errorMessage",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "errorObject",
+      "type": "object"
+    },
+    "exampleObject": {
+      "patternProperties": {
+        "^x-": {
+          "$ref": "#/definitions/vendorExtensionObject"
+        }
+      },
+      "properties": {
+        "description": {
+          "title": "exampleDescription",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "exampleName",
+          "type": "string"
+        },
+        "summary": {
+          "title": "exampleSummary",
+          "type": "string"
+        },
+        "value": {
+          "title": "exampleValue"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "title": "exampleObject",
+      "type": "object"
+    },
+    "examplePairingObject": {
+      "properties": {
+        "description": {
+          "title": "examplePairingDescription",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "examplePairingType",
+          "type": "string"
+        },
+        "params": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/definitions/exampleObject"
+              },
+              {
+                "$ref": "#/definitions/referenceObject"
+              }
+            ]
+          },
+          "title": "examplePairingParams",
+          "type": "array"
+        },
+        "result": {
+          "oneOf": [
+            {
+              "$ref": "#/definitions/exampleObject"
+            },
+            {
+              "$ref": "#/definitions/referenceObject"
+            }
+          ],
+          "title": "examplePairingResult"
+        }
+      },
+      "required": [
+        "name",
+        "params",
+        "result"
+      ],
+      "title": "examplePairingObject",
+      "type": "object"
+    },
+    "externalDocumentationObject": {
+      "additionalProperties": false,
+      "description": "information about external documentation",
+      "patternProperties": {
+        "^x-": {
+          "$ref": "#/definitions/vendorExtensionObject"
+        }
+      },
+      "properties": {
+        "description": {
+          "title": "externalDocumentationDescription",
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "title": "externalDocumentationUrl",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "externalDocumentationObject",
+      "type": "object"
+    },
+    "infoObject": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {
+          "$ref": "#/definitions/vendorExtensionObject"
+        }
+      },
+      "properties": {
+        "contact": {
+          "$ref": "#/definitions/contactObject"
+        },
+        "description": {
+          "title": "infoDescription",
+          "type": "string"
+        },
+        "license": {
+          "$ref": "#/definitions/licenseObject"
+        },
+        "termsOfService": {
+          "format": "uri",
+          "title": "infoTermsOfService",
+          "type": "string"
+        },
+        "title": {
+          "title": "infoTitle",
+          "type": "string"
+        },
+        "version": {
+          "title": "infoVersion",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "version"
+      ],
+      "title": "infoObject",
+      "type": "object"
+    },
+    "licenseObject": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {
+          "$ref": "#/definitions/vendorExtensionObject"
+        }
+      },
+      "properties": {
+        "name": {
+          "title": "licenseName",
+          "type": "string"
+        },
+        "url": {
+          "title": "licenseUrl",
+          "type": "string"
+        }
+      },
+      "title": "licenceObject",
+      "type": "object"
+    },
+    "linkObject": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {
+          "$ref": "#/definitions/vendorExtensionObject"
+        }
+      },
+      "properties": {
+        "description": {
+          "title": "linkDescription",
+          "type": "string"
+        },
+        "method": {
+          "title": "linkMethod",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "linkName",
+          "type": "string"
+        },
+        "params": {
+          "title": "linkParams"
+        },
+        "server": {
+          "$ref": "#/definitions/serverObject"
+        },
+        "summary": {
+          "title": "linkSummary",
+          "type": "string"
+        }
+      },
+      "title": "linkObject",
+      "type": "object"
+    },
+    "methodObject": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {
+          "$ref": "#/definitions/vendorExtensionObject"
+        }
+      },
+      "properties": {
+        "description": {
+          "description": "A verbose explanation of the method behavior. GitHub Flavored Markdown syntax MAY be used for rich text representation.",
+          "title": "methodDescription",
+          "type": "string"
+        },
+        "errors": {
+          "description": "Defines an application level error.",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/definitions/errorObject"
+              },
+              {
+                "$ref": "#/definitions/referenceObject"
+              }
+            ]
+          },
+          "title": "methodErrors",
+          "type": "array"
+        },
+        "examples": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/definitions/examplePairingObject"
+              },
+              {
+                "$ref": "#/definitions/referenceObject"
+              }
+            ]
+          },
+          "title": "methodExamples",
+          "type": "array"
+        },
+        "links": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/definitions/linkObject"
+              },
+              {
+                "$ref": "#/definitions/referenceObject"
+              }
+            ]
+          },
+          "title": "methodLinks",
+          "type": "array"
+        },
+        "name": {
+          "description": "The cannonical name for the method. The name MUST be unique within the methods array.",
+          "minLength": 1,
+          "title": "methodName",
+          "type": "string"
+        },
+        "paramStructure": {
+          "default": "by-position",
+          "description": "Format the server expects the params. Defaults to 'by-positon'.",
+          "enum": [
+            "by-position",
+            "by-name"
+          ],
+          "title": "methodParamStructure",
+          "type": "string"
+        },
+        "params": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/definitions/contentDescriptorObject"
+              },
+              {
+                "$ref": "#/definitions/referenceObject"
+              }
+            ]
+          },
+          "title": "methodParams",
+          "type": "array"
+        },
+        "result": {
+          "oneOf": [
+            {
+              "$ref": "#/definitions/contentDescriptorObject"
+            },
+            {
+              "$ref": "#/definitions/referenceObject"
+            }
+          ],
+          "title": "methodResult"
+        },
+        "summary": {
+          "description": "A short summary of what the method does.",
+          "title": "methodSummary",
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/definitions/tagObject"
+              },
+              {
+                "$ref": "#/definitions/referenceObject"
+              }
+            ]
+          },
+          "title": "methodTags",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "result",
+        "params"
+      ],
+      "title": "methodObject",
+      "type": "object"
+    },
+    "referenceObject": {
+      "additionalProperties": false,
+      "properties": {
+        "$ref": {
+          "format": "uri-reference",
+          "title": "$ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "$ref"
+      ],
+      "title": "referenceObject",
+      "type": "object"
+    },
+    "schema": {
+      "$ref": "https://json-schema.org/draft-07/schema#",
+      "default": {},
+      "title": "schema"
+    },
+    "serverObject": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {}
+      },
+      "properties": {
+        "description": {
+          "title": "serverDescription",
+          "type": "string"
+        },
+        "name": {
+          "title": "serverName",
+          "type": "string"
+        },
+        "summary": {
+          "title": "serverSummary",
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "title": "serverUrl",
+          "type": "string"
+        },
+        "variables": {
+          "patternProperties": {
+            "[0-z]+": {
+              "properties": {
+                "default": {
+                  "title": "serverVariableDefault",
+                  "type": "string"
+                },
+                "description": {
+                  "title": "serverVariableDescription",
+                  "type": "string"
+                },
+                "enum": {
+                  "items": {
+                    "title": "serverVariableEnumValue",
+                    "type": "string"
+                  },
+                  "title": "serverVariableEnumList",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "default"
+              ],
+              "title": "serverVariableObject",
+              "type": "object"
+            }
+          },
+          "title": "serverVariablesObject",
+          "type": "object"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "serverObject",
+      "type": "object"
+    },
+    "tagObject": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {
+          "$ref": "#/definitions/vendorExtensionObject"
+        }
+      },
+      "properties": {
+        "description": {
+          "title": "tagDescription",
+          "type": "string"
+        },
+        "externalDocs": {
+          "$ref": "#/definitions/externalDocumentationObject"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "tagName",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "tagObject",
+      "type": "object"
+    },
+    "vendorExtensionObject": {
+      "title": "vendorExtensionObject"
+    }
+  },
+  "properties": {
+    "components": {
+      "properties": {
+        "contentDescriptors": {
+          "patternProperties": {
+            "[0-z]+": {
+              "oneOf": [
+                {
+                  "$ref": "#/definitions/contentDescriptorObject"
+                },
+                {
+                  "$ref": "#/definitions/referenceObject"
+                }
+              ]
+            }
+          },
+          "title": "contentDescriptors",
+          "type": "object"
+        },
+        "examplePairings": {
+          "patternProperties": {
+            "[0-z]+": {
+              "$ref": "#/definitions/examplePairingObject"
+            }
+          },
+          "title": "examplePairings",
+          "type": "object"
+        },
+        "examples": {
+          "patternProperties": {
+            "[0-z]+": {
+              "$ref": "#/definitions/exampleObject"
+            }
+          },
+          "title": "examples",
+          "type": "object"
+        },
+        "links": {
+          "patternProperties": {
+            "[0-z]+": {
+              "$ref": "#/definitions/linkObject"
+            }
+          },
+          "title": "links",
+          "type": "object"
+        },
+        "schemas": {
+          "patternProperties": {
+            "[0-z]+": {
+              "$ref": "#/definitions/schema"
+            }
+          },
+          "title": "schemas",
+          "type": "object"
+        },
+        "tags": {
+          "patternProperties": {
+            "[0-z]+": {
+              "$ref": "#/definitions/tagObject"
+            }
+          },
+          "title": "tags",
+          "type": "object"
+        }
+      },
+      "title": "components",
+      "type": "object"
+    },
+    "info": {
+      "$ref": "#/definitions/infoObject"
+    },
+    "methods": {
+      "additionalItems": false,
+      "items": {
+        "$ref": "#/definitions/methodObject"
+      },
+      "title": "methods",
+      "type": "array"
+    },
+    "openrpc": {
+      "enum": [
+        "1.4.0"
+      ],
+      "title": "openrpc",
+      "type": "string"
+    },
+    "servers": {
+      "additionalItems": false,
+      "items": {
+        "$ref": "#/definitions/serverObject"
+      },
+      "title": "servers",
+      "type": "array"
+    }
+  },
+  "required": [
+    "info",
+    "methods",
+    "openrpc"
+  ],
+  "type": "object"
+}

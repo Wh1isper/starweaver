@@ -1,0 +1,480 @@
+{
+  "components": {
+    "schemas": {
+      "ApprovalChangedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "$ref": "#/components/schemas/ApprovalSummary"
+          },
+          "kind": {
+            "const": "approval_changed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "approval"
+        ],
+        "type": "object"
+      },
+      "ClarificationChangedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "clarification": {
+            "$ref": "#/components/schemas/ClarificationSummary"
+          },
+          "kind": {
+            "const": "clarification_changed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "clarification"
+        ],
+        "type": "object"
+      },
+      "DeferredChangedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "deferred": {
+            "$ref": "#/components/schemas/DeferredSummary"
+          },
+          "kind": {
+            "const": "deferred_changed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "deferred"
+        ],
+        "type": "object"
+      },
+      "DiagnosticEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "const": "diagnostic",
+            "type": "string"
+          },
+          "level": {
+            "enum": [
+              "info",
+              "warning",
+              "error"
+            ],
+            "type": "string"
+          },
+          "message": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "level",
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "EnvironmentChangedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment": {
+            "$ref": "#/components/schemas/EnvironmentAttachment"
+          },
+          "kind": {
+            "const": "environment_changed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "attachment"
+        ],
+        "type": "object"
+      },
+      "EventDelivery": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "$ref": "#/components/schemas/HostEventCursor"
+          },
+          "record": {
+            "$ref": "#/components/schemas/EventRecord"
+          }
+        },
+        "required": [
+          "cursor",
+          "record"
+        ],
+        "type": "object"
+      },
+      "EventProfile": {
+        "enum": [
+          "conversation.v1",
+          "operations.v1",
+          "desktop.conversation.v1"
+        ],
+        "type": "string"
+      },
+      "EventRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "$ref": "#/components/schemas/HostEvent"
+          },
+          "eventId": {
+            "$ref": "#/components/schemas/EventId"
+          },
+          "occurredAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ResourceScope"
+          }
+        },
+        "required": [
+          "eventId",
+          "occurredAt",
+          "scope",
+          "event"
+        ],
+        "type": "object"
+      },
+      "EventViewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "optionalFeatures": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "profile": {
+            "$ref": "#/components/schemas/EventProfile"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ResourceScope"
+          }
+        },
+        "required": [
+          "scope",
+          "profile",
+          "optionalFeatures"
+        ],
+        "type": "object"
+      },
+      "EventsReplayParams": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HostEventCursor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "limit": {
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "view": {
+            "$ref": "#/components/schemas/EventViewRequest"
+          }
+        },
+        "required": [
+          "view",
+          "limit"
+        ],
+        "type": "object"
+      },
+      "EventsReplayResult": {
+        "additionalProperties": false,
+        "properties": {
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/EventDelivery"
+            },
+            "maxItems": 500,
+            "minItems": 0,
+            "type": "array"
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "$ref": "#/components/schemas/HostEventCursor"
+          }
+        },
+        "required": [
+          "deliveries",
+          "nextCursor",
+          "hasMore"
+        ],
+        "type": "object"
+      },
+      "EventsSubscribeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HostEventCursor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "view": {
+            "$ref": "#/components/schemas/EventViewRequest"
+          }
+        },
+        "required": [
+          "view"
+        ],
+        "type": "object"
+      },
+      "EventsSubscribeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptedCursor": {
+            "$ref": "#/components/schemas/HostEventCursor"
+          },
+          "fenceCursor": {
+            "$ref": "#/components/schemas/HostEventCursor"
+          },
+          "nextDeliverySequence": {
+            "const": "1",
+            "type": "string"
+          },
+          "subscriptionId": {
+            "$ref": "#/components/schemas/SubscriptionId"
+          }
+        },
+        "required": [
+          "subscriptionId",
+          "acceptedCursor",
+          "fenceCursor",
+          "nextDeliverySequence"
+        ],
+        "type": "object"
+      },
+      "EventsUnsubscribeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "subscriptionId": {
+            "$ref": "#/components/schemas/SubscriptionId"
+          }
+        },
+        "required": [
+          "subscriptionId"
+        ],
+        "type": "object"
+      },
+      "EventsUnsubscribeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "closed": {
+            "type": "boolean"
+          },
+          "subscriptionId": {
+            "$ref": "#/components/schemas/SubscriptionId"
+          }
+        },
+        "required": [
+          "subscriptionId",
+          "closed"
+        ],
+        "type": "object"
+      },
+      "HostEvent": {
+        "discriminator": {
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SessionChangedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/RunChangedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/OutputAvailableEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ApprovalChangedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/DeferredChangedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ClarificationChangedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/EnvironmentChangedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/DiagnosticEvent"
+          }
+        ]
+      },
+      "HostEventNotificationParams": {
+        "additionalProperties": false,
+        "properties": {
+          "delivery": {
+            "$ref": "#/components/schemas/EventDelivery"
+          },
+          "deliverySequence": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "subscriptionId": {
+            "$ref": "#/components/schemas/SubscriptionId"
+          }
+        },
+        "required": [
+          "subscriptionId",
+          "deliverySequence",
+          "delivery"
+        ],
+        "type": "object"
+      },
+      "OutputAvailableEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "output_available",
+            "type": "string"
+          },
+          "outputRef": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "preview": {
+            "maxLength": 4096,
+            "minLength": 0,
+            "type": "string"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "kind",
+          "sessionId",
+          "runId",
+          "outputRef",
+          "preview"
+        ],
+        "type": "object"
+      },
+      "RunChangedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "run_changed",
+            "type": "string"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunSummary"
+          }
+        },
+        "required": [
+          "kind",
+          "run"
+        ],
+        "type": "object"
+      },
+      "SessionChangedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "session_changed",
+            "type": "string"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionSummary"
+          }
+        },
+        "required": [
+          "kind",
+          "session"
+        ],
+        "type": "object"
+      },
+      "SubscriptionClosedReason": {
+        "enum": [
+          "terminal",
+          "unsubscribed",
+          "overflow",
+          "authorization_changed",
+          "sequence_exhausted"
+        ],
+        "type": "string"
+      },
+      "SubscriptionClosedNotificationParams": {
+        "additionalProperties": false,
+        "properties": {
+          "lastFlushedCursor": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HostEventCursor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "lastFlushedDeliverySequence": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DecimalU64"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "reason": {
+            "$ref": "#/components/schemas/SubscriptionClosedReason"
+          },
+          "subscriptionId": {
+            "$ref": "#/components/schemas/SubscriptionId"
+          }
+        },
+        "required": [
+          "subscriptionId",
+          "reason"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

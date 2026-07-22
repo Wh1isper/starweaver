@@ -7,7 +7,7 @@ use crate::{
     records::StreamCursorRef,
 };
 
-use super::{InMemorySessionStore, run_key, run_key_label, store_failed};
+use super::{InMemorySessionStore, advance_run_revision, run_key, run_key_label, store_failed};
 
 impl InMemorySessionStore {
     pub(super) fn append_stream_record_batch(
@@ -15,6 +15,16 @@ impl InMemorySessionStore {
         session_id: &SessionId,
         run_id: &RunId,
         records: Vec<AgentStreamRecord>,
+    ) -> SessionStoreResult<()> {
+        self.append_stream_record_batch_with_revision(session_id, run_id, records, true)
+    }
+
+    pub(super) fn append_stream_record_batch_with_revision(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+        records: Vec<AgentStreamRecord>,
+        advance_revision: bool,
     ) -> SessionStoreResult<()> {
         let mut inner = self.inner.lock().map_err(store_failed)?;
         let key = run_key(session_id, run_id);
@@ -42,12 +52,14 @@ impl InMemorySessionStore {
                 )));
             }
         }
+        let mut inserted_any = false;
         for record in records {
             if stream
                 .iter()
                 .all(|existing| existing.sequence != record.sequence)
             {
                 stream.push(record);
+                inserted_any = true;
             }
         }
         stream.sort_by_key(|record| record.sequence);
@@ -62,7 +74,12 @@ impl InMemorySessionStore {
                     .retain(|existing| !existing.same_stream(&cursor));
                 run.stream_cursors.push(cursor);
             }
-            run.updated_at = Utc::now();
+            if inserted_any {
+                if advance_revision {
+                    advance_run_revision(run)?;
+                }
+                run.updated_at = Utc::now();
+            }
         }
         Ok(())
     }
@@ -86,6 +103,16 @@ impl InMemorySessionStore {
         run_id: &RunId,
         cursor: StreamCursorRef,
     ) -> SessionStoreResult<()> {
+        self.save_stream_cursor_ref_with_revision(session_id, run_id, cursor, true)
+    }
+
+    pub(super) fn save_stream_cursor_ref_with_revision(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+        cursor: StreamCursorRef,
+        advance_revision: bool,
+    ) -> SessionStoreResult<()> {
         cursor
             .validate_for_run(run_id)
             .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
@@ -107,6 +134,13 @@ impl InMemorySessionStore {
                 .validate_progression(existing)
                 .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
         }
+        if existing_run
+            .stream_cursors
+            .iter()
+            .any(|existing| existing == &cursor)
+        {
+            return Ok(());
+        }
         let run = inner
             .runs
             .get_mut(&run_key)
@@ -114,6 +148,9 @@ impl InMemorySessionStore {
         run.stream_cursors
             .retain(|existing| !existing.same_stream(&cursor));
         run.stream_cursors.push(cursor.clone());
+        if advance_revision {
+            advance_run_revision(run)?;
+        }
         run.updated_at = updated_at;
         if let Some(session) = inner.sessions.get_mut(session_id) {
             session

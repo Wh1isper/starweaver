@@ -1,19 +1,20 @@
-//! Standalone RPC process stdio transport tests.
+//! Canonical generated host contract over the standalone stdio process.
 #![allow(clippy::expect_used)]
 
 use std::{
-    io::{BufRead as _, BufReader, Write as _},
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    io::{BufRead as _, BufReader, Read as _, Write as _},
+    process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     thread,
     time::{Duration, Instant},
 };
 
 use serde_json::{Value, json};
+use starweaver_rpc_core::generated::PROTOCOL_IDENTITY;
 
 mod common;
 
 #[test]
-fn standalone_stdio_process_handles_initialize_and_shutdown() {
+fn eof_closes_active_subscription_and_revokes_connection_attachment() {
     let temp = tempfile::tempdir().expect("temp dir");
     let store = temp.path().join("starweaver.sqlite");
     let mut child = ChildGuard::spawn(
@@ -30,36 +31,274 @@ fn standalone_stdio_process_handles_initialize_and_shutdown() {
     let initialized = rpc_round_trip(
         &mut stdin,
         &mut stdout,
+        &common::initialize_request("req_initialize_eof", "rpc-stdio-eof-test"),
+    );
+    assert!(initialized.get("result").is_some(), "{initialized}");
+    let attached = rpc_round_trip(
+        &mut stdin,
+        &mut stdout,
         &json!({
             "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {"clientInfo": {"name": "rpc-stdio-test"}}
+            "id": "req_attach_connection",
+            "method": "environment.attach",
+            "params": {
+                "environmentId": "local",
+                "idempotencyKey": "stdio-eof-attachment",
+                "scope": {"kind": "connection"}
+            }
         }),
     );
-    assert_eq!(initialized["jsonrpc"], "2.0");
-    assert_eq!(initialized["result"]["capabilities"]["sessions"], true);
-    assert_eq!(
-        initialized["result"]["capabilities"]["streamSubscribe"],
-        true
+    let attachment_id = attached["result"]["attachment"]["attachmentId"]
+        .as_str()
+        .expect("attachment id")
+        .to_string();
+    let subscribed = rpc_round_trip(
+        &mut stdin,
+        &mut stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "req_subscribe_eof",
+            "method": "events.subscribe",
+            "params": {
+                "view": {
+                    "optionalFeatures": [],
+                    "profile": "operations.v1",
+                    "scope": {"kind": "global"}
+                }
+            }
+        }),
     );
-    assert_eq!(initialized["result"]["capabilities"]["steering"], true);
-    assert_eq!(
-        initialized["result"]["capabilities"]["environmentAttachments"],
-        true
+    assert!(subscribed.get("result").is_some(), "{subscribed}");
+
+    drop(stdin);
+    child.wait_for_exit();
+
+    let database = rusqlite::Connection::open(&store).expect("open durable store");
+    let status: String = database
+        .query_row(
+            "SELECT status FROM environment_attachment_records WHERE attachment_id = ?1",
+            [&attachment_id],
+            |row| row.get(0),
+        )
+        .expect("connection attachment record");
+    assert_eq!(status, "detached");
+}
+
+#[test]
+#[allow(clippy::similar_names, clippy::too_many_lines)]
+fn notification_stdout_failure_fails_closed_the_whole_stdio_transport() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let store = temp.path().join("starweaver.sqlite");
+    let command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_starweaver-rpc"));
+        command
+            .current_dir(temp.path())
+            .env("STARWEAVER_CONFIG_DIR", temp.path())
+            .arg("--store")
+            .arg(&store)
+            .arg("stdio");
+        command
+    };
+
+    let mut subscriber = ChildGuard::spawn(&mut command());
+    let mut subscriber_stdin = subscriber.stdin();
+    let mut subscriber_stdout = BufReader::new(subscriber.stdout());
+    let initialized = rpc_round_trip(
+        &mut subscriber_stdin,
+        &mut subscriber_stdout,
+        &common::initialize_request("req_initialize_subscriber", "rpc-stdio-subscriber"),
+    );
+    assert!(initialized.get("result").is_some(), "{initialized}");
+    let attached = rpc_round_trip(
+        &mut subscriber_stdin,
+        &mut subscriber_stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "req_attach_subscriber_connection",
+            "method": "environment.attach",
+            "params": {
+                "environmentId": "local",
+                "idempotencyKey": "subscriber-connection-attachment",
+                "scope": {"kind": "connection"}
+            }
+        }),
+    );
+    let attachment_id = attached["result"]["attachment"]["attachmentId"]
+        .as_str()
+        .expect("subscriber attachment id")
+        .to_string();
+    let subscribed = rpc_round_trip(
+        &mut subscriber_stdin,
+        &mut subscriber_stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "req_subscribe_transport_failure",
+            "method": "events.subscribe",
+            "params": {
+                "view": {
+                    "optionalFeatures": [],
+                    "profile": "operations.v1",
+                    "scope": {"kind": "global"}
+                }
+            }
+        }),
+    );
+    assert!(subscribed.get("result").is_some(), "{subscribed}");
+
+    let mut publisher = ChildGuard::spawn(&mut command());
+    let mut publisher_stdin = publisher.stdin();
+    let mut publisher_stdout = BufReader::new(publisher.stdout());
+    let publisher_initialized = rpc_round_trip(
+        &mut publisher_stdin,
+        &mut publisher_stdout,
+        &common::initialize_request("req_initialize_publisher", "rpc-stdio-publisher"),
+    );
+    assert!(
+        publisher_initialized.get("result").is_some(),
+        "{publisher_initialized}"
     );
 
-    for (index, vector) in common::conformance_vectors()
-        .iter()
-        .filter(|vector| vector.method != "stream.subscribe")
-        .enumerate()
-    {
+    // Keep subscriber stdin open and idle. Closing only stdout's read end makes the next
+    // subscription notification hit a real broken pipe, so no request-response failure can mask
+    // the notification supervisor path.
+    drop(subscriber_stdout);
+    let created = rpc_round_trip(
+        &mut publisher_stdin,
+        &mut publisher_stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "req_publish_transport_failure_event",
+            "method": "session.create",
+            "params": {
+                "deferredTools": [],
+                "idempotencyKey": "notification-transport-failure-event",
+                "profile": "default",
+                "title": "Trigger subscriber notification"
+            }
+        }),
+    );
+    assert!(created.get("result").is_some(), "{created}");
+
+    let (status, stderr) = subscriber.wait_for_failure(Duration::from_secs(8));
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "subscriber exited with {status}: {stderr}"
+    );
+    assert!(
+        stderr
+            .contains("stdio notification transport failed; connection closed for replay recovery"),
+        "unexpected subscriber stderr: {stderr}"
+    );
+    drop(subscriber_stdin);
+
+    let database = rusqlite::Connection::open(&store).expect("open durable store");
+    let status: String = database
+        .query_row(
+            "SELECT status FROM environment_attachment_records WHERE attachment_id = ?1",
+            [&attachment_id],
+            |row| row.get(0),
+        )
+        .expect("subscriber connection attachment record");
+    assert_eq!(status, "detached");
+
+    let shutdown = rpc_round_trip(
+        &mut publisher_stdin,
+        &mut publisher_stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "req_shutdown_publisher",
+            "method": "shutdown",
+            "params": {"deadlineMs": 5_000}
+        }),
+    );
+    assert_eq!(shutdown["result"]["status"], "shutdown");
+    drop(publisher_stdin);
+    publisher.wait_for_exit();
+}
+
+#[test]
+fn stdio_malformed_requests_share_the_http_error_contract() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let store = temp.path().join("starweaver.sqlite");
+    let mut child = ChildGuard::spawn(
+        Command::new(env!("CARGO_BIN_EXE_starweaver-rpc"))
+            .current_dir(temp.path())
+            .env("STARWEAVER_CONFIG_DIR", temp.path())
+            .arg("--store")
+            .arg(&store)
+            .arg("stdio"),
+    );
+    let mut stdin = child.stdin();
+    let mut stdout = BufReader::new(child.stdout());
+
+    let initialized = rpc_round_trip(
+        &mut stdin,
+        &mut stdout,
+        &common::initialize_request("req_initialize_malformed_stdio", "rpc-stdio-malformed-test"),
+    );
+    assert!(initialized.get("result").is_some(), "{initialized}");
+
+    for vector in common::invalid_request_vectors() {
+        let response = raw_rpc_round_trip(&mut stdin, &mut stdout, vector.body);
+        common::assert_invalid_request_response(&vector, &response);
+    }
+
+    let shutdown = rpc_round_trip(
+        &mut stdin,
+        &mut stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "req_shutdown_malformed_stdio_test",
+            "method": "shutdown",
+            "params": {"deadlineMs": 5_000}
+        }),
+    );
+    assert_eq!(shutdown["result"]["status"], "shutdown");
+    drop(stdin);
+    child.wait_for_exit();
+}
+
+#[test]
+fn standalone_stdio_process_serves_the_generated_contract() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let store = temp.path().join("starweaver.sqlite");
+    let mut child = ChildGuard::spawn(
+        Command::new(env!("CARGO_BIN_EXE_starweaver-rpc"))
+            .current_dir(temp.path())
+            .env("STARWEAVER_CONFIG_DIR", temp.path())
+            .arg("--store")
+            .arg(&store)
+            .arg("stdio"),
+    );
+    let mut stdin = child.stdin();
+    let mut stdout = BufReader::new(child.stdout());
+
+    let initialized = rpc_round_trip(
+        &mut stdin,
+        &mut stdout,
+        &common::initialize_request("req_initialize", "rpc-stdio-test"),
+    );
+    assert_eq!(initialized["jsonrpc"], "2.0");
+    assert_eq!(initialized["id"], "req_initialize");
+    assert_eq!(
+        initialized["result"]["protocol"]["schemaDigest"],
+        PROTOCOL_IDENTITY.schema_digest
+    );
+    assert!(
+        initialized["result"]["supportedFeatures"]
+            .as_array()
+            .is_some_and(|features| features.iter().any(|value| value == "events.replay")),
+        "{initialized}"
+    );
+
+    for (index, vector) in common::conformance_vectors().iter().enumerate() {
         let response = rpc_round_trip(
             &mut stdin,
             &mut stdout,
             &json!({
                 "jsonrpc": "2.0",
-                "id": 100 + index,
+                "id": format!("req_conformance_{index}"),
                 "method": vector.method,
                 "params": vector.params,
             }),
@@ -72,139 +311,10 @@ fn standalone_stdio_process_handles_initialize_and_shutdown() {
         &mut stdout,
         &json!({
             "jsonrpc": "2.0",
-            "id": 2,
+            "id": "req_shutdown",
             "method": "shutdown",
-            "params": {}
+            "params": {"deadlineMs": 5_000}
         }),
-    );
-    assert_eq!(shutdown["result"]["status"], "shutdown");
-    drop(stdin);
-    child.wait_for_exit();
-}
-
-#[test]
-#[allow(clippy::too_many_lines)]
-fn standalone_rpc_reads_cli_style_session_from_shared_database() {
-    use starweaver_core::{ConversationId, RunId};
-    use starweaver_session::{RunRecord, RunStatus};
-    use starweaver_stream::{DisplayMessage, DisplayMessageKind, ReplayScope, StreamArchive};
-
-    let temp = tempfile::tempdir().expect("temp dir");
-    let store = temp.path().join("starweaver.sqlite");
-    let storage = starweaver_storage::SqliteStorage::open(&store).expect("shared storage");
-    let session = storage
-        .create_session_for_product(
-            Some("general".to_string()),
-            Some("CLI session visible to RPC host".to_string()),
-            Some(temp.path().to_string_lossy().into_owned()),
-            Some("cli"),
-        )
-        .expect("CLI-style session");
-    let run_id = RunId::from_string("run_cli_to_rpc_process");
-    let mut run = RunRecord::new(
-        session.session_id.clone(),
-        run_id.clone(),
-        ConversationId::new(),
-    );
-    run.trigger_type = Some("cli".to_string());
-    run.status = RunStatus::Completed;
-    run.output_preview = Some("persisted CLI output".to_string());
-    storage
-        .session_store()
-        .append_run_allocated(run)
-        .expect("CLI-style run");
-    let display = DisplayMessage::new(
-        1,
-        session.session_id.clone(),
-        run_id.clone(),
-        DisplayMessageKind::RunCompleted,
-    )
-    .with_preview("persisted CLI output");
-    tokio::runtime::Runtime::new()
-        .expect("test runtime")
-        .block_on(async {
-            storage
-                .stream_archive()
-                .append_display_messages(ReplayScope::run(run_id.as_str()), vec![display])
-                .await
-                .expect("CLI-style display evidence");
-        });
-    drop(storage);
-
-    let mut child = ChildGuard::spawn(
-        Command::new(env!("CARGO_BIN_EXE_starweaver-rpc"))
-            .current_dir(temp.path())
-            .env("STARWEAVER_CONFIG_DIR", temp.path())
-            .arg("--store")
-            .arg(&store)
-            .arg("stdio"),
-    );
-    let mut stdin = child.stdin();
-    let mut stdout = BufReader::new(child.stdout());
-    let initialized = rpc_round_trip(
-        &mut stdin,
-        &mut stdout,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {"clientInfo": {"name": "rpc-stdio-test"}}
-        }),
-    );
-    assert!(initialized.get("error").is_none(), "{initialized}");
-
-    let listed = rpc_round_trip(
-        &mut stdin,
-        &mut stdout,
-        &json!({"jsonrpc": "2.0", "id": 2, "method": "session.list", "params": {}}),
-    );
-    assert!(
-        listed["result"]["sessions"]
-            .as_array()
-            .expect("session list")
-            .iter()
-            .any(|value| value["session_id"] == session.session_id.as_str()),
-        "{listed}"
-    );
-
-    let loaded = rpc_round_trip(
-        &mut stdin,
-        &mut stdout,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "session.get",
-            "params": {"sessionId": session.session_id.as_str()}
-        }),
-    );
-    assert_eq!(
-        loaded["result"]["session"]["title"],
-        "CLI session visible to RPC host"
-    );
-    assert_eq!(loaded["result"]["runs"][0]["run_id"], run_id.as_str());
-
-    let replayed = rpc_round_trip(
-        &mut stdin,
-        &mut stdout,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "stream.replay",
-            "params": {
-                "sessionId": session.session_id.as_str(),
-                "runId": run_id.as_str()
-            }
-        }),
-    );
-    assert_eq!(
-        replayed["result"]["messages"][0]["preview"],
-        "persisted CLI output"
-    );
-
-    let shutdown = rpc_round_trip(
-        &mut stdin,
-        &mut stdout,
-        &json!({"jsonrpc": "2.0", "id": 5, "method": "shutdown", "params": {}}),
     );
     assert_eq!(shutdown["result"]["status"], "shutdown");
     drop(stdin);
@@ -245,6 +355,24 @@ impl ChildGuard {
         }
         panic!("starweaver-rpc did not exit after shutdown");
     }
+
+    fn wait_for_failure(&mut self, timeout: Duration) -> (ExitStatus, String) {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if let Some(status) = self.child.try_wait().expect("poll child") {
+                let mut stderr = String::new();
+                self.child
+                    .stderr
+                    .take()
+                    .expect("child stderr")
+                    .read_to_string(&mut stderr)
+                    .expect("read child stderr");
+                return (status, stderr);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("starweaver-rpc did not fail before the deadline");
+    }
 }
 
 impl Drop for ChildGuard {
@@ -260,6 +388,14 @@ fn rpc_round_trip(
     stdin: &mut ChildStdin,
     stdout: &mut BufReader<ChildStdout>,
     request: &Value,
+) -> Value {
+    raw_rpc_round_trip(stdin, stdout, &request.to_string())
+}
+
+fn raw_rpc_round_trip(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    request: &str,
 ) -> Value {
     writeln!(stdin, "{request}").expect("write request");
     stdin.flush().expect("flush request");

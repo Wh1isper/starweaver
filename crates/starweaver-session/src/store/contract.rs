@@ -6,15 +6,19 @@ use starweaver_core::{RunId, SessionId};
 use starweaver_stream::{AgentStreamRecord, ReplayEvent};
 
 use crate::{
-    AcquireBackgroundSubagentContinuation, AcquireRunAdmission,
+    AcquireBackgroundSubagentContinuation, AcquireRunAdmission, AdmitRunControl,
     BackgroundSubagentContinuationReceipt, BackgroundSubagentRecord,
     DurableBackgroundSubagentDeliveryClaim, DurableBackgroundSubagentDeliveryRelease,
-    DurableControlReceipt, RunAdmissionLease, RunAdmissionReceipt, SessionContinuationFence,
-    UpdateManagedSession,
+    DurableControlReceipt, DurableRunControlIntent, DurableRunControlStatus, RunAdmissionLease,
+    RunAdmissionReceipt, SessionContinuationFence, UpdateManagedSession,
     approval::{ApprovalRecord, DeferredToolRecord},
     claim::HitlResumeClaim,
     error::{SessionStoreError, SessionStoreResult},
     evidence::RunEvidenceCommit,
+    host_events::{
+        DurableHostEventClass, DurableHostEventPage, DurableHostEventQuery, DurableHostEventRecord,
+        DurableHostEventScope, PendingHostEventPublication,
+    },
     publication::{PendingStreamPublication, StreamPublicationTarget},
     records::{
         EnvironmentStateRef, RunRecord, RunStatus, RunTerminalProjection, SessionRecord,
@@ -43,13 +47,164 @@ pub struct SessionFilter {
     pub limit: Option<usize>,
 }
 
+/// Maximum number of records returned by one stable keyset page.
+pub const MAX_STABLE_PAGE_SIZE: usize = 200;
+
+/// Stable key identifying one session's position in the updated-time ordering.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionPageKey {
+    /// Last update time of the session at the page boundary.
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// Stable session identity used to break equal-timestamp ties.
+    pub session_id: SessionId,
+}
+
+impl SessionPageKey {
+    /// Build a key from one returned session.
+    #[must_use]
+    pub fn from_session(session: &SessionRecord) -> Self {
+        Self {
+            updated_at: session.updated_at,
+            session_id: session.session_id.clone(),
+        }
+    }
+}
+
+/// Bounded keyset query over sessions ordered by update time and stable identity descending.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionPageQuery {
+    after: Option<SessionPageKey>,
+    limit: usize,
+}
+
+impl SessionPageQuery {
+    /// Build a validated session-page query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless `limit` is between 1 and [`MAX_STABLE_PAGE_SIZE`].
+    pub fn new(after: Option<SessionPageKey>, limit: usize) -> SessionStoreResult<Self> {
+        validate_page_limit(limit)?;
+        Ok(Self { after, limit })
+    }
+
+    /// Return the exclusive page boundary.
+    #[must_use]
+    pub const fn after(&self) -> Option<&SessionPageKey> {
+        self.after.as_ref()
+    }
+
+    /// Return the validated page size.
+    #[must_use]
+    pub const fn limit(&self) -> usize {
+        self.limit
+    }
+}
+
+/// One stable page of durable sessions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionPage {
+    /// Sessions in `updated_at DESC, session_id DESC` order.
+    pub sessions: Vec<SessionRecord>,
+    /// Last returned key, or the requested start key when the page is empty.
+    pub next_key: Option<SessionPageKey>,
+    /// Whether another record exists after `next_key`.
+    pub has_more: bool,
+}
+
+/// Stable key identifying one HITL record's position in updated-time ordering.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InteractionPageKey {
+    /// Last update time of the interaction at the page boundary.
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// Approval or deferred-tool identity used to break equal-timestamp ties.
+    pub interaction_id: String,
+}
+
+/// Bounded keyset query over approval or deferred-tool records.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InteractionPageQuery {
+    session_id: Option<SessionId>,
+    run_id: Option<RunId>,
+    after: Option<InteractionPageKey>,
+    limit: usize,
+}
+
+impl InteractionPageQuery {
+    /// Build a validated interaction-page query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless `limit` is between 1 and [`MAX_STABLE_PAGE_SIZE`].
+    pub fn new(
+        session_id: Option<SessionId>,
+        run_id: Option<RunId>,
+        after: Option<InteractionPageKey>,
+        limit: usize,
+    ) -> SessionStoreResult<Self> {
+        validate_page_limit(limit)?;
+        Ok(Self {
+            session_id,
+            run_id,
+            after,
+            limit,
+        })
+    }
+
+    /// Return the optional owning-session filter.
+    #[must_use]
+    pub const fn session_id(&self) -> Option<&SessionId> {
+        self.session_id.as_ref()
+    }
+
+    /// Return the optional owning-run filter.
+    #[must_use]
+    pub const fn run_id(&self) -> Option<&RunId> {
+        self.run_id.as_ref()
+    }
+
+    /// Return the exclusive page boundary.
+    #[must_use]
+    pub const fn after(&self) -> Option<&InteractionPageKey> {
+        self.after.as_ref()
+    }
+
+    /// Return the validated page size.
+    #[must_use]
+    pub const fn limit(&self) -> usize {
+        self.limit
+    }
+}
+
+/// One stable page of approval or deferred-tool records.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InteractionPage<T> {
+    /// Records in `updated_at DESC, stable_id DESC` order.
+    pub records: Vec<T>,
+    /// Last returned key, or the requested start key when the page is empty.
+    pub next_key: Option<InteractionPageKey>,
+    /// Whether another record exists after `next_key`.
+    pub has_more: bool,
+}
+
+fn validate_page_limit(limit: usize) -> SessionStoreResult<()> {
+    if !(1..=MAX_STABLE_PAGE_SIZE).contains(&limit) {
+        return Err(SessionStoreError::Failed(format!(
+            "stable page limit must be between 1 and {MAX_STABLE_PAGE_SIZE}"
+        )));
+    }
+    Ok(())
+}
+
 /// Durable session store contract.
 #[async_trait]
 pub trait SessionStore: Send + Sync {
     /// Atomically persist a complete run evidence bundle.
     ///
     /// Implementations must leave either the complete previous state or the complete committed
-    /// state visible. Identical retries are idempotent and conflicting retries must fail.
+    /// state visible. One successful logical commit advances each changed existing run exactly
+    /// once (new runs begin at revision one), and atomically enqueues authoritative run/output
+    /// host publications. Identical retries are idempotent and conflicting retries must fail.
     async fn commit_run_evidence(&self, commit: RunEvidenceCommit)
     -> SessionStoreResult<RunRecord>;
 
@@ -185,12 +340,73 @@ pub trait SessionStore: Send + Sync {
         ))
     }
 
+    /// Atomically enqueue view-independent host-event publications.
+    ///
+    /// Exact retries are idempotent. Reusing a publication key or event identity with different
+    /// evidence must fail without inserting any member of the batch.
+    async fn enqueue_host_event_publications(
+        &self,
+        _publications: Vec<PendingHostEventPublication>,
+    ) -> SessionStoreResult<()> {
+        management_unsupported()
+    }
+
+    /// List a bounded oldest-first batch of host-event outbox entries.
+    async fn pending_host_event_publications(
+        &self,
+        _limit: usize,
+    ) -> SessionStoreResult<Vec<PendingHostEventPublication>> {
+        management_unsupported()
+    }
+
+    /// Idempotently materialize a bounded outbox batch into the canonical durable event log.
+    ///
+    /// Position allocation, exact-conflict checks, durable inserts, and outbox deletion occur in
+    /// one transaction. Returned records are durable before this method completes.
+    async fn materialize_host_event_publications(
+        &self,
+        _limit: usize,
+    ) -> SessionStoreResult<Vec<DurableHostEventRecord>> {
+        management_unsupported()
+    }
+
+    /// Replay a bounded, class-filtered durable host-event page.
+    async fn replay_host_events(
+        &self,
+        _query: DurableHostEventQuery,
+    ) -> SessionStoreResult<DurableHostEventPage> {
+        management_unsupported()
+    }
+
+    /// Capture the latest eligible durable backend position for one scope and class set.
+    async fn host_event_fence(
+        &self,
+        _scope: &DurableHostEventScope,
+        _event_classes: &[DurableHostEventClass],
+    ) -> SessionStoreResult<Option<u64>> {
+        management_unsupported()
+    }
+
     /// Atomically create a session and bind an idempotency key to a normalized fingerprint.
     async fn create_session_idempotent(
         &self,
         _session: SessionRecord,
         _idempotency_key: &str,
         _command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        management_unsupported()
+    }
+
+    /// Atomically create a session, bind its idempotency receipt, and enqueue host events.
+    ///
+    /// Exact retries validate and deduplicate the supplied publications. A fingerprint or event
+    /// conflict leaves the session, receipt, and outbox unchanged.
+    async fn create_session_idempotent_with_host_events(
+        &self,
+        _session: SessionRecord,
+        _idempotency_key: &str,
+        _command_fingerprint: &str,
+        _publications: Vec<PendingHostEventPublication>,
     ) -> SessionStoreResult<SessionRecord> {
         management_unsupported()
     }
@@ -214,6 +430,16 @@ pub trait SessionStore: Send + Sync {
         management_unsupported()
     }
 
+    /// Apply an allowlisted session patch and enqueue host events in the same atomic mutation.
+    async fn update_managed_session_with_host_events(
+        &self,
+        _command: UpdateManagedSession,
+        _command_fingerprint: &str,
+        _publications: Vec<PendingHostEventPublication>,
+    ) -> SessionStoreResult<SessionRecord> {
+        management_unsupported()
+    }
+
     /// Acquire a deletion fence that blocks run, continuation, and delegation admission.
     async fn acquire_session_deletion_fence(
         &self,
@@ -232,6 +458,22 @@ pub trait SessionStore: Send + Sync {
         &self,
         _session_id: &SessionId,
         _fence_id: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        management_unsupported()
+    }
+
+    /// Complete a fenced tombstone while replacing its idempotency receipt and enqueuing events.
+    ///
+    /// The key and fingerprint must match the receipt written when the deletion fence was
+    /// acquired. Exact retries are idempotent and validate the same event publications.
+    #[allow(clippy::too_many_arguments)]
+    async fn tombstone_session_idempotent_with_host_events(
+        &self,
+        _session_id: &SessionId,
+        _fence_id: &str,
+        _idempotency_key: &str,
+        _command_fingerprint: &str,
+        _publications: Vec<PendingHostEventPublication>,
     ) -> SessionStoreResult<SessionRecord> {
         management_unsupported()
     }
@@ -324,6 +566,62 @@ pub trait SessionStore: Send + Sync {
         _namespace_id: &str,
         _now: chrono::DateTime<chrono::Utc>,
     ) -> SessionStoreResult<Vec<crate::ManagedRunTarget>> {
+        management_unsupported()
+    }
+
+    /// Atomically reserve an authority/key/fingerprint-bound receipt and durable effect intent.
+    ///
+    /// Implementations must validate the exact live admission lease in the same transaction as
+    /// both records. Exact retries return the original intent; any identity or payload mismatch
+    /// fails without changing the receipt or inbox. No runtime effect may occur before success.
+    async fn admit_run_control(
+        &self,
+        _request: AdmitRunControl,
+    ) -> SessionStoreResult<DurableRunControlIntent> {
+        management_unsupported()
+    }
+
+    /// Load one durable control effect by target and deterministic operation id.
+    async fn load_run_control_intent(
+        &self,
+        _target: &crate::ManagedRunTarget,
+        _operation_id: &str,
+    ) -> SessionStoreResult<Option<DurableRunControlIntent>> {
+        management_unsupported()
+    }
+
+    /// List a bounded oldest-first control inbox for recovery and delivery.
+    async fn list_run_control_intents(
+        &self,
+        _target: &crate::ManagedRunTarget,
+        _statuses: &[DurableRunControlStatus],
+        _limit: usize,
+    ) -> SessionStoreResult<Vec<DurableRunControlIntent>> {
+        management_unsupported()
+    }
+
+    /// Monotonically acknowledge runtime delivery or consumption under the exact live lease.
+    ///
+    /// The store validates admission id, host, target, generation, and expiry in the same
+    /// transaction as the state update. Exact state retries are idempotent.
+    async fn advance_run_control_intent(
+        &self,
+        _lease: &RunAdmissionLease,
+        _operation_id: &str,
+        _expected: DurableRunControlStatus,
+        _next: DurableRunControlStatus,
+        _occurred_at: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<DurableRunControlIntent> {
+        management_unsupported()
+    }
+
+    /// Mark a pending, delivered, or consumed intent reconciled during terminal/stale recovery.
+    async fn reconcile_run_control_intent(
+        &self,
+        _target: &crate::ManagedRunTarget,
+        _operation_id: &str,
+        _occurred_at: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<DurableRunControlIntent> {
         management_unsupported()
     }
 
@@ -501,6 +799,9 @@ pub trait SessionStore: Send + Sync {
     }
 
     /// Save a session record.
+    ///
+    /// A new record retains its supplied creation and update evidence; updating an existing
+    /// record assigns the store's current update time and advances its revision.
     async fn save_session(&self, session: SessionRecord) -> SessionStoreResult<()>;
 
     /// Load a session record.
@@ -508,6 +809,9 @@ pub trait SessionStore: Send + Sync {
 
     /// List sessions by optional filter.
     async fn list_sessions(&self, filter: SessionFilter) -> SessionStoreResult<Vec<SessionRecord>>;
+
+    /// Return one storage-bounded stable keyset page of sessions.
+    async fn list_session_page(&self, query: SessionPageQuery) -> SessionStoreResult<SessionPage>;
 
     /// Update session status.
     async fn update_session_status(

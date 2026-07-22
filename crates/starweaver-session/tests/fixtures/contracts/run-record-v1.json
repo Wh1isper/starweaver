@@ -4,6 +4,7 @@
   "payload": {
     "session_id": "session-fixture",
     "run_id": "run-fixture",
+    "revision": 1,
     "conversation_id": "conversation-fixture",
     "input": [
       {

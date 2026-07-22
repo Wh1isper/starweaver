@@ -6,10 +6,15 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+jsonschema.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 syn = { version = "2.0", features = ["full"] }
+tempfile.workspace = true
 toml.workspace = true
+yaml_serde.workspace = true
 
 [lints]
 workspace = true

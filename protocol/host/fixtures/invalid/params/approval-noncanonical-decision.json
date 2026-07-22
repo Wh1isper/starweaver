@@ -1,0 +1,8 @@
+{
+  "method": "approval.decide",
+  "params": {
+    "approvalId": "approval_1",
+    "decision": "approve",
+    "idempotencyKey": "approval-1"
+  }
+}

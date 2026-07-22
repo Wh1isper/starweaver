@@ -3,6 +3,7 @@
   "version": 1,
   "payload": {
     "approval_id": "approval-fixture",
+    "revision": 1,
     "session_id": "session-fixture",
     "run_id": "run-fixture",
     "action_id": "tool-call-fixture",

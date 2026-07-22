@@ -1,0 +1,11 @@
+{
+  "jsonrpc": "2.0",
+  "id": "req_deferred_complete",
+  "method": "deferred.complete",
+  "params": {
+    "deferredId": "deferred_example",
+    "expectedRevision": "4",
+    "idempotencyKey": "deferred-complete-example",
+    "resultText": "Completed by the trusted client"
+  }
+}

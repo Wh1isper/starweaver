@@ -426,4 +426,242 @@ pub const SQLITE_MIGRATIONS: &[SqliteMigration] = &[
     ",
         hook_version: None,
     },
+    SqliteMigration {
+        id: "20260721_000012_durable_host_events",
+        description: "add canonical durable host-event records, deterministic publication outbox, and monotonic positions",
+        sql: r"
+        CREATE TABLE IF NOT EXISTS host_event_log_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            last_position INTEGER NOT NULL CHECK (last_position >= 0)
+        );
+        INSERT OR IGNORE INTO host_event_log_state (singleton, last_position) VALUES (1, 0);
+
+        CREATE TABLE IF NOT EXISTS host_event_records (
+            position INTEGER PRIMARY KEY CHECK (position > 0),
+            publication_key TEXT NOT NULL UNIQUE,
+            event_id TEXT NOT NULL UNIQUE,
+            scope_kind TEXT NOT NULL CHECK (scope_kind IN ('global', 'session', 'run')),
+            session_id TEXT,
+            run_id TEXT,
+            event_class TEXT NOT NULL CHECK (event_class IN (
+                'session_changed', 'run_changed', 'output_available', 'approval_changed',
+                'deferred_changed', 'clarification_changed', 'environment_changed', 'diagnostic'
+            )),
+            record TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            CHECK (
+                (scope_kind = 'global' AND session_id IS NULL AND run_id IS NULL) OR
+                (scope_kind = 'session' AND session_id IS NOT NULL AND run_id IS NULL) OR
+                (scope_kind = 'run' AND session_id IS NOT NULL AND run_id IS NOT NULL)
+            )
+        );
+        CREATE INDEX IF NOT EXISTS ix_host_event_records_session_position
+            ON host_event_records(session_id, position);
+        CREATE INDEX IF NOT EXISTS ix_host_event_records_run_position
+            ON host_event_records(session_id, run_id, position);
+        CREATE INDEX IF NOT EXISTS ix_host_event_records_class_position
+            ON host_event_records(event_class, position);
+
+        CREATE TABLE IF NOT EXISTS host_event_outbox_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            last_sequence INTEGER NOT NULL CHECK (last_sequence >= 0)
+        );
+        INSERT OR IGNORE INTO host_event_outbox_state (singleton, last_sequence) VALUES (1, 0);
+
+        CREATE TABLE IF NOT EXISTS host_event_publication_outbox (
+            publication_key TEXT PRIMARY KEY,
+            enqueue_sequence INTEGER NOT NULL UNIQUE CHECK (enqueue_sequence > 0),
+            event_id TEXT NOT NULL UNIQUE,
+            scope_kind TEXT NOT NULL CHECK (scope_kind IN ('global', 'session', 'run')),
+            session_id TEXT,
+            run_id TEXT,
+            event_class TEXT NOT NULL CHECK (event_class IN (
+                'session_changed', 'run_changed', 'output_available', 'approval_changed',
+                'deferred_changed', 'clarification_changed', 'environment_changed', 'diagnostic'
+            )),
+            record TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            CHECK (
+                (scope_kind = 'global' AND session_id IS NULL AND run_id IS NULL) OR
+                (scope_kind = 'session' AND session_id IS NOT NULL AND run_id IS NULL) OR
+                (scope_kind = 'run' AND session_id IS NOT NULL AND run_id IS NOT NULL)
+            )
+        );
+        CREATE INDEX IF NOT EXISTS ix_host_event_outbox_sequence
+            ON host_event_publication_outbox(enqueue_sequence);
+    ",
+        hook_version: None,
+    },
+    SqliteMigration {
+        id: "20260721_000013_stable_keyset_pages",
+        description: "add stable updated-time and identity indexes for bounded session and HITL pagination",
+        sql: r"
+        CREATE INDEX IF NOT EXISTS ix_session_records_updated_identity
+            ON session_records(updated_at DESC, session_id DESC);
+
+        CREATE INDEX IF NOT EXISTS ix_approval_records_updated_identity
+            ON approval_records(updated_at DESC, approval_id DESC);
+        CREATE INDEX IF NOT EXISTS ix_approval_records_session_updated_identity
+            ON approval_records(session_id, updated_at DESC, approval_id DESC);
+        CREATE INDEX IF NOT EXISTS ix_approval_records_run_updated_identity
+            ON approval_records(run_id, updated_at DESC, approval_id DESC);
+        CREATE INDEX IF NOT EXISTS ix_approval_records_session_run_updated_identity
+            ON approval_records(session_id, run_id, updated_at DESC, approval_id DESC);
+
+        CREATE INDEX IF NOT EXISTS ix_deferred_records_updated_identity
+            ON deferred_tool_records(updated_at DESC, deferred_id DESC);
+        CREATE INDEX IF NOT EXISTS ix_deferred_records_session_updated_identity
+            ON deferred_tool_records(session_id, updated_at DESC, deferred_id DESC);
+        CREATE INDEX IF NOT EXISTS ix_deferred_records_run_updated_identity
+            ON deferred_tool_records(run_id, updated_at DESC, deferred_id DESC);
+        CREATE INDEX IF NOT EXISTS ix_deferred_records_session_run_updated_identity
+            ON deferred_tool_records(session_id, run_id, updated_at DESC, deferred_id DESC);
+    ",
+        hook_version: None,
+    },
+    SqliteMigration {
+        id: "20260721_000014_model_selection_receipts",
+        description: "add authority-bound model selections and durable idempotent mutation receipts",
+        sql: r"
+        CREATE TABLE IF NOT EXISTS model_selection_records (
+            authority_binding TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL CHECK (revision > 0),
+            record TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS model_selection_mutation_receipts (
+            authority_binding TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            command_fingerprint TEXT NOT NULL,
+            receipt_id TEXT NOT NULL UNIQUE,
+            record TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (authority_binding, idempotency_key),
+            FOREIGN KEY (authority_binding) REFERENCES model_selection_records(authority_binding)
+        );
+        CREATE INDEX IF NOT EXISTS ix_model_selection_receipts_created
+            ON model_selection_mutation_receipts(authority_binding, created_at, receipt_id);
+    ",
+        hook_version: None,
+    },
+    SqliteMigration {
+        id: "20260721_000015_interaction_mutation_receipts",
+        description: "add authority-scoped idempotent receipts for atomic approval, deferred, and clarification mutations",
+        sql: r"
+        CREATE TABLE IF NOT EXISTS interaction_mutation_receipts (
+            authority_binding TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            command_fingerprint TEXT NOT NULL,
+            operation TEXT NOT NULL CHECK (operation IN (
+                'approval.decide', 'deferred.complete', 'deferred.fail',
+                'clarification.resolve'
+            )),
+            target_ref TEXT NOT NULL,
+            receipt_id TEXT NOT NULL UNIQUE,
+            record TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (authority_binding, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS ix_interaction_mutation_receipts_created
+            ON interaction_mutation_receipts(authority_binding, created_at, receipt_id);
+    ",
+        hook_version: None,
+    },
+    SqliteMigration {
+        id: "20260721_000016_environment_aggregate",
+        description: "add durable authority-bound environment attachments, mounts, and atomic mutation receipts",
+        sql: r"
+        CREATE TABLE IF NOT EXISTS environment_attachment_records (
+            authority_binding TEXT NOT NULL,
+            attachment_id TEXT NOT NULL,
+            environment_id TEXT NOT NULL,
+            scope_key TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('attaching', 'ready', 'degraded', 'detached')),
+            revision INTEGER NOT NULL CHECK (revision > 0),
+            record TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (authority_binding, attachment_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_environment_attachments_list
+            ON environment_attachment_records(authority_binding, updated_at DESC, attachment_id DESC);
+        CREATE INDEX IF NOT EXISTS ix_environment_attachments_scope_list
+            ON environment_attachment_records(authority_binding, scope_key, updated_at DESC, attachment_id DESC);
+
+        CREATE TABLE IF NOT EXISTS environment_mount_records (
+            authority_binding TEXT NOT NULL,
+            mount_id TEXT NOT NULL,
+            attachment_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('mounted', 'unmounted')),
+            revision INTEGER NOT NULL CHECK (revision > 0),
+            record TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (authority_binding, mount_id),
+            FOREIGN KEY (authority_binding, attachment_id)
+                REFERENCES environment_attachment_records(authority_binding, attachment_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_environment_mounts_run
+            ON environment_mount_records(authority_binding, session_id, run_id, status, mount_id);
+        CREATE INDEX IF NOT EXISTS ix_environment_mounts_attachment
+            ON environment_mount_records(authority_binding, attachment_id, status, mount_id);
+
+        CREATE TABLE IF NOT EXISTS environment_mutation_receipts (
+            authority_binding TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            command_fingerprint TEXT NOT NULL,
+            operation TEXT NOT NULL CHECK (operation IN (
+                'environment.attach', 'environment.detach', 'environment.mount',
+                'environment.unmount'
+            )),
+            target_ref TEXT NOT NULL,
+            receipt_id TEXT NOT NULL UNIQUE,
+            record TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (authority_binding, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS ix_environment_receipts_created
+            ON environment_mutation_receipts(authority_binding, created_at, receipt_id);
+    ",
+        hook_version: None,
+    },
+    SqliteMigration {
+        id: "20260721_000017_durable_run_control_effects",
+        description: "atomically bind run control receipts to durable steering and interrupt intents",
+        sql: r"
+        CREATE TABLE IF NOT EXISTS run_control_intents (
+            namespace_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            operation_id TEXT NOT NULL,
+            authority_binding TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            command_fingerprint TEXT NOT NULL,
+            admission_id TEXT NOT NULL,
+            host_instance_id TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK (generation > 0),
+            operation TEXT NOT NULL CHECK (operation IN ('steer', 'interrupt')),
+            status TEXT NOT NULL CHECK (status IN (
+                'pending', 'delivered', 'consumed', 'reconciled'
+            )),
+            receipt_id TEXT NOT NULL UNIQUE,
+            record TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (namespace_id, session_id, run_id, operation_id),
+            UNIQUE (authority_binding, idempotency_key),
+            FOREIGN KEY (receipt_id) REFERENCES run_control_receipts(receipt_id)
+                ON DELETE CASCADE,
+            FOREIGN KEY (session_id, run_id) REFERENCES run_records(session_id, run_id)
+                ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS ix_run_control_inbox
+            ON run_control_intents(namespace_id, session_id, run_id, status, created_at, operation_id);
+        CREATE INDEX IF NOT EXISTS ix_run_control_admission
+            ON run_control_intents(namespace_id, session_id, run_id, generation, admission_id);
+    ",
+        hook_version: None,
+    },
 ];

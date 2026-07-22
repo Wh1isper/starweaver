@@ -1,0 +1,576 @@
+{
+  "$schema": "./manifest.schema.json",
+  "commands": {
+    "acknowledge": "acknowledge_host_event",
+    "acknowledgeOperation": "acknowledge_host_operation",
+    "execute": "execute_host_operation",
+    "listPendingOperations": "list_pending_host_operations",
+    "subscribe": "subscribe_host_events",
+    "unsubscribe": "unsubscribe_host_events"
+  },
+  "rendererInputVariants": {
+    "InputPart": [
+      "TextInputPart"
+    ]
+  },
+  "notifications": {
+    "host.event": {
+      "output": {
+        "forbidden": [
+          "deliverySequence",
+          "subscriptionId"
+        ],
+        "select": [],
+        "transform": [
+          "delivery"
+        ]
+      },
+      "profile": "desktop.conversation.v1",
+      "projection": "SafeHostEvent"
+    }
+  },
+  "operations": {
+    "approval.decide": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "approvalId",
+          "decision",
+          "expectedRevision",
+          "reason"
+        ],
+        "supervisorConstructed": [
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "approval",
+          "receipt"
+        ]
+      }
+    },
+    "approval.list": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "runId",
+          "sessionId"
+        ],
+        "supervisorConstructed": [],
+        "supervisorOverridden": [
+          "cursor",
+          "limit"
+        ]
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "approvals",
+          "page"
+        ]
+      }
+    },
+    "approval.show": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "approvalId"
+        ],
+        "supervisorConstructed": [],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "approval"
+        ]
+      }
+    },
+    "catalog.list": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [],
+        "supervisorConstructed": [],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "profiles",
+          "selection"
+        ]
+      }
+    },
+    "clarification.resolve": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "answers",
+          "clarificationId",
+          "expectedRevision",
+          "response"
+        ],
+        "supervisorConstructed": [
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "clarification",
+          "receipt"
+        ]
+      }
+    },
+    "deferred.complete": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "deferredId",
+          "expectedRevision",
+          "resultText"
+        ],
+        "supervisorConstructed": [
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "deferred",
+          "receipt"
+        ]
+      }
+    },
+    "deferred.fail": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "deferredId",
+          "error",
+          "expectedRevision"
+        ],
+        "supervisorConstructed": [
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "deferred",
+          "receipt"
+        ]
+      }
+    },
+    "deferred.list": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "runId",
+          "sessionId"
+        ],
+        "supervisorConstructed": [],
+        "supervisorOverridden": [
+          "cursor",
+          "limit"
+        ]
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "deferred",
+          "page"
+        ]
+      }
+    },
+    "deferred.show": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "deferredId"
+        ],
+        "supervisorConstructed": [],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "deferred"
+        ]
+      }
+    },
+    "environment.detach": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "attachmentId"
+        ],
+        "supervisorConstructed": [
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "attachment",
+          "receipt"
+        ]
+      }
+    },
+    "environment.health": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "attachmentId"
+        ],
+        "supervisorConstructed": [],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "attachment",
+          "checkedAt"
+        ]
+      }
+    },
+    "environment.list": {
+      "input": {
+        "forbidden": [
+          "scope"
+        ],
+        "rendererProvided": [],
+        "supervisorConstructed": [],
+        "supervisorOverridden": [
+          "cursor",
+          "limit"
+        ]
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "attachments",
+          "page"
+        ]
+      }
+    },
+    "model.select": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "profile"
+        ],
+        "supervisorConstructed": [
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "receipt",
+          "selection"
+        ]
+      }
+    },
+    "model.selection.get": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [],
+        "supervisorConstructed": [],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "selection"
+        ]
+      }
+    },
+    "profile.get": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "name"
+        ],
+        "supervisorConstructed": [],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "profile"
+        ]
+      }
+    },
+    "run.interrupt": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "reason",
+          "runId",
+          "sessionId"
+        ],
+        "supervisorConstructed": [
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "receipt",
+          "run"
+        ]
+      }
+    },
+    "run.resume": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "continuationMode",
+          "profile",
+          "runId",
+          "sessionId"
+        ],
+        "supervisorConstructed": [
+          "environmentAttachments",
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "receipt",
+          "run",
+          "sourceRunId"
+        ]
+      }
+    },
+    "run.start": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "continuationMode",
+          "input",
+          "profile",
+          "restoreFromRunId",
+          "sessionId"
+        ],
+        "supervisorConstructed": [
+          "environmentAttachments",
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "receipt",
+          "run"
+        ]
+      }
+    },
+    "run.status": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "runId",
+          "sessionId"
+        ],
+        "supervisorConstructed": [],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "run"
+        ]
+      }
+    },
+    "run.steer": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "runId",
+          "sessionId",
+          "text"
+        ],
+        "supervisorConstructed": [
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "accepted",
+          "receipt"
+        ]
+      }
+    },
+    "session.create": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "profile",
+          "title"
+        ],
+        "supervisorConstructed": [
+          "deferredTools",
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "receipt",
+          "session"
+        ]
+      }
+    },
+    "session.delete": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "expectedRevision",
+          "sessionId"
+        ],
+        "supervisorConstructed": [
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "receipt",
+          "session"
+        ]
+      }
+    },
+    "session.fork": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "sessionId",
+          "title"
+        ],
+        "supervisorConstructed": [
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "receipt",
+          "session",
+          "sourceRunId",
+          "sourceSessionId"
+        ]
+      }
+    },
+    "session.get": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "sessionId"
+        ],
+        "supervisorConstructed": [],
+        "supervisorOverridden": [
+          "runLimit"
+        ]
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "runs",
+          "session"
+        ]
+      }
+    },
+    "session.list": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [],
+        "supervisorConstructed": [],
+        "supervisorOverridden": [
+          "cursor",
+          "limit"
+        ]
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "page",
+          "sessions"
+        ]
+      }
+    },
+    "session.search": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "mode",
+          "profile",
+          "query",
+          "status"
+        ],
+        "supervisorConstructed": [],
+        "supervisorOverridden": [
+          "cursor",
+          "limit"
+        ]
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "hits",
+          "page"
+        ]
+      }
+    }
+  },
+  "protocol": {
+    "digest": "sha256:69d2b33653ad2c5eed6b23afb4e19abd14c431240634f30ac3fe756cd4a907b5",
+    "major": 1,
+    "name": "starweaver.host"
+  },
+  "schemaVersion": 1
+}

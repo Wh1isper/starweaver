@@ -1,7 +1,7 @@
 //! RPC-owned environment provider resolution.
 //!
-//! This module consumes host-protocol attachment refs but shares only lower SDK and envd client
-//! abstractions with other products.
+//! Generated host attachment IDs are resolved through the durable aggregate and RPC configuration
+//! before this module receives provider-private attachment material.
 
 use std::{path::Path, sync::Arc};
 
@@ -10,54 +10,31 @@ use starweaver_envd_core::DEFAULT_ENVIRONMENT_ID;
 use starweaver_environment::{
     CompositeEnvironmentProvider, DynEnvironmentProvider, EnvdEnvironmentProvider,
     EnvironmentMount, EnvironmentMountMode, LocalEnvironmentProvider,
-    SwitchableEnvironmentProvider, SwitchableEnvironmentTarget,
-};
-use starweaver_rpc_core::{
-    EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
-    LOCAL_ENVIRONMENT_ATTACHMENT_KIND, normalize_environment_attachment_refs,
 };
 
-use crate::{RpcHostError, RpcHostResult};
+use crate::{
+    RpcHostError, RpcHostResult,
+    environment_contract::{
+        EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
+        LOCAL_ENVIRONMENT_ATTACHMENT_KIND, normalize_environment_attachment_refs,
+    },
+};
 
-/// Environment binding retained by one RPC-owned active run.
+/// Environment binding retained by one RPC-owned run.
 #[derive(Clone)]
 pub struct ResolvedRpcEnvironment {
-    /// Stable SDK provider handle installed in the runtime.
+    /// SDK provider installed in the runtime.
     pub provider: DynEnvironmentProvider,
-    /// Mutable target retained for active environment operations.
-    pub switchable: Arc<SwitchableEnvironmentProvider>,
     /// Effective attachments after default selection.
     pub attachments: Vec<EnvironmentAttachmentRef>,
 }
 
-/// Resolve run attachment refs into an SDK provider owned by the standalone RPC product.
+/// Resolve configured attachments into the SDK provider owned by the standalone RPC product.
 pub fn resolve_rpc_environment(
     workspace_root: &Path,
     session_id: &str,
     attachments: &[EnvironmentAttachmentRef],
 ) -> RpcHostResult<ResolvedRpcEnvironment> {
-    let target = resolve_rpc_environment_target(workspace_root, session_id, attachments)?;
-    let switchable = Arc::new(SwitchableEnvironmentProvider::new(
-        "rpc-active-environment",
-        SwitchableEnvironmentTarget::new(
-            target.provider.clone(),
-            target.provider.clone().process_shell_provider(),
-        ),
-    ));
-    let provider: DynEnvironmentProvider = switchable.clone();
-    Ok(ResolvedRpcEnvironment {
-        provider,
-        switchable,
-        attachments: target.attachments,
-    })
-}
-
-/// Resolve attachments into a replacement target for an active RPC run.
-pub fn resolve_rpc_environment_target(
-    workspace_root: &Path,
-    session_id: &str,
-    attachments: &[EnvironmentAttachmentRef],
-) -> RpcHostResult<ResolvedRpcEnvironmentTarget> {
     let effective = effective_rpc_environment_attachments(attachments);
     let mut mounts = Vec::with_capacity(effective.len());
     for attachment in &effective {
@@ -73,18 +50,10 @@ pub fn resolve_rpc_environment_target(
         CompositeEnvironmentProvider::with_id("rpc-composite", mounts)
             .map_err(|error| RpcHostError::Invalid(error.to_string()))?,
     );
-    Ok(ResolvedRpcEnvironmentTarget {
+    Ok(ResolvedRpcEnvironment {
         provider,
         attachments: effective,
     })
-}
-
-/// Non-switchable environment target prepared for an active binding update.
-pub struct ResolvedRpcEnvironmentTarget {
-    /// Replacement SDK provider.
-    pub provider: DynEnvironmentProvider,
-    /// Effective attachments after default selection.
-    pub attachments: Vec<EnvironmentAttachmentRef>,
 }
 
 fn resolve_attachment(
@@ -127,7 +96,8 @@ fn resolve_attachment(
     }
 }
 
-/// Normalize the credential-free attachment identities that define an RPC run binding.
+/// Normalize the credential-bearing attachments that define an RPC run binding.
+#[must_use]
 pub fn effective_rpc_environment_attachments(
     attachments: &[EnvironmentAttachmentRef],
 ) -> Vec<EnvironmentAttachmentRef> {
@@ -139,7 +109,8 @@ pub fn effective_rpc_environment_attachments(
     normalize_environment_attachment_refs(&effective)
 }
 
-/// Project provider-private attachments into credential-free durable and host-visible evidence.
+/// Project provider-private attachments into credential-free durable evidence.
+#[must_use]
 pub fn safe_rpc_environment_attachments(
     attachments: &[EnvironmentAttachmentRef],
 ) -> Vec<EnvironmentAttachmentRef> {
@@ -151,8 +122,6 @@ pub fn safe_rpc_environment_attachments(
             attachment.endpoint_ref = attachment
                 .requested_endpoint_ref()
                 .and_then(starweaver_envd_client::redacted_endpoint_ref);
-            // Attachment metadata is an extension map with no reviewed safe keys. Keep it only in
-            // the process-private provider binding until a typed allowlist exists.
             attachment.metadata.clear();
             attachment
         })
@@ -166,7 +135,6 @@ fn default_local_attachment() -> EnvironmentAttachmentRef {
         mode: Some(EnvironmentAttachmentAccessMode::ReadWrite),
         is_default: true,
         is_default_for_shell: true,
-        attachment_lease_id: None,
         endpoint_ref: None,
         environment_id: None,
         auth_token: None,
@@ -193,7 +161,7 @@ mod tests {
         let resolved = resolve_rpc_environment(temp.path(), "session-test", &[]).unwrap();
         assert_eq!(resolved.attachments.len(), 1);
         assert_eq!(resolved.attachments[0].id, LOCAL_ENVIRONMENT_ATTACHMENT_ID);
-        assert_eq!(resolved.provider.id(), "rpc-active-environment");
+        assert_eq!(resolved.provider.id(), "rpc-composite");
     }
 
     #[test]
@@ -204,7 +172,6 @@ mod tests {
             mode: Some(EnvironmentAttachmentAccessMode::ReadWrite),
             is_default: true,
             is_default_for_shell: true,
-            attachment_lease_id: Some("lease-safe-id".to_string()),
             endpoint_ref: Some("stdio:///private/envd?arg=--token&arg=private-value".to_string()),
             environment_id: Some("environment-safe-id".to_string()),
             auth_token: Some("private-bearer".to_string()),
@@ -218,10 +185,6 @@ mod tests {
         assert_eq!(
             projected[0].endpoint_ref.as_deref(),
             Some("stdio://<redacted>")
-        );
-        assert_eq!(
-            projected[0].attachment_lease_id.as_deref(),
-            Some("lease-safe-id")
         );
         assert_eq!(
             projected[0].environment_id.as_deref(),

@@ -15,7 +15,7 @@ one workspace.
 - Durable execution foundations: context export/restore, checkpoints, session records, replay streams, and SQLite storage adapters.
 - First-party SDK bundles for filesystem, shell, skills, task tracking, host search/scrape/media adapters, MCP, and subagents.
 - A CLI launcher with profile-based local runs, install/update flow, display messages, local storage, and release artifacts.
-- A three-platform Tauri 2 Desktop foundation with a least-authority renderer bridge, single-instance lifecycle, and native CI matrix.
+- A three-platform Tauri 2 Desktop foundation with generated least-authority host bindings, a verified local RPC supervisor, single-instance lifecycle, and native CI matrix.
 
 ## Install
 
@@ -150,10 +150,24 @@ Starweaver is organized as focused crates:
 - `starweaver-environment`: local and virtual filesystem/shell providers, policies, resources, and environment snapshots.
 - `starweaver-session`, `starweaver-stream`, `starweaver-storage`: durable session, replay, display stream, and SQLite storage contracts.
 - `starweaver-cli`: local CLI product surface, launcher dispatch, profiles, TUI, storage, install, and update workflows.
-- `starweaver-rpc-core`: current major-1 JSON-RPC helpers plus the planned generated IDL-first major-2 wire boundary and stream/replay projections.
-- `starweaver-rpc`: standalone JSON-RPC host process for local and external host integrations and future implementer of the generated major-2 server contract.
-- `apps/starweaver-desktop`: Tauri 2 shell foundation for Linux, macOS, and Windows; RPC supervision remains gated on the public launch contract and IDL-first host major 2.
+- `starweaver-rpc-core`: generated IDL-first `starweaver.host` major-1 wire boundary, strict server/client codecs, typed errors/events/cursors, launch-envelope contracts, and narrow framing/projection helpers; the generated contract atomically replaces handwritten DTO authority.
+- `starweaver-rpc`: standalone JSON-RPC host process for local and external integrations and implementer of the generated single-contract server boundary; HTTP exposes only `POST /rpc`.
+- `apps/starweaver-desktop`: Tauri 2 shell for Linux, macOS, and Windows with a manifest-filtered renderer bridge and verified local stdio RPC supervisor; normal runtime activation remains gated on the updater/configuration owner.
 - `packages/starweaver-py`: in-process Python SDK bindings, Python tool injection, live run control, message bus facades, typed HITL helpers, deterministic test models, sessions, and Python distribution artifacts.
+
+The canonical host protocol lives under `protocol/host/`. Default generation writes the bundled OpenRPC artifact, Rust server bindings, and Desktop's manifest-filtered safe bindings:
+
+```bash
+make rpc-idl-generate
+```
+
+External TypeScript consumers can generate complete bindings into a directory they own. Starweaver does not maintain or publish a separate TypeScript protocol package:
+
+```bash
+cargo run -p xtask -- generate-rpc-typescript --output path/to/generated-host
+# or
+make rpc-typescript-generate OUTPUT=path/to/generated-host
+```
 
 ## Validation
 
@@ -186,7 +200,7 @@ Prepare a release:
 gh workflow run prepare-release.yml -f version=X.Y.Z
 ```
 
-The workflow pushes `release/vX.Y.Z` for review. After that release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release; the published Release event builds CLI archives and Python distributions, uploads checksums, and publishes crates plus the Python package through the `Release` environment.
+The workflow pushes `release/vX.Y.Z` for review. After that release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release; the published Release event builds CLI archives, the self-contained host OpenRPC bundle and schema/profile artifacts, and Python distributions, uploads checksums, and publishes crates plus the Python package through the `Release` environment.
 
 ## Acknowledgements
 

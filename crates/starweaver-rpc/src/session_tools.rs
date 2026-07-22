@@ -3,7 +3,6 @@ use std::{collections::BTreeSet, sync::Arc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use starweaver_rpc_core::{DeferredToolDefinition, DeferredToolsetBindingSummary};
 use starweaver_session::SessionRecord;
 use starweaver_tools::{DeferredToolSpec, DeferredToolset, DynToolset};
 
@@ -15,6 +14,24 @@ const MAX_DEFERRED_TOOLS: usize = 64;
 const MAX_DEFERRED_TOOLSET_BYTES: usize = 256 * 1024;
 const MAX_TOOL_DESCRIPTION_BYTES: usize = 8 * 1024;
 const MAX_TOOL_INSTRUCTION_BYTES: usize = 16 * 1024;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeferredToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instructions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeferredToolsetBindingSummary {
+    pub binding_id: String,
+    pub digest: String,
+    pub tool_names: Vec<String>,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -4,9 +4,11 @@ use starweaver_context::{AgentCheckpoint, AgentRunState, ResumableState};
 use starweaver_core::{AgentExecutionNode, AgentId, CheckpointId, ConversationId, RunId};
 use starweaver_session::{
     AcquireRunAdmission, ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord,
-    ExecutionStatus, HitlResumeClaim, InMemorySessionStore, LOCAL_SESSION_NAMESPACE,
-    RelatedRunUpdate, RunRecord, RunStatus, RunTerminalError, SessionRecord, SessionStore,
-    SessionStoreError, StreamCursorRef, StreamPublicationTarget, StreamPublicationTargets,
+    DurableHostEventClass, DurableHostEventQuery, DurableHostEventScope, ExecutionStatus,
+    HitlResumeClaim, InMemorySessionStore, InteractionPageQuery, LOCAL_SESSION_NAMESPACE,
+    PendingHostEventPublication, RelatedRunUpdate, RunRecord, RunStatus, RunTerminalError,
+    SessionRecord, SessionStore, SessionStoreError, StreamCursorRef, StreamPublicationTarget,
+    StreamPublicationTargets,
 };
 use starweaver_stream::{AgentStreamEvent, AgentStreamRecord};
 use starweaver_stream::{
@@ -16,7 +18,7 @@ use starweaver_stream::{
 
 use crate::{
     RunEvidenceCommit, SqliteStorage, domain::EvidenceWritePoint,
-    session_store::records::save_run_record,
+    session_store::records::save_run_record, sqlite::serialize_json_record,
 };
 
 fn evidence_state(run: &RunRecord) -> ResumableState {
@@ -42,6 +44,157 @@ fn begun_run(storage: &SqliteStorage, suffix: &str) -> RunRecord {
         ConversationId::new(),
     );
     storage.begin_run(run).expect("begin run")
+}
+
+#[test]
+fn hitl_pages_are_bounded_stable_and_filter_before_limit() {
+    let storage = SqliteStorage::in_memory().expect("storage");
+    let first_run = begun_run(&storage, "page-first");
+    let second_run = begun_run(&storage, "page-second");
+    let tied_at = chrono::DateTime::parse_from_rfc3339("2099-07-21T12:00:00Z")
+        .expect("fixed timestamp")
+        .with_timezone(&Utc);
+
+    let mut approvals = Vec::new();
+    let mut deferred = Vec::new();
+    for (run, labels) in [
+        (&first_run, ["e", "c", "a"].as_slice()),
+        (&second_run, ["d", "b"].as_slice()),
+    ] {
+        for label in labels {
+            let mut approval = ApprovalRecord::new(
+                format!("approval-page-{label}"),
+                run.session_id.clone(),
+                run.run_id.clone(),
+                format!("action-{label}"),
+                "shell",
+            );
+            approval.created_at = tied_at;
+            approval.updated_at = tied_at;
+            approvals.push(approval);
+
+            let mut record = DeferredToolRecord::new(
+                format!("deferred-page-{label}"),
+                run.session_id.clone(),
+                run.run_id.clone(),
+                format!("call-{label}"),
+                "client_tool",
+            );
+            record.created_at = tied_at;
+            record.updated_at = tied_at;
+            deferred.push(record);
+        }
+    }
+    {
+        let connection = storage.lock().expect("connection");
+        for approval in &approvals {
+            connection
+                .execute(
+                    "INSERT INTO approval_records
+                     (session_id, run_id, approval_id, record, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        approval.session_id.as_str(),
+                        approval.run_id.as_str(),
+                        approval.approval_id,
+                        serialize_json_record(approval).expect("approval record"),
+                        approval.updated_at.to_rfc3339(),
+                    ],
+                )
+                .expect("insert approval");
+        }
+        for record in &deferred {
+            connection
+                .execute(
+                    "INSERT INTO deferred_tool_records
+                     (session_id, run_id, deferred_id, record, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        record.session_id.as_str(),
+                        record.run_id.as_str(),
+                        record.deferred_id,
+                        serialize_json_record(record).expect("deferred record"),
+                        record.updated_at.to_rfc3339(),
+                    ],
+                )
+                .expect("insert deferred record");
+        }
+    }
+
+    assert!(InteractionPageQuery::new(None, None, None, 0).is_err());
+    assert!(InteractionPageQuery::new(None, None, None, 201).is_err());
+
+    let first = storage
+        .list_approval_page(InteractionPageQuery::new(None, None, None, 2).expect("query"))
+        .expect("first approval page");
+    assert_eq!(
+        first
+            .records
+            .iter()
+            .map(|record| record.approval_id.as_str())
+            .collect::<Vec<_>>(),
+        ["approval-page-e", "approval-page-d"]
+    );
+    assert!(first.has_more, "limit+1 must identify another row");
+    let second = storage
+        .list_approval_page(
+            InteractionPageQuery::new(None, None, first.next_key.clone(), 2).expect("query"),
+        )
+        .expect("second approval page");
+    let third = storage
+        .list_approval_page(
+            InteractionPageQuery::new(None, None, second.next_key.clone(), 2).expect("query"),
+        )
+        .expect("third approval page");
+    assert_eq!(
+        first
+            .records
+            .iter()
+            .chain(&second.records)
+            .chain(&third.records)
+            .map(|record| record.approval_id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "approval-page-e",
+            "approval-page-d",
+            "approval-page-c",
+            "approval-page-b",
+            "approval-page-a",
+        ]
+    );
+    assert!(!third.has_more);
+
+    let session_filtered = storage
+        .list_approval_page(
+            InteractionPageQuery::new(Some(first_run.session_id.clone()), None, None, 2)
+                .expect("query"),
+        )
+        .expect("session-filtered page");
+    assert_eq!(
+        session_filtered
+            .records
+            .iter()
+            .map(|record| record.approval_id.as_str())
+            .collect::<Vec<_>>(),
+        ["approval-page-e", "approval-page-c"]
+    );
+    assert!(session_filtered.has_more);
+
+    let run_filtered = storage
+        .list_deferred_tool_page(
+            InteractionPageQuery::new(None, Some(second_run.run_id.clone()), None, 2)
+                .expect("query"),
+        )
+        .expect("run-filtered deferred page");
+    assert_eq!(
+        run_filtered
+            .records
+            .iter()
+            .map(|record| record.deferred_id.as_str())
+            .collect::<Vec<_>>(),
+        ["deferred-page-d", "deferred-page-b"]
+    );
+    assert!(!run_filtered.has_more);
 }
 
 #[tokio::test]
@@ -622,6 +775,345 @@ async fn stream_publication_outbox_is_atomic_acknowledged_and_not_recreated_by_r
     );
 }
 
+#[tokio::test]
+async fn host_event_outbox_recovers_across_every_durable_live_crash_boundary() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_path = tempdir.path().join("host-event-recovery.sqlite3");
+    let storage = SqliteStorage::open(&database_path).expect("storage");
+    let mut run = begun_run(&storage, "host-event-recovery");
+    run.status = RunStatus::Completed;
+    let publication = PendingHostEventPublication::new(
+        "terminal-run:host-event-recovery",
+        0,
+        DurableHostEventScope::run(run.session_id.clone(), run.run_id.clone()),
+        DurableHostEventClass::RunChanged,
+        serde_json::json!({"status": "completed"}),
+        run.updated_at,
+    )
+    .expect("host event publication");
+    let mut commit = RunEvidenceCommit::new(run.clone(), evidence_state(&run));
+    commit.host_event_publications = vec![publication.clone()];
+    storage
+        .commit_run_evidence(commit.clone())
+        .expect("state and outbox commit");
+    drop(storage);
+
+    // Simulate restart after state/outbox commit but before event-log materialization.
+    let storage = SqliteStorage::open(&database_path).expect("reopen pending outbox");
+    let store = storage.session_store();
+    assert_eq!(
+        store
+            .pending_host_event_publications(10)
+            .await
+            .expect("recover pending publication"),
+        vec![publication.clone()]
+    );
+    let before_materialization = store
+        .replay_host_events(
+            DurableHostEventQuery::new(
+                DurableHostEventScope::Global,
+                [DurableHostEventClass::RunChanged],
+                None,
+                10,
+            )
+            .expect("replay query"),
+        )
+        .await
+        .expect("empty pre-materialization replay");
+    assert!(before_materialization.records.is_empty());
+
+    // A failed append must leave the complete outbox batch available for exact recovery.
+    {
+        let connection = storage.lock().expect("connection");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_host_event_materialization
+                 BEFORE INSERT ON host_event_records
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected host event append failure');
+                 END;",
+            )
+            .expect("failure trigger");
+    }
+    let error = store
+        .materialize_host_event_publications(10)
+        .await
+        .expect_err("materialization must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("injected host event append failure")
+    );
+    assert_eq!(
+        store
+            .pending_host_event_publications(10)
+            .await
+            .expect("outbox retained after append failure"),
+        vec![publication]
+    );
+    {
+        let connection = storage.lock().expect("connection");
+        connection
+            .execute_batch("DROP TRIGGER fail_host_event_materialization;")
+            .expect("drop failure trigger");
+    }
+    let materialized = store
+        .materialize_host_event_publications(10)
+        .await
+        .expect("retry materialization");
+    assert_eq!(materialized.len(), 1);
+    let position = materialized[0].position;
+    drop(store);
+    drop(storage);
+
+    // Simulate restart after durable append but before any process-local live emission.
+    let storage = SqliteStorage::open(&database_path).expect("reopen materialized event");
+    let store = storage.session_store();
+    let replay = store
+        .replay_host_events(
+            DurableHostEventQuery::new(
+                DurableHostEventScope::Global,
+                [DurableHostEventClass::RunChanged],
+                None,
+                10,
+            )
+            .expect("replay query"),
+        )
+        .await
+        .expect("replay after restart");
+    assert_eq!(replay.records.len(), 1);
+    assert_eq!(replay.records[0].position, position);
+    assert!(
+        store
+            .pending_host_event_publications(10)
+            .await
+            .expect("outbox drained")
+            .is_empty()
+    );
+    storage
+        .commit_run_evidence(commit)
+        .expect("exact state retry after materialization");
+    assert!(
+        store
+            .pending_host_event_publications(10)
+            .await
+            .expect("exact retry must not recreate outbox")
+            .is_empty()
+    );
+    assert!(
+        store
+            .materialize_host_event_publications(10)
+            .await
+            .expect("idempotent empty drain")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn physical_run_and_session_deletion_remove_scoped_host_event_evidence() {
+    let storage = SqliteStorage::in_memory().expect("storage");
+    let first = begun_run(&storage, "host-event-delete-first");
+    let second = storage
+        .begin_run(RunRecord::new(
+            first.session_id.clone(),
+            RunId::from_string("run-host-event-delete-second"),
+            ConversationId::new(),
+        ))
+        .expect("second run");
+    let store = storage.session_store();
+    {
+        let connection = storage.lock().expect("connection");
+        for run in [&first, &second] {
+            let approval = ApprovalRecord::new(
+                format!("approval-delete-{}", run.run_id.as_str()),
+                run.session_id.clone(),
+                run.run_id.clone(),
+                "action",
+                "shell",
+            );
+            connection
+                .execute(
+                    "INSERT INTO approval_records
+                     (session_id, run_id, approval_id, record, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        approval.session_id.as_str(),
+                        approval.run_id.as_str(),
+                        approval.approval_id,
+                        serialize_json_record(&approval).expect("approval record"),
+                        approval.updated_at.to_rfc3339(),
+                    ],
+                )
+                .expect("insert approval");
+            let deferred = DeferredToolRecord::new(
+                format!("deferred-delete-{}", run.run_id.as_str()),
+                run.session_id.clone(),
+                run.run_id.clone(),
+                "call",
+                "client_tool",
+            );
+            connection
+                .execute(
+                    "INSERT INTO deferred_tool_records
+                     (session_id, run_id, deferred_id, record, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        deferred.session_id.as_str(),
+                        deferred.run_id.as_str(),
+                        deferred.deferred_id,
+                        serialize_json_record(&deferred).expect("deferred record"),
+                        deferred.updated_at.to_rfc3339(),
+                    ],
+                )
+                .expect("insert deferred record");
+        }
+    }
+    let make_event = |transition: &str, run: &RunRecord, ordinal| {
+        PendingHostEventPublication::new(
+            transition,
+            ordinal,
+            DurableHostEventScope::run(run.session_id.clone(), run.run_id.clone()),
+            DurableHostEventClass::RunChanged,
+            serde_json::json!({"run_id": run.run_id.as_str()}),
+            Utc::now(),
+        )
+        .expect("host event")
+    };
+    store
+        .enqueue_host_event_publications(vec![
+            make_event("delete-first-materialized", &first, 0),
+            make_event("delete-second-materialized", &second, 0),
+        ])
+        .await
+        .expect("enqueue materialized events");
+    assert_eq!(
+        store
+            .materialize_host_event_publications(10)
+            .await
+            .expect("materialize events")
+            .len(),
+        2
+    );
+    store
+        .enqueue_host_event_publications(vec![
+            make_event("delete-first-pending", &first, 0),
+            make_event("delete-second-pending", &second, 0),
+        ])
+        .await
+        .expect("enqueue pending events");
+
+    assert_eq!(
+        storage
+            .prune_runs(&first.session_id, std::slice::from_ref(&first.run_id))
+            .expect("prune first run"),
+        1
+    );
+    assert!(
+        store
+            .replay_host_events(
+                DurableHostEventQuery::new(
+                    DurableHostEventScope::run(first.session_id.clone(), first.run_id.clone()),
+                    DurableHostEventClass::ALL,
+                    None,
+                    10,
+                )
+                .expect("first run query"),
+            )
+            .await
+            .expect("first run replay")
+            .records
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .pending_host_event_publications(10)
+            .await
+            .expect("pending after prune")
+            .len(),
+        1
+    );
+    assert!(
+        storage
+            .list_approval_page(
+                InteractionPageQuery::new(None, Some(first.run_id.clone()), None, 10)
+                    .expect("pruned approval query")
+            )
+            .expect("pruned approval page")
+            .records
+            .is_empty()
+    );
+    assert!(
+        storage
+            .list_deferred_tool_page(
+                InteractionPageQuery::new(None, Some(first.run_id.clone()), None, 10)
+                    .expect("pruned deferred query")
+            )
+            .expect("pruned deferred page")
+            .records
+            .is_empty()
+    );
+    assert_eq!(
+        storage
+            .list_approval_page(
+                InteractionPageQuery::new(None, Some(second.run_id.clone()), None, 10)
+                    .expect("retained approval query")
+            )
+            .expect("retained approval page")
+            .records
+            .len(),
+        1
+    );
+
+    assert!(
+        storage
+            .delete_session(&second.session_id)
+            .expect("delete session")
+    );
+    assert!(
+        store
+            .replay_host_events(
+                DurableHostEventQuery::new(
+                    DurableHostEventScope::Global,
+                    DurableHostEventClass::ALL,
+                    None,
+                    10,
+                )
+                .expect("global query"),
+            )
+            .await
+            .expect("global replay")
+            .records
+            .is_empty()
+    );
+    assert!(
+        store
+            .pending_host_event_publications(10)
+            .await
+            .expect("pending after session deletion")
+            .is_empty()
+    );
+    assert!(
+        storage
+            .list_approval_page(
+                InteractionPageQuery::new(None, None, None, 10)
+                    .expect("post-delete approval query")
+            )
+            .expect("post-delete approval page")
+            .records
+            .is_empty()
+    );
+    assert!(
+        storage
+            .list_deferred_tool_page(
+                InteractionPageQuery::new(None, None, None, 10)
+                    .expect("post-delete deferred query")
+            )
+            .expect("post-delete deferred page")
+            .records
+            .is_empty()
+    );
+}
+
 #[test]
 fn legacy_unsealed_run_marker_rejects_post_migration_evidence_overwrite() {
     let storage = SqliteStorage::in_memory().expect("storage");
@@ -1087,6 +1579,10 @@ const EVIDENCE_TABLES: &[&str] = &[
     "display_snapshot_records",
     "run_evidence_commits",
     "stream_publication_outbox",
+    "host_event_log_state",
+    "host_event_records",
+    "host_event_outbox_state",
+    "host_event_publication_outbox",
     "hitl_resume_claims",
 ];
 
@@ -1206,6 +1702,17 @@ fn maximal_primary_commit(storage: &SqliteStorage, suffix: &str) -> (RunRecord, 
         StreamCursorRef::new(ReplayCursor::replay_event(scope, 1)),
     ];
     commit.publication_targets = StreamPublicationTargets::new(true, true);
+    commit.host_event_publications = vec![
+        PendingHostEventPublication::new(
+            &format!("maximal-primary-{suffix}"),
+            0,
+            DurableHostEventScope::run(run.session_id.clone(), run.run_id.clone()),
+            DurableHostEventClass::RunChanged,
+            serde_json::json!({"status": "completed"}),
+            run.updated_at,
+        )
+        .expect("host event publication"),
+    ];
     (run, commit)
 }
 
@@ -1232,6 +1739,7 @@ fn every_primary_evidence_write_boundary_is_atomic_after_database_reopen() {
         EvidenceWritePoint::PrimaryRunFinal,
         EvidenceWritePoint::Session,
         EvidenceWritePoint::EvidenceDigest,
+        EvidenceWritePoint::HostEventOutbox,
         EvidenceWritePoint::PublicationOutbox,
         EvidenceWritePoint::TransactionCommitted,
     ];

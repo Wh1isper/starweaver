@@ -1,0 +1,14 @@
+{
+  "method": "events.replay",
+  "params": {
+    "limit": 100,
+    "view": {
+      "authority": "admin",
+      "optionalFeatures": [],
+      "profile": "conversation.v1",
+      "scope": {
+        "kind": "global"
+      }
+    }
+  }
+}

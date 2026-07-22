@@ -8,6 +8,10 @@ use starweaver_model::TOOL_RETURN_APPROVAL_ARGUMENTS_METADATA_KEY;
 
 use crate::records::ExecutionStatus;
 
+const fn initial_interaction_revision() -> u64 {
+    1
+}
+
 /// Tool-return evidence used to derive durable HITL records without depending on model crates.
 pub struct ToolReturnRecordInput<'a> {
     /// Session id that owns the tool return.
@@ -114,6 +118,9 @@ pub struct ApprovalDecision {
 pub struct ApprovalRecord {
     /// Approval id.
     pub approval_id: String,
+    /// Monotonic optimistic-concurrency revision.
+    #[serde(default = "initial_interaction_revision")]
+    pub revision: u64,
     /// Session id.
     pub session_id: SessionId,
     /// Run id.
@@ -164,6 +171,7 @@ impl ApprovalRecord {
         let now = Utc::now();
         Self {
             approval_id: approval_id.into(),
+            revision: initial_interaction_revision(),
             session_id,
             run_id,
             action_id: action_id.into(),
@@ -327,6 +335,9 @@ impl ToolApprovalDecision {
 pub struct DeferredToolRecord {
     /// Deferred record id.
     pub deferred_id: String,
+    /// Monotonic optimistic-concurrency revision.
+    #[serde(default = "initial_interaction_revision")]
+    pub revision: u64,
     /// Session id.
     pub session_id: SessionId,
     /// Run id.
@@ -373,6 +384,7 @@ impl DeferredToolRecord {
         let now = Utc::now();
         Self {
             deferred_id: deferred_id.into(),
+            revision: initial_interaction_revision(),
             session_id,
             run_id,
             tool_call_id: tool_call_id.into(),

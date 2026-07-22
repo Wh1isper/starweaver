@@ -1,0 +1,596 @@
+{
+  "components": {
+    "schemas": {
+      "ApprovalDecideParams": {
+        "additionalProperties": false,
+        "properties": {
+          "approvalId": {
+            "$ref": "#/components/schemas/ApprovalId"
+          },
+          "decision": {
+            "enum": [
+              "approved",
+              "denied"
+            ],
+            "type": "string"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "reason": {
+            "oneOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "expectedRevision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          }
+        },
+        "required": [
+          "approvalId",
+          "expectedRevision",
+          "decision",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "ApprovalDecideResult": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "$ref": "#/components/schemas/ApprovalSummary"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "approval",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "ApprovalListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "approvals": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalSummary"
+            },
+            "maxItems": 200,
+            "minItems": 0,
+            "type": "array"
+          },
+          "page": {
+            "$ref": "#/components/schemas/PageInfo"
+          }
+        },
+        "required": [
+          "approvals",
+          "page"
+        ],
+        "type": "object"
+      },
+      "ApprovalShowParams": {
+        "additionalProperties": false,
+        "properties": {
+          "approvalId": {
+            "$ref": "#/components/schemas/ApprovalId"
+          }
+        },
+        "required": [
+          "approvalId"
+        ],
+        "type": "object"
+      },
+      "ApprovalShowResult": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "$ref": "#/components/schemas/ApprovalSummary"
+          }
+        },
+        "required": [
+          "approval"
+        ],
+        "type": "object"
+      },
+      "ApprovalStatus": {
+        "enum": [
+          "pending",
+          "approved",
+          "denied",
+          "expired",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "ApprovalSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "approvalId": {
+            "$ref": "#/components/schemas/ApprovalId"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ApprovalStatus"
+          },
+          "title": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          }
+        },
+        "required": [
+          "approvalId",
+          "sessionId",
+          "runId",
+          "status",
+          "revision",
+          "title",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "ClarificationResolveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "clarificationId": {
+            "$ref": "#/components/schemas/ClarificationId"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/ClarificationAnswer"
+            },
+            "maxItems": 4,
+            "minItems": 0,
+            "type": "array"
+          },
+          "expectedRevision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "response": {
+            "oneOf": [
+              {
+                "maxLength": 16384,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "clarificationId",
+          "expectedRevision",
+          "answers",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "ClarificationResolveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "clarification": {
+            "$ref": "#/components/schemas/ClarificationSummary"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "clarification",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "ClarificationStatus": {
+        "enum": [
+          "pending",
+          "resolved",
+          "expired"
+        ],
+        "type": "string"
+      },
+      "ClarificationSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "clarificationId": {
+            "$ref": "#/components/schemas/ClarificationId"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ClarificationStatus"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/ClarificationQuestion"
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "type": "array"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          }
+        },
+        "required": [
+          "clarificationId",
+          "sessionId",
+          "runId",
+          "questions",
+          "status",
+          "revision",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "DeferredCompleteParams": {
+        "additionalProperties": false,
+        "properties": {
+          "deferredId": {
+            "$ref": "#/components/schemas/DeferredId"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "resultText": {
+            "maxLength": 65536,
+            "minLength": 0,
+            "type": "string"
+          },
+          "expectedRevision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          }
+        },
+        "required": [
+          "deferredId",
+          "resultText",
+          "expectedRevision",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "DeferredCompleteResult": {
+        "additionalProperties": false,
+        "properties": {
+          "deferred": {
+            "$ref": "#/components/schemas/DeferredSummary"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "deferred",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "DeferredFailParams": {
+        "additionalProperties": false,
+        "properties": {
+          "deferredId": {
+            "$ref": "#/components/schemas/DeferredId"
+          },
+          "error": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "expectedRevision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          }
+        },
+        "required": [
+          "deferredId",
+          "error",
+          "expectedRevision",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "DeferredFailResult": {
+        "additionalProperties": false,
+        "properties": {
+          "deferred": {
+            "$ref": "#/components/schemas/DeferredSummary"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "deferred",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "DeferredListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "deferred": {
+            "items": {
+              "$ref": "#/components/schemas/DeferredSummary"
+            },
+            "maxItems": 200,
+            "minItems": 0,
+            "type": "array"
+          },
+          "page": {
+            "$ref": "#/components/schemas/PageInfo"
+          }
+        },
+        "required": [
+          "deferred",
+          "page"
+        ],
+        "type": "object"
+      },
+      "DeferredShowParams": {
+        "additionalProperties": false,
+        "properties": {
+          "deferredId": {
+            "$ref": "#/components/schemas/DeferredId"
+          }
+        },
+        "required": [
+          "deferredId"
+        ],
+        "type": "object"
+      },
+      "DeferredShowResult": {
+        "additionalProperties": false,
+        "properties": {
+          "deferred": {
+            "$ref": "#/components/schemas/DeferredSummary"
+          }
+        },
+        "required": [
+          "deferred"
+        ],
+        "type": "object"
+      },
+      "DeferredStatus": {
+        "enum": [
+          "pending",
+          "running",
+          "waiting",
+          "completed",
+          "failed",
+          "expired",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "DeferredSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "deferredId": {
+            "$ref": "#/components/schemas/DeferredId"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DeferredStatus"
+          },
+          "toolName": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          }
+        },
+        "required": [
+          "deferredId",
+          "sessionId",
+          "runId",
+          "toolName",
+          "status",
+          "revision",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "InteractionListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "oneOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "runId": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "sessionId": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "limit"
+        ],
+        "type": "object"
+      },
+      "ClarificationQuestionOption": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "preview": {
+            "oneOf": [
+              {
+                "maxLength": 4096,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "label",
+          "description"
+        ],
+        "type": "object"
+      },
+      "ClarificationQuestion": {
+        "additionalProperties": false,
+        "properties": {
+          "header": {
+            "maxLength": 12,
+            "minLength": 1,
+            "type": "string"
+          },
+          "multiSelect": {
+            "type": "boolean"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/ClarificationQuestionOption"
+            },
+            "maxItems": 4,
+            "minItems": 2,
+            "type": "array"
+          },
+          "question": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "question",
+          "header",
+          "options",
+          "multiSelect"
+        ],
+        "type": "object"
+      },
+      "ClarificationAnswer": {
+        "additionalProperties": false,
+        "properties": {
+          "freeText": {
+            "oneOf": [
+              {
+                "maxLength": 16384,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "question": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "selectedOptions": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 4,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "question",
+          "selectedOptions"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

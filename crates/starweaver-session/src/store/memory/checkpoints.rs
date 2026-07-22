@@ -7,13 +7,22 @@ use crate::{
     records::CheckpointRef,
 };
 
-use super::{InMemorySessionStore, run_key, run_key_label, store_failed};
+use super::{InMemorySessionStore, advance_run_revision, run_key, run_key_label, store_failed};
 
 impl InMemorySessionStore {
     pub(super) fn append_checkpoint_record(
         &self,
         session_id: &SessionId,
         checkpoint: AgentCheckpoint,
+    ) -> SessionStoreResult<()> {
+        self.append_checkpoint_record_with_revision(session_id, checkpoint, true)
+    }
+
+    pub(super) fn append_checkpoint_record_with_revision(
+        &self,
+        session_id: &SessionId,
+        checkpoint: AgentCheckpoint,
+        advance_revision: bool,
     ) -> SessionStoreResult<()> {
         let mut inner = self.inner.lock().map_err(store_failed)?;
         let key = run_key(session_id, &checkpoint.run_id);
@@ -50,6 +59,9 @@ impl InMemorySessionStore {
                 created_at: Utc::now(),
                 metadata: checkpoint.metadata,
             });
+            if advance_revision {
+                advance_run_revision(run)?;
+            }
             run.updated_at = Utc::now();
         }
         Ok(())

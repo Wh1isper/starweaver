@@ -47,8 +47,8 @@ use crate::{
         write_last_retention_maintenance,
     },
     environment::{
-        ResolvedEnvironment, resolve_environment_for_session_with_attachments,
-        validate_environment_config,
+        EnvironmentAttachmentAccessMode, ResolvedEnvironment,
+        resolve_environment_for_session_with_attachments, validate_environment_config,
     },
     local_store::{
         HITL_RESUME_CLAIM_ID_METADATA_KEY, HITL_RESUME_PREFLIGHT_SOURCE_RUN_ID_METADATA_KEY,
@@ -754,8 +754,8 @@ impl CliService {
             (
                 item.kind.clone(),
                 match item.resolved_mode() {
-                    starweaver_rpc_core::EnvironmentAttachmentAccessMode::ReadOnly => "read_only",
-                    starweaver_rpc_core::EnvironmentAttachmentAccessMode::ReadWrite => "read_write",
+                    EnvironmentAttachmentAccessMode::ReadOnly => "read_only",
+                    EnvironmentAttachmentAccessMode::ReadWrite => "read_write",
                 }
                 .to_string(),
             )

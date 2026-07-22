@@ -89,6 +89,35 @@ jobs:
           path: ${{ matrix.archive }}
           if-no-files-found: error
 
+  build-protocol-artifacts:
+    name: Package public host protocol
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Package protocol bundle and source schemas
+        run: |
+          version="${{ github.event.release.tag_name }}"
+          version="${version#v}"
+          mkdir -p dist/protocol
+          cp protocol/host/generated/starweaver-host.openrpc.json \
+            "dist/protocol/starweaver-host-${version}.openrpc.json"
+          cp protocol/host/generated/manifest.json \
+            "dist/protocol/starweaver-host-${version}.manifest.json"
+          tar -czf "dist/protocol/starweaver-host-${version}-schemas.tar.gz" \
+            protocol/host/openrpc.yaml protocol/host/schemas protocol/tooling \
+            spec/ops/09-rpc-idl-and-client-generation.md
+
+      - name: Upload protocol artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-protocol
+          path: dist/protocol/*
+          if-no-files-found: error
+
   build-python-sdist:
     name: Build Python source distribution
     runs-on: ubuntu-latest
@@ -208,7 +237,7 @@ jobs:
 
   upload-assets:
     name: Upload release assets
-    needs: [build-binaries, build-python-sdist, build-python-wheels]
+    needs: [build-binaries, build-protocol-artifacts, build-python-sdist, build-python-wheels]
     runs-on: ubuntu-latest
     steps:
       - name: Download binary artifacts

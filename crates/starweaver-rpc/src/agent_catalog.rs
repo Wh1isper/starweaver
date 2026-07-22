@@ -87,9 +87,9 @@ impl RpcAgentCatalog {
                 label: profile.label.clone(),
                 model_id: profile.model_id.clone(),
                 source: if profile.test_response.is_some() {
-                    "rpc_test"
+                    "builtin"
                 } else {
-                    "rpc_config"
+                    "user"
                 },
             })
             .collect()
@@ -705,7 +705,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
         let catalog = RpcAgentCatalog::new(config).unwrap();
-        assert_eq!(catalog.profiles()[0].source, "rpc_test");
+        assert_eq!(catalog.profiles()[0].source, "builtin");
         assert!(catalog.runtime_builder("default").is_ok());
     }
 

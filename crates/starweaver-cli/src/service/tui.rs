@@ -7,10 +7,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use starweaver_rpc_core::{
-    EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
-    LOCAL_ENVIRONMENT_ATTACHMENT_KIND,
-};
 use starweaver_runtime::AgentStreamRecord;
 use starweaver_session::{
     ApprovalRecord, ApprovalStatus, DeferredToolRecord, ExecutionStatus, RunStatus,
@@ -22,7 +18,10 @@ use crate::{
     args::{GoalCommandOptions, OutputMode, RunCommand, TuiCommand, TuiRenderMode},
     client_state,
     config::{CliConfig, clear_current_session, write_current_session},
-    environment::resolve_environment_for_session_with_attachments,
+    environment::{
+        EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
+        LOCAL_ENVIRONMENT_ATTACHMENT_KIND, resolve_environment_for_session_with_attachments,
+    },
     local_store::{HITL_RESUME_PREFLIGHT_SOURCE_RUN_ID_METADATA_KEY, SessionSummary},
     profiles::{ProfileSummary, list_config_model_profiles, list_profiles},
     prompt_input::PromptInput,
@@ -1476,7 +1475,6 @@ fn tui_environment_attachments(config: &CliConfig) -> CliResult<Vec<EnvironmentA
         mode: Some(EnvironmentAttachmentAccessMode::ReadWrite),
         is_default: default_profile_name.is_none(),
         is_default_for_shell: default_profile_name.is_none(),
-        attachment_lease_id: None,
         endpoint_ref: None,
         environment_id: None,
         auth_token: None,
@@ -1509,7 +1507,6 @@ fn tui_environment_attachments(config: &CliConfig) -> CliResult<Vec<EnvironmentA
             mode: Some(profile.mode),
             is_default: default_profile_name == Some(name.as_str()),
             is_default_for_shell: false,
-            attachment_lease_id: None,
             endpoint_ref: Some(profile.endpoint.clone()),
             environment_id: profile.environment_id.clone(),
             auth_token: Some(auth_token),
@@ -1708,7 +1705,6 @@ mod tests {
 
     use super::*;
     use crate::{ConfigResolver, args};
-    use starweaver_rpc_core::EnvironmentAttachmentAccessMode;
 
     #[test]
     fn repeated_interrupt_keeps_main_cancellation_pending_without_host_shutdown() {

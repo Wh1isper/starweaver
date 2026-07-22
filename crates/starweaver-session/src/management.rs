@@ -613,7 +613,8 @@ pub struct DurableControlReceipt {
     pub command_fingerprint: String,
     /// Matching owner generation.
     pub fencing_generation: u64,
-    /// Effect state (`reserved`, `accepted`, or `failed`).
+    /// Effect state. Durable admission uses `pending`, `delivered`, `consumed`, or `reconciled`;
+    /// legacy compatibility paths may retain historical `reserved`, `accepted`, or `failed`.
     pub state: String,
     /// Creation time.
     pub created_at: DateTime<Utc>,

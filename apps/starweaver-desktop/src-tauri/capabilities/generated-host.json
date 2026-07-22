@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "description": "Generated least-authority host operation fragment for sha256:69d2b33653ad2c5eed6b23afb4e19abd14c431240634f30ac3fe756cd4a907b5",
+  "identifier": "generated-host",
+  "permissions": [
+    "allow-acknowledge-host-event",
+    "allow-acknowledge-host-operation",
+    "allow-execute-host-operation",
+    "allow-list-pending-host-operations",
+    "allow-subscribe-host-events",
+    "allow-unsubscribe-host-events"
+  ],
+  "windows": ["main"]
+}

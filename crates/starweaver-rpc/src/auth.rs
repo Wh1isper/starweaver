@@ -8,6 +8,8 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+use starweaver_rpc_core::generated as host;
 use uuid::Uuid;
 
 use crate::{RpcHostError, RpcHostResult};
@@ -136,59 +138,52 @@ impl RpcHttpCredential {
     pub(super) fn authenticates(&self, supplied: &str) -> bool {
         constant_time_eq(self.token.as_bytes(), supplied.as_bytes())
     }
+
+    pub(super) fn authorizes_method(&self, supplied: &str, method: host::Method) -> bool {
+        if !self.authenticates(supplied) {
+            return false;
+        }
+        method.metadata().scopes.iter().all(|scope| {
+            *scope == "public"
+                || RpcHttpScope::parse(scope).is_some_and(|scope| self.scopes.contains(&scope))
+        })
+    }
+
+    pub(super) fn scope_names(&self) -> BTreeSet<String> {
+        self.scopes
+            .iter()
+            .map(|scope| scope.as_str().to_string())
+            .collect()
+    }
+
+    pub(super) fn authority_identity(&self) -> String {
+        let scopes = self
+            .scopes
+            .iter()
+            .map(|scope| scope.as_str())
+            .collect::<Vec<_>>();
+        let mut digest = Sha256::new();
+        digest.update(b"starweaver.host.http-authority.v1\0");
+        digest.update(self.token.as_bytes());
+        for scope in scopes {
+            digest.update([0]);
+            digest.update(scope.as_bytes());
+        }
+        format!("http-sha256:{:x}", digest.finalize())
+    }
 }
 
 /// Return the scope required by one implemented method.
 ///
 /// Unknown methods return `None` so transports fail closed before dispatch.
+#[cfg(test)]
 #[must_use]
-pub fn required_scope(method: &str) -> Option<RpcHttpScope> {
-    let scope = match method {
-        "shutdown" => RpcHttpScope::Shutdown,
-        "run.start"
-        | "run.prompt"
-        | "run.cancel"
-        | "run.steer"
-        | "run.resume"
-        | "session.create"
-        | "session.fork"
-        | "environment.attach"
-        | "environment.detach"
-        | "environment.health"
-        | "environment.active_mount"
-        | "environment.active_unmount" => RpcHttpScope::Run,
-        "approval.decide" | "deferred.complete" | "deferred.fail" => RpcHttpScope::Approval,
-        "model.select" | "session.current.set" | "session.delete" | "storage.importLegacy" => {
-            RpcHttpScope::Admin
-        }
-        "initialize"
-        | "diagnostics.get"
-        | "profile.list"
-        | "model.list"
-        | "profile.get"
-        | "model.current"
-        | "config.get"
-        | "session.list"
-        | "session.search"
-        | "session.get"
-        | "session.current.get"
-        | "run.status"
-        | "run.await"
-        | "run.attach"
-        | "session.output"
-        | "stream.replay"
-        | "session.replay"
-        | "approval.list"
-        | "approval.show"
-        | "deferred.list"
-        | "deferred.show"
-        | "environment.list"
-        | "environment.active_list"
-        | "stream.subscribe"
-        | "stream.unsubscribe" => RpcHttpScope::Read,
-        _ => return None,
+fn required_scope(method: &str) -> Option<RpcHttpScope> {
+    let method = host::Method::parse(method)?;
+    let [scope] = method.metadata().scopes else {
+        return None;
     };
-    Some(scope)
+    RpcHttpScope::parse(scope)
 }
 
 pub fn parse_scope_list(value: &str) -> RpcHostResult<BTreeSet<RpcHttpScope>> {
@@ -380,11 +375,24 @@ mod tests {
             Some(RpcHttpScope::Approval)
         );
         assert_eq!(required_scope("session.delete"), Some(RpcHttpScope::Admin));
-        assert_eq!(
-            required_scope("storage.importLegacy"),
-            Some(RpcHttpScope::Admin)
-        );
         assert_eq!(required_scope("shutdown"), Some(RpcHttpScope::Shutdown));
+        for method in host::METHODS {
+            assert!(
+                method.scopes == ["public"] || required_scope(method.name).is_some(),
+                "generated method {} must have public or exactly one recognized authorization scope",
+                method.name
+            );
+        }
+        let credential = RpcHttpCredential {
+            token: "configured-token-0123456789abcdef".to_string(),
+            scopes: BTreeSet::new(),
+        };
+        assert!(credential.authorizes_method(
+            "configured-token-0123456789abcdef",
+            host::Method::Initialize
+        ));
+        assert_eq!(required_scope("initialize"), None);
+        assert_eq!(required_scope("storage.importLegacy"), None);
         assert_eq!(required_scope("future.mutating_method"), None);
     }
 

@@ -561,12 +561,13 @@ impl AgentSessionControl for RpcAgentSessionAdapter {
         }
         let result = self
             .coordinator
-            .steer_idempotent(
+            .steer_idempotent_bound(
                 &command.target.session_id,
                 &command.target.run_id,
                 command.steering_id.clone(),
                 command.text,
                 command.idempotency_key,
+                scope.namespace_id.clone(),
             )
             .await
             .map_err(map_control_host)?;
@@ -591,12 +592,13 @@ impl AgentSessionControl for RpcAgentSessionAdapter {
         }
         let result = self
             .coordinator
-            .cancel_idempotent(
+            .cancel_idempotent_bound(
                 &command.target.session_id,
                 &command.target.run_id,
                 command.operation_id.clone(),
                 command.reason_category,
                 command.idempotency_key,
+                scope.namespace_id.clone(),
             )
             .await
             .map_err(map_control_host)?;

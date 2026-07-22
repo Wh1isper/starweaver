@@ -21,7 +21,7 @@ The operations layer turns core runtime evidence and SDK contracts into validate
 
 ## Target Operations Shape
 
-The host-IDL and Desktop-client nodes below are accepted major-2 targets. Current RPC execution remains on handwritten Rust DTOs and the v1 corpus for major 1; the clean next major is generated independently from `09-rpc-idl-and-client-generation.md` rather than preserving v1 wire parity.
+The host-IDL and Desktop-client nodes below are the accepted atomic replacement target. `protocol/host/` defines the sole generated `starweaver.host` major-1 contract; handwritten DTOs and old fixtures are behavioral inventory only and are removed without wire compatibility or parallel dispatch.
 
 ```mermaid
 flowchart TD
@@ -36,9 +36,9 @@ flowchart TD
     storage[Shared SQLite storage]
     cli[CLI and TUI product]
     rpc[Standalone RPC product]
-    hostidl[Planned major-2 OpenRPC and JSON Schema IDL]
-    hostrpc[Target generated major-2 host contracts]
-    desktop[Planned major-2 Desktop TypeScript client and Rust supervisor]
+    hostidl[Single OpenRPC and JSON Schema IDL]
+    hostrpc[Generated major-1 host contract]
+    desktop[Generated Desktop TypeScript client and Rust supervisor]
     service[Future service adapters]
     observability[Observability]
     platform[Platform]
@@ -88,7 +88,7 @@ flowchart TD
 - `06-json-rpc-host-protocol.md` — independent standalone RPC product protocol, transport profiles, typed method/event/error contracts, stream replay/subscription semantics, projections, idempotency, and acceptance gates
 - `07-session-search.md` — optional product-neutral session search contract, local SQLite/filesystem provider, external index ingestion, and independent CLI/RPC integration
 - `08-agent-session-management.md` — agent-facing query/control bundles, composite identity and ownership, query-only CLI policy, grant-gated RPC CRUD/run control, and lifecycle prerequisites
-- `09-rpc-idl-and-client-generation.md` — clean IDL-first JSON-RPC major 2, OpenRPC/JSON Schema source of truth, generated Rust server boundary, safe manifest-filtered TypeScript Desktop bridge/client, compatibility, cutover, and validation gates
+- `09-rpc-idl-and-client-generation.md` — single IDL-first JSON-RPC major-1 contract, unversioned protocol source tree, generated Rust and safe Desktop TypeScript boundaries, on-demand external TypeScript generation, exact revision/digest admission, atomic replacement, and validation gates
 
 ## Readiness Model
 

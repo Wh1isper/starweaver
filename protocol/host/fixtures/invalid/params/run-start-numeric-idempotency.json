@@ -1,0 +1,14 @@
+{
+  "method": "run.start",
+  "params": {
+    "continuationMode": "preserve",
+    "environmentAttachments": [],
+    "idempotencyKey": 1,
+    "input": [
+      {
+        "kind": "text",
+        "text": "hello"
+      }
+    ]
+  }
+}

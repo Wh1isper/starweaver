@@ -1,6 +1,6 @@
 # Desktop Product and Process Boundaries
 
-Status: accepted architecture baseline; implementation planned
+Status: accepted architecture baseline; shell and single local-child supervisor implemented; routing, updates, and SSH planned
 
 This document defines the ownership and process model for Starweaver Desktop. The existing CLI/RPC independence rules in `../ops/00-product-boundaries.md` remain normative. SSH remote execution extends this model through `07-ssh-remote-workspaces.md` without moving execution into Desktop.
 
@@ -21,8 +21,8 @@ The Desktop product must not depend on `starweaver-cli`. The CLI must not depend
 
 Allowed implementation dependencies:
 
-- Desktop renderer TypeScript only to the major-2 manifest-filtered `DesktopHostClient`, safe bridge request/result/notification DTOs and decoders, and safe operation/notification maps derived from the IDL;
-- Desktop backend to IDL-generated major-2 Rust bindings in `starweaver-rpc-core` plus narrow handwritten transport and projection helpers;
+- Desktop renderer TypeScript only to the generated manifest-filtered `DesktopHostClient`, safe bridge request/result/notification DTOs and decoders, and safe operation/notification maps derived from the IDL;
+- Desktop backend to IDL-generated Rust bindings in `starweaver-rpc-core` plus narrow handwritten transport and projection helpers;
 - Desktop backend to narrow product-neutral helpers needed for version parsing, signed-manifest verification, component installation, checksums, and platform paths;
 - Desktop backend to a least-authority system OpenSSH process adapter and native askpass/host-trust bridge;
 - `starweaver-rpc` to existing Agent SDK, storage, OAuth, environment, and envd crates;
@@ -41,7 +41,7 @@ If Desktop and another product need the same logic, that logic moves only when a
 
 ## Process Topology
 
-The accepted initial topology is one Desktop backend supervisor with one optional least-authority catalog/control child and zero or more workspace-scoped execution RPC children. Every Desktop execution connection requires the IDL-first host major 2. SSH adds origin-scoped remote catalog and execution connections while preserving the same supervisor/RPC boundary.
+The accepted initial topology is one Desktop backend supervisor with one optional least-authority catalog/control child and zero or more workspace-scoped execution RPC children. Every Desktop execution connection requires the sole IDL-first host major 1 with exact revision and schema-digest agreement. SSH adds origin-scoped remote catalog and execution connections while preserving the same supervisor/RPC boundary.
 
 ```mermaid
 flowchart LR
@@ -113,7 +113,7 @@ Desktop must not configure one RPC process with the user home directory solely t
 
 ## Shell and Backend Separation
 
-The renderer receives safe view models and sends user intents through major-2 IDL-derived bridge request/result/notification DTOs selected by a reviewed Desktop operation-surface manifest. TypeScript implements the typed Desktop client experience, but the renderer must not construct arbitrary JSON-RPC requests, submit complete host params objects, choose authority-bearing wire metadata, or receive raw secrets. The generated TypeScript client and generated Rust server bindings share the language-neutral source defined by `../ops/09-rpc-idl-and-client-generation.md`; the Desktop manifest adds authority ownership and safe projection without redefining host wire types.
+The renderer receives safe view models and sends user intents through IDL-derived bridge request/result/notification DTOs selected by a reviewed Desktop operation-surface manifest. TypeScript implements the typed Desktop client experience, but the renderer must not construct arbitrary JSON-RPC requests, submit complete host params objects, choose authority-bearing wire metadata, or receive raw secrets. The generated TypeScript client and generated Rust server bindings share the language-neutral source defined by `../ops/09-rpc-idl-and-client-generation.md`; the Desktop manifest adds authority ownership and safe projection without redefining host wire types.
 
 The backend supervisor owns:
 
@@ -175,7 +175,7 @@ After local spawn or the SSH bootstrap transition, the RPC stream contract requi
 
 ## Product Naming and Packaging
 
-The application root is `apps/starweaver-desktop/`. Its cross-platform shell foundation may be built and tested before Phase 0 completes, but it remains disconnected from RPC, storage, OAuth, environment effects, and runtime updates. Its current single-instance transports carry only a fixed activation frame and never read or transmit argv or the working directory; forwarding typed workspace/session intents waits for the reviewed authenticated intent protocol. Execution integration starts only after the applicable Phase 0 protocols, owners, fixtures, and security gates exist.
+The application root is `apps/starweaver-desktop/`. Its cross-platform shell and verified single local-child supervisor are built and tested, while normal startup remains `unconfigured` until the runtime update/configuration owner selects an exact runtime and public launch envelope. Desktop remains disconnected from direct storage, OAuth files, and environment effects. Its current single-instance transports carry only a fixed activation frame and never read or transmit argv or the working directory; forwarding typed workspace/session intents waits for the reviewed authenticated intent protocol.
 
 Observable methods, metadata, bundle identifiers, and file names use Starweaver-native names. References to other desktop agent products are design comparisons only and must not appear in protocol IDs or public symbols.
 

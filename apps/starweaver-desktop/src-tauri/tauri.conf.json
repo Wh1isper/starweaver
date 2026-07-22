@@ -1,58 +1,58 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Starweaver",
-  "version": "0.9.0",
-  "identifier": "io.github.wh1isper.starweaver",
-  "build": {
-    "beforeDevCommand": "corepack pnpm dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "corepack pnpm build",
-    "frontendDist": "../dist"
-  },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "Starweaver",
-        "width": 1120,
-        "height": 760,
-        "minWidth": 760,
-        "minHeight": 560,
-        "center": true,
-        "resizable": true
-      }
-    ],
     "security": {
-      "capabilities": ["main"],
+      "capabilities": ["main", "generated-host"],
       "csp": {
-        "default-src": "'self' customprotocol: asset:",
         "connect-src": "'self' ipc: http://ipc.localhost",
+        "default-src": "'self' customprotocol: asset:",
         "font-src": "'self'",
         "img-src": "'self' asset: http://asset.localhost data: blob:",
         "style-src": "'self'"
       },
       "devCsp": {
-        "default-src": "'self' http://localhost:1420",
         "connect-src": "'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1421",
+        "default-src": "'self' http://localhost:1420",
         "font-src": "'self' http://localhost:1420",
         "img-src": "'self' data: blob: http://localhost:1420",
-        "style-src": "'self' 'unsafe-inline' http://localhost:1420",
-        "script-src": "'self' http://localhost:1420"
+        "script-src": "'self' http://localhost:1420",
+        "style-src": "'self' 'unsafe-inline' http://localhost:1420"
       },
       "freezePrototype": true
-    }
+    },
+    "windows": [
+      {
+        "center": true,
+        "height": 760,
+        "label": "main",
+        "minHeight": 560,
+        "minWidth": 760,
+        "resizable": true,
+        "title": "Starweaver",
+        "width": 1120
+      }
+    ]
+  },
+  "build": {
+    "beforeBuildCommand": "corepack pnpm build",
+    "beforeDevCommand": "corepack pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
   },
   "bundle": {
     "active": true,
-    "targets": "all",
     "category": "DeveloperTool",
-    "shortDescription": "Native workspace for Starweaver agents",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
-  }
+    ],
+    "shortDescription": "Native workspace for Starweaver agents",
+    "targets": "all"
+  },
+  "identifier": "io.github.wh1isper.starweaver",
+  "productName": "Starweaver",
+  "version": "0.10.0"
 }

@@ -1,4 +1,6 @@
 #![allow(clippy::missing_errors_doc)]
+#![allow(clippy::redundant_pub_crate)]
+
 //! CLI-first local product surface for Starweaver.
 
 mod args;
@@ -27,6 +29,7 @@ use std::env;
 
 pub use args::{Cli, CliCommand, OutputMode, SessionCommand};
 pub use config::{CliConfig, ConfigResolver};
+pub use environment::EnvironmentAttachmentAccessMode as CliEnvironmentAccessMode;
 pub use error::{CliError, CliResult};
 pub use local_store::{
     DisplayReplayWindow, LocalSessionStore, LocalStore, LocalStreamArchive, TrimReport,

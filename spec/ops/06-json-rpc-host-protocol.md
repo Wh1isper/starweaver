@@ -1,12 +1,12 @@
-# JSON-RPC Host Protocol v1
+# Handwritten JSON-RPC Host Behavioral Inventory
 
-Status: implemented normative profile
+Status: implemented behavior inventory; superseded as target wire authority by the atomic IDL-first contract
 
 Revision: 2026-07-21
 
 The Starweaver host protocol is implemented by the standalone `starweaver-rpc` product. It is a local control plane for durable sessions, non-blocking runs, replay, HITL records, RPC-owned model profiles, and RPC-owned environment attachments.
 
-This document describes implemented major-1 behavior. `09-rpc-idl-and-client-generation.md` defines the accepted IDL-first JSON-RPC major-2 target. Major 2 is a clean OpenRPC/JSON Schema contract with generated Rust and TypeScript boundaries; it does not preserve every v1 frame or extend this closed v1 shape. Until major 2 is implemented and cut over, the current Rust DTOs and v1 corpus remain the implementation authority for major 1. Proposed additions that are not incorporated into the major-2 target remain in `rfcs/host-protocol-future.md`. The v1 stdio profile implements connection-owned live subscriptions; unary HTTP remains replay-only.
+This document inventories behavior in the handwritten host so the atomic replacement does not lose required product semantics. `09-rpc-idl-and-client-generation.md` is the sole target wire authority: the generated `starweaver.host` major-1 contract under `protocol/host/` replaces these DTOs, registries, aliases, fixtures, and transport parsing in place. This inventory does not require old-frame support, an old-client lane, a compatibility migration, or a deprecation window. Removed shapes must fail strict validation. Proposed additions not selected by the IDL remain in `rfcs/host-protocol-future.md`. The currently implemented stdio behavior includes connection-owned live subscriptions; unary HTTP is replay-only.
 
 ## Product Boundary
 
@@ -14,10 +14,9 @@ This document describes implemented major-1 behavior. `09-rpc-idl-and-client-gen
 - Neither crate may depend on the other directly or transitively.
 - CLI/TUI is not an RPC frontend and does not reuse RPC handlers, configuration, coordinator state, or attachment leases.
 - Both products may independently use lower runtime, storage, stream, environment, and envd abstractions.
-- For major 1, `starweaver-rpc-core` continues to own the handwritten DTO and corpus authority documented here.
-- For major 2, the checked-in host IDL defined by `09-rpc-idl-and-client-generation.md` is the structural source of truth and generates Rust and TypeScript peers.
-- `starweaver-rpc-core` will own the generated major-2 Rust wire boundary plus narrow framing and projection helpers.
-- `starweaver-rpc` will implement the generated major-2 server boundary and continues to own configuration, model materialization, handlers, active runs, environment leases, and transports.
+- The checked-in host IDL defined by `09-rpc-idl-and-client-generation.md` is the sole structural source of truth. Default generation emits the bundled IDL, generated Rust boundary, and manifest-filtered safe Desktop TypeScript bindings; complete external TypeScript bindings are generated only on demand into a caller-selected directory.
+- `starweaver-rpc-core` owns the generated major-1 Rust wire boundary plus narrow framing and projection helpers after atomic replacement; handwritten types and fixtures are inventory only.
+- `starweaver-rpc` implements the generated server boundary and continues to own configuration, model materialization, handlers, active runs, environment leases, and transports. No legacy dispatcher or parser remains.
 
 The permanent `make architecture-check` gate enforces the dependency boundary.
 
@@ -53,7 +52,7 @@ Initialization returns the shared identity shape:
 
 Identity constants are owned by `starweaver-rpc-core`. Clients validate `name` and `major`, then use `features`. In the implemented v1 handshake this list reports server-supported features; it is not yet a per-connection client/server intersection. `session.search` appears only when the RPC-owned configuration installs a provider; it is omitted when search is disabled. Clients must not compare revision strings for ordering. The previous top-level `protocolVersion` date field is accepted as legacy response evidence but is no longer emitted.
 
-Major 2 does not reinterpret these v1 fields. Its initialize request explicitly carries client-supported and client-required features, and its result explicitly carries server-supported and negotiated features together with runtime and storage compatibility. A v1 frame is never decoded as major 2, and a major-2 client must not depend on implicit legacy mode. See `09-rpc-idl-and-client-generation.md` for the canonical next-major handshake.
+The generated replacement does not preserve this handwritten initialize shape. Its request explicitly carries client-supported and client-required features plus the exact generated protocol identity, revision, and schema digest; its result carries the same exact identity, server-supported and negotiated features, and typed runtime/storage compatibility. Any mismatch fails closed. See `09-rpc-idl-and-client-generation.md` for the sole canonical handshake.
 
 `stream.subscribe` is advertised only by stdio connections with an installed bounded notification sink. Unary HTTP returns `unsupported_feature` for subscribe/unsubscribe and uses replay/status polling.
 
@@ -185,11 +184,11 @@ Messages are safe for client display and must not include credentials, provider 
 | HITL                   | `approval.list`, `approval.show`, `approval.decide`, `deferred.list`, `deferred.show`, `deferred.complete`, `deferred.fail`                                               |
 | Environments           | `environment.attach`, `environment.detach`, `environment.list`, `environment.health`, `environment.active_mount`, `environment.active_unmount`, `environment.active_list` |
 
-A method not in this table is not part of implemented v1. Compatibility aliases are provisional and may be removed in the next host protocol major after clients migrate.
+A method not in this table is not part of the implemented handwritten inventory. Entries labeled compatibility aliases are not selected by the target IDL and receive no generated alias or migration path.
 
 ### Session-scoped deferred tools
 
-`session.create` accepts optional `deferredTools` and `idempotencyKey`. Each tool is a closed definition containing `name`, `description`, object `inputSchema`, and optional string `instructions`; it cannot carry executable code, commands, transports, or arbitrary metadata. The host accepts at most 64 definitions and 256 KiB of encoded definitions, validates names and field limits, stores a versioned digest-bound snapshot in session metadata, and returns only its binding id, digest, and tool names. An exact create retry reads its durable receipt before current profile/config validation and returns the existing session even if that profile was later removed; omitting the key creates a fresh session.
+`session.create` requires an `idempotencyKey` and accepts a `deferredTools` array. Each tool is a closed definition containing `name`, `description`, complete object `inputSchema`, canonical `inputSchemaDigest`, and a bounded `instructions` string array; it cannot carry executable code, commands, transports, or arbitrary metadata. `inputSchema` is the sole explicitly marked arbitrary JSON object in this shape, and the host verifies its digest instead of attempting to recover a schema from a digest. The host accepts at most 64 definitions and 256 KiB of encoded definitions, validates names and field limits, stores a versioned digest-bound snapshot in session metadata, and returns only its binding id, digest, and tool names. An exact create retry reads its durable receipt before current profile/config validation and returns the existing session even if that profile was later removed.
 
 The toolset is restored from the owning session for ordinary runs, HITL preflight, continuations, and background continuations. A model call emits one `deferred_requested` sideband event with run id, normalized tool-call id, tool name, derived durable deferred id, and the client request payload, followed by `run_waiting`. Its stable display projection is `DEFERRED_REQUESTED`. The waiting worker commits checkpoint, stream, and deferred records, releases its admission without writing a terminal replay marker, and remains resumable. The client resolves records with `deferred.complete` or `deferred.fail`, then explicitly calls `run.resume`; resolution alone never starts execution.
 

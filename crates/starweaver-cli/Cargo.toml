@@ -52,7 +52,6 @@ starweaver-runtime.workspace = true
 starweaver-session.workspace = true
 starweaver-storage.workspace = true
 starweaver-stream.workspace = true
-starweaver-rpc-core.workspace = true
 starweaver-tools.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true

@@ -1,22 +1,22 @@
 # IDL-First JSON-RPC Host Protocol and Client Generation
 
-Status: accepted target architecture; implementation planned
+Status: accepted normative architecture; atomic major-1 replacement implemented
 
 Revision: 2026-07-21
 
-This specification defines the next canonical Starweaver host protocol as an IDL-first JSON-RPC design. It deliberately does not preserve the structural limitations of the implemented Rust-first v1 wire contract. The current v1 host remains documented in `06-json-rpc-host-protocol.md` until the new major is implemented and cut over.
+This specification defines the sole canonical Starweaver host protocol as an IDL-first JSON-RPC design. It atomically replaces the handwritten Rust-first wire contract in place. `06-json-rpc-host-protocol.md` remains behavioral inventory for the replacement, not an independently supported wire contract.
 
 ## Decision
 
-Starweaver adopts the following protocol stack for the next host-protocol major:
+Starweaver adopts the following single host-protocol contract:
 
 - JSON-RPC 2.0 is the wire protocol.
 - OpenRPC 1.4.0 plus its JSON Schema Draft 7 dialect is the canonical language-neutral IDL.
-- The new contract uses protocol identity `starweaver.host` major `2`.
-- Checked-in IDL source generates the public bundled OpenRPC document, Rust server bindings, a complete TypeScript protocol model, and manifest-filtered safe Desktop bridge/client bindings.
+- The contract uses protocol identity `starweaver.host` major `1`, with an exact non-ordered revision and SHA-256 schema digest.
+- Default checked-in generation emits the public bundled OpenRPC document, Rust server bindings, and manifest-filtered safe Desktop bridge/client bindings. A separate explicit command can generate a complete TypeScript protocol model into a caller-selected directory for external consumers.
 - `starweaver-rpc` implements the generated Rust server boundary.
-- Rust and TypeScript outputs are generated peers; neither is an independent protocol source.
-- The current handwritten v1 DTOs, method tables, and corpus are behavioral inventory for the redesign, not wire-compatibility requirements for major 2.
+- Rust, Desktop TypeScript, and optional caller-generated TypeScript outputs are generated peers; none is an independent protocol source.
+- The current handwritten DTOs, method tables, and corpus are behavioral inventory only. They are replaced atomically and create no old-wire compatibility requirement.
 - Protobuf, Thrift, gRPC, TypeSpec, and language-first schema derivation are not part of this protocol.
 
 The IDL is authoritative for structural wire facts: methods, notifications, params, results, public errors, field names, enum values, requiredness, nullability, bounds, type openness, feature metadata, transport availability, and idempotency classification. Behavioral specifications remain authoritative for durability, ordering, authorization, fencing, process supervision, replay recovery, and shutdown barriers.
@@ -40,12 +40,12 @@ OpenRPC is an IDL, not an execution runtime. Starweaver owns the constrained sch
 
 - Define a clean host contract from the IDL outward rather than transcribing Rust types.
 - Generate all canonical Rust wire types and server signatures.
-- Generate a complete external TypeScript protocol model and runtime codecs.
+- Support explicit on-demand generation of a complete external TypeScript protocol model and runtime codecs into a caller-selected directory.
 - Generate a separate least-authority Desktop bridge/client surface from the IDL plus a reviewed authority manifest.
 - Make the bundled OpenRPC artifact sufficient for an independent Go, Python, Swift, Kotlin, or other client.
 - Eliminate JSON precision ambiguity, implicit defaults, trial-deserialized unions, untyped errors, and accidental open objects.
 - Use one durable event vocabulary for replay and live delivery.
-- Make same-major compatibility mechanically enforceable.
+- Make exact revision and schema-digest agreement mechanically enforceable and fail closed.
 - Keep JSON-RPC transport profiles independent from domain handlers and storage implementations.
 
 ## Non-goals
@@ -59,37 +59,36 @@ OpenRPC is an IDL, not an execution runtime. Starweaver owns the constrained sch
 - Introducing TypeSpec as an authoring frontend before direct OpenRPC authoring demonstrates a concrete maintenance problem.
 - Shipping first-party SDKs for every language in the initial implementation.
 
-## Relationship to Host Protocol v1
+## Atomic Replacement of the Handwritten Contract
 
-The implemented v1 contract remains valid only for v1 clients and servers while it is supported. Major 2 is intentionally a new wire contract.
+The IDL-first contract replaces the existing handwritten major-1 wire atomically. There is one supported protocol identity and no staged cutover, legacy parser, fallback dispatch, old-client lane, or deprecation window.
 
-The redesign follows these rules:
+The replacement follows these rules:
 
-- v1 behavior is inventoried method by method so required product capabilities are not lost;
-- v1 field names and structures may be retained when they are already clear and cross-language safe;
-- legacy method aliases, field aliases, omitted-params normalization, integer request IDs, and untyped errors do not carry into major 2;
-- v1 fixtures remain under the v1 contract and are never rewritten to pretend they were major 2;
-- major 2 receives an independent canonical and invalid corpus generated from its IDL;
-- a temporary server may expose both majors through explicit protocol dispatch during cutover, but no frame is interpreted as both; and
-- Desktop execution remains disabled until it can require and validate the new major and its mandatory features.
+- existing behavior is inventoried method by method so required product capabilities are not lost;
+- old field names and structures may be selected for the new IDL when they are clear and cross-language safe, but selection creates no compatibility promise;
+- legacy method aliases, field aliases, omitted-params normalization, integer request IDs, and untyped errors are removed;
+- old fixtures are behavioral input only and are deleted or replaced by the canonical and invalid corpus generated from the IDL;
+- removed aliases and old wire shapes fail strict validation, with no alternate parser or dispatch path; and
+- Desktop execution remains disabled until it validates the generated contract, exact revision, schema digest, and mandatory features.
 
-If product release policy establishes that v1 was never public, implementation may replace it atomically rather than maintain dual-major runtime support. That release decision does not change the major-2 contract defined here.
+The incompatible rebase intentionally retains protocol major `1` because no old-wire compatibility promise is maintained. Exact revision and digest prevent stale generated clients, hosts, bundles, and Desktop projections from being mixed.
 
 ## Ownership
 
-| Concern                                                                                       | Owner                                                               |
-| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| Canonical host IDL source and public bundled artifact                                         | repository-level `protocol/starweaver-host/v2/` tree                |
-| IDL profile, bundling, linting, compatibility checks, and generators                          | repository `xtask` automation                                       |
-| Generated Rust wire types, server trait, dispatcher, and protocol codecs                      | `starweaver-rpc-core`                                               |
-| Rust handlers, authorization, coordination, subscriptions, and transports                     | `starweaver-rpc`                                                    |
-| Complete generated TypeScript protocol model and codecs                                       | repository generator output, excluded from Desktop renderer imports |
-| Desktop operation authority manifest and generated safe TypeScript bridge/client              | Starweaver Desktop                                                  |
-| Child process, stdio/SSH transport, request identity, retries, replay recovery, and authority | Desktop privileged Rust backend                                     |
-| Renderer intents, safe view models, and presentation state                                    | Desktop TypeScript application layer                                |
-| Durable and product-neutral domain semantics                                                  | existing owning crates and specs                                    |
-| Implemented major-1 behavior                                                                  | `06-json-rpc-host-protocol.md`                                      |
-| Desktop process and connection lifecycle                                                      | `../desktop/` specifications                                        |
+| Concern                                                                                       | Owner                                                                                                        |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Canonical host IDL source and public bundled artifact                                         | repository-level `protocol/host/` tree                                                                       |
+| IDL profile, bundling, linting, semantic-diff checks, and generators                          | repository `xtask` automation                                                                                |
+| Generated Rust wire types, server trait, dispatcher, and protocol codecs                      | `starweaver-rpc-core`                                                                                        |
+| Rust handlers, authorization, coordination, subscriptions, and transports                     | `starweaver-rpc`                                                                                             |
+| Complete generated TypeScript protocol model and codecs                                       | caller-selected on-demand generator output, excluded from repository workspaces and Desktop renderer imports |
+| Desktop operation authority manifest and generated safe TypeScript bridge/client              | Starweaver Desktop                                                                                           |
+| Child process, stdio/SSH transport, request identity, retries, replay recovery, and authority | Desktop privileged Rust backend                                                                              |
+| Renderer intents, safe view models, and presentation state                                    | Desktop TypeScript application layer                                                                         |
+| Durable and product-neutral domain semantics                                                  | existing owning crates and specs                                                                             |
+| Handwritten behavior inventory                                                                | `06-json-rpc-host-protocol.md`                                                                               |
+| Desktop process and connection lifecycle                                                      | `../desktop/` specifications                                                                                 |
 
 Generated wire types never import Rust crate paths. Handwritten adapters convert between generated wire projections and product-neutral domain types. This conversion boundary prevents storage or runtime implementation details from becoming accidental public protocol.
 
@@ -97,44 +96,44 @@ Generated wire types never import Rust crate paths. Handwritten adapters convert
 
 ```text
 protocol/
-  starweaver-host/
-    v2/
-      openrpc.yaml
-      schemas/
-        common.yaml
-        initialize.yaml
-        sessions.yaml
-        runs.yaml
-        events.yaml
-        interactions.yaml
-        environments.yaml
-        errors.yaml
-      examples/
-        initialize.json
-        run-start.json
-        events-subscribe.json
-        host-event.json
-        typed-error.json
-      generated/
-        starweaver-host-v2.openrpc.json
+  host/
+    openrpc.yaml
+    schemas/
+      common.yaml
+      initialize.yaml
+      sessions.yaml
+      runs.yaml
+      events.yaml
+      interactions.yaml
+      environments.yaml
+      errors.yaml
+    examples/
+      initialize.json
+      run-start.json
+      events-subscribe.json
+      host-event.json
+      typed-error.json
+    generated/
+      starweaver-host.openrpc.json
 apps/
   starweaver-desktop/
-    protocol/
-      host-surface.yaml
+    host-bridge/
+      manifest.yaml
+      manifest.schema.json
 ```
 
 Rules:
 
 - Split YAML files are the human-maintained canonical source.
 - The self-contained JSON bundle is the public release artifact and contains no local file references.
-- `apps/starweaver-desktop/protocol/host-surface.yaml` is Desktop-owned authority and projection policy over public IDL symbols, not a second host schema or part of the public host bundle.
-- Generated Rust and TypeScript files are committed for review and reproducibility but never edited manually.
+- `apps/starweaver-desktop/host-bridge/manifest.yaml` is Desktop-owned authority and projection policy over public IDL symbols, not a second host schema or part of the public host bundle.
+- Generated Rust and safe Desktop TypeScript files are committed for review and reproducibility but never edited manually. Complete external TypeScript bindings are generated on demand and are not committed repository output.
 - Examples are conformance evidence, not type inference input.
 - The bundle records protocol family, major, revision, and a SHA-256 artifact digest.
 - The digest is computed over deterministic bundled bytes with the digest member omitted.
 - Generated code records the same identity and digest.
 
-No new workspace crate is required merely to hold source files. A publishable package is introduced only when there is a concrete distribution boundary.
+No new workspace crate or TypeScript package is maintained merely to hold generated files. External TypeScript consumers generate bindings from the canonical protocol into their own selected output directory and own any packaging or publication boundary.
 
 ## OpenRPC Profile
 
@@ -177,16 +176,18 @@ Only documented `x-starweaver-*` extensions are accepted. The initial profile de
 - required feature, transport, authorization scope, idempotency class, and behavioral-spec links;
 - protocol identity and schema digest;
 - canonical decimal kind and string-valued minimum/maximum;
-- a root-level `x-starweaver-error-data` registry mapping every error code and `data.kind` to one schema; and
+- a root-level `x-starweaver-error-data` registry mapping every error code and `data.kind` to one schema;
+- a closed root-level `x-starweaver-event-classes` registry mapping every `HostEvent.kind` to its exact event schema, required feature or `null`, and non-empty authorization-scope set;
+- root-level `x-starweaver-event-profiles` whose entries contain only registered event classes; and
 - explicit extension-map trust and size metadata where JSON Schema alone is insufficient.
 
 Unknown Starweaver extensions fail linting. Language-specific code snippets, Rust paths, TypeScript import paths, and handler implementation metadata are prohibited in the public IDL.
 
-## JSON-RPC Major-2 Profile
+## Strict JSON-RPC Profile
 
 ### Envelope
 
-Major 2 narrows JSON-RPC 2.0 to one deterministic profile:
+The single contract narrows JSON-RPC 2.0 to one deterministic profile:
 
 - `jsonrpc` is exactly `"2.0"`;
 - client request IDs are non-empty strings;
@@ -252,7 +253,7 @@ methods:
 
 This generates params `{ sessionId, includeRuns? }` and the frame member `"params":{"sessionId":"..."}`. It never generates `"params":{"params":{...}}`.
 
-Objects are closed by default with `additionalProperties: false`. An open map is allowed only through a named component whose value schema and trust semantics are explicit.
+Objects are closed by default with `additionalProperties: false`. The only arbitrary JSON object escape hatch is a named component marked `x-starweaver-json-value: object` with `additionalProperties: true`; generators map that exact marker to `serde_json::Value` and `Readonly<Record<string, unknown>>`. The linter rejects an open object without the marker, rejects extra schema keywords on the marked component, and never relaxes ordinary object handling. The initial use is a deferred tool's complete `inputSchema`, whose separately supplied digest is verified over the canonical schema rather than used as an impossible reverse lookup.
 
 Missing, `null`, empty, and defaulted values are distinct. The IDL must never rely on a language default that is not visible in the wire contract. Canonical writers omit an optional member only when omission is explicitly part of its schema.
 
@@ -331,7 +332,7 @@ Every method declares:
 - stability state; and
 - behavioral-spec references.
 
-Major 2 has one canonical name per method and field. It has no legacy read aliases. A deprecated method remains implemented for the entire major and can be removed only in a later major.
+The contract has one canonical name per method and field and no legacy read aliases. Removed or renamed shapes fail validation; deprecation metadata does not create an old-wire support window.
 
 Method groups remain product-oriented rather than transport-oriented:
 
@@ -346,11 +347,11 @@ Method groups remain product-oriented rather than transport-oriented:
 - OAuth and runtime management when publicly authorized; and
 - coordinated shutdown.
 
-The exact catalog is authored in the IDL and generated into both server and client method maps. Handwritten registries are prohibited after cutover. Host methods are bounded control operations: starting a run returns promptly, long-running work progresses through durable events, and major 2 does not expose an unbounded `run.await` request. Explicit run interruption is a domain method and is distinct from abandoning local interest in an RPC response.
+The exact catalog is authored in the IDL and generated into both server and client method maps. Handwritten registries are prohibited after atomic replacement. Host methods are bounded control operations: starting a run returns promptly, long-running work progresses through durable events, and the contract does not expose an unbounded `run.await` request. Explicit run interruption is a domain method and is distinct from abandoning local interest in an RPC response.
 
 ## Initialization and Feature Negotiation
 
-Major 2 defines initialization cleanly instead of extending the closed v1 shape.
+The IDL defines initialization directly rather than extending the handwritten shape.
 
 Request:
 
@@ -366,7 +367,9 @@ Request:
     },
     "protocol": {
       "name": "starweaver.host",
-      "major": 2
+      "major": 1,
+      "revision": "2026-07-21",
+      "schemaDigest": "sha256:..."
     },
     "supportedFeatures": [
       "events.replay.v1",
@@ -393,7 +396,7 @@ Result:
     },
     "protocol": {
       "name": "starweaver.host",
-      "major": 2,
+      "major": 1,
       "revision": "2026-07-21",
       "schemaDigest": "sha256:..."
     },
@@ -417,7 +420,7 @@ Result:
 Rules:
 
 - stateful stdio/SSH connections accept only `initialize` before successful initialization;
-- protocol family and major must match exactly;
+- protocol family, major, exact revision, and schema digest must match the generated client contract; any mismatch fails closed;
 - supported and required feature arrays are duplicate-free and canonically sorted;
 - every required feature must also appear in the client's supported set;
 - the server rejects initialization when any required feature is unsupported;
@@ -425,8 +428,8 @@ Rules:
 - stateful peers store the negotiated set for the connection;
 - feature-gated methods and events on a stateful connection require membership in that set;
 - capabilities report effective instance state and never replace vocabulary features;
-- revision is an exact artifact identity and is not ordered like a minor version; and
-- reconnect identity, runtime identity, storage compatibility, and safe workspace identity are typed members from the first major-2 release rather than later optional additions to a closed result.
+- revision is an exact, non-ordered artifact identity and schema digest is the exact canonical-bundle identity; and
+- reconnect identity, runtime identity, storage compatibility, and safe workspace identity are typed members of the initial generated contract.
 
 Feature IDs are lowercase ASCII tokens matching `^[a-z][a-z0-9._-]*$` and are sorted by ascending unsigned UTF-8 byte sequence, which is equivalent to ASCII lexical order for this alphabet. They are versioned semantic capabilities, not build flags. Enabling server configuration never claims client support. The canonical initialize request/result pair is shared unchanged by Rust, TypeScript, and independent-client fixtures.
 
@@ -487,34 +490,33 @@ Rust and TypeScript error unions are generated from these components and the reg
 
 JSON-RPC request ID is connection-local correlation only. Every effectful method requires a durable `idempotencyKey` in params unless its behavioral spec proves the operation intrinsically idempotent.
 
-The trusted client creates the key before the first send and retains it across retries. The server scopes and fingerprints it, then returns a secret-free mutation receipt containing operation kind, state, target/result reference, and reconciliation status.
+The trusted client creates the key before the first send and retains it across retries. The server scopes and fingerprints it, then returns a secret-free mutation receipt containing `operation`, `state`, `targetRef`, `reconciliationRequired`, canonical fingerprint, receipt identity, and whether the response is an exact replay.
 
 Desktop renderer input never supplies or overrides idempotency keys. The privileged Rust supervisor constructs them when mapping safe bridge requests to complete host params.
 
-After response loss, clients query the receipt or target state before retrying. They never retry an effectful operation with a new key merely because the transport disconnected.
+After response loss, clients query the target state when available and resend only the exact same normalized mutation with the same key; the durable receipt then reconstructs the original result with `replayed: true`. This major does not expose a standalone receipt-query method. Clients never retry an effectful operation with a new key merely because the transport disconnected.
 
 ## Events, Replay, and Live Delivery
 
-Major 2 separates view-independent durable evidence from its view-bound delivery position. `EventRecord` is the canonical durable event. `EventDelivery` pairs that record with the `HostEventCursor` generated for one admitted logical view; the same delivery schema is used by replay and live notifications.
+The contract separates view-independent durable evidence from its view-bound delivery position. `EventRecord` is the canonical durable event. `EventDelivery` pairs that record with the `HostEventCursor` generated for one admitted logical view; the same delivery schema is used by replay and live notifications.
 
 ```json
 {
-  "cursor": {
-    "family": "host_event",
-    "scope": {
-      "kind": "run",
-      "runId": "run_01J2Y8..."
-    },
-    "token": "cursor_01J2Y8..."
-  },
+  "cursor": "eyJ2IjoxLCJmIjoiaG9zdF9ldmVudCIsInAiOiI0MiJ9",
   "record": {
     "eventId": "event_01J2Y8...",
     "occurredAt": "2026-07-21T11:00:00Z",
-    "sessionId": "sess_01J2Y8...",
-    "runId": "run_01J2Y8...",
+    "scope": {
+      "kind": "run",
+      "sessionId": "sess_01J2Y8...",
+      "runId": "run_01J2Y8..."
+    },
     "event": {
-      "kind": "run_status_changed",
-      "status": "completed"
+      "kind": "output_available",
+      "sessionId": "sess_01J2Y8...",
+      "runId": "run_01J2Y8...",
+      "outputRef": "output_01J2Y8...",
+      "preview": "completed"
     }
   }
 }
@@ -522,9 +524,9 @@ Major 2 separates view-independent durable evidence from its view-bound delivery
 
 Every `EventRecord` is committed to the durable event log before any delivery that references it is emitted. The durable record contains no caller, authority, feature-set, view, or cursor material. Replay and subscription projection create `EventDelivery` values by pairing eligible records with cursors for the admitted `EventView`. The same durable record can therefore appear in multiple logical views with the same `eventId` and payload but a different cursor. Ephemeral transport diagnostics remain on stderr and never masquerade as host events. UI-only presentation models are projections and are not separate durable truth.
 
-`HostEventCursor` is a major-2 public projection independent from the existing internal `ReplayCursor` vocabulary. It has stable family `host_event`, a typed session/run/global scope, and an opaque token. The integrity-checked token is generated while reading/projecting a logical view and binds the durable log position, storage domain, exact scope, event-view digest, and backend cursor family without exposing record counts or backend layout. It survives process restart for the same retained storage evidence and becomes invalid only through typed retention/view/storage mismatch rules. Clients compare cursor identity only; they never increment, order, coerce, or transplant tokens.
+`HostEventCursor` is one opaque unpadded-base64url string independent from the existing internal `ReplayCursor` vocabulary. Its authenticated internal claims use stable family `host_event` and bind the durable log position, storage domain, exact typed session/run/global scope, event-view digest, and backend cursor family without exposing any of those claims, record counts, or backend layout as public JSON members. It survives process restart for the same retained storage evidence and becomes invalid only through typed retention/view/storage mismatch rules. Clients compare cursor identity only; they never decode, increment, order, coerce, or transplant tokens.
 
-The token is a bounded ASCII value, not a credential or authorization grant; every use rechecks current authority and feature eligibility. The start cursor, accepted cursor, replay fence, page `nextCursor`, live record cursors, and terminal cursor for one operation must share family, scope, and event-view digest. A mismatch returns one typed `cursor_scope_mismatch` or `cursor_view_mismatch` error without revealing whether another scope exists. Handwritten adapters may translate between `HostEventCursor` and internal stream/storage cursors, but the IDL never exposes internal cursor structs.
+The token is a bounded ASCII value, not a credential or authorization grant; every use rechecks current authority and feature eligibility. The start cursor, accepted cursor, replay fence, page `nextCursor`, live record cursors, and terminal cursor for one operation must share family, scope, and event-view digest. A mismatch returns `CursorInvalid` with the typed safe reason `scope_mismatch` or `view_mismatch` without revealing whether another scope exists. Malformed, integrity, storage-domain, and retention failures use the other closed `CursorInvalidData.reason` values. Handwritten adapters may translate between `HostEventCursor` and internal stream/storage cursors, but the IDL never exposes internal cursor structs.
 
 ### Atomic Event Publication
 
@@ -538,12 +540,9 @@ Crash fixtures cover failure before the state transaction, after state/outbox co
 
 `events.replay` and `events.subscribe` take one typed `EventView` containing the exact scope, one versioned view profile, and requested optional event features. A profile defines the essential event variants required for one coherent projection and the optional enrichments it may include. On a stateful connection, every requested feature must be a subset of negotiated features. Unary HTTP replay computes a request-local intersection from its declared event features and server support.
 
-Every `HostEvent` variant declares in the IDL:
+Every `HostEvent` variant has exactly one entry in the root `x-starweaver-event-classes` registry. Each entry declares the exact component schema, required feature or `null`, and a non-empty set of reviewed authorization scopes. The registry key must equal that schema's `kind` constant. The registry, the `HostEvent.oneOf` variants, and the union of all `x-starweaver-event-profiles` must be complete and identical: unknown classes, duplicate profile members, and omitted classes fail IDL lint.
 
-- required feature, if any;
-- required authorization scopes;
-- whether it is essential in each view profile or an optional enrichment; and
-- redaction/projection policy.
+Rust generation owns the typed `EventClass` enum, per-class metadata and parser, typed `EventProfile` class slices, and feature/scope admission helpers. Complete TypeScript metadata exposes the same registry and profile facts. Service code may consume those generated facts but must not maintain a handwritten competing eligibility table.
 
 The server admits a view only when the caller is authorized for every event class selected by that profile and its optional features. It never admits a broad view and then silently removes unauthorized event classes. Events outside the selected profile are a different logical projection stream: they do not consume its cursor positions, create empty pages, affect `hasMore`, or reveal hidden count/activity.
 
@@ -572,7 +571,7 @@ Server notifications are declared through the reviewed `x-starweaver-notificatio
 - `host.event` with `{ subscriptionId, deliverySequence, delivery }`; and
 - `subscription.closed` with typed reason plus `lastFlushedCursor` and `lastFlushedDeliverySequence` when known.
 
-Event-specific notification method names such as `run.status` and `diagnostic` are not part of major 2. Their data becomes variants of the typed `HostEvent` union carried by `host.event.delivery.record.event`.
+Event-specific notification method names such as `run.status` and `diagnostic` are not part of the contract. Their data becomes variants of the typed `HostEvent` union carried by `host.event.delivery.record.event`.
 
 A client applies each delivery idempotently by `delivery.record.eventId` and its last applied `delivery.cursor`. A delivery-sequence gap, cursor binding mismatch, malformed event, or decoder failure closes the tail and triggers bounded replay or projection recovery. Receipt of a valid `host.event` implies the referenced record was already durably committed; it does not imply that the client has acknowledged or rendered it.
 
@@ -583,7 +582,7 @@ stdio supports live subscriptions. Unary HTTP is replay/status-only and rejects 
 ### Stdio
 
 - UTF-8 NDJSON carries exactly one JSON-RPC frame per non-empty line.
-- the first valid request is major-specific `initialize`; its `protocol.major` selects one dispatch table for the connection, and no later frame may change it;
+- the first valid request is `initialize`; it must match the one generated protocol identity, exact revision, and schema digest, and there is no major router or fallback dispatch;
 - stdin carries client frames; stdout carries responses and server notifications; stderr carries diagnostics only.
 - every output frame is flushed according to the response/notification ordering contract;
 - bounded queues and frame-size limits fail closed rather than consume unbounded memory;
@@ -593,7 +592,7 @@ stdio supports live subscriptions. Unary HTTP is replay/status-only and rejects 
 
 ### HTTP
 
-- Major 2 uses the versioned endpoint `POST /rpc/v2`; a dual-major server keeps major 1 on its separately documented endpoint and never infers a major from overlapping method names.
+- The only JSON-RPC HTTP endpoint is `POST /rpc`; versioned RPC routes and major dispatch are prohibited.
 - HTTP carries unary JSON-RPC requests and responses.
 - `initialize` is stateless capability discovery: the response returns the request-specific feature intersection, which the client retains locally, but the server does not treat the TCP connection as protocol session state.
 - HTTP methods are admitted by endpoint major, server feature availability, authorization, and method schema. Methods or event variants that require connection-held negotiation are unavailable.
@@ -623,7 +622,7 @@ The Rust generator emits into `starweaver-rpc-core`:
 
 Generated code is wire-only. It does not open storage, authorize users, construct agents, allocate environments, own Tokio tasks, or write transport frames. `starweaver-rpc` implements behavior and maps generated DTOs to domain/service types.
 
-Handwritten canonical DTO or method registries are prohibited after cutover. Narrow handwritten transport helpers, domain conversion adapters, and runtime policies remain allowed in their owning modules.
+Handwritten canonical DTO or method registries are prohibited after atomic replacement. Narrow handwritten transport helpers, domain conversion adapters, and runtime policies remain allowed in their owning modules.
 
 ## Generated TypeScript Boundaries
 
@@ -643,11 +642,11 @@ The complete model contains:
 - a transport-neutral `HostRpcClient`; and
 - protocol identity and schema-digest constants.
 
-This model is appropriate for conformance tests and trusted external TypeScript clients. It is not renderer-authorized and must not be imported into the Desktop renderer bundle.
+This model is appropriate for conformance tests and trusted external TypeScript clients. It is generated only by `cargo run -p xtask -- generate-rpc-typescript --output <directory>` (or `make rpc-typescript-generate OUTPUT=<directory>`), is not a repository workspace package or tracked default output, and is not renderer-authorized. It must not be imported into the Desktop renderer bundle.
 
 ### Safe Desktop Client
 
-The Desktop-owned `apps/starweaver-desktop/protocol/host-surface.yaml` selects operations and classifies fields as:
+The Desktop-owned `apps/starweaver-desktop/host-bridge/manifest.yaml` selects operations and classifies fields as:
 
 - renderer-provided;
 - supervisor-constructed;
@@ -664,19 +663,21 @@ Generation combines the IDL and manifest to emit:
 - Rust wire constructors that fill supervisor-owned fields; and
 - Rust result/notification redaction and projection code.
 
-The Rust backend never deserializes renderer input as complete host params. It constructs request IDs, idempotency keys, routing identity, client scope, execution-domain binding, and retry metadata. Raw host paths, credentials, private diagnostics, and unselected fields fail closed before crossing into TypeScript state.
+The Rust backend never deserializes renderer input as complete host params. It constructs request IDs, idempotency keys, routing identity, client scope, execution-domain binding, and retry metadata. Raw host paths, credentials, private diagnostics, and unselected fields fail closed before crossing into TypeScript state. The manifest also allowlists variants inside renderer-provided unions. Desktop `run.start` currently exposes text input only: public host `ResourceInputPart` URIs are excluded from both generated TypeScript and Rust bridge types until a privileged backend resource-grant flow can replace them with backend-issued opaque handles.
 
 Architecture checks reject imports of the complete host model, raw host codecs, `HostRpcClient`, or unfiltered notification unions from renderer code.
 
-## Compatibility and Versioning
+## Identity and Change Policy
 
-Compatibility uses:
+Protocol admission uses:
 
 - protocol family `starweaver.host`;
-- integer major `2`;
-- non-ordered exact revision;
-- artifact digest; and
+- integer major `1`;
+- exact, non-ordered revision;
+- exact SHA-256 artifact digest; and
 - negotiated feature IDs.
+
+Clients and servers generated from different revisions or digests do not negotiate around the mismatch: initialization fails closed. The repository publishes one coherent bundle, Rust boundary, Desktop projection, host, and fixture corpus. Optional external TypeScript bindings are derived from that bundle at the consumer-selected location and are not a Starweaver-maintained package. No old-wire compatibility, old-client support, fallback parser, compatibility migration, or deprecation window is provided.
 
 Same-major changes may:
 
@@ -698,7 +699,7 @@ A new major is required to:
 - weaken authority, redaction, or transport framing rules; or
 - change durability, replay, ordering, fencing, or idempotency semantics incompatibly.
 
-Deprecation is guidance only and never permits same-major removal. A compatibility checker compares the proposed bundle with the last released bundle for the same major and has no waiver flag for breaking changes.
+The semantic-diff checker classifies every structural and behavioral change for review. It does not require preservation of the replaced handwritten wire or authorize a second contract. A released contract change requires a new exact revision and digest and a coherent atomic component release; stale peers fail initialization.
 
 ## Generation Workflow
 
@@ -707,18 +708,21 @@ A protocol change follows this order:
 1. Update the behavioral spec when semantics change.
 2. Edit split OpenRPC/JSON Schema source.
 3. Update the Desktop authority manifest if renderer exposure changes.
-4. Regenerate the bundle, Rust bindings, complete TypeScript model, safe Desktop bindings, and fixture skeletons.
+4. Regenerate the bundle, Rust bindings, safe Desktop bindings, and fixture skeletons. Generate the complete TypeScript model into a temporary or consumer-owned directory only when exercising external TypeScript conformance.
 5. Add canonical and invalid fixtures.
 6. Implement Rust handlers and domain projections.
 7. Run structural, compatibility, cross-language, transport, security, and product tests.
 8. Review source IDL, bundled artifact, generated code, and semantic diff together.
 
-Planned commands:
+Commands:
 
 ```text
 make rpc-idl-generate
 make rpc-idl-check
+make rpc-typescript-generate OUTPUT=<directory>
 ```
+
+`rpc-idl-generate` never writes the complete external TypeScript model. The explicit `rpc-typescript-generate` command replaces only an empty directory or a directory marked as owned by that generator, refuses canonical Rust/Desktop/protocol output paths, and emits no package manifest, lockfile, release metadata, or repository manifest entry.
 
 Generation is deterministic. The check command does not modify the worktree and fails on stale output, unsupported schema, unresolved references, missing method/error/notification coverage, compatibility violations, unsafe Desktop exposure, or fixture mismatch.
 
@@ -726,42 +730,42 @@ Generation is deterministic. The check command does not modify the worktree and 
 
 ### Phase 0: behavioral inventory
 
-- Map every current v1 method, error, notification, capability, authorization rule, and durability guarantee to retain, redesign, or drop.
+- Map every current method, error, notification, capability, authorization rule, and durability guarantee to retain, redesign, or drop.
 - Identify every current cross-crate type that needs a stable public projection.
 - Audit open JSON, paths, secrets, integer widths, defaults, aliases, and trial-deserialized unions.
-- Record the intended major-2 method and event catalog before code generation.
+- Record the single target method and event catalog before code generation.
 
-### Phase 1: canonical major-2 IDL
+### Phase 1: canonical IDL
 
-- Add `protocol/starweaver-host/v2/` source.
+- Add `protocol/host/` source.
 - Define common scalars, initialize, typed errors, events, and representative session/run methods first.
 - Produce a self-contained OpenRPC bundle.
 - Validate it with the official meta-schema and an independent parser.
-- Establish canonical and invalid major-2 fixtures independently of v1.
+- Establish one canonical and invalid fixture corpus; old fixtures impose no wire-compatibility requirement.
 
 ### Phase 2: generated Rust boundary
 
 - Generate wire types, validators, method metadata, server trait, and dispatcher.
 - Implement adapters into current service/domain types.
 - Implement initialize, typed errors, decimal scalars, and event replay as the first vertical slice.
-- Add stdio and HTTP major dispatch.
-- Remove handwritten major-2 registries; v1 code remains isolated if dual support is temporarily required.
+- Add stateful stdio initialization and stateless HTTP `POST /rpc` with no major router.
+- Remove handwritten DTOs, registries, aliases, validators, and old fixtures in the same atomic replacement; no legacy namespace remains.
 
 ### Phase 3: generated TypeScript and Desktop surface
 
-- Generate the complete TypeScript model and cross-language fixture tests.
+- Exercise the on-demand complete TypeScript generator in an isolated temporary directory and run cross-language fixture tests without adding a maintained package or tracked default output.
 - Add the reviewed Desktop authority manifest.
 - Generate safe bridge DTOs, Rust constructors/projections, and `DesktopHostClient`.
 - Implement initialize, session list/get, run start/status, replay, subscribe, event delivery, and cancellation as the Desktop vertical slice.
 - Prove renderer import confinement and supervisor-owned field injection resistance.
 
-### Phase 4: cutover and external proof
+### Phase 4: atomic activation and external proof
 
-- Require major 2 for Desktop execution.
+- Require the generated major-1 identity, exact revision, and digest for Desktop execution.
 - Publish the bundled IDL with releases.
 - Build an independent Go or Python conformance client using only the public bundle and profile documentation.
 - Verify initialize, session list/get, run start/status, replay, stdio subscription, unary HTTP, typed errors, and reconnect recovery.
-- Retire v1 only under explicit release policy; never silently reinterpret v1 frames as major 2.
+- Activate the generated host, clients, bundle, projections, and fixtures together; old wire shapes remain unsupported.
 
 ## Validation Gates
 
@@ -773,9 +777,9 @@ The architecture is not implemented until CI proves:
 - no unresolved local references or mixed schema dialects;
 - exact method, event, feature, transport, scope, and error coverage, including one unique typed `x-starweaver-error-data` mapping per Error Object;
 - no implicit `any`, unbounded open object, language-specific type reference, or unsupported schema construct;
-- canonical fixtures validate and invalid fixtures fail in both generated Rust and TypeScript;
-- Rust and TypeScript encode canonical requests identically;
-- Rust and TypeScript decode results, errors, replay records, and notifications equivalently;
+- canonical fixtures validate and invalid fixtures fail in generated Rust and in ephemeral TypeScript output;
+- Rust and ephemeral TypeScript output encode canonical requests identically;
+- Rust and ephemeral TypeScript output decode results, errors, replay records, and notifications equivalently;
 - decimal-u64 min/max/canonical-form tests;
 - string-only client request-ID, protocol-error `id: null`, and object-required params tests;
 - typed initialize feature-negotiation, required-subset, ASCII-ID, and canonical-sort tests;
@@ -787,7 +791,7 @@ The architecture is not implemented until CI proves:
 - replay/live `EventDelivery` schema identity, multi-view cursor materialization over one stable event identity, fence handoff, and cursor recovery tests;
 - slow-consumer tests in which ordinary event capacity and terminal-frame delivery both fail, proving reserved control capacity or full transport close;
 - unsubscribe response-flush tests proving no later event for that subscription generation;
-- same-major compatibility comparison against the previous released bundle;
+- semantic IDL diff plus exact revision/digest drift checks, without an old-wire regression lane;
 - generated files are current and formatted;
 - `starweaver-rpc` passes in-process, stdio, HTTP, backpressure, malformed-frame, and shutdown-barrier tests;
 - Desktop imports only safe generated modules;
@@ -808,14 +812,34 @@ make test
 git diff --check
 ```
 
+## Implemented Evidence
+
+The atomic major-1 replacement is implemented as one release unit:
+
+- `protocol/host/` is the only structural wire authority and deterministically produces the self-contained public bundle plus generated manifest;
+- `starweaver-rpc-core` and `starweaver-rpc` use the generated types, validators, server trait, dispatcher, client correlation, and metadata without a handwritten fallback registry;
+- the Desktop generator emits the reviewed safe Rust/TypeScript bridge, opaque backend pagination, supervisor-owned request fields, recursive safe projection, and generated Tauri permissions;
+- `.github/workflows/protocol-ci.yml` requires source/profile validation, generated drift on Linux/macOS/Windows, Rust, ephemeral TypeScript, cross-language fixtures, host transports, Desktop, and independent-client jobs;
+- `.github/workflows/release.yml` packages the bundle, generated manifest, and split schema/tooling archive as checksummed GitHub Release assets; and
+- `tests/protocol-client/client.py` reads only the public bundle and proves stdio and HTTP initialize, session mutation/query, typed errors, run lifecycle, replay, live subscription, unsubscribe, reconnect cursor use, and shutdown.
+
+The local acceptance commands include:
+
+```text
+make rpc-idl-check
+make rpc-contracts-check
+make rpc-independent-client-check
+make desktop-check
+```
+
 ## Acceptance Criteria
 
 This target is complete when:
 
-01. one reviewed OpenRPC/JSON Schema source defines every major-2 structural contract;
+01. one reviewed `protocol/host/` OpenRPC/JSON Schema source defines every structural contract;
 02. a deterministic self-contained bundle ships with Starweaver releases;
-03. `starweaver-rpc-core` major-2 wire types, server trait, dispatcher, and validators are generated;
-04. `starweaver-rpc` implements the generated boundary without a competing handwritten major-2 registry;
+03. `starweaver-rpc-core` wire types, server trait, dispatcher, and validators are generated;
+04. `starweaver-rpc` implements the generated boundary without a competing handwritten or legacy registry;
 05. request IDs are string-only and all potentially 64-bit JSON values use canonical decimal strings;
 06. initialize explicitly negotiates required and supported features;
 07. every public error has one generated, typed, redacted machine-readable data schema registered in the bundled IDL;
@@ -824,6 +848,6 @@ This target is complete when:
 10. opaque delivery cursors bind family, scope, and event view, while replay and live delivery enforce identical feature/authorization eligibility;
 11. Desktop consumes only manifest-filtered safe TypeScript bridge/client bindings;
 12. the Rust supervisor retains transport, routing, request identity, idempotency, recovery, wire construction, projection, and authority;
-13. same-major breaking changes fail CI;
-14. stdio, HTTP, Rust, TypeScript, and Desktop conformance gates pass; and
+13. identity/revision/digest drift, stale generation, and unreviewed semantic changes fail CI;
+14. stdio, HTTP, Rust, ephemeral TypeScript generation, and Desktop conformance gates pass; and
 15. an independent language client can interoperate using only the published IDL and protocol-profile documentation.

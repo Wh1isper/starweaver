@@ -3,6 +3,7 @@
   "version": 1,
   "payload": {
     "deferred_id": "deferred-fixture",
+    "revision": 1,
     "session_id": "session-fixture",
     "run_id": "run-fixture",
     "tool_call_id": "tool-call-fixture",

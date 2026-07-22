@@ -13,7 +13,10 @@ use starweaver_core::SessionId;
 
 use crate::RunAdmissionLease;
 
-pub use contract::{SessionFilter, SessionStore};
+pub use contract::{
+    InteractionPage, InteractionPageKey, InteractionPageQuery, MAX_STABLE_PAGE_SIZE, SessionFilter,
+    SessionPage, SessionPageKey, SessionPageQuery, SessionStore,
+};
 pub use memory::InMemorySessionStore;
 
 /// Executor adapter that persists runtime checkpoints into a session store.

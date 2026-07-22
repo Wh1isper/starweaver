@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use serde_json::json;
 use starweaver_context::{AgentCheckpoint, AgentRunState, ResumableState};
 use starweaver_core::{
     AgentExecutionNode, AgentId, ConversationId, RunId, RunLifecycle, SessionId, SubagentAttemptId,
@@ -15,13 +16,96 @@ use starweaver_session::{
     DurableBackgroundSubagentDeliveryClaim, DurableBackgroundSubagentDeliveryRelease,
     DurableBackgroundSubagentDeliveryStatus, DurableBackgroundSubagentExecutionStatus,
     DurableBackgroundSubagentOwnerLease, DurableBackgroundSubagentResultRef,
-    DurableBackgroundSubagentRetentionStatus, HitlResumeAbortOutcome, HitlResumeClaim, InputPart,
-    LOCAL_SESSION_NAMESPACE, RelatedRunUpdate, RunEvidenceCommit, RunRecord, RunStatus,
-    RunTerminalError, RunTerminalProjection, SessionDeletionFence, SessionRecord, SessionStatus,
-    SessionStore, SessionStoreError, StreamPublicationTarget, StreamPublicationTargets,
-    ToolApprovalDecision,
+    DurableBackgroundSubagentRetentionStatus, DurableHostEventClass, DurableHostEventQuery,
+    DurableHostEventScope, HitlResumeAbortOutcome, HitlResumeClaim, InputPart,
+    LOCAL_SESSION_NAMESPACE, ManagedSessionPatch, PendingHostEventPublication, RelatedRunUpdate,
+    RunEvidenceCommit, RunRecord, RunStatus, RunTerminalError, RunTerminalProjection,
+    SessionDeletionFence, SessionPageQuery, SessionRecord, SessionStatus, SessionStore,
+    SessionStoreError, StreamPublicationTarget, StreamPublicationTargets, ToolApprovalDecision,
+    UpdateManagedSession,
 };
 use starweaver_stream::{ReplayEvent, ReplayEventKind, ReplayScope};
+
+pub async fn assert_stable_session_page_contract(store: Arc<dyn SessionStore>, suffix: &str) {
+    let tied_at = chrono::DateTime::parse_from_rfc3339("2099-07-21T12:00:00Z")
+        .expect("fixed page timestamp")
+        .with_timezone(&Utc);
+    let expected = ["e", "d", "c", "b", "a"]
+        .into_iter()
+        .map(|label| SessionId::from_string(format!("page-{label}-{suffix}")))
+        .collect::<Vec<_>>();
+    for session_id in expected.iter().rev() {
+        let mut session = SessionRecord::new(session_id.clone());
+        session.created_at = tied_at;
+        session.updated_at = tied_at;
+        store
+            .save_session(session)
+            .await
+            .expect("seed tied session page record");
+    }
+
+    assert!(SessionPageQuery::new(None, 0).is_err());
+    assert!(SessionPageQuery::new(None, 201).is_err());
+
+    let first = store
+        .list_session_page(SessionPageQuery::new(None, 2).expect("first query"))
+        .await
+        .expect("first session page");
+    assert_eq!(
+        first
+            .sessions
+            .iter()
+            .map(|session| session.session_id.clone())
+            .collect::<Vec<_>>(),
+        expected[..2]
+    );
+    assert!(first.has_more);
+
+    let second = store
+        .list_session_page(SessionPageQuery::new(first.next_key.clone(), 2).expect("second query"))
+        .await
+        .expect("second session page");
+    assert_eq!(
+        second
+            .sessions
+            .iter()
+            .map(|session| session.session_id.clone())
+            .collect::<Vec<_>>(),
+        expected[2..4]
+    );
+    assert!(second.has_more);
+
+    let third = store
+        .list_session_page(SessionPageQuery::new(second.next_key.clone(), 2).expect("third query"))
+        .await
+        .expect("third session page");
+    assert_eq!(
+        third
+            .sessions
+            .iter()
+            .map(|session| session.session_id.clone())
+            .collect::<Vec<_>>(),
+        expected[4..]
+    );
+    assert!(!third.has_more);
+
+    let exhausted = store
+        .list_session_page(SessionPageQuery::new(third.next_key.clone(), 2).expect("tail query"))
+        .await
+        .expect("exhausted session page");
+    assert!(exhausted.sessions.is_empty());
+    assert!(!exhausted.has_more);
+    assert_eq!(exhausted.next_key, third.next_key);
+
+    let collected = first
+        .sessions
+        .iter()
+        .chain(&second.sessions)
+        .chain(&third.sessions)
+        .map(|session| session.session_id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(collected, expected, "pages must have no gaps or duplicates");
+}
 
 pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix: &str) {
     let session_id = SessionId::from_string(format!("contract-session-{suffix}"));
@@ -56,6 +140,7 @@ pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix:
         .await
         .expect("load bootstrapped run");
     assert_eq!(source_run.status, RunStatus::Waiting);
+    assert_eq!(source_run.revision, 1, "checkpoint bootstrap starts at one");
     source_run.status = RunStatus::Waiting;
     let source_context = resumable_state(&session_id, &source_run_id, &conversation_id);
     let mut source_commit = RunEvidenceCommit::new(source_run, source_context);
@@ -66,10 +151,39 @@ pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix:
         .await
         .expect("commit source evidence");
     assert_eq!(committed_source.status, RunStatus::Waiting);
-    store
+    assert_eq!(
+        committed_source.revision, 2,
+        "one evidence transaction advances the run exactly once"
+    );
+    let replayed_source = store
         .commit_run_evidence(source_commit)
         .await
         .expect("exact source evidence retry");
+    assert_eq!(
+        replayed_source.revision, committed_source.revision,
+        "exact evidence retry must not advance revision"
+    );
+    let source_events = store
+        .pending_host_event_publications(500)
+        .await
+        .expect("authoritative source-run event outbox");
+    assert!(source_events.iter().any(|publication| {
+        publication.scope.run_id() == Some(&source_run_id)
+            && publication.event_class == DurableHostEventClass::RunChanged
+            && publication.projection["run"]["revision"]
+                == json!(committed_source.revision.to_string())
+    }));
+    assert_eq!(
+        source_events
+            .iter()
+            .filter(|publication| {
+                publication.scope.run_id() == Some(&source_run_id)
+                    && publication.event_class == DurableHostEventClass::RunChanged
+            })
+            .count(),
+        1,
+        "exact evidence retry must not duplicate host publication"
+    );
 
     for (label, status, terminal_error) in [
         ("failed-without-diagnostic", RunStatus::Failed, None),
@@ -146,6 +260,7 @@ pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix:
         .await
         .expect("normalize stale terminal projection during admission");
     assert_eq!(admitted.run.status, RunStatus::Queued);
+    assert_eq!(admitted.run.revision, 1, "new admission starts at one");
     assert_eq!(admitted.run.output_preview, None);
     assert_eq!(admitted.run.terminal_error, None);
     assert_eq!(
@@ -161,6 +276,35 @@ pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix:
         .expect("exact admission retry returns normalized durable receipt");
     assert!(admission_replay.idempotent_replay);
     assert_eq!(admission_replay.run, admitted.run);
+    let running = store
+        .update_run_status_fenced(&admitted.lease, RunStatus::Running, None)
+        .await
+        .expect("advance admitted run to running");
+    assert_eq!(running.revision, 2);
+    let running_retry = store
+        .update_run_status_fenced(&admitted.lease, RunStatus::Running, None)
+        .await
+        .expect("exact running transition retry");
+    assert_eq!(running_retry.revision, running.revision);
+    let finalized = store
+        .finalize_run_admission(
+            &admitted.lease,
+            RunTerminalProjection::completed(Some("normalized run complete".to_string())),
+        )
+        .await
+        .expect("finalize normalized admitted run");
+    assert_eq!(finalized.revision, 3);
+    assert_eq!(
+        store
+            .finalize_run_admission(
+                &admitted.lease,
+                RunTerminalProjection::completed(Some("normalized run complete".to_string())),
+            )
+            .await
+            .expect("exact finalization retry")
+            .revision,
+        finalized.revision
+    );
 
     for (label, status, code, message) in [
         (
@@ -205,10 +349,29 @@ pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix:
             .await
             .expect("load safely updated legacy run");
         assert_eq!(updated.status, status);
+        assert_eq!(updated.revision, 2);
         assert_eq!(updated.output_preview, None);
         assert_eq!(
             updated.terminal_error,
             Some(RunTerminalError::new(code, message))
+        );
+        store
+            .update_run_status(
+                &legacy_session_id,
+                &legacy_run_id,
+                status,
+                Some("different ignored retry text".to_string()),
+            )
+            .await
+            .expect("exact effective status retry");
+        assert_eq!(
+            store
+                .load_run(&legacy_session_id, &legacy_run_id)
+                .await
+                .expect("load retried legacy status")
+                .revision,
+            updated.revision,
+            "exact effective status retry must not advance revision"
         );
     }
 
@@ -348,14 +511,26 @@ pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix:
         .await
         .expect("atomic continuation commit");
     assert_eq!(committed_continuation.status, RunStatus::Completed);
+    assert_eq!(committed_continuation.revision, 1);
+    let transitioned_source = store
+        .load_run(&session_id, &source_run_id)
+        .await
+        .expect("load transitioned source");
+    assert_eq!(transitioned_source.status, RunStatus::Completed);
     assert_eq!(
-        store
-            .load_run(&session_id, &source_run_id)
-            .await
-            .expect("load transitioned source")
-            .status,
-        RunStatus::Completed
+        transitioned_source.revision,
+        committed_source.revision + 1,
+        "related source transition advances exactly once"
     );
+    let continuation_events = store
+        .pending_host_event_publications(500)
+        .await
+        .expect("continuation host publications");
+    assert!(continuation_events.iter().any(|publication| {
+        publication.scope.run_id() == Some(&continuation_run_id)
+            && publication.event_class == DurableHostEventClass::OutputAvailable
+            && publication.projection["preview"] == json!("continued")
+    }));
     store
         .commit_run_evidence(continuation_commit.clone())
         .await
@@ -367,6 +542,429 @@ pub async fn assert_session_store_contract(store: Arc<dyn SessionStore>, suffix:
         .commit_run_evidence(conflicting)
         .await
         .expect_err("conflicting evidence retry must fail");
+}
+
+pub async fn assert_durable_host_event_contract(store: Arc<dyn SessionStore>, suffix: &str) {
+    // Earlier contract phases intentionally author run-evidence events. Materialize that shared
+    // history before asserting the isolated ordering of this fixture's new outbox batch.
+    store
+        .materialize_host_event_publications(500)
+        .await
+        .expect("materialize prior run-evidence events");
+    let session_id = SessionId::from_string(format!("host-event-session-{suffix}"));
+    let run_id = RunId::from_string(format!("host-event-run-{suffix}"));
+    let other_session_id = SessionId::from_string(format!("host-event-other-{suffix}"));
+    let occurred_at = Utc::now();
+    let session_event = PendingHostEventPublication::new(
+        &format!("session-transition-{suffix}"),
+        0,
+        DurableHostEventScope::session(session_id.clone()),
+        DurableHostEventClass::SessionChanged,
+        json!({"revision": "1"}),
+        occurred_at + chrono::Duration::seconds(3),
+    )
+    .expect("session event");
+    let run_event = PendingHostEventPublication::new(
+        &format!("run-transition-{suffix}"),
+        0,
+        DurableHostEventScope::run(session_id.clone(), run_id.clone()),
+        DurableHostEventClass::RunChanged,
+        json!({"status": "running"}),
+        occurred_at + chrono::Duration::seconds(2),
+    )
+    .expect("run event");
+    let output_event = PendingHostEventPublication::new(
+        &format!("output-transition-{suffix}"),
+        0,
+        DurableHostEventScope::run(session_id.clone(), run_id.clone()),
+        DurableHostEventClass::OutputAvailable,
+        json!({"output_ref": format!("output-{suffix}"), "preview": "ready"}),
+        occurred_at + chrono::Duration::seconds(1),
+    )
+    .expect("output event");
+    let hidden_event = PendingHostEventPublication::new(
+        &format!("diagnostic-transition-{suffix}"),
+        0,
+        DurableHostEventScope::session(other_session_id),
+        DurableHostEventClass::Diagnostic,
+        json!({"level": "warning", "code": "other", "message": "hidden"}),
+        occurred_at,
+    )
+    .expect("diagnostic event");
+    let publications = vec![
+        session_event.clone(),
+        run_event.clone(),
+        output_event.clone(),
+        hidden_event,
+    ];
+
+    store
+        .enqueue_host_event_publications(publications.clone())
+        .await
+        .expect("enqueue host events");
+    store
+        .enqueue_host_event_publications(publications.clone())
+        .await
+        .expect("exact enqueue retry");
+    assert_eq!(
+        store
+            .pending_host_event_publications(500)
+            .await
+            .expect("pending host events"),
+        publications
+    );
+
+    let never_inserted = PendingHostEventPublication::new(
+        &format!("never-inserted-{suffix}"),
+        0,
+        DurableHostEventScope::Global,
+        DurableHostEventClass::Diagnostic,
+        json!({"level": "info", "code": "new", "message": "new"}),
+        occurred_at,
+    )
+    .expect("new event");
+    let mut conflicting = session_event.clone();
+    conflicting.projection = json!({"revision": "2"});
+    let error = store
+        .enqueue_host_event_publications(vec![never_inserted.clone(), conflicting])
+        .await
+        .expect_err("conflicting batch must fail atomically");
+    assert!(matches!(error, SessionStoreError::Conflict(_)));
+    assert!(
+        store
+            .pending_host_event_publications(500)
+            .await
+            .expect("unchanged outbox")
+            .iter()
+            .all(|pending| pending.publication_key != never_inserted.publication_key)
+    );
+
+    let materialized = store
+        .materialize_host_event_publications(500)
+        .await
+        .expect("materialize host events");
+    assert_eq!(materialized.len(), 4);
+    assert!(
+        materialized
+            .windows(2)
+            .all(|pair| pair[0].position < pair[1].position)
+    );
+    assert_eq!(
+        materialized
+            .iter()
+            .map(|record| record.event_id.as_str())
+            .collect::<Vec<_>>(),
+        publications
+            .iter()
+            .map(|publication| publication.event_id.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        store
+            .pending_host_event_publications(500)
+            .await
+            .expect("drained outbox")
+            .is_empty()
+    );
+    assert!(
+        store
+            .materialize_host_event_publications(500)
+            .await
+            .expect("repeat drain")
+            .is_empty()
+    );
+
+    let first_page = store
+        .replay_host_events(
+            DurableHostEventQuery::new(
+                DurableHostEventScope::session(session_id.clone()),
+                DurableHostEventClass::ALL,
+                None,
+                1,
+            )
+            .expect("first query"),
+        )
+        .await
+        .expect("first host event page");
+    assert_eq!(first_page.records.len(), 1);
+    assert!(first_page.has_more);
+    let second_page = store
+        .replay_host_events(
+            DurableHostEventQuery::new(
+                DurableHostEventScope::session(session_id.clone()),
+                DurableHostEventClass::ALL,
+                first_page.next_position,
+                10,
+            )
+            .expect("second query"),
+        )
+        .await
+        .expect("second host event page");
+    assert_eq!(second_page.records.len(), 2);
+    assert!(!second_page.has_more);
+    assert!(
+        second_page
+            .records
+            .iter()
+            .all(|record| record.scope.session_id() == Some(&session_id))
+    );
+
+    let run_page = store
+        .replay_host_events(
+            DurableHostEventQuery::new(
+                DurableHostEventScope::run(session_id.clone(), run_id),
+                [
+                    DurableHostEventClass::RunChanged,
+                    DurableHostEventClass::OutputAvailable,
+                ],
+                None,
+                10,
+            )
+            .expect("run query"),
+        )
+        .await
+        .expect("run page");
+    assert_eq!(run_page.records.len(), 2);
+
+    let session_changed_only = store
+        .replay_host_events(
+            DurableHostEventQuery::new(
+                DurableHostEventScope::Global,
+                [DurableHostEventClass::SessionChanged],
+                None,
+                10,
+            )
+            .expect("filtered query"),
+        )
+        .await
+        .expect("filtered page");
+    assert_eq!(session_changed_only.records.len(), 1);
+    assert!(!session_changed_only.has_more);
+    assert_eq!(
+        store
+            .host_event_fence(
+                &DurableHostEventScope::session(session_id),
+                &DurableHostEventClass::ALL,
+            )
+            .await
+            .expect("host event fence"),
+        second_page.next_position
+    );
+}
+
+pub async fn assert_atomic_session_host_event_contract(store: Arc<dyn SessionStore>, suffix: &str) {
+    let session_id = SessionId::from_string(format!("atomic-session-event-{suffix}"));
+    let create_time = Utc::now();
+    let create_event = PendingHostEventPublication::new(
+        &format!("atomic-session-create-{suffix}"),
+        0,
+        DurableHostEventScope::session(session_id.clone()),
+        DurableHostEventClass::SessionChanged,
+        json!({"kind": "session_changed", "phase": "created"}),
+        create_time,
+    )
+    .expect("create event");
+    let created = store
+        .create_session_idempotent_with_host_events(
+            SessionRecord::new(session_id.clone()),
+            &format!("atomic-session-create-key-{suffix}"),
+            "atomic-session-create-fingerprint",
+            vec![create_event.clone()],
+        )
+        .await
+        .expect("atomic session create");
+    assert_eq!(created.updated_at, create_time);
+    let replay = store
+        .create_session_idempotent_with_host_events(
+            SessionRecord::new(session_id.clone()),
+            &format!("atomic-session-create-key-{suffix}"),
+            "atomic-session-create-fingerprint",
+            vec![create_event.clone()],
+        )
+        .await
+        .expect("exact create replay");
+    assert_eq!(replay.session_id, created.session_id);
+    assert_eq!(replay.revision, created.revision);
+    assert_eq!(replay.updated_at, created.updated_at);
+
+    let rolled_back_id = SessionId::from_string(format!("atomic-session-rollback-{suffix}"));
+    let mut conflicting_event = create_event.clone();
+    conflicting_event.projection = json!({"kind": "session_changed", "phase": "forged"});
+    let conflict = store
+        .create_session_idempotent_with_host_events(
+            SessionRecord::new(rolled_back_id.clone()),
+            &format!("atomic-session-rollback-key-{suffix}"),
+            "atomic-session-rollback-fingerprint",
+            vec![conflicting_event],
+        )
+        .await
+        .expect_err("event conflict must roll back session create");
+    assert!(matches!(conflict, SessionStoreError::Conflict(_)));
+    assert!(matches!(
+        store.load_session(&rolled_back_id).await,
+        Err(SessionStoreError::NotFound(_))
+    ));
+    assert!(
+        store
+            .load_session_mutation_receipt(
+                LOCAL_SESSION_NAMESPACE,
+                &format!("atomic-session-rollback-key-{suffix}"),
+                "atomic-session-rollback-fingerprint",
+            )
+            .await
+            .expect("rollback receipt lookup")
+            .is_none()
+    );
+
+    let mut conflicting_update_event = create_event.clone();
+    conflicting_update_event.projection =
+        json!({"kind": "session_changed", "phase": "forged-update"});
+    let update_conflict = store
+        .update_managed_session_with_host_events(
+            UpdateManagedSession {
+                session_id: session_id.clone(),
+                expected_revision: created.revision,
+                patch: ManagedSessionPatch {
+                    title: Some(Some("must roll back".to_string())),
+                    ..ManagedSessionPatch::default()
+                },
+                idempotency_key: format!("atomic-session-update-rollback-key-{suffix}"),
+            },
+            "atomic-session-update-rollback-fingerprint",
+            vec![conflicting_update_event],
+        )
+        .await
+        .expect_err("event conflict must roll back session update");
+    assert!(matches!(update_conflict, SessionStoreError::Conflict(_)));
+    let unchanged = store
+        .load_session(&session_id)
+        .await
+        .expect("session after rolled-back update");
+    assert_eq!(unchanged.revision, created.revision);
+    assert!(unchanged.title.is_none());
+
+    let update_time = create_time + chrono::Duration::seconds(1);
+    let update_event = PendingHostEventPublication::new(
+        &format!("atomic-session-update-{suffix}"),
+        0,
+        DurableHostEventScope::session(session_id.clone()),
+        DurableHostEventClass::SessionChanged,
+        json!({"kind": "session_changed", "phase": "updated"}),
+        update_time,
+    )
+    .expect("update event");
+    let updated = store
+        .update_managed_session_with_host_events(
+            UpdateManagedSession {
+                session_id: session_id.clone(),
+                expected_revision: created.revision,
+                patch: ManagedSessionPatch {
+                    title: Some(Some("atomic title".to_string())),
+                    ..ManagedSessionPatch::default()
+                },
+                idempotency_key: format!("atomic-session-update-key-{suffix}"),
+            },
+            "atomic-session-update-fingerprint",
+            vec![update_event],
+        )
+        .await
+        .expect("atomic session update");
+    assert_eq!(updated.updated_at, update_time);
+    assert_eq!(updated.title.as_deref(), Some("atomic title"));
+
+    let delete_key = format!("atomic-session-delete-key-{suffix}");
+    let delete_fingerprint = "atomic-session-delete-fingerprint";
+    let fence_id = format!("atomic-session-delete-fence-{suffix}");
+    let fenced = store
+        .acquire_session_deletion_fence(
+            &session_id,
+            updated.revision,
+            &fence_id,
+            "contract-test",
+            &delete_key,
+            delete_fingerprint,
+        )
+        .await
+        .expect("acquire deletion fence");
+    let delete_time = update_time + chrono::Duration::seconds(1);
+    let delete_event = PendingHostEventPublication::new(
+        &format!("atomic-session-delete-{suffix}"),
+        0,
+        DurableHostEventScope::session(session_id.clone()),
+        DurableHostEventClass::SessionChanged,
+        json!({"kind": "session_changed", "phase": "deleted"}),
+        delete_time,
+    )
+    .expect("delete event");
+    let mut conflicting_delete_event = create_event;
+    conflicting_delete_event.projection =
+        json!({"kind": "session_changed", "phase": "forged-delete"});
+    let delete_conflict = store
+        .tombstone_session_idempotent_with_host_events(
+            &session_id,
+            &fence_id,
+            &delete_key,
+            delete_fingerprint,
+            vec![conflicting_delete_event],
+        )
+        .await
+        .expect_err("event conflict must roll back tombstone");
+    assert!(matches!(delete_conflict, SessionStoreError::Conflict(_)));
+    let still_fenced = store
+        .load_session(&session_id)
+        .await
+        .expect("session after rolled-back tombstone");
+    assert_eq!(still_fenced.status, SessionStatus::Active);
+    assert!(matches!(
+        still_fenced.deletion_fence,
+        SessionDeletionFence::Deleting { .. }
+    ));
+
+    let deleted = store
+        .tombstone_session_idempotent_with_host_events(
+            &session_id,
+            &fence_id,
+            &delete_key,
+            delete_fingerprint,
+            vec![delete_event.clone()],
+        )
+        .await
+        .expect("atomic session tombstone");
+    assert_eq!(deleted.status, SessionStatus::Deleted);
+    assert_eq!(deleted.updated_at, delete_time);
+    assert_eq!(deleted.revision, fenced.revision.saturating_add(1));
+    assert_eq!(
+        store
+            .load_session_mutation_receipt(
+                LOCAL_SESSION_NAMESPACE,
+                &delete_key,
+                delete_fingerprint,
+            )
+            .await
+            .expect("final deletion receipt"),
+        Some(deleted.clone())
+    );
+    assert_eq!(
+        store
+            .tombstone_session_idempotent_with_host_events(
+                &session_id,
+                &fence_id,
+                &delete_key,
+                delete_fingerprint,
+                vec![delete_event],
+            )
+            .await
+            .expect("exact tombstone replay"),
+        deleted
+    );
+    assert_eq!(
+        store
+            .pending_host_event_publications(500)
+            .await
+            .expect("atomic session events")
+            .len(),
+        3
+    );
 }
 
 pub async fn assert_approval_reviewed_arguments_immutable_contract(
@@ -660,13 +1258,14 @@ pub async fn assert_atomic_hitl_replacement_admission_contract(
             .expect("abort admitted replacement before the effect fence"),
         HitlResumeAbortOutcome::AbortedBeforeEffect
     );
+    let aborted_replacement = store
+        .load_run(&session_id, &continuation_run_id)
+        .await
+        .expect("load aborted replacement");
+    assert_eq!(aborted_replacement.status, RunStatus::Failed);
     assert_eq!(
-        store
-            .load_run(&session_id, &continuation_run_id)
-            .await
-            .expect("load aborted replacement")
-            .status,
-        RunStatus::Failed
+        aborted_replacement.revision, 2,
+        "pre-effect abort advances the admitted run exactly once"
     );
     assert_eq!(
         store
@@ -818,6 +1417,31 @@ pub async fn assert_started_hitl_orphan_reconciliation_contract(
         assert_eq!(
             starweaver_session::ContinuationEffectState::from_metadata(&run.metadata).unwrap(),
             Some(starweaver_session::ContinuationEffectState::indeterminate())
+        );
+    }
+    let publications = store
+        .pending_host_event_publications(100)
+        .await
+        .expect("load atomic orphan host publications");
+    for run_id in [&replacement_run_id, &source_run_id] {
+        let scope = DurableHostEventScope::run(session_id.clone(), run_id.clone());
+        let output_index = publications
+            .iter()
+            .position(|publication| {
+                publication.scope == scope
+                    && publication.event_class == DurableHostEventClass::OutputAvailable
+            })
+            .expect("orphan terminalization publishes output availability");
+        let run_index = publications
+            .iter()
+            .position(|publication| {
+                publication.scope == scope
+                    && publication.event_class == DurableHostEventClass::RunChanged
+            })
+            .expect("orphan terminalization publishes run change");
+        assert!(
+            output_index < run_index,
+            "output availability must precede the terminal run event"
         );
     }
     assert_eq!(
@@ -1120,6 +1744,19 @@ pub async fn assert_terminal_evidence_admission_cleanup_contract(
         Some(failed_projection.clone())
     );
     assert_eq!(failed.output_preview, None);
+    let failed_scope = DurableHostEventScope::run(failed.session_id.clone(), failed.run_id.clone());
+    assert!(
+        store
+            .pending_host_event_publications(100)
+            .await
+            .expect("load direct-finalization host publications")
+            .iter()
+            .any(|publication| {
+                publication.scope == failed_scope
+                    && publication.event_class == DurableHostEventClass::RunChanged
+            }),
+        "direct terminal finalization must atomically publish run_changed"
+    );
     assert_eq!(
         store
             .finalize_run_admission(&failed_receipt.lease, failed_projection)

@@ -1,6 +1,6 @@
 # Authentication, Interaction, and Security
 
-Status: accepted architecture baseline; implementation planned
+Status: accepted architecture baseline; renderer/stdio/local-child controls implemented; OAuth, updater, sandbox, and SSH controls planned
 
 Desktop introduces a privileged local UI around filesystem, shell, model, and durable-control capabilities. Its security boundary is the Desktop backend plus the workspace-scoped RPC child, not the renderer.
 
@@ -85,13 +85,13 @@ An approval includes durable identity, expected revision/fence, actor, reason, n
 
 ## Event Authorization
 
-Method-level authority for `events.replay` or `events.subscribe` is not sufficient by itself. Every major-2 `HostEvent` variant declares required feature and authorization scopes. The server evaluates those declarations against the typed `EventView` and caller authority identically for replay catch-up and live delivery.
+Method-level authority for `events.replay` or `events.subscribe` is not sufficient by itself. The canonical closed `x-starweaver-event-classes` IDL registry binds every generated `HostEvent` variant to its exact schema, required feature, and authorization scopes; generator lint proves it is complete against both `HostEvent.oneOf` and all event profiles. Rust and complete TypeScript metadata are generated from that registry. The Desktop backend and server consume the generated admission facts rather than maintaining a renderer-controlled or handwritten competing table, and evaluate them against the typed `EventView` and caller authority identically for replay catch-up and live delivery.
 
 A versioned event-view profile is admitted only when the caller is authorized for every event class it selects. Events outside that profile belong to a separate logical projection stream and do not consume its cursor positions or pagination, so there is no per-record silent authorization filtering. Approval/deferred profiles require `approval`; execution-changing or run-control profiles require `run`; no generic read/event scope silently grants either. Authority or negotiated-feature changes invalidate the view and close active subscriptions with a typed, non-disclosing reason.
 
 ## Clarifying Questions
 
-Clarifying questions require a typed answer contract. Marking an approval `approved` without persisting normalized answers is invalid.
+Clarifying questions require a typed answer contract. Marking an approval `approved` without persisting normalized answers is invalid. The host summary retains the original one-to-four questions with header, options, and `multiSelect`; `clarification.resolve` submits closed answer items keyed by exact question text with explicit selected-option labels and optional free text, plus an optional whole-request response. Resolution is fenced by `expectedRevision` and a supervisor-owned idempotency key.
 
 The resolution path must:
 
@@ -155,7 +155,7 @@ Required controls:
 - successful unsubscribe response flush is a barrier after which no event from that subscription generation may be written; and
 - process-tree or SSH-channel termination on forced shutdown.
 
-The Desktop backend avoids long blocking calls on the command connection. Major 2 uses non-blocking `run.start` plus durable subscription/replay and does not expose unbounded `run.await`; concurrent dispatch still requires an ordered response writer, and long environment probes cannot block responsive stop/steer/shutdown behavior.
+The Desktop backend avoids long blocking calls on the command connection. The generated contract uses non-blocking `run.start` plus durable subscription/replay and does not expose unbounded `run.await`; concurrent dispatch still requires an ordered response writer, and long environment probes cannot block responsive stop/steer/shutdown behavior.
 
 ## RPC Runtime Safety Prerequisites
 
@@ -203,7 +203,7 @@ Secret scrub tests include sentinels in:
 - environment endpoint metadata;
 - child stderr;
 - subscription failure notifications;
-- active major-2 `host.event` deliveries whose `delivery.record.event.kind` is `run_status_changed` or a typed diagnostic variant;
+- active generated `host.event` deliveries whose `delivery.record.event.kind` is `run_status_changed` or a typed diagnostic variant;
 - updater URLs and headers.
 
 Diagnostic export requires explicit user action, previews included files, excludes OAuth/token files and the session database by default, and redacts home/workspace paths when possible.

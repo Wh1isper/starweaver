@@ -123,6 +123,34 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _session_page_timestamp(value: object, field: str) -> datetime:
+    if not isinstance(value, str):
+        raise StateError(f"session page {field} must be a timestamp string")
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise StateError(f"session page {field} is invalid") from error
+
+
+def _session_page_key(record: Mapping[str, Any]) -> tuple[datetime, str]:
+    session_id = record.get("session_id")
+    if not isinstance(session_id, str):
+        raise StateError("session page record is missing its stable identity")
+    return _session_page_timestamp(record.get("updated_at"), "record updated_at"), session_id
+
+
+def _session_page_boundary(query: Mapping[str, Any]) -> tuple[datetime, str] | None:
+    after = query.get("after")
+    if after is None:
+        return None
+    if not isinstance(after, Mapping):
+        raise StateError("session page boundary must be an object or null")
+    session_id = after.get("sessionId")
+    if not isinstance(session_id, str):
+        raise StateError("session page boundary is missing its stable identity")
+    return _session_page_timestamp(after.get("updatedAt"), "boundary updatedAt"), session_id
+
+
 def _copy(value: Mapping[str, Any]) -> JsonObject:
     return copy.deepcopy(dict(value))
 
@@ -937,6 +965,36 @@ class SessionStore:
         filter: Mapping[str, Any] | None = None,  # noqa: A002
     ) -> list[SessionRecord]:
         raise NotImplementedError
+
+    async def list_session_page(self, query: Mapping[str, Any]) -> JsonObject:
+        """Return one stable updated-time/session-identity keyset page for native callers."""
+
+        limit = query.get("limit")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+            raise StateError("session page limit must be between 1 and 200")
+        after = query.get("after")
+        after_key = _session_page_boundary(query)
+        records = [record.to_dict() for record in await self.list_sessions()]
+        records.sort(key=_session_page_key, reverse=True)
+        if after_key is not None:
+            records = [record for record in records if _session_page_key(record) < after_key]
+
+        has_more = len(records) > limit
+        sessions = records[:limit]
+        if sessions:
+            _, session_id = _session_page_key(sessions[-1])
+            next_key: JsonObject | None = {
+                "updatedAt": str(sessions[-1]["updated_at"]),
+                "sessionId": session_id,
+            }
+        elif isinstance(after, Mapping):
+            next_key = {
+                "updatedAt": str(after["updatedAt"]),
+                "sessionId": str(after["sessionId"]),
+            }
+        else:
+            next_key = None
+        return {"sessions": sessions, "nextKey": next_key, "hasMore": has_more}
 
     async def update_session_status(self, session_id: str, status: SessionStatus | str) -> None:
         record = await self.load_session(session_id)

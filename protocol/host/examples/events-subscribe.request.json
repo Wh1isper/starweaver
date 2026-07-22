@@ -1,0 +1,15 @@
+{
+  "id": "req_4",
+  "jsonrpc": "2.0",
+  "method": "events.subscribe",
+  "params": {
+    "view": {
+      "optionalFeatures": [],
+      "profile": "conversation.v1",
+      "scope": {
+        "kind": "session",
+        "sessionId": "session_example"
+      }
+    }
+  }
+}

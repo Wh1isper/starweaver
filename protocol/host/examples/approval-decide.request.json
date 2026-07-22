@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "id": "req_approval_decide",
+  "method": "approval.decide",
+  "params": {
+    "approvalId": "approval_example",
+    "decision": "approved",
+    "expectedRevision": "2",
+    "idempotencyKey": "approval-decide-example",
+    "reason": "Reviewed"
+  }
+}

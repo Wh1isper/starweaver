@@ -737,3 +737,89 @@ async fn deletion_fence_blocks_continuations_and_new_admission() {
         .unwrap();
     assert_eq!(deleted.status, SessionStatus::Deleted);
 }
+
+#[tokio::test]
+async fn in_memory_run_control_admission_is_atomic_idempotent_and_fenced() {
+    let store = InMemorySessionStore::new();
+    let session_id = SessionId::from_string("memory-control-session");
+    store
+        .save_session(SessionRecord::new(session_id.clone()))
+        .await
+        .unwrap();
+    let admission = store
+        .acquire_run_admission(AcquireRunAdmission {
+            run: RunRecord::new(
+                session_id,
+                RunId::from_string("memory-control-run"),
+                ConversationId::new(),
+            ),
+            namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+            host_instance_id: "host-memory".to_string(),
+            admission_id: "admission-memory".to_string(),
+            lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(1),
+            idempotency_key: "start-memory".to_string(),
+            command_fingerprint: "sha256:start-memory".to_string(),
+            replaces_waiting_run_id: None,
+            hitl_resume_claim_id: None,
+        })
+        .await
+        .unwrap();
+    let operation_id = deterministic_run_control_operation_id(
+        "interrupt",
+        "authority-memory",
+        &admission.lease.target,
+        "interrupt-key",
+        "sha256:interrupt-memory",
+    );
+    let command = AdmitRunControl {
+        lease: admission.lease.clone(),
+        authority_binding: "authority-memory".to_string(),
+        receipt_id: deterministic_run_control_receipt_id(&operation_id),
+        operation_id: operation_id.clone(),
+        idempotency_key: "interrupt-key".to_string(),
+        command_fingerprint: "sha256:interrupt-memory".to_string(),
+        effect: DurableRunControlEffect::Interrupt {
+            reason: Some("requested".to_string()),
+        },
+        created_at: chrono::Utc::now(),
+    };
+    let pending = store.admit_run_control(command.clone()).await.unwrap();
+    assert_eq!(pending.status, DurableRunControlStatus::Pending);
+    assert_eq!(store.admit_run_control(command).await.unwrap(), pending);
+    assert_eq!(
+        store
+            .list_run_control_intents(
+                &admission.lease.target,
+                &[DurableRunControlStatus::Pending],
+                10,
+            )
+            .await
+            .unwrap(),
+        vec![pending.clone()]
+    );
+    let delivered = store
+        .advance_run_control_intent(
+            &admission.lease,
+            &operation_id,
+            DurableRunControlStatus::Pending,
+            DurableRunControlStatus::Delivered,
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(delivered.status, DurableRunControlStatus::Delivered);
+    let mut stale = admission.lease;
+    stale.fencing_generation += 1;
+    assert!(matches!(
+        store
+            .advance_run_control_intent(
+                &stale,
+                &operation_id,
+                DurableRunControlStatus::Delivered,
+                DurableRunControlStatus::Consumed,
+                chrono::Utc::now(),
+            )
+            .await,
+        Err(SessionStoreError::StaleFence(_))
+    ));
+}

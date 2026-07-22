@@ -12,6 +12,11 @@ mod contract;
 async fn sqlite_store_satisfies_shared_session_store_contract() {
     let store: Arc<dyn SessionStore> =
         Arc::new(SqliteSessionStore::in_memory().expect("in-memory SQLite store"));
+    Box::pin(contract::assert_stable_session_page_contract(
+        store.clone(),
+        "sqlite",
+    ))
+    .await;
     Box::pin(contract::assert_session_store_contract(
         store.clone(),
         "sqlite",
@@ -43,6 +48,16 @@ async fn sqlite_store_satisfies_shared_session_store_contract() {
     Box::pin(
         contract::assert_terminal_evidence_admission_cleanup_contract(store.clone(), "sqlite"),
     )
+    .await;
+    Box::pin(contract::assert_durable_host_event_contract(
+        store.clone(),
+        "sqlite",
+    ))
+    .await;
+    Box::pin(contract::assert_atomic_session_host_event_contract(
+        store.clone(),
+        "sqlite",
+    ))
     .await;
     Box::pin(contract::assert_background_subagent_contract(
         store, "sqlite",

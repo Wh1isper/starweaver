@@ -1,21 +1,4 @@
 {
-  "name": "@starweaver/desktop",
-  "private": true,
-  "version": "0.9.0",
-  "type": "module",
-  "scripts": {
-    "build": "corepack pnpm typecheck && vite build",
-    "check": "corepack pnpm format:check && corepack pnpm lint && corepack pnpm typecheck && corepack pnpm test && corepack pnpm build",
-    "dev": "vite",
-    "format": "biome format --write .",
-    "format:check": "biome format .",
-    "lint": "biome lint .",
-    "preview": "vite preview",
-    "tauri": "tauri",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc --noEmit --pretty false -p tsconfig.json && tsc --noEmit --pretty false -p tsconfig.node.json"
-  },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
     "react": "19.2.7",
@@ -34,5 +17,22 @@
     "typescript": "7.0.2",
     "vite": "8.1.5",
     "vitest": "4.1.10"
-  }
+  },
+  "name": "@starweaver/desktop",
+  "private": true,
+  "scripts": {
+    "build": "corepack pnpm typecheck && vite build",
+    "check": "corepack pnpm format:check && corepack pnpm lint && corepack pnpm typecheck && corepack pnpm test && corepack pnpm build",
+    "dev": "vite",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit --pretty false -p tsconfig.json && tsc --noEmit --pretty false -p tsconfig.node.json"
+  },
+  "type": "module",
+  "version": "0.10.0"
 }

@@ -1,0 +1,401 @@
+{
+  "components": {
+    "schemas": {
+      "ApprovalId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "AttachmentId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "ClarificationId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "ClientInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version"
+        ],
+        "type": "object"
+      },
+      "DecimalU64": {
+        "maxLength": 20,
+        "minLength": 1,
+        "pattern": "^(0|[1-9][0-9]{0,19})$",
+        "type": "string",
+        "x-starweaver-decimal": {
+          "kind": "u64",
+          "maximum": "18446744073709551615",
+          "minimum": "0"
+        }
+      },
+      "DeferredId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "EmptyParams": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "EmptyResult": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "EnvironmentId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "EventId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "GlobalResourceScope": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "global",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "HostEventCursor": {
+        "maxLength": 1024,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9_-]+$",
+        "type": "string"
+      },
+      "IdempotencyKey": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "InputPart": {
+        "discriminator": {
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TextInputPart"
+          },
+          {
+            "$ref": "#/components/schemas/ResourceInputPart"
+          }
+        ]
+      },
+      "MutationReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "fingerprint": {
+            "$ref": "#/components/schemas/SchemaDigest"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "receiptId": {
+            "$ref": "#/components/schemas/ReceiptId"
+          },
+          "replayed": {
+            "type": "boolean"
+          },
+          "operation": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "state": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "targetRef": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "receiptId",
+          "idempotencyKey",
+          "fingerprint",
+          "operation",
+          "state",
+          "targetRef",
+          "reconciliationRequired",
+          "replayed"
+        ],
+        "type": "object"
+      },
+      "PageInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "hasMore": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "oneOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "hasMore"
+        ],
+        "type": "object"
+      },
+      "ProtocolIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "major": {
+            "const": 1,
+            "type": "integer"
+          },
+          "name": {
+            "const": "starweaver.host",
+            "type": "string"
+          },
+          "revision": {
+            "maxLength": 32,
+            "minLength": 1,
+            "type": "string"
+          },
+          "schemaDigest": {
+            "$ref": "#/components/schemas/SchemaDigest"
+          }
+        },
+        "required": [
+          "name",
+          "major",
+          "revision",
+          "schemaDigest"
+        ],
+        "type": "object"
+      },
+      "ReceiptId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "RequestId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^.*\\S.*$",
+        "type": "string"
+      },
+      "ResourceInputPart": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "resource",
+            "type": "string"
+          },
+          "mediaType": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "uri": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "uri",
+          "mediaType"
+        ],
+        "type": "object"
+      },
+      "ResourceScope": {
+        "discriminator": {
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/GlobalResourceScope"
+          },
+          {
+            "$ref": "#/components/schemas/SessionResourceScope"
+          },
+          {
+            "$ref": "#/components/schemas/RunResourceScope"
+          }
+        ]
+      },
+      "RunId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "RunResourceScope": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "run",
+            "type": "string"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "kind",
+          "sessionId",
+          "runId"
+        ],
+        "type": "object"
+      },
+      "SchemaDigest": {
+        "maxLength": 71,
+        "minLength": 71,
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "ServerInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version"
+        ],
+        "type": "object"
+      },
+      "SessionId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "SessionResourceScope": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "session",
+            "type": "string"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "kind",
+          "sessionId"
+        ],
+        "type": "object"
+      },
+      "SubscriptionId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "TextInputPart": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "text",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "text"
+        ],
+        "type": "object"
+      },
+      "Timestamp": {
+        "format": "date-time",
+        "maxLength": 40,
+        "minLength": 1,
+        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$",
+        "type": "string"
+      },
+      "JsonObject": {
+        "additionalProperties": true,
+        "type": "object",
+        "x-starweaver-json-value": "object"
+      }
+    }
+  }
+}

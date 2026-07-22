@@ -12,9 +12,9 @@ use starweaver_stream::{
 };
 
 use crate::{
-    ApprovalRecord, DeferredToolRecord, RunRecord, RunStatus, RunTerminalError,
-    RunTerminalProjection, SessionStoreError, SessionStoreResult, StreamCursorRef,
-    StreamPublicationTargets,
+    ApprovalRecord, DeferredToolRecord, PendingHostEventPublication, RunRecord, RunStatus,
+    RunTerminalError, RunTerminalProjection, SessionStoreError, SessionStoreResult,
+    StreamCursorRef, StreamPublicationTargets,
 };
 
 /// Atomic transition applied to an existing run together with a new run evidence commit.
@@ -91,6 +91,9 @@ pub struct RunEvidenceCommit {
     pub display_snapshot: Option<ReplaySnapshot>,
     /// External sink families transactionally enqueued with this evidence.
     pub publication_targets: StreamPublicationTargets,
+    /// View-independent host events enqueued atomically with this evidence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_event_publications: Vec<PendingHostEventPublication>,
     /// Existing runs transitioned atomically with this commit.
     pub related_run_updates: Vec<RelatedRunUpdate>,
 }
@@ -117,6 +120,7 @@ impl RunEvidenceCommit {
             replay_events: Vec::new(),
             display_snapshot: None,
             publication_targets: StreamPublicationTargets::new(false, false),
+            host_event_publications: Vec::new(),
             related_run_updates: Vec::new(),
         }
     }
@@ -143,6 +147,7 @@ impl RunEvidenceCommit {
     pub fn validate_structure(&self) -> SessionStoreResult<()> {
         validate_primary_identity(self)?;
         validate_stream_evidence(self)?;
+        validate_host_event_publications(self)?;
         validate_related_run_evidence(self)
     }
 
@@ -315,6 +320,54 @@ fn validate_stream_evidence(commit: &RunEvidenceCommit) -> SessionStoreResult<()
     }
     if let Some(environment) = commit.environment_state.as_ref() {
         validate_environment_envelope(environment)?;
+    }
+    Ok(())
+}
+
+fn validate_host_event_publications(commit: &RunEvidenceCommit) -> SessionStoreResult<()> {
+    let mut publication_keys = BTreeSet::new();
+    let mut event_ids = BTreeSet::new();
+    for publication in &commit.host_event_publications {
+        publication.validate()?;
+        if !publication_keys.insert(publication.publication_key.as_str())
+            || !event_ids.insert(publication.event_id.as_str())
+        {
+            return Err(SessionStoreError::Failed(format!(
+                "duplicate host event publication for run {}",
+                commit.run.run_id.as_str()
+            )));
+        }
+        match &publication.scope {
+            crate::DurableHostEventScope::Global => {
+                return Err(SessionStoreError::Failed(format!(
+                    "run evidence {} cannot publish a global host event",
+                    commit.run.run_id.as_str()
+                )));
+            }
+            crate::DurableHostEventScope::Session { session_id }
+                if session_id != &commit.run.session_id =>
+            {
+                return Err(SessionStoreError::Failed(format!(
+                    "host event session scope mismatch for run {}",
+                    commit.run.run_id.as_str()
+                )));
+            }
+            crate::DurableHostEventScope::Run { session_id, run_id }
+                if session_id != &commit.run.session_id
+                    || (run_id != &commit.run.run_id
+                        && !commit
+                            .related_run_updates
+                            .iter()
+                            .any(|update| &update.run_id == run_id)) =>
+            {
+                return Err(SessionStoreError::Failed(format!(
+                    "host event run scope mismatch for run {}",
+                    commit.run.run_id.as_str()
+                )));
+            }
+            crate::DurableHostEventScope::Session { .. }
+            | crate::DurableHostEventScope::Run { .. } => {}
+        }
     }
     Ok(())
 }
