@@ -73,6 +73,7 @@ fn check_native_default_paths(cli: &Path, rpc: &Path, root: &Path) -> Result<(),
     cli_diagnostics_command
         .current_dir(&workspace)
         .env_remove("STARWEAVER_CONFIG_DIR")
+        .env_remove("STARWEAVER_PROJECT_DIR")
         .env_remove("STARWEAVER_SESSION_DB")
         .env_remove("STARWEAVER_STORE")
         .arg("diagnostics");
@@ -89,6 +90,7 @@ fn check_native_default_paths(cli: &Path, rpc: &Path, root: &Path) -> Result<(),
     rpc_command
         .current_dir(&workspace)
         .env_remove("STARWEAVER_CONFIG_DIR")
+        .env_remove("STARWEAVER_RPC_CONFIG")
         .env_remove("STARWEAVER_SESSION_DB")
         .env_remove("STARWEAVER_STORE")
         .arg("stdio")
@@ -111,18 +113,20 @@ fn check_native_default_paths(cli: &Path, rpc: &Path, root: &Path) -> Result<(),
     let session_id = required_json_string(&created["result"]["session"], "sessionId")?;
     host.shutdown()?;
 
-    let mut cli_list_command = Command::new(cli);
-    cli_list_command
+    let mut cli_show_command = Command::new(cli);
+    cli_show_command
         .current_dir(&workspace)
         .env_remove("STARWEAVER_CONFIG_DIR")
+        .env_remove("STARWEAVER_PROJECT_DIR")
         .env_remove("STARWEAVER_SESSION_DB")
         .env_remove("STARWEAVER_STORE")
-        .args(["session", "list", "--output", "json"]);
-    set_native_home(&mut cli_list_command, &home);
-    let cli_sessions = run_capture(&mut cli_list_command)?;
-    if !cli_sessions.contains(&session_id) {
+        .args(["session", "show", session_id.as_str(), "--output", "json"]);
+    set_native_home(&mut cli_show_command, &home);
+    let cli_session = run_capture(&mut cli_show_command)?;
+    let cli_session = parse_single_json(&cli_session, "CLI native-default session show")?;
+    if cli_session["session"]["session_id"] != session_id {
         return Err(format!(
-            "CLI and generated RPC did not share native default storage at {}: {cli_sessions}",
+            "CLI did not load the RPC-created session from native default storage at {}: {cli_session}",
             expected.display()
         ));
     }
