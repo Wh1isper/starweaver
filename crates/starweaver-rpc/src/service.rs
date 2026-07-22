@@ -5200,10 +5200,18 @@ mod generated_service_tests {
             )
             .await
             .unwrap();
-            assert_eq!(after_mount.deliveries.len(), 1);
             assert_eq!(
-                serde_json::to_value(&after_mount.deliveries[0].record.event).unwrap()["kind"],
-                "environment_changed"
+                after_mount
+                    .deliveries
+                    .iter()
+                    .filter(|delivery| {
+                        matches!(
+                            &delivery.record.event,
+                            host::HostEvent::EnvironmentChangedEvent(_)
+                        )
+                    })
+                    .count(),
+                1
             );
 
             let unmount_params: host::EnvironmentUnmountParams = typed(json!({
@@ -5242,10 +5250,22 @@ mod generated_service_tests {
             )
             .await
             .unwrap();
-            assert_eq!(after_unmount.deliveries.len(), 2);
+            // The run can complete concurrently, and operations.v1 legitimately includes
+            // RunChanged events. Idempotency here is proven by exactly two environment changes.
+            let after_unmount_environment = after_unmount
+                .deliveries
+                .iter()
+                .filter(|delivery| {
+                    matches!(
+                        &delivery.record.event,
+                        host::HostEvent::EnvironmentChangedEvent(_)
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(after_unmount_environment.len(), 2);
             assert_ne!(
-                after_unmount.deliveries[0].cursor,
-                after_unmount.deliveries[1].cursor
+                after_unmount_environment[0].cursor,
+                after_unmount_environment[1].cursor
             );
 
             let detach_params: host::EnvironmentDetachParams = typed(json!({
