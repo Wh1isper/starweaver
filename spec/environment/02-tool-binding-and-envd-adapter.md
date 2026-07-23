@@ -63,6 +63,7 @@ pub struct EnvironmentMount {
 pub struct CompositeEnvironmentProvider {
     mounts: Vec<EnvironmentMount>,
     process_routes: Mutex<BTreeMap<String, String>>,
+    scratch_routes: Mutex<BTreeMap<String, ScratchRoute>>,
 }
 ```
 
@@ -234,24 +235,32 @@ and remote RPC mode on the same semantic path. It should not require a mandatory
 dependency on `starweaver-envd-client`; callers that choose remote envd can
 construct an `EnvdRpcClient` and pass it as the service implementation.
 
+Scratch stays provider-owned across this adapter. `file_write_scratch` returns a
+provider-visible path that the same attachment must accept through ordinary file
+operations. A composite qualifies relative results under the owning mount and
+records one stable absolute scratch scope per owning mount. Later results must
+remain within that scope. This keeps file routing reliable when an envd adapter
+has no synchronous shell review context or when multiple mounts have overlapping
+authorities without creating per-file routing state.
+
 ## Method Mapping
 
-| SDK provider method | Envd service method         |
-| ------------------- | --------------------------- |
-| `read_text`         | `file_read`                 |
-| `read_bytes`        | `file_read` with byte range |
-| `write_text`        | `file_write`                |
-| `create_dir`        | file mutation method        |
-| `delete_path`       | file mutation method        |
-| `move_path`         | file mutation method        |
-| `copy_path`         | file mutation method        |
-| `write_tmp_file`    | scratch/tmp write method    |
-| `stat`              | `file_stat`                 |
-| `list`              | `file_list`                 |
-| `glob`              | `file_glob`                 |
-| `grep`              | `file_grep`                 |
-| `run_shell`         | `command_run`               |
-| `export_state`      | `export_snapshot`           |
+| SDK provider method  | Envd service method         |
+| -------------------- | --------------------------- |
+| `read_text`          | `file_read`                 |
+| `read_bytes`         | `file_read` with byte range |
+| `write_text`         | `file_write`                |
+| `create_dir`         | file mutation method        |
+| `delete_path`        | file mutation method        |
+| `move_path`          | file mutation method        |
+| `copy_path`          | file mutation method        |
+| `write_scratch_file` | `file_write_scratch`        |
+| `stat`               | `file_stat`                 |
+| `list`               | `file_list`                 |
+| `glob`               | `file_glob`                 |
+| `grep`               | `file_grep`                 |
+| `run_shell`          | `command_run`               |
+| `export_state`       | `export_snapshot`           |
 
 Process mapping:
 

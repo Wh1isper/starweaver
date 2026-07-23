@@ -281,6 +281,48 @@ fn path_glob_matches_ripgrep_style_patterns() {
     assert!(leading_current_dir.is_match("src/lib.rs"));
 }
 
+#[test]
+fn requested_paths_reject_traversal_with_either_separator() {
+    for path in [
+        "../outside",
+        "..\\outside",
+        "nested/../outside",
+        "nested\\..\\outside",
+    ] {
+        assert!(matches!(
+            normalize_requested_path(path),
+            Err(EnvironmentError::InvalidRequest(_))
+        ));
+    }
+    assert_eq!(
+        normalize_requested_path("nested\\file.txt").unwrap(),
+        "nested/file.txt"
+    );
+}
+
+#[test]
+fn windows_shell_context_path_matching_is_case_insensitive() {
+    let context = ShellReviewEnvironmentContext {
+        default_cwd: Some("C:/Users/Agent/Workspace".to_string()),
+        allowed_paths: vec!["//SERVER/Share/Data".to_string()],
+        shell_platform: Some("windows".to_string()),
+        shell_executable: None,
+    };
+
+    assert!(provider_visible_path_allowed_by_context(
+        &context,
+        "c:/users/agent/workspace/src/lib.rs"
+    ));
+    assert!(provider_visible_path_allowed_by_context(
+        &context,
+        "//server/share/data/report.txt"
+    ));
+    assert!(!provider_visible_path_allowed_by_context(
+        &context,
+        "C:/Users/Agent/Workspace-Other/file.txt"
+    ));
+}
+
 #[tokio::test]
 async fn virtual_provider_glob_includes_files_and_directories() {
     let provider = VirtualEnvironmentProvider::new("test")
@@ -536,10 +578,12 @@ async fn local_provider_range_reads_seek_without_materializing_the_prefix() {
         .unwrap();
     file.write_all(b"MARK").unwrap();
     drop(file);
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_only(),
-        shell: ShellPolicy::default(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
 
     assert_eq!(
         provider
@@ -564,6 +608,7 @@ async fn local_provider_rejects_reads_above_the_configured_byte_limit() {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("large.bin"), b"12345678").unwrap();
     let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_only(),
             shell: ShellPolicy::default(),
@@ -604,10 +649,12 @@ async fn local_provider_search_respects_gitignore_hidden_and_policy() {
     std::fs::write(root.join(".hidden.rs"), "needle hidden\n").unwrap();
     std::fs::write(root.join(".gitignore"), "*.log\n").unwrap();
 
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_only(),
-        shell: ShellPolicy::default(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
 
     let visible = provider
         .glob("", "**/*", FileGlobOptions::default())
@@ -719,10 +766,12 @@ async fn local_provider_search_exposes_agents_without_exposing_other_hidden_path
     )
     .unwrap();
 
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_only(),
-        shell: ShellPolicy::default(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
 
     let root_matches = provider
         .glob("", "SKILL.md", FileGlobOptions::default())
@@ -789,10 +838,12 @@ async fn local_provider_search_does_not_follow_agents_or_root_directory_symlinks
     std::os::unix::fs::symlink(&store, root.join("project/.agents")).unwrap();
     std::os::unix::fs::symlink(root.join("project"), root.join("project-alias")).unwrap();
 
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_only(),
-        shell: ShellPolicy::default(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
 
     assert!(
         provider
@@ -825,10 +876,12 @@ async fn local_provider_grep_streams_context_limits_and_binary_detection() {
     .unwrap();
     std::fs::write(root.join("src/binary.bin"), b"needle\0binary\n").unwrap();
 
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_only(),
-        shell: ShellPolicy::default(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
 
     let context_matches = provider
         .grep(
@@ -931,10 +984,12 @@ async fn local_provider_grep_streams_context_limits_and_binary_detection() {
 async fn local_provider_runs_background_shell_processes() {
     let root = unique_test_dir();
     std::fs::create_dir_all(&root).unwrap();
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_write(),
-        shell: ShellPolicy::allow_all(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_write(),
+            shell: ShellPolicy::allow_all(),
+        });
 
     let started = provider
         .start_process(ShellCommand {
@@ -966,10 +1021,12 @@ async fn local_provider_runs_background_shell_processes() {
 async fn local_provider_kills_descendants_that_hold_output_pipes() {
     let root = unique_test_dir();
     std::fs::create_dir_all(&root).unwrap();
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_only(),
-        shell: ShellPolicy::allow_all(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::allow_all(),
+        });
 
     let started_at = std::time::Instant::now();
     let output = provider
@@ -1014,6 +1071,7 @@ async fn dropping_foreground_shell_future_terminates_process_tree() {
     std::fs::create_dir_all(&root).unwrap();
     let process_ids_path = root.join("process-ids.txt");
     let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_only(),
             shell: ShellPolicy::allow_all(),
@@ -1093,6 +1151,7 @@ async fn local_provider_bounds_infinite_output_and_reports_capture_metadata() {
     let root = unique_test_dir();
     std::fs::create_dir_all(&root).unwrap();
     let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
         .with_max_output_bytes(4096)
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_only(),
@@ -1138,6 +1197,7 @@ async fn local_provider_shares_concurrency_limit_and_reaps_retained_processes() 
     let root = unique_test_dir();
     std::fs::create_dir_all(&root).unwrap();
     let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
         .with_max_concurrent_processes(1)
         .with_completed_process_retention(1)
         .with_policy(EnvironmentPolicy {
@@ -1226,7 +1286,7 @@ async fn local_provider_shares_concurrency_limit_and_reaps_retained_processes() 
 }
 
 #[tokio::test]
-async fn local_provider_manages_tmp_files_as_allowed_absolute_paths() {
+async fn local_provider_manages_scratch_files_as_ephemeral_absolute_paths() {
     let root = unique_test_dir();
     let external = unique_test_dir();
     let unrelated_tmp = std::env::temp_dir().join(format!(
@@ -1236,37 +1296,32 @@ async fn local_provider_manages_tmp_files_as_allowed_absolute_paths() {
     ));
     std::fs::write(&unrelated_tmp, "secret").unwrap();
     let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
         .with_allowed_paths([external.clone()])
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_only(),
             shell: ShellPolicy::default(),
         });
 
-    let tmp_path = provider
-        .write_tmp_file("stdout.log", b"full shell output")
+    let scratch_path = provider
+        .write_scratch_file("stdout.log", b"full shell output")
         .await
         .unwrap();
-    let tmp_path_buf = normalize_local_config_path(PathBuf::from(&tmp_path));
-    assert!(tmp_path_buf.is_absolute());
-    assert!(provider.path_is_managed_tmp(&tmp_path_buf));
+    let scratch_path_buf = normalize_local_config_path(PathBuf::from(&scratch_path));
+    assert!(scratch_path_buf.is_absolute());
+    assert!(provider.path_is_managed_scratch(&scratch_path_buf));
     assert!(
         provider
             .allowed_paths()
             .iter()
-            .any(|path| tmp_path_buf.starts_with(path))
+            .all(|path| !scratch_path_buf.starts_with(path))
     );
     assert_eq!(
-        provider.read_text(&tmp_path).await.unwrap(),
+        provider.read_text(&scratch_path).await.unwrap(),
         "full shell output"
     );
-    assert!(!root.join(".starweaver/tmp/stdout.log").exists());
-    assert_eq!(
-        provider
-            .read_text(".starweaver/tmp/stdout.log")
-            .await
-            .unwrap(),
-        "full shell output"
-    );
+    assert!(!root.join(".starweaver/scratch/stdout.log").exists());
+    assert!(!root.join(LOCAL_WORKSPACE_TMP_DIR).exists());
     assert!(matches!(
         provider
             .read_text(&unrelated_tmp.display().to_string())
@@ -1279,14 +1334,47 @@ async fn local_provider_manages_tmp_files_as_allowed_absolute_paths() {
     std::fs::remove_dir_all(external).unwrap();
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn local_scratch_rejects_backslash_traversal_even_when_parent_is_allowed() {
+    let base = unique_test_dir();
+    let root = base.join("workspace");
+    std::fs::create_dir_all(&root).unwrap();
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_scratch_base_dir(&base)
+        .unwrap()
+        .with_scratch_namespace("session")
+        .unwrap()
+        .with_allowed_paths([base.clone()])
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_write(),
+            shell: ShellPolicy::default(),
+        });
+
+    for filename in ["..\\escaped.txt", "nested\\..\\escaped.txt"] {
+        assert!(matches!(
+            provider.write_scratch_file(filename, b"blocked").await,
+            Err(EnvironmentError::InvalidRequest(_))
+        ));
+    }
+    assert!(!base.join("escaped.txt").exists());
+    assert!(!provider.scratch_dir_path().join("escaped.txt").exists());
+
+    drop(provider);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
 #[tokio::test]
 async fn local_provider_writes_relative_file_under_absolute_root() {
     let root = unique_test_dir();
     std::fs::create_dir_all(&root).unwrap();
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_write(),
-        shell: ShellPolicy::default(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_write(),
+            shell: ShellPolicy::default(),
+        });
 
     provider
         .write_text("nested/file.txt", "content")
@@ -1312,6 +1400,7 @@ async fn local_provider_allows_platform_symlink_ancestors_of_allowed_roots() {
     std::fs::remove_dir(&alias_parent).unwrap();
     std::os::unix::fs::symlink(&real_parent, &alias_parent).unwrap();
     let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
         .with_allowed_paths([allowed.clone()])
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_write(),
@@ -1335,7 +1424,7 @@ async fn local_provider_allows_platform_symlink_ancestors_of_allowed_roots() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn local_provider_rejects_preexisting_symlink_escapes_for_file_shell_and_tmp_paths() {
+async fn local_provider_rejects_preexisting_symlink_escapes_for_file_and_shell_paths() {
     let root = unique_test_dir();
     let outside = unique_test_dir();
     std::fs::create_dir_all(&root).unwrap();
@@ -1343,14 +1432,16 @@ async fn local_provider_rejects_preexisting_symlink_escapes_for_file_shell_and_t
     std::fs::write(outside.join("secret.txt"), "secret").unwrap();
     std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
 
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy {
-            allow_read: true,
-            allow_write: true,
-            allowed_prefixes: vec!["escape".to_string()],
-        },
-        shell: ShellPolicy::allow_all(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy {
+                allow_read: true,
+                allow_write: true,
+                allowed_prefixes: vec!["escape".to_string()],
+            },
+            shell: ShellPolicy::allow_all(),
+        });
 
     assert!(matches!(
         provider.read_text("escape/secret.txt").await,
@@ -1381,45 +1472,77 @@ async fn local_provider_rejects_preexisting_symlink_escapes_for_file_shell_and_t
     assert!(!outside.join("created.txt").exists());
     assert!(!outside.join("nested").exists());
 
-    let tmp_escape = provider.tmp_dir_path().unwrap().join("escape");
-    std::os::unix::fs::symlink(&outside, &tmp_escape).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(outside).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_provider_rejects_preexisting_symlink_escapes_from_scratch_paths() {
+    let root = unique_test_dir();
+    let outside = unique_test_dir();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_write(),
+            shell: ShellPolicy::default(),
+        });
+
+    let scratch_escape = provider.scratch_dir_path().join("escape");
+    std::os::unix::fs::symlink(&outside, &scratch_escape).unwrap();
     assert!(matches!(
         provider
-            .write_tmp_file("escape/payload.txt", b"blocked")
+            .write_scratch_file("escape/payload.txt", b"blocked")
             .await,
         Err(EnvironmentError::AccessDenied(_))
     ));
     assert!(!outside.join("payload.txt").exists());
 
-    let tmp_dir = provider.tmp_dir_path().unwrap().to_path_buf();
-    std::fs::remove_dir_all(&tmp_dir).unwrap();
-    std::os::unix::fs::symlink(&root, &tmp_dir).unwrap();
+    let scratch_dir = provider.scratch_dir_path().to_path_buf();
+    std::fs::remove_dir_all(&scratch_dir).unwrap();
+    std::os::unix::fs::symlink(&root, &scratch_dir).unwrap();
     std::fs::write(root.join("protected.txt"), "original").unwrap();
     std::fs::write(root.join("existing.txt"), "existing").unwrap();
 
     assert!(matches!(
-        provider.write_tmp_file("protected.txt", b"blocked").await,
-        Err(EnvironmentError::AccessDenied(_))
-    ));
-    assert!(matches!(
         provider
-            .write_text(".starweaver/tmp/protected.txt", "blocked")
-            .await,
-        Err(EnvironmentError::AccessDenied(_))
-    ));
-    assert!(matches!(
-        provider.create_dir(".starweaver/tmp/protected", true).await,
-        Err(EnvironmentError::AccessDenied(_))
-    ));
-    assert!(matches!(
-        provider
-            .delete_path(".starweaver/tmp/existing.txt", false)
+            .write_scratch_file("protected.txt", b"blocked")
             .await,
         Err(EnvironmentError::AccessDenied(_))
     ));
     assert!(matches!(
         provider
-            .move_path(".starweaver/tmp/existing.txt", "moved.txt", false)
+            .write_text(
+                &display_local_path(&scratch_dir.join("protected.txt")),
+                "blocked",
+            )
+            .await,
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    assert!(matches!(
+        provider
+            .create_dir(&display_local_path(&scratch_dir.join("protected")), true)
+            .await,
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    assert!(matches!(
+        provider
+            .delete_path(
+                &display_local_path(&scratch_dir.join("existing.txt")),
+                false
+            )
+            .await,
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    assert!(matches!(
+        provider
+            .move_path(
+                &display_local_path(&scratch_dir.join("existing.txt")),
+                "moved.txt",
+                false,
+            )
             .await,
         Err(EnvironmentError::AccessDenied(_))
     ));
@@ -1445,10 +1568,12 @@ async fn local_provider_rejects_writes_through_symlinks_inside_an_allowed_root()
     std::fs::create_dir_all(root.join("target")).unwrap();
     std::fs::write(root.join("target/file.txt"), "original").unwrap();
     std::os::unix::fs::symlink(root.join("target"), root.join("alias")).unwrap();
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_write(),
-        shell: ShellPolicy::default(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_write(),
+            shell: ShellPolicy::default(),
+        });
 
     assert_eq!(
         provider.read_text("alias/file.txt").await.unwrap(),
@@ -1525,15 +1650,17 @@ fn windows_msys_path(path: &str) -> String {
 
 #[cfg(windows)]
 #[tokio::test]
-async fn local_provider_accepts_windows_verbatim_tmp_paths() {
+async fn local_provider_accepts_windows_verbatim_scratch_paths() {
     let root = unique_test_dir();
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_only(),
-        shell: ShellPolicy::default(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
 
     let tmp_path = provider
-        .write_tmp_file("stdout.log", b"full shell output")
+        .write_scratch_file("stdout.log", b"full shell output")
         .await
         .unwrap();
     assert!(!tmp_path.starts_with("//?/"));
@@ -1573,13 +1700,22 @@ async fn local_provider_restores_from_trusted_state_with_explicit_policy() {
     std::fs::write(root.join("README.md"), "root").unwrap();
     std::fs::write(external.join("extra.txt"), "extra").unwrap();
     let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
         .with_id("local-test")
         .with_allowed_paths([external.clone()])
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_only(),
             shell: ShellPolicy::default(),
         });
+    let scratch_dir = provider.scratch_dir_path().to_path_buf();
     let state = provider.export_state().await.unwrap();
+    let exported_allowed_paths =
+        serde_json::from_value::<Vec<PathBuf>>(state.metadata["allowed_paths"].clone()).unwrap();
+    assert!(
+        exported_allowed_paths
+            .iter()
+            .all(|path| path != &scratch_dir)
+    );
 
     let restored = LocalEnvironmentProvider::from_trusted_state(
         &state,
@@ -1605,26 +1741,33 @@ async fn local_provider_restores_from_trusted_state_with_explicit_policy() {
 }
 
 #[tokio::test]
-async fn local_provider_tmp_namespace_isolates_managed_tmp_files() {
+async fn local_provider_scratch_namespace_isolates_managed_scratch_files() {
     let root = unique_test_dir();
     let provider = LocalEnvironmentProvider::new(&root)
-        .with_tmp_namespace("session_123")
+        .unwrap()
+        .with_scratch_namespace("session_123")
+        .unwrap()
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_only(),
             shell: ShellPolicy::default(),
         });
 
-    let tmp_path = provider.write_tmp_file("grep.json", b"[]").await.unwrap();
+    let tmp_path = provider
+        .write_scratch_file("grep.json", b"[]")
+        .await
+        .unwrap();
     let tmp_path_buf = PathBuf::from(&tmp_path);
     assert!(tmp_path_buf.ends_with("session_123/grep.json"));
     assert_eq!(provider.read_text(&tmp_path).await.unwrap(), "[]");
-    assert_eq!(
-        provider
-            .read_text(".starweaver/tmp/session_123/grep.json")
-            .await
-            .unwrap(),
-        "[]"
-    );
+    let context = provider
+        .render_environment_context()
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(context.contains(&format!(
+        "<scratch-directory>{}</scratch-directory>",
+        display_local_path(tmp_path_buf.parent().unwrap())
+    )));
     assert!(
         tmp_path_buf
             .parent()
@@ -1635,45 +1778,297 @@ async fn local_provider_tmp_namespace_isolates_managed_tmp_files() {
 }
 
 #[tokio::test]
-async fn virtual_provider_tmp_namespace_isolates_tmp_files() {
-    let provider = VirtualEnvironmentProvider::new("virtual").with_tmp_namespace("session_123");
+async fn virtual_provider_scratch_namespace_isolates_scratch_files() {
+    let provider = VirtualEnvironmentProvider::new("virtual")
+        .with_scratch_namespace("session_123")
+        .unwrap();
 
-    let tmp_path = provider.write_tmp_file("grep.json", b"[]").await.unwrap();
-    assert_eq!(tmp_path, ".starweaver/tmp/session_123/grep.json");
+    let tmp_path = provider
+        .write_scratch_file("grep.json", b"[]")
+        .await
+        .unwrap();
+    assert_eq!(tmp_path, ".starweaver/scratch/session_123/grep.json");
     assert_eq!(provider.read_text(&tmp_path).await.unwrap(), "[]");
     assert!(matches!(
-        provider.read_text(".starweaver/tmp/grep.json").await,
+        provider.read_text(".starweaver/scratch/grep.json").await,
         Err(EnvironmentError::NotFound(_))
     ));
 }
 
 #[tokio::test]
-async fn local_provider_tmp_base_dir_places_managed_tmp_under_base() {
+async fn local_provider_scratch_base_dir_places_managed_scratch_under_base() {
     let root = unique_test_dir();
-    let tmp_base = unique_test_dir();
+    let scratch_base = unique_test_dir();
     let provider = LocalEnvironmentProvider::new(&root)
-        .with_tmp_base_dir(tmp_base.clone())
+        .unwrap()
+        .with_scratch_base_dir(scratch_base.clone())
+        .unwrap()
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_only(),
             shell: ShellPolicy::default(),
         });
 
-    let normalized_tmp_base = normalize_local_config_path(tmp_base.clone());
-    let tmp_dir = normalize_local_config_path(provider.tmp_dir_path().unwrap().to_path_buf());
-    assert!(tmp_dir.starts_with(&normalized_tmp_base));
+    let normalized_scratch_base = normalize_local_config_path(scratch_base.clone());
+    let scratch_dir = normalize_local_config_path(provider.scratch_dir_path().to_path_buf());
+    assert!(scratch_dir.starts_with(&normalized_scratch_base));
     assert!(
-        tmp_dir
+        scratch_dir
             .file_name()
             .unwrap()
             .to_string_lossy()
-            .starts_with(LOCAL_TMP_DIR_PREFIX)
+            .starts_with(LOCAL_SCRATCH_DIR_PREFIX)
     );
-    let tmp_path = provider.write_tmp_file("grep.json", b"[]").await.unwrap();
-    assert!(normalize_local_config_path(PathBuf::from(&tmp_path)).starts_with(&tmp_dir));
-    assert_eq!(provider.read_text(&tmp_path).await.unwrap(), "[]");
+    let scratch_path = provider
+        .write_scratch_file("grep.json", b"[]")
+        .await
+        .unwrap();
+    assert!(normalize_local_config_path(PathBuf::from(&scratch_path)).starts_with(&scratch_dir));
+    assert_eq!(provider.read_text(&scratch_path).await.unwrap(), "[]");
 
     std::fs::remove_dir_all(root).unwrap();
-    std::fs::remove_dir_all(tmp_base).unwrap();
+    std::fs::remove_dir_all(scratch_base).unwrap();
+}
+
+#[test]
+fn local_scratch_falls_back_to_workspace_tmp_when_preferred_temp_is_unavailable() {
+    let root = unique_test_dir();
+    let unavailable_tmp = root.join("not-a-directory");
+    std::fs::write(&unavailable_tmp, "file").unwrap();
+
+    let scratch_dir =
+        create_local_scratch_dir_with_workspace_fallback_from(&root, unavailable_tmp.as_path())
+            .unwrap();
+    let workspace_tmp = normalize_local_config_path(root.join(LOCAL_WORKSPACE_TMP_DIR));
+
+    assert_eq!(
+        normalize_local_config_path(scratch_dir.path().to_path_buf()).parent(),
+        Some(workspace_tmp.as_path())
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace_tmp.join(".gitignore")).unwrap(),
+        "*\n"
+    );
+
+    drop(scratch_dir);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn local_workspace_tmp_initializes_shared_ignore_and_exclusive_instances() {
+    let root = unique_test_dir();
+    let workspace_tmp = normalize_local_config_path(root.join(LOCAL_WORKSPACE_TMP_DIR));
+    let first = create_local_workspace_tmp_dir(&root).unwrap();
+    let first_dir = normalize_local_config_path(first.path().to_path_buf());
+    let second = create_local_workspace_tmp_dir(&root).unwrap();
+    let second_dir = normalize_local_config_path(second.path().to_path_buf());
+
+    assert_eq!(first_dir.parent(), Some(workspace_tmp.as_path()));
+    assert_eq!(second_dir.parent(), Some(workspace_tmp.as_path()));
+    assert_ne!(first_dir, second_dir);
+    assert_eq!(
+        std::fs::read_to_string(workspace_tmp.join(".gitignore")).unwrap(),
+        "*\n"
+    );
+    assert!(
+        first_dir
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(LOCAL_SCRATCH_DIR_PREFIX)
+    );
+
+    drop(first);
+    assert!(!first_dir.exists());
+    assert!(second_dir.exists());
+    assert!(workspace_tmp.join(".gitignore").is_file());
+    drop(second);
+    assert!(!second_dir.exists());
+    assert!(workspace_tmp.join(".gitignore").is_file());
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn local_workspace_tmp_never_reclaims_sibling_instances() {
+    let root = unique_test_dir();
+    let workspace_tmp = root.join(LOCAL_WORKSPACE_TMP_DIR);
+    let sibling = workspace_tmp.join("starweaver-scratch-owned-by-another-instance");
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::write(sibling.join("marker"), "owned elsewhere").unwrap();
+
+    let current = create_local_workspace_tmp_dir(&root).unwrap();
+    let current_path = current.path().to_path_buf();
+    drop(current);
+
+    assert!(!current_path.exists());
+    assert_eq!(
+        std::fs::read_to_string(sibling.join("marker")).unwrap(),
+        "owned elsewhere"
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn local_workspace_tmp_supports_concurrent_initialization() {
+    let root = Arc::new(unique_test_dir());
+    let barrier = Arc::new(std::sync::Barrier::new(8));
+    let mut handles = Vec::with_capacity(8);
+    for _ in 0..8 {
+        let root = root.clone();
+        let barrier = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            create_local_workspace_tmp_dir(root.as_path()).unwrap()
+        }));
+    }
+    let scratch_dirs = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    let paths = scratch_dirs
+        .iter()
+        .map(|scratch_dir| scratch_dir.path().to_path_buf())
+        .collect::<std::collections::BTreeSet<_>>();
+    let workspace_tmp = root.join(LOCAL_WORKSPACE_TMP_DIR);
+
+    assert_eq!(paths.len(), scratch_dirs.len());
+    assert_eq!(
+        std::fs::read_to_string(workspace_tmp.join(".gitignore")).unwrap(),
+        "*\n"
+    );
+
+    drop(scratch_dirs);
+    std::fs::remove_dir_all(root.as_path()).unwrap();
+}
+
+#[test]
+fn local_workspace_tmp_preserves_existing_gitignore() {
+    let root = unique_test_dir();
+    let workspace_tmp = root.join(LOCAL_WORKSPACE_TMP_DIR);
+    std::fs::create_dir_all(&workspace_tmp).unwrap();
+    std::fs::write(workspace_tmp.join(".gitignore"), "custom-rule\n").unwrap();
+
+    let scratch_dir = create_local_workspace_tmp_dir(&root).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(workspace_tmp.join(".gitignore")).unwrap(),
+        "custom-rule\n"
+    );
+    drop(scratch_dir);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn local_workspace_tmp_rejects_non_file_gitignore() {
+    let root = unique_test_dir();
+    let gitignore = root.join(LOCAL_WORKSPACE_TMP_DIR).join(".gitignore");
+    std::fs::create_dir_all(&gitignore).unwrap();
+
+    assert!(matches!(
+        create_local_workspace_tmp_dir(&root),
+        Err(EnvironmentError::InvalidRequest(_))
+    ));
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn local_workspace_tmp_rejects_symlinked_management_directory() {
+    let root = unique_test_dir();
+    let outside = unique_test_dir();
+    std::os::unix::fs::symlink(&outside, root.join(".starweaver")).unwrap();
+
+    assert!(matches!(
+        create_local_workspace_tmp_dir(&root),
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    assert!(!outside.join("tmp/.gitignore").exists());
+
+    std::fs::remove_file(root.join(".starweaver")).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(outside).unwrap();
+}
+
+#[test]
+fn local_provider_releases_scratch_after_last_clone_is_dropped() {
+    let root = unique_test_dir();
+    let provider = LocalEnvironmentProvider::new(&root).unwrap();
+    let scratch_dir = provider.scratch_dir_path().to_path_buf();
+    let clone = provider.clone();
+
+    assert!(scratch_dir.is_dir());
+    drop(provider);
+    assert!(scratch_dir.is_dir());
+    drop(clone);
+    assert!(!scratch_dir.exists());
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_provider_drops_processes_before_releasing_scratch() {
+    let root = unique_test_dir();
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::allow_all(),
+        });
+    let scratch_dir = provider.scratch_dir_path().to_path_buf();
+    let process_provider = Arc::new(provider.clone()).process_shell_provider().unwrap();
+    let process = process_provider
+        .start_process(ShellCommand::shell("sleep 30"))
+        .await
+        .unwrap();
+    let pid = process
+        .process_id
+        .strip_prefix("process_")
+        .expect("local process id contains pid")
+        .to_string();
+
+    drop(process_provider);
+    drop(provider);
+
+    let process_status = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid])
+        .output()
+        .unwrap();
+    assert!(
+        process_status.stdout.iter().all(u8::is_ascii_whitespace),
+        "provider teardown left process {pid} behind with status {}",
+        String::from_utf8_lossy(&process_status.stdout)
+    );
+    assert!(!scratch_dir.exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scratch_configuration_rejects_invalid_namespaces_and_base_paths() {
+    let root = unique_test_dir();
+    let invalid_base = root.join("not-a-directory");
+    std::fs::write(&invalid_base, "file").unwrap();
+
+    assert!(matches!(
+        LocalEnvironmentProvider::new(&root)
+            .unwrap()
+            .with_scratch_namespace("../escape"),
+        Err(EnvironmentError::InvalidRequest(_))
+    ));
+    assert!(matches!(
+        VirtualEnvironmentProvider::new("virtual").with_scratch_namespace("nested/scope"),
+        Err(EnvironmentError::InvalidRequest(_))
+    ));
+    assert!(
+        LocalEnvironmentProvider::new(&root)
+            .unwrap()
+            .with_scratch_base_dir(&invalid_base)
+            .is_err()
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]
@@ -1690,10 +2085,12 @@ async fn local_provider_search_preserves_gitignore_negations() {
     )
     .unwrap();
 
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_only(),
-        shell: ShellPolicy::default(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
 
     let glob_matches = provider
         .glob(
@@ -1783,7 +2180,7 @@ async fn virtual_context_file_tree_matches_starweaver_sdk_semantics() {
     assert!(instructions.contains("<environment-context>"));
     assert!(instructions.contains("<file-system>"));
     assert!(instructions.contains("<default-directory>.</default-directory>"));
-    assert!(!instructions.contains("<tmp-directory>"));
+    assert!(!instructions.contains("<scratch-directory>"));
     assert!(instructions.contains("<file-trees>"));
     assert!(instructions.contains("<directory path=\".\">"));
     assert!(!instructions.contains("<file>"));
@@ -1824,20 +2221,24 @@ async fn local_context_file_tree_matches_starweaver_sdk_semantics() {
     std::fs::write(root.join("node_modules/package.json"), "{}").unwrap();
     std::fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
 
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_only(),
-        shell: ShellPolicy::default(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
     let instructions = provider
         .render_environment_context()
         .await
         .unwrap()
         .unwrap();
 
-    let tmp_dir = display_local_path(provider.tmp_dir_path().unwrap());
-    assert!(instructions.contains(&format!("<tmp-directory>{tmp_dir}</tmp-directory>")));
+    let scratch_dir = display_local_path(&provider.shell_scratch_dir_path().unwrap());
+    assert!(instructions.contains(&format!(
+        "<scratch-directory>{scratch_dir}</scratch-directory>"
+    )));
     assert!(instructions.contains(
-        "<tmp-directory-note>This is an agent-only temporary directory for intermediate files."
+        "<scratch-directory-note>This is an agent-only scratch directory for intermediate files."
     ));
     assert!(instructions.contains(&format!(
         "<directory path=\"{}\">",
@@ -1871,6 +2272,7 @@ async fn local_context_file_tree_roots_can_be_narrower_than_allowed_paths() {
     std::fs::write(cache.join("cache-marker.txt"), "cache").unwrap();
 
     let provider = LocalEnvironmentProvider::new(&workspace)
+        .unwrap()
         .with_allowed_paths([cache.clone()])
         .with_context_file_tree_roots([workspace.clone()])
         .with_policy(EnvironmentPolicy {
@@ -1920,10 +2322,12 @@ async fn local_context_file_tree_marks_permission_denied_directories() {
         return;
     }
 
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_only(),
-        shell: ShellPolicy::default(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
     let instructions = provider
         .render_environment_context()
         .await
@@ -1945,6 +2349,7 @@ async fn local_provider_accepts_allowed_absolute_paths_and_rejects_unsafe_paths(
     std::fs::write(root.join("safe..name.txt"), "ok").unwrap();
     std::fs::write(external.join("research/SKILL.md"), "skill").unwrap();
     let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
         .with_allowed_paths([external.clone()])
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_only(),
@@ -2019,10 +2424,12 @@ async fn local_provider_list_with_options_filters_and_limits_sorted_entries() {
     std::fs::write(root.join("alpha.log"), "a").unwrap();
     std::fs::write(root.join("beta.txt"), "b").unwrap();
     std::fs::write(root.join("gamma.txt"), "g").unwrap();
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_only(),
-        shell: ShellPolicy::default(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
 
     let listing = provider
         .list_with_options(
@@ -2054,6 +2461,7 @@ async fn local_context_file_tree_includes_allowed_external_roots() {
     std::fs::write(root.join("README.md"), "readme").unwrap();
     std::fs::write(external.join("skills/research/SKILL.md"), "skill").unwrap();
     let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
         .with_allowed_paths([external.clone()])
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_only(),
@@ -2091,6 +2499,7 @@ async fn local_context_file_tree_deduplicates_visible_nested_allowed_roots() {
     std::fs::write(root.join("README.md"), "readme").unwrap();
     std::fs::write(root.join("skills/research/SKILL.md"), "skill").unwrap();
     let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
         .with_allowed_paths([root.join("skills")])
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_only(),
@@ -2128,6 +2537,7 @@ async fn local_context_file_tree_deduplicates_visible_agents_skill_roots() {
     std::fs::write(root.join("README.md"), "readme").unwrap();
     std::fs::write(allowed_root.join("research/SKILL.md"), "skill").unwrap();
     let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
         .with_allowed_paths([allowed_root.clone()])
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_only(),
@@ -2166,6 +2576,7 @@ async fn local_context_file_tree_keeps_hidden_nested_allowed_roots() {
     std::fs::write(hidden.join("SKILL.md"), "skill").unwrap();
     let allowed_root = root.join(".starweaver/skills");
     let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
         .with_allowed_paths([allowed_root.clone()])
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_only(),
@@ -2199,6 +2610,7 @@ async fn local_context_file_tree_keeps_gitignored_nested_allowed_roots() {
     std::fs::write(root.join("README.md"), "readme").unwrap();
     std::fs::write(allowed_root.join("SKILL.md"), "skill").unwrap();
     let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
         .with_allowed_paths([allowed_root.clone()])
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_only(),
@@ -2232,6 +2644,7 @@ async fn local_context_file_tree_keeps_deep_nested_allowed_roots() {
     std::fs::write(root.join("README.md"), "readme").unwrap();
     std::fs::write(allowed_root.join("SKILL.md"), "skill").unwrap();
     let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
         .with_allowed_paths([allowed_root.clone()])
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_only(),
@@ -2301,13 +2714,15 @@ fn shell_process_metadata_does_not_snapshot_environment_values() {
 #[tokio::test]
 async fn shell_allowlist_rejects_shell_operators_before_execution() {
     let root = unique_test_dir();
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_only(),
-        shell: ShellPolicy {
-            allow_execute: true,
-            allowed_programs: vec!["printf".to_string()],
-        },
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy {
+                allow_execute: true,
+                allowed_programs: vec!["printf".to_string()],
+            },
+        });
     let marker = root.join("allowlist-bypass-marker");
     let marker = marker.display();
     let scripts = [
@@ -2339,13 +2754,15 @@ async fn shell_allowlist_rejects_shell_operators_before_execution() {
 #[tokio::test]
 async fn allowlisted_program_executes_directly_with_literal_arguments() {
     let root = unique_test_dir();
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_only(),
-        shell: ShellPolicy {
-            allow_execute: true,
-            allowed_programs: vec!["printf".to_string()],
-        },
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy {
+                allow_execute: true,
+                allowed_programs: vec!["printf".to_string()],
+            },
+        });
     let marker = root.join("direct-program-marker");
     let literal = format!("; && | $(touch '{}')\nnot-a-command", marker.display());
 
@@ -2389,10 +2806,12 @@ async fn local_provider_runs_shell_with_cwd_environment_and_policy() {
     let root = unique_test_dir();
     std::fs::create_dir_all(root.join("work")).unwrap();
     std::fs::write(root.join("work/input.txt"), "content").unwrap();
-    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_only(),
-        shell: ShellPolicy::allow_all(),
-    });
+    let provider = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::allow_all(),
+        });
 
     let output = provider
         .run_shell(ShellCommand {
@@ -2406,10 +2825,12 @@ async fn local_provider_runs_shell_with_cwd_environment_and_policy() {
     assert_eq!(output.status, 0);
     assert_eq!(output.stdout, "ok:work");
 
-    let denied = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-        files: FilePolicy::read_only(),
-        shell: ShellPolicy::default(),
-    });
+    let denied = LocalEnvironmentProvider::new(&root)
+        .unwrap()
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
     assert!(matches!(
         denied
             .run_shell(ShellCommand {
@@ -2427,7 +2848,9 @@ async fn local_provider_runs_shell_with_cwd_environment_and_policy() {
 async fn local_provider_shell_tmpdir_uses_managed_namespace() {
     let root = unique_test_dir();
     let provider = LocalEnvironmentProvider::new(&root)
-        .with_tmp_namespace("session_123")
+        .unwrap()
+        .with_scratch_namespace("session_123")
+        .unwrap()
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_only(),
             shell: ShellPolicy::allow_all(),
@@ -2444,7 +2867,7 @@ async fn local_provider_shell_tmpdir_uses_managed_namespace() {
     let path = output.stdout;
     assert!(path.contains("session_123"));
     let normalized_path = normalize_absolute_request_path(Path::new(&path)).unwrap();
-    assert!(provider.path_is_managed_tmp(&normalized_path));
+    assert!(provider.path_is_managed_scratch(&normalized_path));
     assert_eq!(provider.read_text(&path).await.unwrap(), "managed");
 
     std::fs::remove_dir_all(root).unwrap();
@@ -2455,7 +2878,9 @@ async fn local_provider_background_shell_tmpdir_uses_managed_namespace() {
     let root = unique_test_dir();
     let provider = Arc::new(
         LocalEnvironmentProvider::new(&root)
-            .with_tmp_namespace("session_123")
+            .unwrap()
+            .with_scratch_namespace("session_123")
+            .unwrap()
             .with_policy(EnvironmentPolicy {
                 files: FilePolicy::read_only(),
                 shell: ShellPolicy::allow_all(),
@@ -2478,7 +2903,7 @@ async fn local_provider_background_shell_tmpdir_uses_managed_namespace() {
     let path = completed.stdout;
     assert!(path.contains("session_123"));
     let normalized_path = normalize_absolute_request_path(Path::new(&path)).unwrap();
-    assert!(provider.path_is_managed_tmp(&normalized_path));
+    assert!(provider.path_is_managed_scratch(&normalized_path));
     assert_eq!(provider.read_text(&path).await.unwrap(), "managed");
 
     std::fs::remove_dir_all(root).unwrap();
@@ -2505,12 +2930,12 @@ async fn switchable_provider_preserves_search_and_path_candidate_semantics() {
         "pub fn needle() {}\n",
     )
     .unwrap();
-    let local = Arc::new(
-        LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+    let local = Arc::new(LocalEnvironmentProvider::new(&root).unwrap().with_policy(
+        EnvironmentPolicy {
             files: FilePolicy::read_only(),
             shell: ShellPolicy::default(),
-        }),
-    );
+        },
+    ));
     let provider = SwitchableEnvironmentProvider::new(
         "switchable",
         SwitchableEnvironmentTarget::new(local.clone(), local.clone().process_shell_provider()),
@@ -2629,8 +3054,8 @@ async fn composite_provider_rebases_local_mount_list_entries_from_subdirs() {
     .unwrap();
     std::fs::write(data_root.join("src").join("lib.rs"), "data").unwrap();
     std::fs::write(data_root.join("src").join("main.rs"), "data").unwrap();
-    let workspace = Arc::new(LocalEnvironmentProvider::new(&workspace_root));
-    let data = Arc::new(LocalEnvironmentProvider::new(&data_root));
+    let workspace = Arc::new(LocalEnvironmentProvider::new(&workspace_root).unwrap());
+    let data = Arc::new(LocalEnvironmentProvider::new(&data_root).unwrap());
     let provider = CompositeEnvironmentProvider::new(vec![
         EnvironmentMount::new("workspace", workspace)
             .unwrap()
@@ -2671,6 +3096,117 @@ async fn composite_provider_rebases_local_mount_list_entries_from_subdirs() {
 }
 
 #[tokio::test]
+async fn composite_provider_shares_shell_mount_scratch_with_file_operations() {
+    let file_root = unique_test_dir().join("files");
+    let shell_root = unique_test_dir().join("shell");
+    std::fs::create_dir_all(&file_root).unwrap();
+    std::fs::create_dir_all(&shell_root).unwrap();
+    let file_provider = Arc::new(
+        LocalEnvironmentProvider::new(&file_root)
+            .unwrap()
+            .with_allowed_paths([std::env::temp_dir()])
+            .with_policy(EnvironmentPolicy {
+                files: FilePolicy::read_write(),
+                shell: ShellPolicy::default(),
+            }),
+    );
+    let shell_provider = Arc::new(
+        LocalEnvironmentProvider::new(&shell_root)
+            .unwrap()
+            .with_policy(EnvironmentPolicy {
+                files: FilePolicy::read_write(),
+                shell: ShellPolicy::allow_all(),
+            }),
+    );
+    let shell_scratch = shell_provider.scratch_dir_path().to_path_buf();
+    let provider = CompositeEnvironmentProvider::new(vec![
+        EnvironmentMount::new("files", file_provider)
+            .unwrap()
+            .with_default(true),
+        EnvironmentMount::new("shell", shell_provider)
+            .unwrap()
+            .with_default_for_shell(true),
+    ])
+    .unwrap();
+
+    let scratch_path = provider
+        .write_scratch_file("shared.txt", b"shared")
+        .await
+        .unwrap();
+
+    let effective_shell_scratch = Path::new(&scratch_path).parent().unwrap();
+    assert_eq!(
+        effective_shell_scratch.file_name(),
+        shell_scratch.file_name()
+    );
+    assert_eq!(provider.read_text(&scratch_path).await.unwrap(), "shared");
+    let output = provider
+        .run_shell(ShellCommand::shell("printf %s \"$TMPDIR\""))
+        .await
+        .unwrap();
+    assert_eq!(output.stdout, display_local_path(effective_shell_scratch));
+
+    provider.delete_path(&scratch_path, false).await.unwrap();
+    assert!(matches!(
+        provider.read_text(&scratch_path).await,
+        Err(EnvironmentError::NotFound(_))
+    ));
+
+    std::fs::remove_dir_all(file_root.parent().unwrap()).unwrap();
+    std::fs::remove_dir_all(shell_root.parent().unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn composite_provider_qualifies_relative_scratch_paths_to_the_owner_mount() {
+    let file_provider = Arc::new(VirtualEnvironmentProvider::new("files"));
+    let shell_provider = Arc::new(VirtualEnvironmentProvider::new("shell"));
+    let provider = CompositeEnvironmentProvider::new(vec![
+        EnvironmentMount::new("files", file_provider)
+            .unwrap()
+            .with_default(true),
+        EnvironmentMount::new("shell", shell_provider)
+            .unwrap()
+            .with_default_for_shell(true),
+    ])
+    .unwrap();
+
+    let scratch_path = provider
+        .write_scratch_file("nested/shared.txt", b"shared")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        scratch_path,
+        "/environment/shell/.starweaver/scratch/nested/shared.txt"
+    );
+    assert_eq!(provider.read_text(&scratch_path).await.unwrap(), "shared");
+}
+
+#[tokio::test]
+async fn composite_provider_rejects_ambiguous_provider_visible_paths() {
+    let root = unique_test_dir();
+    std::fs::write(root.join("shared.txt"), "shared").unwrap();
+    let first = Arc::new(LocalEnvironmentProvider::new(&root).unwrap());
+    let second = Arc::new(LocalEnvironmentProvider::new(&root).unwrap());
+    let provider = CompositeEnvironmentProvider::new(vec![
+        EnvironmentMount::new("first", first)
+            .unwrap()
+            .with_default(true),
+        EnvironmentMount::new("second", second).unwrap(),
+    ])
+    .unwrap();
+    let absolute_path = display_local_path(&root.join("shared.txt"));
+
+    assert!(matches!(
+        provider.read_text(&absolute_path).await,
+        Err(EnvironmentError::InvalidRequest(message))
+            if message.contains("ambiguous across environment mounts")
+    ));
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn composite_provider_routes_provider_visible_absolute_file_paths() {
     let workspace_root = unique_test_dir().join("workspace");
     let external_root = unique_test_dir().join("external");
@@ -2683,6 +3219,7 @@ async fn composite_provider_routes_provider_visible_absolute_file_paths() {
             "workspace",
             Arc::new(
                 LocalEnvironmentProvider::new(&workspace_root)
+                    .unwrap()
                     .with_allowed_paths([external_root.clone()])
                     .with_policy(EnvironmentPolicy {
                         files: FilePolicy::read_only(),
@@ -2739,12 +3276,14 @@ async fn composite_provider_routes_provider_visible_absolute_file_paths() {
 async fn composite_provider_routes_provider_visible_absolute_shell_cwd() {
     let workspace_root = unique_test_dir().join("workspace");
     std::fs::create_dir_all(workspace_root.join("nested")).unwrap();
-    let workspace = Arc::new(LocalEnvironmentProvider::new(&workspace_root).with_policy(
-        EnvironmentPolicy {
-            files: FilePolicy::read_only(),
-            shell: ShellPolicy::allow_all(),
-        },
-    ));
+    let workspace = Arc::new(
+        LocalEnvironmentProvider::new(&workspace_root)
+            .unwrap()
+            .with_policy(EnvironmentPolicy {
+                files: FilePolicy::read_only(),
+                shell: ShellPolicy::allow_all(),
+            }),
+    );
     let provider = CompositeEnvironmentProvider::new(vec![
         EnvironmentMount::new("workspace", workspace)
             .unwrap()
@@ -2792,7 +3331,11 @@ async fn composite_provider_rebases_path_match_candidates_for_explicit_mounts() 
         .unwrap()
         .with_default(true)
         .with_default_for_shell(true),
-        EnvironmentMount::new("data", Arc::new(LocalEnvironmentProvider::new(&data_root))).unwrap(),
+        EnvironmentMount::new(
+            "data",
+            Arc::new(LocalEnvironmentProvider::new(&data_root).unwrap()),
+        )
+        .unwrap(),
     ])
     .unwrap();
 

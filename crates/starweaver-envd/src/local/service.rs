@@ -9,11 +9,12 @@ use starweaver_envd_core::{
     EnvironmentStateSnapshot, FileCopyRequest, FileCreateDirRequest, FileDeleteRequest,
     FileGlobMatch, FileGlobRequest, FileGrepMatch, FileGrepRequest, FileListRequest,
     FileListResult, FileMoveRequest, FileReadMode, FileReadRequest, FileReadResult,
-    FileStatRequest, FileWriteRequest, FileWriteResult, FileWriteTmpRequest, FileWriteTmpResult,
-    InitializeEnvdRequest, InitializeEnvdResult, MutationResult, OpenEnvironmentRequest,
-    ProcessInputRequest, ProcessKillRequest, ProcessListResult, ProcessSignalRequest,
-    ProcessSnapshot, ProcessStartRequest, ProcessWaitRequest, ShellReviewContextRequest,
-    ShellReviewContextResult, envd_protocol_identity, validate_envd_initialize,
+    FileStatRequest, FileWriteRequest, FileWriteResult, FileWriteScratchRequest,
+    FileWriteScratchResult, InitializeEnvdRequest, InitializeEnvdResult, MutationResult,
+    OpenEnvironmentRequest, ProcessInputRequest, ProcessKillRequest, ProcessListResult,
+    ProcessSignalRequest, ProcessSnapshot, ProcessStartRequest, ProcessWaitRequest,
+    ShellReviewContextRequest, ShellReviewContextResult, envd_protocol_identity,
+    validate_envd_initialize,
 };
 use starweaver_environment::ShellCommand;
 
@@ -159,16 +160,21 @@ impl EnvdService for LocalEnvd {
         self.record_operation("file.copy", metadata)
     }
 
-    async fn file_write_tmp(&self, request: FileWriteTmpRequest) -> EnvdResult<FileWriteTmpResult> {
+    async fn file_write_scratch(
+        &self,
+        request: FileWriteScratchRequest,
+    ) -> EnvdResult<FileWriteScratchResult> {
         self.ensure_environment(&request.environment_id)?;
         let path = self
             .provider
-            .write_tmp_file(&request.filename, &request.bytes)
+            .write_scratch_file(&request.filename, &request.bytes)
             .await
             .map_err(env_error_to_envd)?;
-        let mutation =
-            self.record_operation("file.write_tmp", Self::operation_metadata("path", &path))?;
-        Ok(FileWriteTmpResult {
+        let mutation = self.record_operation(
+            "file.write_scratch",
+            Self::operation_metadata("path", &path),
+        )?;
+        Ok(FileWriteScratchResult {
             path,
             state_version: mutation.state_version,
             operation_id: mutation.operation_id,

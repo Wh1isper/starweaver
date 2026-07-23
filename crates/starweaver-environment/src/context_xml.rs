@@ -4,7 +4,7 @@ use starweaver_core::XmlWriter;
 
 use crate::shell::local_shell_executable;
 
-const TMP_DIRECTORY_CONTEXT_NOTE: &str = "This is an agent-only temporary directory for intermediate files. Never write deliverables or user-facing files here. Files the user needs to access must be written to the project directory. Never mention this path to the user.";
+const SCRATCH_DIRECTORY_CONTEXT_NOTE: &str = "This is an agent-only scratch directory for intermediate files. Never write deliverables or user-facing files here. Files the user needs to access must be written to the project directory. Never mention this path to the user.";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileTreeBlock {
@@ -15,7 +15,7 @@ pub struct FileTreeBlock {
 pub fn render_environment_context_xml(
     provider_id: &str,
     default_directory: &str,
-    tmp_directory: Option<String>,
+    scratch_directory: Option<String>,
     file_trees: &[FileTreeBlock],
     shell_enabled: bool,
     shell_metadata: Option<ShellMetadata>,
@@ -36,9 +36,9 @@ pub fn render_environment_context_xml(
         }
     }
     xml.close("file-trees");
-    if let Some(tmp_directory) = tmp_directory {
-        xml.text_element("tmp-directory", tmp_directory)
-            .text_element("tmp-directory-note", TMP_DIRECTORY_CONTEXT_NOTE);
+    if let Some(scratch_directory) = scratch_directory {
+        xml.text_element("scratch-directory", scratch_directory)
+            .text_element("scratch-directory-note", SCRATCH_DIRECTORY_CONTEXT_NOTE);
     }
     xml.close("file-system");
 
@@ -80,7 +80,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn file_trees_are_rendered_before_volatile_tmp_directory() {
+    fn file_trees_are_rendered_before_volatile_scratch_directory() {
         let xml = render_environment_context_xml(
             "local",
             "/workspace",
@@ -96,10 +96,10 @@ mod tests {
         let Some(file_trees_index) = xml.find("<file-trees>") else {
             panic!("environment context should include file trees: {xml}");
         };
-        let Some(tmp_directory_index) = xml.find("<tmp-directory>") else {
-            panic!("environment context should include tmp directory: {xml}");
+        let Some(scratch_directory_index) = xml.find("<scratch-directory>") else {
+            panic!("environment context should include scratch directory: {xml}");
         };
-        assert!(file_trees_index < tmp_directory_index);
+        assert!(file_trees_index < scratch_directory_index);
         assert!(xml.contains("Cargo.toml"));
         assert!(xml.contains("/tmp/starweaver-run-1"));
     }

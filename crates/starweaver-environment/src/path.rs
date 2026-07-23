@@ -8,8 +8,8 @@ use grep_regex::RegexMatcher;
 
 use crate::{EnvironmentError, EnvironmentResult, types::ShellReviewEnvironmentContext};
 
-pub const DEFAULT_TMP_DIR: &str = ".starweaver/tmp";
-pub const LOCAL_TMP_DIR_PREFIX: &str = "starweaver-";
+pub const DEFAULT_SCRATCH_DIR: &str = ".starweaver/scratch";
+pub const LOCAL_SCRATCH_DIR_PREFIX: &str = "starweaver-scratch-";
 pub const DEFAULT_VISIBLE_DOT_DIR_NAMES: &[&str] = &[".agents"];
 
 pub fn join_logical_path(root: &str, child: &str) -> String {
@@ -138,17 +138,35 @@ pub fn path_match_candidates(path: &str) -> Vec<String> {
 /// provider that owns the corresponding shell review context.
 #[must_use]
 pub fn is_provider_visible_absolute_path(path: &str) -> bool {
-    Path::new(path).is_absolute() || path.replace('\\', "/").starts_with('/')
+    let normalized = path.replace('\\', "/");
+    Path::new(path).is_absolute()
+        || normalized.starts_with('/')
+        || matches!(
+            normalized.as_bytes(),
+            [drive, b':', b'/', ..] if drive.is_ascii_alphabetic()
+        )
 }
 
 /// Return whether an absolute provider-visible `root` contains `child`.
 #[must_use]
 pub fn provider_visible_path_contains(root: &str, child: &str) -> bool {
+    provider_visible_path_contains_for_platform(root, child, None)
+}
+
+fn provider_visible_path_contains_for_platform(
+    root: &str,
+    child: &str,
+    shell_platform: Option<&str>,
+) -> bool {
     if !is_provider_visible_absolute_path(root) {
         return false;
     }
-    let normalized_root = normalize_provider_visible_path(root);
-    let normalized_child = normalize_provider_visible_path(child);
+    let mut normalized_root = normalize_provider_visible_path(root);
+    let mut normalized_child = normalize_provider_visible_path(child);
+    if shell_platform.is_some_and(|platform| platform.eq_ignore_ascii_case("windows")) {
+        normalized_root.make_ascii_lowercase();
+        normalized_child.make_ascii_lowercase();
+    }
     if normalized_root == "/" {
         return normalized_child.starts_with('/');
     }
@@ -165,14 +183,16 @@ pub fn provider_visible_path_allowed_by_context(
     if !is_provider_visible_absolute_path(path) {
         return false;
     }
-    context
-        .default_cwd
-        .as_deref()
-        .is_some_and(|default_cwd| provider_visible_path_contains(default_cwd, path))
-        || context
-            .allowed_paths
-            .iter()
-            .any(|allowed_path| provider_visible_path_contains(allowed_path, path))
+    let shell_platform = context.shell_platform.as_deref();
+    let contains = |root: &str| {
+        if shell_platform.is_some_and(|platform| platform.eq_ignore_ascii_case("windows")) {
+            provider_visible_path_contains_for_platform(root, path, shell_platform)
+        } else {
+            provider_visible_path_contains(root, path)
+        }
+    };
+    context.default_cwd.as_deref().is_some_and(contains)
+        || context.allowed_paths.iter().any(|path| contains(path))
 }
 
 /// Add path candidates derived from a provider shell review context.
@@ -387,7 +407,10 @@ pub fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
 }
 
 pub fn normalize_requested_path(path: &str) -> EnvironmentResult<String> {
-    let requested = Path::new(path);
+    // Provider paths accept both separators on every host. Normalize before
+    // inspecting components so a backslash cannot hide traversal on Unix.
+    let normalized_separators = path.replace('\\', "/");
+    let requested = Path::new(&normalized_separators);
     if requested.components().any(|component| {
         matches!(
             component,
@@ -396,34 +419,34 @@ pub fn normalize_requested_path(path: &str) -> EnvironmentResult<String> {
     }) {
         return Err(EnvironmentError::InvalidRequest(path.to_string()));
     }
-    Ok(normalize_str_path(path))
+    Ok(normalize_str_path(&normalized_separators))
 }
 
-pub fn is_tmp_path(path: &str) -> bool {
+pub fn is_scratch_path(path: &str) -> bool {
     let normalized = normalize_str_path(path);
-    normalized == DEFAULT_TMP_DIR || normalized.starts_with(&format!("{DEFAULT_TMP_DIR}/"))
+    normalized == DEFAULT_SCRATCH_DIR || normalized.starts_with(&format!("{DEFAULT_SCRATCH_DIR}/"))
 }
 
-pub fn normalize_tmp_filename(filename: &str) -> EnvironmentResult<String> {
+pub fn normalize_scratch_filename(filename: &str) -> EnvironmentResult<String> {
     let normalized = normalize_requested_path(filename)?;
     if normalized.is_empty() {
         return Err(EnvironmentError::InvalidRequest(
-            "tmp filename must be non-empty".to_string(),
+            "scratch filename must be non-empty".to_string(),
         ));
     }
-    if is_tmp_path(&normalized) {
+    if is_scratch_path(&normalized) {
         return Err(EnvironmentError::InvalidRequest(
-            "tmp filename must be relative to the provider tmp directory".to_string(),
+            "scratch filename must be relative to the provider scratch directory".to_string(),
         ));
     }
     Ok(normalized)
 }
 
-pub fn normalize_tmp_namespace(namespace: &str) -> EnvironmentResult<String> {
-    let normalized = normalize_tmp_filename(namespace)?;
+pub fn normalize_scratch_namespace(namespace: &str) -> EnvironmentResult<String> {
+    let normalized = normalize_scratch_filename(namespace)?;
     if normalized.contains('/') {
         return Err(EnvironmentError::InvalidRequest(
-            "tmp namespace must be a single path segment".to_string(),
+            "scratch namespace must be a single path segment".to_string(),
         ));
     }
     Ok(normalized)

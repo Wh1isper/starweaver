@@ -1,12 +1,11 @@
-//! Output truncation and temporary file helpers for filesystem search tools.
+//! Output truncation and scratch file helpers for filesystem search tools.
 
 use serde_json::Value;
 use starweaver_context::ToolConfig;
 use starweaver_environment::{EnvironmentProvider, FileGrepMatch};
 use starweaver_tools::{ToolError, ToolResult};
-use uuid::Uuid;
 
-use crate::bundles::helpers::tool_execution_error;
+use crate::bundles::{helpers::tool_execution_error, output::write_scratch_output};
 
 use super::{add_skill_document_reminder, is_skill_document, truncate_chars};
 
@@ -21,7 +20,8 @@ pub(super) async fn guard_glob_output(
     if serialized.len() <= output_truncate_limit {
         return Ok(ToolResult::new(result));
     }
-    let output_path = write_tool_output(provider, "glob", "json", &serialized).await;
+    let output_path =
+        write_scratch_output(Some(provider), "glob", "json", serialized.as_bytes()).await;
     let matches = result
         .get("matches")
         .and_then(Value::as_array)
@@ -47,7 +47,7 @@ pub(super) async fn guard_glob_output(
     let note = output_path.as_ref().map_or_else(
         || {
             format!(
-                "Output too large ({} chars). Failed to save temp file; showing truncated preview.",
+                "Output too large ({} chars). Failed to save scratch file; showing truncated preview.",
                 serialized.len()
             )
         },
@@ -99,7 +99,8 @@ pub(super) async fn guard_ls_output(
     if serialized.len() <= output_truncate_limit {
         return Ok(ToolResult::new(result));
     }
-    let output_path = write_tool_output(provider, "ls", "json", &serialized).await;
+    let output_path =
+        write_scratch_output(Some(provider), "ls", "json", serialized.as_bytes()).await;
     let entries = result
         .get("entries")
         .and_then(Value::as_array)
@@ -132,7 +133,7 @@ pub(super) async fn guard_ls_output(
     let note = output_path.as_ref().map_or_else(
         || {
             format!(
-                "Output too large ({} chars). Failed to save temp file; showing truncated preview.",
+                "Output too large ({} chars). Failed to save scratch file; showing truncated preview.",
                 serialized.len()
             )
         },
@@ -221,7 +222,13 @@ pub(super) async fn guard_grep_output(
         return Ok(ToolResult::new(simplified));
     }
 
-    let output_path = write_tool_output(provider, "grep", "json", &simplified_serialized).await;
+    let output_path = write_scratch_output(
+        Some(provider),
+        "grep",
+        "json",
+        simplified_serialized.as_bytes(),
+    )
+    .await;
     let matches = simplified["matches"]
         .as_array()
         .cloned()
@@ -264,8 +271,8 @@ fn build_grep_preview(
         limit,
     );
     let system = output_path.as_ref().map_or_else(
-        || format!("Output too large ({serialized_len} chars). Failed to save temp file; showing truncated preview."),
-        |_| format!("Output too large ({serialized_len} chars). Full results saved to temp file. Use view to read it."),
+        || format!("Output too large ({serialized_len} chars). Failed to save scratch file; showing truncated preview."),
+        |_| format!("Output too large ({serialized_len} chars). Full results saved to scratch file. Use view to read it."),
     );
     if let Some(path) = output_path {
         insert_if_fits(&mut preview, "output_file_path", Value::String(path), limit);
@@ -318,19 +325,6 @@ fn insert_if_fits(preview: &mut Value, key: &str, value: Value, limit: usize) {
     if serde_json::to_string(&candidate).is_ok_and(|serialized| serialized.len() <= limit) {
         *preview = candidate;
     }
-}
-
-async fn write_tool_output(
-    provider: &dyn EnvironmentProvider,
-    prefix: &str,
-    extension: &str,
-    content: &str,
-) -> Option<String> {
-    let filename = format!("{prefix}-{}.{}", Uuid::new_v4().simple(), extension);
-    provider
-        .write_tmp_file(&filename, content.as_bytes())
-        .await
-        .ok()
 }
 
 fn simplify_grep_match(value: &Value, truncated_line_max: usize) -> Value {

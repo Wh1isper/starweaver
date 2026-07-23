@@ -69,11 +69,19 @@ fn resolve_attachment(
         ));
     }
     match attachment.kind.as_str() {
-        LOCAL_ENVIRONMENT_ATTACHMENT_KIND => Ok(Arc::new(
-            LocalEnvironmentProvider::new(workspace_root.to_path_buf())
-                .with_id(format!("rpc-local-{}", attachment.id))
-                .with_tmp_namespace(session_id),
-        )),
+        LOCAL_ENVIRONMENT_ATTACHMENT_KIND => {
+            let provider =
+                LocalEnvironmentProvider::new(workspace_root.to_path_buf()).map_err(|error| {
+                    RpcHostError::Environment(format!(
+                        "failed to initialize local environment: {error}"
+                    ))
+                })?;
+            let provider = provider
+                .with_scratch_namespace(session_id)
+                .map_err(|error| RpcHostError::Invalid(error.to_string()))?
+                .with_id(format!("rpc-local-{}", attachment.id));
+            Ok(Arc::new(provider))
+        }
         "envd" => {
             let endpoint = attachment.requested_endpoint_ref().ok_or_else(|| {
                 RpcHostError::Invalid("envd attachment requires endpointRef".to_string())
@@ -162,6 +170,15 @@ mod tests {
         assert_eq!(resolved.attachments.len(), 1);
         assert_eq!(resolved.attachments[0].id, LOCAL_ENVIRONMENT_ATTACHMENT_ID);
         assert_eq!(resolved.provider.id(), "rpc-composite");
+    }
+
+    #[test]
+    fn invalid_local_scratch_namespace_remains_invalid_client_input() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            resolve_rpc_environment(temp.path(), "../invalid", &[]),
+            Err(RpcHostError::Invalid(_))
+        ));
     }
 
     #[test]

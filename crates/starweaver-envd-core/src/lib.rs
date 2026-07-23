@@ -13,7 +13,7 @@ pub use request::{
     FileDeleteRequest, FileGlobMatch, FileGlobOptions, FileGlobRequest, FileGrepMatch,
     FileGrepOptions, FileGrepRequest, FileListOptions, FileListRequest, FileListResult,
     FileMoveRequest, FileReadRequest, FileReadResult, FileStat, FileStatRequest, FileWriteRequest,
-    FileWriteResult, FileWriteTmpRequest, FileWriteTmpResult, InitializeEnvdRequest,
+    FileWriteResult, FileWriteScratchRequest, FileWriteScratchResult, InitializeEnvdRequest,
     InitializeEnvdResult, MutationResult, OpenEnvironmentRequest, ProcessInputRequest,
     ProcessKillRequest, ProcessListResult, ProcessSignalRequest, ProcessStartRequest,
     ProcessWaitRequest, ShellReviewContextRequest, ShellReviewContextResult,
@@ -34,10 +34,10 @@ pub use types::{
 pub const ENVD_PROTOCOL_NAME: &str = "starweaver.envd";
 
 /// Supported breaking envd protocol generation.
-pub const ENVD_PROTOCOL_MAJOR: u32 = 1;
+pub const ENVD_PROTOCOL_MAJOR: u32 = 2;
 
 /// Current envd protocol documentation and fixture revision.
-pub const ENVD_PROTOCOL_REVISION: &str = "2026-07-11";
+pub const ENVD_PROTOCOL_REVISION: &str = "2026-07-23";
 
 /// Implemented envd protocol features.
 pub const ENVD_PROTOCOL_FEATURES: &[&str] =
@@ -65,18 +65,18 @@ pub fn validate_envd_protocol(protocol: &starweaver_core::ProtocolIdentity) -> E
         .map_err(|error| EnvdError::invalid_request(error.to_string()))
 }
 
-/// Validate an initialize request when it carries an explicit protocol identity.
-///
-/// Omission remains readable for pre-v1 local clients.
+/// Validate an initialize request against the current protocol generation.
 ///
 /// # Errors
 ///
-/// Returns an invalid-request error for another protocol name or major.
+/// Returns an invalid-request error when the identity is absent or uses another
+/// protocol name or major.
 pub fn validate_envd_initialize(request: &InitializeEnvdRequest) -> EnvdResult<()> {
-    request
+    let protocol = request
         .protocol
         .as_ref()
-        .map_or(Ok(()), validate_envd_protocol)
+        .ok_or_else(|| EnvdError::invalid_request("missing envd protocol identity"))?;
+    validate_envd_protocol(protocol)
 }
 
 /// Default environment id used by direct local mode.

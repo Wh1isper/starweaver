@@ -12,7 +12,7 @@ use crate::{
     EnvironmentProvider, EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions,
     FileGrepMatch, FileGrepOptions, FileListOptions, FileListResult, FileStat,
     ProcessShellProvider, ProgramCommand, ShellCommand, ShellOutput, ShellProcessSnapshot,
-    ShellReviewEnvironmentContext, is_provider_visible_absolute_path,
+    ShellReviewEnvironmentContext, is_provider_visible_absolute_path, normalize_scratch_filename,
     path_match_candidates as default_path_match_candidates,
     provider_visible_path_allowed_by_context, push_unique_candidate,
 };
@@ -110,6 +110,7 @@ pub struct CompositeEnvironmentProvider {
     default_index: usize,
     default_shell_index: Option<usize>,
     process_routes: Mutex<BTreeMap<String, ProcessRoute>>,
+    scratch_routes: Mutex<BTreeMap<String, ScratchRoute>>,
 }
 
 #[derive(Clone)]
@@ -126,6 +127,13 @@ struct RoutedProvider {
 struct ProcessRoute {
     mount_id: String,
     child_process_id: String,
+}
+
+#[derive(Clone, Debug)]
+struct ScratchRoute {
+    mount_id: String,
+    provider_prefix: String,
+    case_insensitive: bool,
 }
 
 enum PathRoute {
@@ -230,6 +238,7 @@ impl CompositeEnvironmentProvider {
             default_index,
             default_shell_index,
             process_routes: Mutex::new(BTreeMap::new()),
+            scratch_routes: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -255,6 +264,8 @@ impl CompositeEnvironmentProvider {
     }
 
     fn route_path(&self, path: &str) -> EnvironmentResult<PathRoute> {
+        // Validate components before any provider-visible prefix routing. Child
+        // providers must never receive a lexical parent escape from Composite.
         let normalized = normalize_agent_path(path)?;
         let mut parts = normalized.split('/').filter(|part| !part.is_empty());
         if is_absolute_environment_namespace_path(path) && parts.next() == Some(RESERVED_ROOT) {
@@ -271,6 +282,12 @@ impl CompositeEnvironmentProvider {
                 child_path: provider_root_or_path(&child_path),
                 explicit_root: true,
             }));
+        }
+        if let Some(route) = self.route_registered_scratch_path(path)? {
+            return Ok(PathRoute::Provider(route));
+        }
+        if let Some(route) = self.route_provider_visible_path(path)? {
+            return Ok(PathRoute::Provider(route));
         }
         let mount = self.default_mount();
         let child_path = if default_mount_allows_provider_visible_path(mount, path, &normalized) {
@@ -290,9 +307,6 @@ impl CompositeEnvironmentProvider {
 
     fn route_shell(&self, cwd: Option<&str>) -> EnvironmentResult<RoutedProvider> {
         if let Some(cwd) = cwd {
-            if let Some(route) = self.route_provider_visible_shell_cwd(cwd)? {
-                return Ok(route);
-            }
             if let PathRoute::Provider(route) = self.route_path(cwd)? {
                 return Ok(route);
             }
@@ -311,26 +325,130 @@ impl CompositeEnvironmentProvider {
         })
     }
 
-    fn route_provider_visible_shell_cwd(
+    fn route_registered_scratch_path(
         &self,
-        cwd: &str,
+        path: &str,
     ) -> EnvironmentResult<Option<RoutedProvider>> {
-        if !is_provider_visible_absolute_path(cwd) || is_absolute_environment_namespace_path(cwd) {
+        let routes = self
+            .scratch_routes
+            .lock()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+        let mut matches = routes
+            .values()
+            .filter(|route| {
+                provider_path_contains_registered_scratch(
+                    &route.provider_prefix,
+                    path,
+                    route.case_insensitive,
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        drop(routes);
+        matches.sort_by_key(|route| route.provider_prefix.len());
+        let Some(route) = matches.pop() else {
             return Ok(None);
+        };
+        if matches.last().is_some_and(|candidate| {
+            candidate.provider_prefix.len() == route.provider_prefix.len()
+                && candidate.mount_id != route.mount_id
+        }) {
+            return Err(EnvironmentError::InvalidRequest(format!(
+                "scratch path is ambiguous across environment mounts: {path}"
+            )));
         }
-        let mount = self.default_shell_mount()?;
-        let context = mount.provider.shell_review_context();
-        if !provider_visible_path_allowed_by_context(&context, cwd) {
-            return Ok(None);
-        }
+        let mount = self.mount_by_id(&route.mount_id)?;
         Ok(Some(RoutedProvider {
             id: mount.id.clone(),
             agent_root: mount.agent_root.clone(),
             mode: mount.mode,
             provider: mount.provider.clone(),
-            child_path: cwd.to_string(),
+            child_path: path.to_string(),
             explicit_root: false,
         }))
+    }
+
+    fn register_absolute_scratch_scope(
+        &self,
+        mount: &EnvironmentMount,
+        provider_path: &str,
+        filename: &str,
+    ) -> EnvironmentResult<()> {
+        let case_insensitive = provider_path_uses_windows_syntax(provider_path)
+            || mount
+                .provider
+                .shell_review_context()
+                .shell_platform
+                .as_deref()
+                .is_some_and(|platform| platform.eq_ignore_ascii_case("windows"));
+        let provider_prefix =
+            absolute_scratch_scope_prefix(provider_path, filename, case_insensitive)?;
+        if is_absolute_environment_namespace_path(&provider_prefix)
+            || provider_path_has_noncanonical_components(&provider_prefix)
+        {
+            return Err(EnvironmentError::Provider(
+                "scratch provider returned an invalid or reserved scratch scope".to_string(),
+            ));
+        }
+        let mut routes = self
+            .scratch_routes
+            .lock()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+        if let Some(route) = routes.get(&mount.id) {
+            if route.case_insensitive != case_insensitive
+                || !provider_path_contains_registered_scratch(
+                    &route.provider_prefix,
+                    provider_path,
+                    route.case_insensitive,
+                )
+            {
+                return Err(EnvironmentError::Provider(
+                    "scratch provider changed its absolute scratch scope".to_string(),
+                ));
+            }
+            return Ok(());
+        }
+        routes.insert(
+            mount.id.clone(),
+            ScratchRoute {
+                mount_id: mount.id.clone(),
+                provider_prefix,
+                case_insensitive,
+            },
+        );
+        drop(routes);
+        Ok(())
+    }
+
+    fn route_provider_visible_path(&self, path: &str) -> EnvironmentResult<Option<RoutedProvider>> {
+        if !is_provider_visible_absolute_path(path) || is_absolute_environment_namespace_path(path)
+        {
+            return Ok(None);
+        }
+        let matching_mounts = self
+            .mounts
+            .iter()
+            .filter(|mount| {
+                provider_visible_path_allowed_by_context(
+                    &mount.provider.shell_review_context(),
+                    path,
+                )
+            })
+            .collect::<Vec<_>>();
+        match matching_mounts.as_slice() {
+            [] => Ok(None),
+            [mount] => Ok(Some(RoutedProvider {
+                id: mount.id.clone(),
+                agent_root: mount.agent_root.clone(),
+                mode: mount.mode,
+                provider: mount.provider.clone(),
+                child_path: path.to_string(),
+                explicit_root: false,
+            })),
+            _ => Err(EnvironmentError::InvalidRequest(format!(
+                "provider-visible path is ambiguous across environment mounts: {path}"
+            ))),
+        }
     }
 
     fn route_for_process(&self, process_id: &str) -> EnvironmentResult<(EnvironmentMount, String)> {
@@ -468,8 +586,14 @@ impl EnvironmentProvider for CompositeEnvironmentProvider {
         cross_mount_copy(&src_route, &dst_route, overwrite).await
     }
 
-    async fn write_tmp_file(&self, filename: &str, content: &[u8]) -> EnvironmentResult<String> {
-        let mount = self.default_mount();
+    async fn write_scratch_file(
+        &self,
+        filename: &str,
+        content: &[u8],
+    ) -> EnvironmentResult<String> {
+        let mount = self
+            .default_shell_index
+            .map_or_else(|| self.default_mount(), |index| &self.mounts[index]);
         let route = RoutedProvider {
             id: mount.id.clone(),
             agent_root: mount.agent_root.clone(),
@@ -478,8 +602,19 @@ impl EnvironmentProvider for CompositeEnvironmentProvider {
             child_path: ".".to_string(),
             explicit_root: false,
         };
-        ensure_write(&route, "write temporary file")?;
-        mount.provider.write_tmp_file(filename, content).await
+        ensure_write(&route, "write scratch file")?;
+        let provider_path = mount.provider.write_scratch_file(filename, content).await?;
+        if is_provider_visible_absolute_path(&provider_path) {
+            self.register_absolute_scratch_scope(mount, &provider_path, filename)?;
+            return Ok(provider_path);
+        }
+        let child_path = normalize_agent_path(&provider_path)?;
+        if child_path.is_empty() || child_path == "." {
+            return Err(EnvironmentError::Provider(
+                "scratch provider returned an empty path".to_string(),
+            ));
+        }
+        Ok(format!("{}/{}", mount.agent_root, child_path))
     }
 
     async fn stat(&self, path: &str) -> EnvironmentResult<FileStat> {
@@ -1057,6 +1192,66 @@ fn composite_process_id(mount_id: &str, child_process_id: &str) -> String {
     format!("{mount_id}:{child_process_id}")
 }
 
+fn provider_path_has_noncanonical_components(path: &str) -> bool {
+    path.replace('\\', "/")
+        .split('/')
+        .any(|component| matches!(component, "." | ".."))
+}
+
+fn provider_path_uses_windows_syntax(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.starts_with("//")
+        || matches!(
+            normalized.as_bytes(),
+            [drive, b':', b'/', ..] if drive.is_ascii_alphabetic()
+        )
+}
+
+fn provider_path_contains_registered_scratch(
+    root: &str,
+    path: &str,
+    case_insensitive: bool,
+) -> bool {
+    let root = normalize_registered_scratch_path(root, case_insensitive);
+    let path = normalize_registered_scratch_path(path, case_insensitive);
+    !root.is_empty() && (path == root || path.starts_with(&format!("{root}/")))
+}
+
+fn absolute_scratch_scope_prefix(
+    provider_path: &str,
+    filename: &str,
+    case_insensitive: bool,
+) -> EnvironmentResult<String> {
+    let normalized_filename = normalize_scratch_filename(filename)?;
+    let normalized_path = provider_path.replace('\\', "/");
+    let suffix = format!("/{normalized_filename}");
+    let comparison_path = normalize_registered_scratch_path(&normalized_path, case_insensitive);
+    let comparison_suffix = normalize_registered_scratch_path(&suffix, case_insensitive);
+    if !comparison_path.ends_with(&comparison_suffix) {
+        return Err(EnvironmentError::Provider(
+            "scratch provider returned a path outside the requested filename suffix".to_string(),
+        ));
+    }
+    let candidate = &normalized_path[..normalized_path.len() - suffix.len()];
+    if !is_provider_visible_absolute_path(candidate) {
+        return Err(EnvironmentError::Provider(
+            "scratch provider returned a path without an absolute scratch scope".to_string(),
+        ));
+    }
+    Ok(normalize_registered_scratch_path(candidate, false))
+}
+
+fn normalize_registered_scratch_path(path: &str, case_insensitive: bool) -> String {
+    let mut normalized = path.replace('\\', "/");
+    while normalized.len() > 1 && normalized.ends_with('/') {
+        normalized.pop();
+    }
+    if case_insensitive {
+        normalized.make_ascii_lowercase();
+    }
+    normalized
+}
+
 fn provider_root_or_path(path: &str) -> String {
     if path.is_empty() {
         ".".to_string()
@@ -1071,7 +1266,9 @@ fn environment_root(id: &str) -> String {
 
 fn is_absolute_environment_namespace_path(path: &str) -> bool {
     let path = path.replace('\\', "/");
-    if !path.starts_with('/') {
+    // `/environment/...` is Composite's logical namespace. A double slash is
+    // a provider-visible UNC path and must never be interpreted as that root.
+    if !path.starts_with('/') || path.starts_with("//") {
         return false;
     }
     let trimmed = path.trim_start_matches('/');
@@ -1152,4 +1349,149 @@ fn render_mount_summary(mounts: &[EnvironmentMount]) -> String {
     }
     xml.push_str("</environment-mounts>");
     xml
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::{
+        EnvironmentPolicy, EnvironmentProvider, FilePolicy, LocalEnvironmentProvider, ShellPolicy,
+        VirtualEnvironmentProvider,
+    };
+
+    use super::{
+        CompositeEnvironmentProvider, EnvironmentMount, PathRoute, absolute_scratch_scope_prefix,
+    };
+
+    #[test]
+    fn windows_scratch_routes_ignore_case_without_windows_review_context()
+    -> crate::EnvironmentResult<()> {
+        for (registered, equivalent) in [
+            ("C:/Temp/session/Output.log", "c:/temp/session/another.log"),
+            (
+                "//environment/Share/session/Output.log",
+                "//ENVIRONMENT/share/session/another.log",
+            ),
+        ] {
+            let provider = CompositeEnvironmentProvider::new(vec![
+                EnvironmentMount::new("files", Arc::new(VirtualEnvironmentProvider::new("files")))?
+                    .with_default(true),
+                EnvironmentMount::new("owner", Arc::new(VirtualEnvironmentProvider::new("owner")))?
+                    .with_default_for_shell(true),
+            ])?;
+            let owner = provider.mount_by_id("owner")?;
+            provider.register_absolute_scratch_scope(owner, registered, "Output.log")?;
+            let PathRoute::Provider(route) = provider.route_path(equivalent)? else {
+                panic!("registered scratch scope must route to a provider");
+            };
+            assert_eq!(route.id, "owner");
+            assert_eq!(route.child_path, equivalent);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn scratch_scope_registration_rejects_escape_reserved_and_scope_changes()
+    -> crate::EnvironmentResult<()> {
+        let provider = CompositeEnvironmentProvider::new(vec![
+            EnvironmentMount::new("files", Arc::new(VirtualEnvironmentProvider::new("files")))?
+                .with_default(true),
+            EnvironmentMount::new("owner", Arc::new(VirtualEnvironmentProvider::new("owner")))?
+                .with_default_for_shell(true),
+        ])?;
+        let owner = provider.mount_by_id("owner")?;
+        provider.register_absolute_scratch_scope(owner, "/tmp/scope/output.log", "output.log")?;
+        assert!(matches!(
+            provider.route_path("/tmp/scope/../shared/secret"),
+            Err(crate::EnvironmentError::InvalidRequest(_))
+        ));
+        assert!(matches!(
+            provider.register_absolute_scratch_scope(
+                owner,
+                "/environment/data/scratch/output.log",
+                "output.log",
+            ),
+            Err(crate::EnvironmentError::Provider(_))
+        ));
+        assert!(matches!(
+            provider.register_absolute_scratch_scope(
+                owner,
+                "/tmp/another-scope/output.log",
+                "output.log",
+            ),
+            Err(crate::EnvironmentError::Provider(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn absolute_scratch_scope_is_bounded_and_survives_file_mutations()
+    -> crate::EnvironmentResult<()> {
+        let root = tempfile::tempdir()
+            .map_err(|error| crate::EnvironmentError::Provider(error.to_string()))?;
+        let provider = CompositeEnvironmentProvider::new(vec![
+            EnvironmentMount::new(
+                "owner",
+                Arc::new(LocalEnvironmentProvider::new(root.path())?.with_policy(
+                    EnvironmentPolicy {
+                        files: FilePolicy::read_write(),
+                        shell: ShellPolicy::default(),
+                    },
+                )),
+            )?
+            .with_default(true)
+            .with_default_for_shell(true),
+        ])?;
+        let first = provider.write_scratch_file("first.log", b"first").await?;
+        let second = provider
+            .write_scratch_file("nested/second.log", b"second")
+            .await?;
+        assert_eq!(
+            provider
+                .scratch_routes
+                .lock()
+                .map_err(|error| crate::EnvironmentError::Provider(error.to_string()))?
+                .len(),
+            1
+        );
+
+        provider.delete_path(&first, false).await?;
+        let scratch_root = std::path::Path::new(&first)
+            .parent()
+            .ok_or_else(|| crate::EnvironmentError::InvalidRequest(first.clone()))?;
+        let moved = crate::display_local_path(&scratch_root.join("moved.log"));
+        provider.move_path(&second, &moved, false).await?;
+        assert_eq!(provider.read_text(&moved).await?, "second");
+        assert_eq!(
+            provider
+                .scratch_routes
+                .lock()
+                .map_err(|error| crate::EnvironmentError::Provider(error.to_string()))?
+                .len(),
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scratch_scope_prefix_strips_nested_requested_filename() -> crate::EnvironmentResult<()> {
+        assert_eq!(
+            absolute_scratch_scope_prefix(
+                "/tmp/scratch/session/nested/output.log",
+                "nested/output.log",
+                false,
+            )?,
+            "/tmp/scratch/session"
+        );
+        assert!(matches!(
+            absolute_scratch_scope_prefix(
+                "/tmp/scratch/provider-renamed.log",
+                "requested.log",
+                false,
+            ),
+            Err(crate::EnvironmentError::Provider(_))
+        ));
+        Ok(())
+    }
 }

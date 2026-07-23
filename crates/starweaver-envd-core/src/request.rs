@@ -10,7 +10,7 @@ use crate::{FileReadMode, ProcessSnapshot};
 /// Initialize request.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InitializeEnvdRequest {
-    /// Protocol identity requested by the caller. Omitted only by legacy clients.
+    /// Protocol identity requested by the caller. Required by protocol validation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<ProtocolIdentity>,
     /// Caller name.
@@ -152,9 +152,9 @@ pub struct FileCopyRequest {
     pub overwrite: bool,
 }
 
-/// Temporary file write request.
+/// Scratch file write request.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct FileWriteTmpRequest {
+pub struct FileWriteScratchRequest {
     /// Environment id.
     pub environment_id: String,
     /// Requested filename.
@@ -163,10 +163,10 @@ pub struct FileWriteTmpRequest {
     pub bytes: Vec<u8>,
 }
 
-/// Temporary file write result.
+/// Scratch file write result.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct FileWriteTmpResult {
-    /// Provider-visible temporary path.
+pub struct FileWriteScratchResult {
+    /// Provider-visible scratch path.
     pub path: String,
     /// State version after the write.
     pub state_version: u64,

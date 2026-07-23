@@ -19,11 +19,12 @@ use starweaver_envd_core::{
     EnvironmentRequest, EnvironmentStateSnapshot, FileCopyRequest, FileCreateDirRequest,
     FileDeleteRequest, FileGlobMatch, FileGlobRequest, FileGrepMatch, FileGrepRequest,
     FileListRequest, FileListResult, FileMoveRequest, FileReadRequest, FileReadResult, FileStat,
-    FileStatRequest, FileWriteRequest, FileWriteResult, FileWriteTmpRequest, FileWriteTmpResult,
-    InitializeEnvdRequest, InitializeEnvdResult, MutationResult, OpenEnvironmentRequest,
-    ProcessInputRequest, ProcessKillRequest, ProcessListResult, ProcessSignalRequest,
-    ProcessSnapshot, ProcessStartRequest, ProcessWaitRequest, ShellReviewContextRequest,
-    ShellReviewContextResult, envd_protocol_identity, validate_envd_protocol,
+    FileStatRequest, FileWriteRequest, FileWriteResult, FileWriteScratchRequest,
+    FileWriteScratchResult, InitializeEnvdRequest, InitializeEnvdResult, MutationResult,
+    OpenEnvironmentRequest, ProcessInputRequest, ProcessKillRequest, ProcessListResult,
+    ProcessSignalRequest, ProcessSnapshot, ProcessStartRequest, ProcessWaitRequest,
+    ShellReviewContextRequest, ShellReviewContextResult, envd_protocol_identity,
+    validate_envd_protocol,
 };
 use thiserror::Error;
 use tokio::{
@@ -293,8 +294,11 @@ impl EnvdService for EnvdRpcClient {
         self.request("file.copy", &request).await
     }
 
-    async fn file_write_tmp(&self, request: FileWriteTmpRequest) -> EnvdResult<FileWriteTmpResult> {
-        self.request("file.write_tmp", &request).await
+    async fn file_write_scratch(
+        &self,
+        request: FileWriteScratchRequest,
+    ) -> EnvdResult<FileWriteScratchResult> {
+        self.request("file.write_scratch", &request).await
     }
 
     async fn file_stat(&self, request: FileStatRequest) -> EnvdResult<FileStat> {

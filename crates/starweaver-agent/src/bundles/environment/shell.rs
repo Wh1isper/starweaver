@@ -25,7 +25,7 @@ use crate::bundles::helpers::{
 };
 use crate::bundles::output::{
     DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT, append_guidance, dump_tool_output,
-    fit_text_fields_to_limit, output_too_large_message, tool_output_size, write_tmp_output,
+    fit_text_fields_to_limit, output_too_large_message, tool_output_size, write_scratch_output,
 };
 
 /// `AgentContext` dependency for process-capable shell providers.
@@ -74,7 +74,7 @@ pub fn shell_tools() -> DynToolset {
                 r#"<shell-guidelines>
 Check the runtime `<environment-context><shell-execution>` context for the active shell dialect before relying on shell-specific syntax.
 
-Large outputs may be saved to stdout_file_path, stderr_file_path, or output_file_path. When a shell command needs to create temporary files itself, write them under `$TMPDIR` rather than hard-coded `/tmp/...`; local providers map `$TMPDIR` to a provider-managed, session-scoped directory that file tools can read.
+Large outputs may be saved to stdout_file_path, stderr_file_path, or output_file_path. When a shell command needs to create scratch files itself, write them under `$TMPDIR` rather than hard-coded `/tmp/...`; local providers map `$TMPDIR` to a provider-managed, session-scoped directory that file tools can read.
 
 <background-mode>
 Set background=true for long-running commands such as builds, servers, and test suites. Completed background processes are automatically reported in context; use shell_wait only when you need results before proceeding, and use timeout_seconds=0 to poll without blocking.
@@ -625,7 +625,7 @@ async fn guard_shell_result(
     }
 
     let full_result = dump_tool_output(&result);
-    let output_path = write_tmp_output(provider, prefix, "json", full_result.as_bytes()).await;
+    let output_path = write_scratch_output(provider, prefix, "json", full_result.as_bytes()).await;
     let guidance = output_too_large_message(
         full_result.chars().count(),
         output_path.as_deref(),
@@ -729,7 +729,7 @@ async fn truncate_shell_output(
     }
     let filename = format!("{stream_name}-{}.log", Uuid::new_v4().simple());
     provider
-        .write_tmp_file(&filename, content.as_bytes())
+        .write_scratch_file(&filename, content.as_bytes())
         .await
         .map_or_else(
             |_| truncate_shell_output_without_file(content, truncate_limit),
@@ -774,12 +774,14 @@ mod tests {
     #[tokio::test]
     async fn process_start_handoff_cleans_up_when_caller_is_cancelled() {
         let root = tempfile::tempdir().unwrap();
-        let local_provider = Arc::new(LocalEnvironmentProvider::new(root.path()).with_policy(
-            EnvironmentPolicy {
-                files: FilePolicy::read_only(),
-                shell: ShellPolicy::allow_all(),
-            },
-        ));
+        let local_provider = Arc::new(
+            LocalEnvironmentProvider::new(root.path())
+                .unwrap()
+                .with_policy(EnvironmentPolicy {
+                    files: FilePolicy::read_only(),
+                    shell: ShellPolicy::allow_all(),
+                }),
+        );
         let provider: DynProcessShellProvider = local_provider;
         let start_provider = provider.clone();
         let (started_sender, started_receiver) = oneshot::channel();

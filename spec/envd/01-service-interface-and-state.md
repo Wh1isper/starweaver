@@ -20,7 +20,10 @@ pub trait EnvdService: Send + Sync {
     async fn file_delete(&self, request: FileDeleteRequest) -> EnvdResult<MutationResult>;
     async fn file_move(&self, request: FileMoveRequest) -> EnvdResult<MutationResult>;
     async fn file_copy(&self, request: FileCopyRequest) -> EnvdResult<MutationResult>;
-    async fn file_write_tmp(&self, request: FileWriteTmpRequest) -> EnvdResult<FileWriteTmpResult>;
+    async fn file_write_scratch(
+        &self,
+        request: FileWriteScratchRequest,
+    ) -> EnvdResult<FileWriteScratchResult>;
     async fn file_list(&self, request: FileListRequest) -> EnvdResult<FileListResult>;
     async fn file_stat(&self, request: FileStatRequest) -> EnvdResult<FileStat>;
     async fn file_glob(&self, request: FileGlobRequest) -> EnvdResult<Vec<FileGlobMatch>>;
@@ -140,7 +143,7 @@ File state should expose:
 - create/delete/move/copy
 - stat/list
 - glob/grep
-- tmp/scratch writes
+- provider-owned scratch writes
 
 ## Operation and Effect Records
 

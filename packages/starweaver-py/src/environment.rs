@@ -239,12 +239,16 @@ impl EnvironmentProviderTrait for PythonEnvironmentProvider {
         .await
     }
 
-    async fn write_tmp_file(&self, filename: &str, content: &[u8]) -> EnvironmentResult<String> {
+    async fn write_scratch_file(
+        &self,
+        filename: &str,
+        content: &[u8],
+    ) -> EnvironmentResult<String> {
         let filename = filename.to_string();
         let content = content.to_vec();
-        self.call_json("write_tmp_file", move |py, provider| {
+        self.call_json("write_scratch_file", move |py, provider| {
             let content = PyBytes::new(py, &content).unbind().into_any();
-            provider.call_method1(py, "write_tmp_file", (filename, content))
+            provider.call_method1(py, "write_scratch_file", (filename, content))
         })
         .await
     }
@@ -380,18 +384,20 @@ impl PyEnvironmentProvider {
     }
 
     #[staticmethod]
-    #[pyo3(signature = (id="virtual", files=None, resources=None, shell_outputs=None, tmp_namespace=None))]
+    #[pyo3(signature = (id="virtual", files=None, resources=None, shell_outputs=None, scratch_namespace=None))]
     fn virtual_provider(
         py: Python<'_>,
         id: &str,
         files: Option<&Bound<'_, PyAny>>,
         resources: Option<&Bound<'_, PyAny>>,
         shell_outputs: Option<&Bound<'_, PyAny>>,
-        tmp_namespace: Option<String>,
+        scratch_namespace: Option<String>,
     ) -> PyResult<Self> {
         let mut provider = VirtualEnvironmentProvider::new(id);
-        if let Some(namespace) = tmp_namespace {
-            provider = provider.with_tmp_namespace(namespace);
+        if let Some(namespace) = scratch_namespace {
+            provider = provider
+                .with_scratch_namespace(namespace)
+                .map_err(environment_error_to_py_value)?;
         }
         if let Some(files) = files {
             let files: BTreeMap<String, String> = parse_json(py, files, "files")?;
@@ -416,7 +422,7 @@ impl PyEnvironmentProvider {
     }
 
     #[staticmethod]
-    #[pyo3(signature = (root, id=None, allowed_paths=None, context_file_tree_roots=None, writable=false, allow_shell=false, allowed_programs=None, tmp_namespace=None))]
+    #[pyo3(signature = (root, id=None, allowed_paths=None, context_file_tree_roots=None, writable=false, allow_shell=false, allowed_programs=None, scratch_namespace=None))]
     #[allow(clippy::too_many_arguments)]
     fn local(
         root: String,
@@ -426,8 +432,8 @@ impl PyEnvironmentProvider {
         writable: bool,
         allow_shell: bool,
         allowed_programs: Option<Vec<String>>,
-        tmp_namespace: Option<String>,
-    ) -> Self {
+        scratch_namespace: Option<String>,
+    ) -> PyResult<Self> {
         let file_policy = if writable {
             FilePolicy::read_write()
         } else {
@@ -441,8 +447,9 @@ impl PyEnvironmentProvider {
         } else {
             ShellPolicy::default()
         };
-        let mut provider =
-            LocalEnvironmentProvider::new(PathBuf::from(root)).with_policy(EnvironmentPolicy {
+        let mut provider = LocalEnvironmentProvider::new(PathBuf::from(root))
+            .map_err(environment_error_to_py_value)?
+            .with_policy(EnvironmentPolicy {
                 files: file_policy,
                 shell: shell_policy,
             });
@@ -455,12 +462,14 @@ impl PyEnvironmentProvider {
         if let Some(paths) = context_file_tree_roots {
             provider = provider.with_context_file_tree_roots(paths.into_iter().map(PathBuf::from));
         }
-        if let Some(namespace) = tmp_namespace {
-            provider = provider.with_tmp_namespace(namespace);
+        if let Some(namespace) = scratch_namespace {
+            provider = provider
+                .with_scratch_namespace(namespace)
+                .map_err(environment_error_to_py_value)?;
         }
-        Self {
+        Ok(Self {
             inner: Arc::new(provider),
-        }
+        })
     }
 
     #[staticmethod]
@@ -642,7 +651,7 @@ impl PyEnvironmentProvider {
         )
     }
 
-    fn write_tmp_file(
+    fn write_scratch_file(
         &self,
         py: Python<'_>,
         filename: String,
@@ -654,7 +663,7 @@ impl PyEnvironmentProvider {
             py,
             async move {
                 provider
-                    .write_tmp_file(&filename, &content)
+                    .write_scratch_file(&filename, &content)
                     .await
                     .map_err(environment_error_to_py)
             },

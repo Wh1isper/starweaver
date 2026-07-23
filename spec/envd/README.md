@@ -136,7 +136,7 @@ extraction gate.
 
 The initial `LocalEnvd` path is a refactor of existing behavior: it may use the
 current Starweaver local/virtual providers as its backend so file, shell,
-context, process, temporary file, and export-state behavior do not change.
+context, process, provider-owned scratch, and export-state behavior do not change.
 Envd client and daemon transports wrap the same service interface. Durable
 state and public load/unload semantics belong to concrete envd implementations
 that need them, not to the current local CLI scenario.

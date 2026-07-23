@@ -1271,7 +1271,7 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
         )
         .await;
     let glob_path = glob.content["output_file_path"].as_str().unwrap();
-    assert!(glob_path.starts_with(".starweaver/tmp/glob-"));
+    assert!(glob_path.starts_with(".starweaver/scratch/glob-"));
     assert!(glob.content["system-reminder"].is_string());
     assert!(
         serde_json::to_string(&glob.content).unwrap().len()
@@ -1304,7 +1304,7 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
         )
         .await;
     let grep_path = grep.content["output_file_path"].as_str().unwrap();
-    assert!(grep_path.starts_with(".starweaver/tmp/grep-"));
+    assert!(grep_path.starts_with(".starweaver/scratch/grep-"));
     assert!(grep.content["system-reminder"].is_string());
     assert!(
         serde_json::to_string(&grep.content).unwrap().len()
@@ -1330,8 +1330,8 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
         .await;
     let stdout_path = shell.content["stdout_file_path"].as_str().unwrap();
     let stderr_path = shell.content["stderr_file_path"].as_str().unwrap();
-    assert!(stdout_path.starts_with(".starweaver/tmp/stdout-"));
-    assert!(stderr_path.starts_with(".starweaver/tmp/stderr-"));
+    assert!(stdout_path.starts_with(".starweaver/scratch/stdout-"));
+    assert!(stderr_path.starts_with(".starweaver/scratch/stderr-"));
     assert_eq!(provider.read_text(stdout_path).await.unwrap().len(), 25_000);
     assert_eq!(provider.read_text(stderr_path).await.unwrap().len(), 25_000);
     assert!(
@@ -1347,7 +1347,7 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
             .contains("truncated")
     );
     let shell_result_path = shell.content["output_file_path"].as_str().unwrap();
-    assert!(shell_result_path.starts_with(".starweaver/tmp/shell-exec-"));
+    assert!(shell_result_path.starts_with(".starweaver/scratch/shell-exec-"));
     let full_shell_result = provider.read_text(shell_result_path).await.unwrap();
     assert!(full_shell_result.contains(stdout_path));
     assert!(full_shell_result.contains(stderr_path));
@@ -1387,7 +1387,7 @@ async fn host_io_large_outputs_are_bounded_and_saved_to_tmp_files() {
     assert_eq!(search.content["results_total"], 8);
     assert!(search.content["results_showing"].as_u64().unwrap() < 8);
     let search_path = search.content["output_file_path"].as_str().unwrap();
-    assert!(search_path.starts_with(".starweaver/tmp/search-"));
+    assert!(search_path.starts_with(".starweaver/scratch/search-"));
     assert!(
         provider
             .read_text(search_path)
@@ -1406,7 +1406,7 @@ async fn host_io_large_outputs_are_bounded_and_saved_to_tmp_files() {
         .unwrap();
     assert_eq!(scrape.content["truncated"], true);
     let scrape_path = scrape.content["output_file_path"].as_str().unwrap();
-    assert!(scrape_path.starts_with(".starweaver/tmp/scrape-"));
+    assert!(scrape_path.starts_with(".starweaver/scratch/scrape-"));
     assert_eq!(
         provider.read_text(scrape_path).await.unwrap(),
         large_markdown()
@@ -1467,7 +1467,7 @@ async fn fetch_large_text_output_is_bounded_and_saved_to_tmp_file() {
 
     assert_eq!(fetch.content["truncated"], true);
     let fetch_path = fetch.content["output_file_path"].as_str().unwrap();
-    assert!(fetch_path.starts_with(".starweaver/tmp/fetch-"));
+    assert!(fetch_path.starts_with(".starweaver/scratch/fetch-"));
     assert_eq!(provider.read_text(fetch_path).await.unwrap(), expected);
     assert!(
         fetch.content["content"]
@@ -1700,12 +1700,12 @@ async fn read_media_rejects_non_media_http_url_with_actionable_retry() {
 #[tokio::test]
 async fn local_shell_exec_foreground_cancels_running_process_quickly() {
     let root = unique_agent_test_dir();
-    let provider = Arc::new(
-        LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+    let provider = Arc::new(LocalEnvironmentProvider::new(&root).unwrap().with_policy(
+        EnvironmentPolicy {
             files: FilePolicy::read_only(),
             shell: ShellPolicy::allow_all(),
-        }),
-    );
+        },
+    ));
     let mut registry = ToolRegistry::new();
     registry.insert_toolset(&shell_tools());
     let mut agent_context = AgentContext::default();
@@ -1800,12 +1800,12 @@ async fn wait_for_local_process_status(
 #[tokio::test]
 async fn local_shell_tmp_output_path_can_be_viewed() {
     let root = unique_agent_test_dir();
-    let provider = Arc::new(
-        LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+    let provider = Arc::new(LocalEnvironmentProvider::new(&root).unwrap().with_policy(
+        EnvironmentPolicy {
             files: FilePolicy::read_only(),
             shell: ShellPolicy::allow_all(),
-        }),
-    );
+        },
+    ));
     let mut registry = ToolRegistry::new();
     registry.insert_toolset(&filesystem_tools());
     registry.insert_toolset(&shell_tools());

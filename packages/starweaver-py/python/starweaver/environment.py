@@ -255,8 +255,19 @@ class PythonEnvironmentProvider:
         _ = overwrite
         await self.write_text(dst, await self.read_text(src))
 
-    async def write_tmp_file(self, filename: str, content: str | bytes) -> str:
-        path = f".tmp/{filename.lstrip('/')}"
+    async def write_scratch_file(self, filename: str, content: str | bytes) -> str:
+        normalized = filename.replace("\\", "/")
+        parts = normalized.split("/")
+        if (
+            not normalized
+            or normalized.startswith("/")
+            or parts[0].endswith(":")
+            or any(part == ".." for part in parts)
+            or normalized == ".starweaver/scratch"
+            or normalized.startswith(".starweaver/scratch/")
+        ):
+            raise ValueError("scratch filename must be relative to the provider scratch directory")
+        path = f".starweaver/scratch/{normalized}"
         text = content.decode("utf-8") if isinstance(content, bytes) else content
         await self.write_text(path, text)
         return path
@@ -551,7 +562,7 @@ class EnvironmentProvider:
         files: Mapping[str, str] | None = None,
         resources: Sequence[ResourceRef | Mapping[str, Any]] | None = None,
         shell_outputs: Mapping[str, str | Mapping[str, Any]] | None = None,
-        tmp_namespace: str | None = None,
+        scratch_namespace: str | None = None,
     ) -> EnvironmentProvider:
         return cls(
             _native.EnvironmentProvider.virtual_provider(
@@ -559,7 +570,7 @@ class EnvironmentProvider:
                 files=dict(files or {}),
                 resources=[ensure_resource_ref(resource).to_dict() for resource in resources or ()],
                 shell_outputs=dict(shell_outputs or {}),
-                tmp_namespace=tmp_namespace,
+                scratch_namespace=scratch_namespace,
             )
         )
 
@@ -574,7 +585,7 @@ class EnvironmentProvider:
         writable: bool = False,
         allow_shell: bool = False,
         allowed_programs: Sequence[str] | None = None,
-        tmp_namespace: str | None = None,
+        scratch_namespace: str | None = None,
     ) -> EnvironmentProvider:
         return cls(
             _native.EnvironmentProvider.local(
@@ -585,7 +596,7 @@ class EnvironmentProvider:
                 writable=writable,
                 allow_shell=allow_shell,
                 allowed_programs=list(allowed_programs or ()),
-                tmp_namespace=tmp_namespace,
+                scratch_namespace=scratch_namespace,
             )
         )
 
@@ -701,8 +712,8 @@ class EnvironmentProvider:
     async def write_text(self, path: str, content: str) -> None:
         await self._native.write_text(path, content)
 
-    async def write_tmp_file(self, filename: str, content: str | bytes) -> str:
-        return cast(str, await self._native.write_tmp_file(filename, content))
+    async def write_scratch_file(self, filename: str, content: str | bytes) -> str:
+        return cast(str, await self._native.write_scratch_file(filename, content))
 
     async def create_dir(self, path: str, *, parents: bool = True) -> None:
         await self._native.create_dir(path, parents)
@@ -923,7 +934,7 @@ class VirtualEnvironment(Environment):
         files: Mapping[str, str] | None = None,
         resources: Sequence[ResourceRef | Mapping[str, Any]] | None = None,
         shell_outputs: Mapping[str, str | Mapping[str, Any]] | None = None,
-        tmp_namespace: str | None = None,
+        scratch_namespace: str | None = None,
     ) -> None:
         super().__init__(
             native
@@ -932,7 +943,7 @@ class VirtualEnvironment(Environment):
                 files=dict(files or {}),
                 resources=[ensure_resource_ref(resource).to_dict() for resource in resources or ()],
                 shell_outputs=dict(shell_outputs or {}),
-                tmp_namespace=tmp_namespace,
+                scratch_namespace=scratch_namespace,
             )
         )
 
@@ -950,7 +961,7 @@ class LocalEnvironment(Environment):
         writable: bool = False,
         allow_shell: bool = False,
         allowed_programs: Sequence[str] | None = None,
-        tmp_namespace: str | None = None,
+        scratch_namespace: str | None = None,
     ) -> None:
         if isinstance(root, _native.EnvironmentProvider):
             super().__init__(root)
@@ -964,7 +975,7 @@ class LocalEnvironment(Environment):
                 writable=writable,
                 allow_shell=allow_shell,
                 allowed_programs=list(allowed_programs or ()),
-                tmp_namespace=tmp_namespace,
+                scratch_namespace=scratch_namespace,
             )
         )
 
@@ -1107,7 +1118,7 @@ class FileOperator:
         suffix: str = ".txt",
     ) -> ResourceRef:
         filename = f"{uuid.uuid4().hex}{suffix}"
-        path = await self.environment.write_tmp_file(filename, content)
+        path = await self.environment.write_scratch_file(filename, content)
         return ResourceRef.typed(path, kind="file", metadata={"path": path})
 
 

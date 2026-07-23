@@ -99,8 +99,9 @@ pub trait EnvironmentProvider: Send + Sync {
     /// Copy a provider-scoped file or directory.
     async fn copy_path(&self, src: &str, dst: &str, overwrite: bool) -> EnvironmentResult<()>;
 
-    /// Write a provider-scoped temporary file and return the path that tools can pass back to the model.
-    async fn write_tmp_file(&self, filename: &str, content: &[u8]) -> EnvironmentResult<String>;
+    /// Write a provider-scoped scratch file and return the path that tools can pass back to the model.
+    async fn write_scratch_file(&self, filename: &str, content: &[u8])
+    -> EnvironmentResult<String>;
 
     /// Return provider-scoped file metadata.
     async fn stat(&self, path: &str) -> EnvironmentResult<FileStat>;

@@ -11,7 +11,7 @@ use starweaver_envd_core::{
     CleanupIdleRequest, CommandRunRequest, EnvdService, EnvironmentContextRequest,
     EnvironmentRequest, FileCopyRequest, FileCreateDirRequest, FileDeleteRequest, FileGlobRequest,
     FileGrepRequest, FileListRequest, FileMoveRequest, FileReadMode, FileReadRequest,
-    FileStatRequest, FileWriteRequest, FileWriteTmpRequest, ProcessInputRequest,
+    FileStatRequest, FileWriteRequest, FileWriteScratchRequest, ProcessInputRequest,
     ProcessKillRequest, ProcessSignalRequest, ProcessStartRequest, ProcessWaitRequest,
 };
 
@@ -258,9 +258,13 @@ impl EnvironmentProvider for EnvdEnvironmentProvider {
             .map_err(envd_error_to_environment)
     }
 
-    async fn write_tmp_file(&self, filename: &str, content: &[u8]) -> EnvironmentResult<String> {
+    async fn write_scratch_file(
+        &self,
+        filename: &str,
+        content: &[u8],
+    ) -> EnvironmentResult<String> {
         self.service
-            .file_write_tmp(FileWriteTmpRequest {
+            .file_write_scratch(FileWriteScratchRequest {
                 environment_id: self.environment_id.clone(),
                 filename: filename.to_string(),
                 bytes: content.to_vec(),

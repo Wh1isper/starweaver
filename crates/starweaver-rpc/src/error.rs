@@ -45,6 +45,9 @@ pub enum RpcHostError {
     /// Retryable durable storage failure.
     #[error("storage temporarily unavailable: {0}")]
     RetryableStorage(String),
+    /// Environment initialization or availability failure.
+    #[error("environment error: {0}")]
+    Environment(String),
     /// Agent runtime failure.
     #[error("runtime error: {0}")]
     Runtime(String),
@@ -105,6 +108,9 @@ impl From<RpcHostError> for RpcError {
                 "durable storage is temporarily unavailable",
             ),
             RpcHostError::Storage(_) => Self::new(SERVER_ERROR, "durable storage operation failed"),
+            RpcHostError::Environment(_) => {
+                Self::new(ENVIRONMENT_UNAVAILABLE, "environment is unavailable")
+            }
             RpcHostError::Runtime(_) => Self::new(SERVER_ERROR, "runtime operation failed"),
             RpcHostError::Io(_) => Self::new(SERVER_ERROR, "host I/O operation failed"),
         }
@@ -142,12 +148,20 @@ mod tests {
     }
 
     #[test]
+    fn environment_errors_use_the_typed_redacted_unavailable_error() {
+        let rpc = RpcError::from(RpcHostError::Environment("private host path".to_string()));
+        assert_eq!(rpc.code, ENVIRONMENT_UNAVAILABLE);
+        assert_eq!(rpc.message, "environment is unavailable");
+    }
+
+    #[test]
     fn internal_errors_are_redacted_from_rpc_messages() {
         let secret = "sqlite:///private/path?token=provider-secret";
         let cases = [
             RpcHostError::from(SessionStoreError::Failed(secret.to_string())),
             RpcHostError::from(SessionStoreError::RetryableStorage(secret.to_string())),
             RpcHostError::from(starweaver_stream::ReplayError::Failed(secret.to_string())),
+            RpcHostError::Environment(secret.to_string()),
             RpcHostError::Runtime(secret.to_string()),
             RpcHostError::Io(std::io::Error::other(secret)),
         ];

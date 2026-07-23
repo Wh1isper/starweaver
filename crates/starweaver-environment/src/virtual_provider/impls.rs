@@ -302,8 +302,12 @@ impl EnvironmentProvider for VirtualEnvironmentProvider {
         Ok(())
     }
 
-    async fn write_tmp_file(&self, filename: &str, content: &[u8]) -> EnvironmentResult<String> {
-        let normalized = self.tmp_file_path(filename)?;
+    async fn write_scratch_file(
+        &self,
+        filename: &str,
+        content: &[u8],
+    ) -> EnvironmentResult<String> {
+        let normalized = self.scratch_file_path(filename)?;
         self.binary_files
             .lock()
             .map_err(|error| EnvironmentError::Provider(error.to_string()))?

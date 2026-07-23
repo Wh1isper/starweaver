@@ -18,10 +18,11 @@ use crate::{
     FileGlobMatch, FileGlobOptions, FileGrepMatch, FileGrepOptions, FileListOptions,
     FileListResult, FilePolicy, FileStat, FileTreeBlock, LocalExecutionLimiter, LocalGrepSink,
     PathGlob, ProgramCommand, ShellCommand, ShellOutput, ShellPolicy,
-    ShellReviewEnvironmentContext, copy_local_dir, create_local_tmp_dir, display_local_path,
+    ShellReviewEnvironmentContext, copy_local_dir, create_local_scratch_dir,
+    create_local_scratch_dir_with_workspace_fallback, display_local_path,
     file_tree_directory_depth_increment, file_tree_directory_is_visible, list_ignore_match,
     local_grep_file_match_limit, local_search_walk_builder, local_shell_metadata, map_io_error,
-    normalize_local_config_path, normalize_match_path, normalize_path, normalize_tmp_namespace,
+    normalize_local_config_path, normalize_match_path, normalize_path, normalize_scratch_namespace,
     path_match_candidates, prepare_local_destination, push_unique_candidate, push_unique_path,
     render_environment_context_xml, render_local_file_tree_listing,
 };
@@ -39,16 +40,34 @@ pub const DEFAULT_LOCAL_READ_BYTES: usize = 8 * 1024 * 1024;
 /// to a concurrent untrusted filesystem writer must use a sandboxed provider
 /// or keep allowed roots exclusively controlled for the duration of an
 /// operation.
+#[derive(Debug)]
+struct LocalProviderResources {
+    // Processes must be dropped before the scratch directory because running
+    // children may still have their working environment rooted there.
+    processes: Mutex<BTreeMap<String, LocalShellProcess>>,
+    scratch_dir: tempfile::TempDir,
+}
+
+impl Drop for LocalProviderResources {
+    fn drop(&mut self) {
+        match self.processes.get_mut() {
+            Ok(processes) => processes.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+    }
+}
+
+/// Local filesystem and shell provider with an owned, RAII-managed scratch area.
 #[derive(Clone, Debug)]
 pub struct LocalEnvironmentProvider {
     id: String,
     root: PathBuf,
-    allowed_paths: Vec<PathBuf>,
+    configured_allowed_paths: Vec<PathBuf>,
+    effective_allowed_paths: Vec<PathBuf>,
     context_file_tree_roots: Option<Vec<PathBuf>>,
-    tmp_dir: Option<Arc<tempfile::TempDir>>,
-    tmp_namespace: Option<String>,
+    resources: Arc<LocalProviderResources>,
+    scratch_namespace: Option<String>,
     policy: EnvironmentPolicy,
-    processes: Arc<Mutex<BTreeMap<String, LocalShellProcess>>>,
     execution_limiter: Arc<LocalExecutionLimiter>,
     max_read_bytes: usize,
     max_output_bytes: usize,
@@ -57,35 +76,46 @@ pub struct LocalEnvironmentProvider {
 
 mod paths;
 mod process;
-mod temp;
+mod scratch;
 
 pub use process::LocalShellProcess;
 
 impl LocalEnvironmentProvider {
     /// Create a local provider rooted at a directory.
-    #[must_use]
-    pub fn new(root: impl Into<PathBuf>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when neither the operating-system temporary directory nor
+    /// the workspace-local `.starweaver/tmp` fallback can host the provider-owned
+    /// scratch directory.
+    pub fn new(root: impl Into<PathBuf>) -> EnvironmentResult<Self> {
         let root = normalize_local_config_path(root.into());
-        let tmp_dir = create_local_tmp_dir(None).map(Arc::new);
-        let mut allowed_paths = vec![root.clone()];
-        if let Some(tmp_path) = tmp_dir.as_ref().map(|tmp_dir| tmp_dir.path()) {
-            push_unique_path(
-                &mut allowed_paths,
-                normalize_local_config_path(tmp_path.to_path_buf()),
-            );
-        }
+        let scratch_dir = create_local_scratch_dir_with_workspace_fallback(&root)?;
+        Ok(Self::from_root_and_scratch_dir(root, scratch_dir))
+    }
+
+    fn from_root_and_scratch_dir(root: PathBuf, scratch_dir: tempfile::TempDir) -> Self {
+        let configured_allowed_paths = vec![root.clone()];
+        let mut effective_allowed_paths = configured_allowed_paths.clone();
+        push_unique_path(
+            &mut effective_allowed_paths,
+            normalize_local_config_path(scratch_dir.path().to_path_buf()),
+        );
         Self {
             id: "local".to_string(),
-            allowed_paths,
+            configured_allowed_paths,
+            effective_allowed_paths,
             context_file_tree_roots: None,
-            tmp_dir,
-            tmp_namespace: None,
+            resources: Arc::new(LocalProviderResources {
+                processes: Mutex::new(BTreeMap::new()),
+                scratch_dir,
+            }),
+            scratch_namespace: None,
             root,
             policy: EnvironmentPolicy {
                 files: FilePolicy::read_only(),
                 shell: ShellPolicy::default(),
             },
-            processes: Arc::new(Mutex::new(BTreeMap::new())),
             execution_limiter: Arc::new(LocalExecutionLimiter::new(
                 DEFAULT_LOCAL_PROCESS_CONCURRENCY,
             )),
@@ -123,7 +153,7 @@ impl LocalEnvironmentProvider {
             .transpose()
             .map_err(|error| EnvironmentError::InvalidRequest(error.to_string()))?
             .unwrap_or_default();
-        Ok(Self::new(root)
+        Ok(Self::new(root)?
             .with_id(state.provider_id.clone())
             .with_policy(policy)
             .with_allowed_paths(allowed_paths))
@@ -181,38 +211,57 @@ impl LocalEnvironmentProvider {
         self
     }
 
-    /// Create provider-managed temporary files under a specific base directory.
+    /// Create provider-managed scratch files under a specific base directory.
     ///
-    /// The created session directory is added to the allowed path set and is
-    /// cleaned up when the provider and its clones are dropped. If creation
-    /// fails, the existing temporary directory configuration is left unchanged.
-    #[must_use]
-    pub fn with_tmp_base_dir(mut self, base_dir: impl Into<PathBuf>) -> Self {
-        let old_tmp_dir = self
-            .tmp_dir_path()
-            .map(|path| normalize_local_config_path(path.to_path_buf()));
+    /// The created provider directory is added to the effective allowed path set
+    /// and is cleaned up when the provider and its clones are dropped. Configure
+    /// the base before cloning or starting background processes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the base cannot host a scratch directory, the
+    /// provider has already been cloned, or a background process is retained.
+    pub fn with_scratch_base_dir(
+        mut self,
+        base_dir: impl Into<PathBuf>,
+    ) -> EnvironmentResult<Self> {
         let base_dir = normalize_local_config_path(base_dir.into());
-        if let Some(tmp_dir) = create_local_tmp_dir(Some(&base_dir)) {
-            self.tmp_dir = Some(Arc::new(tmp_dir));
-            let allowed_paths = self
-                .allowed_paths
-                .iter()
-                .filter(|path| old_tmp_dir.as_ref() != Some(path))
-                .cloned()
-                .collect::<Vec<_>>();
-            self.rebuild_allowed_paths_with_managed_roots(allowed_paths);
+        let scratch_dir = create_local_scratch_dir(Some(&base_dir))?;
+        let resources = Arc::try_unwrap(self.resources).map_err(|_| {
+            EnvironmentError::InvalidRequest(
+                "scratch base must be configured before cloning the local provider".to_string(),
+            )
+        })?;
+        let has_processes = !resources
+            .processes
+            .lock()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?
+            .is_empty();
+        if has_processes {
+            return Err(EnvironmentError::InvalidRequest(
+                "scratch base must be configured before starting background processes".to_string(),
+            ));
         }
-        self
+        drop(resources);
+        self.resources = Arc::new(LocalProviderResources {
+            processes: Mutex::new(BTreeMap::new()),
+            scratch_dir,
+        });
+        self.rebuild_effective_allowed_paths();
+        Ok(self)
     }
 
-    /// Set a provider-scoped temporary file namespace.
+    /// Set a provider-scoped scratch file namespace.
     ///
     /// Namespaces isolate tool-generated large output files under a stable
-    /// subdirectory of the provider temporary root.
-    #[must_use]
-    pub fn with_tmp_namespace(mut self, namespace: impl AsRef<str>) -> Self {
-        self.tmp_namespace = normalize_tmp_namespace(namespace.as_ref()).ok();
-        self
+    /// subdirectory of the provider scratch root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the namespace is not one safe path segment.
+    pub fn with_scratch_namespace(mut self, namespace: impl AsRef<str>) -> EnvironmentResult<Self> {
+        self.scratch_namespace = Some(normalize_scratch_namespace(namespace.as_ref())?);
+        Ok(self)
     }
 
     /// Set the shared foreground/background local process concurrency limit.
@@ -256,13 +305,13 @@ impl LocalEnvironmentProvider {
     /// Return configured local filesystem roots.
     #[must_use]
     pub fn allowed_paths(&self) -> &[PathBuf] {
-        &self.allowed_paths
+        &self.configured_allowed_paths
     }
 
-    /// Return this provider's managed temporary directory when available.
+    /// Return this provider's managed scratch directory.
     #[must_use]
-    pub fn tmp_dir_path(&self) -> Option<&Path> {
-        self.tmp_dir.as_ref().map(|tmp_dir| tmp_dir.path())
+    pub fn scratch_dir_path(&self) -> &Path {
+        self.resources.scratch_dir.path()
     }
 }
 
@@ -280,7 +329,7 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
         ShellReviewEnvironmentContext {
             default_cwd: Some(display_local_path(&self.root)),
             allowed_paths: self
-                .allowed_paths
+                .effective_allowed_paths
                 .iter()
                 .map(|path| display_local_path(path))
                 .collect(),
@@ -519,19 +568,23 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
         .map_err(EnvironmentError::Provider)?
     }
 
-    async fn write_tmp_file(&self, filename: &str, content: &[u8]) -> EnvironmentResult<String> {
+    async fn write_scratch_file(
+        &self,
+        filename: &str,
+        content: &[u8],
+    ) -> EnvironmentResult<String> {
         let provider = self.clone();
         let filename = filename.to_string();
         let content = content.to_vec();
         crate::blocking::run(move || {
             let filename = filename.as_str();
             let content = content.as_slice();
-            let normalized = provider.tmp_file_relative_path(filename)?;
-            let path = provider.resolve_tmp_relative_path(&normalized, true)?;
+            let normalized = provider.scratch_file_relative_path(filename)?;
+            let path = provider.resolve_scratch_relative_path(&normalized, true)?;
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|error| map_io_error(parent, &error))?;
             }
-            let path = provider.resolve_tmp_relative_path(&normalized, true)?;
+            let path = provider.resolve_scratch_relative_path(&normalized, true)?;
             std::fs::write(&path, content).map_err(|error| map_io_error(&path, &error))?;
             Ok(display_local_path(&path))
         })
@@ -867,7 +920,7 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
             let file_tree_roots = provider
                 .context_file_tree_roots
                 .as_deref()
-                .unwrap_or(&provider.allowed_paths);
+                .unwrap_or(&provider.configured_allowed_paths);
             for allowed_path in context_file_tree_roots(file_tree_roots) {
                 let visible_root = provider.logical_root_for_allowed_path(allowed_path);
                 let tree = render_local_file_tree_listing(
@@ -883,10 +936,11 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
                     });
                 }
             }
+            let scratch_directory = display_local_path(&provider.shell_scratch_dir_path()?);
             Ok(Some(render_environment_context_xml(
                 provider.id(),
                 &display_local_path(&provider.root),
-                provider.tmp_dir_path().map(display_local_path),
+                Some(scratch_directory),
                 &file_trees,
                 provider.policy.shell.allow_execute,
                 Some(local_shell_metadata()),
@@ -905,7 +959,7 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
         metadata.insert("root".to_string(), serde_json::json!(self.root));
         metadata.insert(
             "allowed_paths".to_string(),
-            serde_json::json!(self.allowed_paths),
+            serde_json::json!(self.configured_allowed_paths),
         );
         Ok(EnvironmentState {
             provider_id: self.id.clone(),

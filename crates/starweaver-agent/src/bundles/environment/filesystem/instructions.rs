@@ -92,7 +92,7 @@ pub(super) fn filesystem_tools() -> DynToolset {
 - The search root's direct `.agents/` child remains visible by default so Skill entrypoints can be discovered; use `include_hidden=true` for other dotfiles and hidden directories.
 - `.agents/` still follows provider ignore rules; set `include_ignored=true` only when ignored paths are intentionally needed.
 - Set `include_ignored=true` for generated, dependency, cache, and build outputs.
-- Very large results are saved to a temp file with `output_file_path`; use view to read it.
+- Very large results are saved to a scratch file with `output_file_path`; use view to read it.
 </best-practices>
 </glob-guidelines>"#,
             ))

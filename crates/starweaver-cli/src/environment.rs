@@ -101,15 +101,15 @@ pub fn validate_environment_config(config: &CliConfig) -> CliResult<()> {
 /// Build an environment provider from resolved CLI config.
 #[cfg(test)]
 pub fn resolve_environment(config: &CliConfig) -> CliResult<ResolvedEnvironment> {
-    resolve_environment_with_tmp_namespace(config, None)
+    resolve_environment_with_scratch_namespace(config, None)
 }
 
-/// Build an environment provider with a session-scoped temporary file namespace.
+/// Build an environment provider with a session-scoped scratch file namespace.
 pub fn resolve_environment_for_session(
     config: &CliConfig,
     session_id: &str,
 ) -> CliResult<ResolvedEnvironment> {
-    resolve_environment_with_tmp_namespace(config, Some(session_id))
+    resolve_environment_with_scratch_namespace(config, Some(session_id))
 }
 
 /// Build an environment provider for a session, optionally using host RPC attachments.
@@ -190,21 +190,24 @@ fn default_shell_attachment_id<'a>(
         .map(|attachment| attachment.id.as_str())
 }
 
-fn resolve_environment_with_tmp_namespace(
+fn resolve_environment_with_scratch_namespace(
     config: &CliConfig,
-    tmp_namespace: Option<&str>,
+    scratch_namespace: Option<&str>,
 ) -> CliResult<ResolvedEnvironment> {
     validate_environment_config(config)?;
     let policy = environment_policy(config)?;
     let provider: DynEnvironmentProvider = match config.environment_provider.as_str() {
         "local" => {
             let mut provider = LocalEnvironmentProvider::new(config.workspace_root.clone())
+                .map_err(|error| CliError::Config(error.to_string()))?
                 .with_id("cli-local")
                 .with_allowed_paths(local_allowed_paths(config))
                 .with_context_file_tree_roots([config.workspace_root.clone()])
                 .with_policy(policy);
-            if let Some(namespace) = tmp_namespace {
-                provider = provider.with_tmp_namespace(namespace);
+            if let Some(namespace) = scratch_namespace {
+                provider = provider
+                    .with_scratch_namespace(namespace)
+                    .map_err(|error| CliError::Config(error.to_string()))?;
             }
             envd_backed_provider(Arc::new(provider), "cli-local")
         }
@@ -212,8 +215,10 @@ fn resolve_environment_with_tmp_namespace(
             let mut provider = VirtualEnvironmentProvider::new("cli-virtual")
                 .with_policy(policy)
                 .with_file("README.md", "Virtual Starweaver CLI workspace");
-            if let Some(namespace) = tmp_namespace {
-                provider = provider.with_tmp_namespace(namespace);
+            if let Some(namespace) = scratch_namespace {
+                provider = provider
+                    .with_scratch_namespace(namespace)
+                    .map_err(|error| CliError::Config(error.to_string()))?;
             }
             envd_backed_provider(Arc::new(provider), "cli-virtual")
         }
@@ -245,7 +250,7 @@ fn default_local_attachment() -> EnvironmentAttachmentRef {
 
 fn resolve_environment_attachment(
     config: &CliConfig,
-    tmp_namespace: Option<&str>,
+    scratch_namespace: Option<&str>,
     attachment: &EnvironmentAttachmentRef,
 ) -> CliResult<ResolvedEnvironment> {
     if attachment.id == LOCAL_ENVIRONMENT_ATTACHMENT_ID
@@ -256,7 +261,7 @@ fn resolve_environment_attachment(
         ));
     }
     match attachment.kind.as_str() {
-        "local" => resolve_environment_with_tmp_namespace(config, tmp_namespace),
+        "local" => resolve_environment_with_scratch_namespace(config, scratch_namespace),
         "envd" => resolve_envd_attachment(attachment),
         other => Err(CliError::Config(format!(
             "unsupported environment attachment kind: {other}"
@@ -321,9 +326,8 @@ fn envd_backed_provider(provider: DynEnvironmentProvider, id: &str) -> DynEnviro
 
 fn local_allowed_paths(config: &CliConfig) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    // Include the system temp dir so CLI/TUI agents can access user-specified
-    // temporary files, while LocalEnvironmentProvider still appends its
-    // provider-managed session temp dir separately.
+    // This broad user-file grant is independent from the CLI-owned scratch
+    // subdirectory created beneath the system temp directory.
     push_allowed_path(&mut paths, std::env::temp_dir());
     push_allowed_path(&mut paths, config.global_dir.clone());
     if let Some(home) = std::env::var_os("HOME") {
@@ -463,7 +467,7 @@ additional_dirs = ["../custom-skills"]
     }
 
     #[tokio::test]
-    async fn cli_local_environment_tmp_outputs_and_system_tmp_are_readable() {
+    async fn cli_local_environment_uses_owned_system_temp_scratch_and_user_temp_grant() {
         let temp = tempfile::tempdir().unwrap();
         let cli = args::parse(["starweaver-cli".to_string()]).unwrap();
         let config = ConfigResolver::for_tests(temp.path())
@@ -471,19 +475,35 @@ additional_dirs = ["../custom-skills"]
             .unwrap();
         let environment = resolve_environment_for_session(&config, "session_123").unwrap();
 
-        let tmp_path = environment
+        let scratch_path = environment
             .provider
-            .write_tmp_file("stdout.log", b"captured output")
+            .write_scratch_file("stdout.log", b"captured output")
             .await
             .unwrap();
-        assert!(Path::new(&tmp_path).is_absolute());
-        assert!(tmp_path.contains("session_123"));
+        let scratch_path = PathBuf::from(scratch_path);
+        let canonical_scratch_path = scratch_path.canonicalize().unwrap();
+        let scratch_root = canonical_scratch_path
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .to_path_buf();
+        let system_temp = std::env::temp_dir()
+            .canonicalize()
+            .unwrap_or_else(|_| std::env::temp_dir());
+        assert!(scratch_path.is_absolute());
+        assert!(canonical_scratch_path.starts_with(&system_temp));
+        assert_ne!(scratch_root, system_temp);
+        assert!(scratch_path.to_string_lossy().contains("session_123"));
         assert_eq!(
-            Path::new(&tmp_path).file_name().unwrap().to_string_lossy(),
+            scratch_path.file_name().unwrap().to_string_lossy(),
             "stdout.log"
         );
         assert_eq!(
-            environment.provider.read_text(&tmp_path).await.unwrap(),
+            environment
+                .provider
+                .read_text(&scratch_path.to_string_lossy())
+                .await
+                .unwrap(),
             "captured output"
         );
         let state = environment.provider.export_state().await.unwrap();
@@ -523,6 +543,8 @@ additional_dirs = ["../custom-skills"]
         );
         let _ = std::fs::remove_file(system_tmp_file);
         let _ = std::fs::remove_file(system_tmp_output);
+        drop(environment);
+        assert!(!scratch_root.exists());
     }
 
     #[tokio::test]

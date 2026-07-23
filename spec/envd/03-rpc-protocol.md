@@ -2,7 +2,7 @@
 
 Status: implemented normative profile
 
-Revision: 2026-07-11
+Revision: 2026-07-23
 
 Envd RPC exposes `EnvdService` over JSON-RPC. Stdio and HTTP are initial
 transports. The protocol must match the service semantics exactly.
@@ -12,8 +12,8 @@ transports. The protocol must match the service semantics exactly.
 ```json
 {
   "name": "starweaver.envd",
-  "major": 1,
-  "revision": "2026-07-11",
+  "major": 2,
+  "revision": "2026-07-23",
   "features": [
     "environment.lifecycle",
     "files",
@@ -23,9 +23,9 @@ transports. The protocol must match the service semantics exactly.
 }
 ```
 
-`InitializeEnvdRequest.protocol` carries this typed identity. Omission remains readable for legacy local clients. Services and clients validate the exact name and major through `starweaver-envd-core`; revision is fixture/documentation identity rather than an ordered compatibility gate. `InitializeEnvdResult.protocol` is the only protocol-version field, and implementations must not emit a duplicate `protocolVersion` or `protocol_version` string.
+`InitializeEnvdRequest.protocol` carries this required typed identity. Services and clients validate the exact name and major through `starweaver-envd-core`; revision is fixture/documentation identity rather than an ordered compatibility gate. `InitializeEnvdResult.protocol` is the only protocol-version field, and implementations must not emit a duplicate `protocolVersion` or `protocol_version` string.
 
-Wrong names and unsupported majors fail initialization as invalid requests. The release fixture under `crates/starweaver-envd-core/tests/fixtures/contracts/` fixes the identity, feature vocabulary, legacy omission, and rejection behavior.
+Missing identities, wrong names, and unsupported majors fail initialization as invalid requests. The release fixture under `crates/starweaver-envd-core/tests/fixtures/contracts/` fixes the identity, feature vocabulary, and rejection behavior.
 
 ## Transport Profiles
 
@@ -84,8 +84,8 @@ A future typed method can expose the same readiness shape over every transport:
   "status": "ready",
   "protocol": {
     "name": "starweaver.envd",
-    "major": 1,
-    "revision": "2026-07-11"
+    "major": 2,
+    "revision": "2026-07-23"
   },
   "environments": [{
     "environmentId": "env_cli_default",
@@ -106,21 +106,28 @@ errors because readiness can change after a run begins.
 
 ## Method Groups
 
-| Group       | Methods                                                                                                                                                     |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Lifecycle   | `initialize`, `shutdown`                                                                                                                                    |
-| Environment | `environment.open`, `environment.state`, `snapshot.export`                                                                                                  |
-| File        | `file.read`, `file.write`, `file.create_dir`, `file.delete`, `file.move`, `file.copy`, `file.write_tmp`, `file.list`, `file.stat`, `file.glob`, `file.grep` |
-| Command     | `command.run`                                                                                                                                               |
-| Process     | `process.start`, `process.wait`, `process.list`, `process.input`, `process.signal`, `process.kill`                                                          |
-| Context     | `context.render`, `shell.review_context`                                                                                                                    |
+| Group       | Methods                                                                                                                                                         |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Lifecycle   | `initialize`, `shutdown`                                                                                                                                        |
+| Environment | `environment.open`, `environment.state`, `snapshot.export`                                                                                                      |
+| File        | `file.read`, `file.write`, `file.create_dir`, `file.delete`, `file.move`, `file.copy`, `file.write_scratch`, `file.list`, `file.stat`, `file.glob`, `file.grep` |
+| Command     | `command.run`                                                                                                                                                   |
+| Process     | `process.start`, `process.wait`, `process.list`, `process.input`, `process.signal`, `process.kill`                                                              |
+| Context     | `context.render`, `shell.review_context`                                                                                                                        |
 
-Interactive terminal state is not part of envd v1. Execution capabilities are
+Protocol major 2 at revision `2026-07-23` replaces the temporary-file vocabulary
+atomically with `FileWriteScratchRequest`, `FileWriteScratchResult`, and
+`file.write_scratch`. There is no `file.write_tmp` fallback or dual DTO surface;
+major-1 peers are rejected during initialization.
+The returned path is owned by the target environment and must remain usable by
+its ordinary file operations and shell context.
+
+Interactive terminal state is not part of envd v2. Execution capabilities are
 exposed as foreground commands and background process handles.
 
 ## Common Params
 
-The implemented v1 minimum uses method-specific params plus `environmentId`
+The implemented v2 minimum uses method-specific params plus `environmentId`
 where an environment method needs it. The richer request metadata below is a
 planned protocol extension for remote, audited, or retry-heavy envd
 deployments, not a requirement for the current local CLI path.
@@ -260,5 +267,5 @@ ways:
 - polling methods such as `process.wait` and `process.list`
 - future subscription methods over notification-capable transports
 
-Do not block envd v1 on streaming. Process output can be returned in snapshots
+Do not block envd v2 on streaming. Process output can be returned in snapshots
 until output cursors are added.
