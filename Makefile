@@ -120,6 +120,13 @@ build: ## Build the workspace
 	@echo "Building Rust workspace"
 	@cargo build --workspace --all-targets --all-features --locked
 
+.PHONY: clean
+clean: ## Remove Rust build artifacts for the workspace and Python extension
+	@echo "Cleaning Rust workspace artifacts"
+	@cargo clean
+	@echo "Cleaning Python Rust extension artifacts"
+	@cargo clean --manifest-path $(PY_PACKAGE)/Cargo.toml
+
 .PHONY: desktop-sync
 desktop-sync: ## Install locked Desktop frontend dependencies
 	@$(PNPM) install --frozen-lockfile
