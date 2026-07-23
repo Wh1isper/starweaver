@@ -3144,7 +3144,10 @@ async fn composite_provider_shares_shell_mount_scratch_with_file_operations() {
         .run_shell(ShellCommand::shell("printf %s \"$TMPDIR\""))
         .await
         .unwrap();
-    assert_eq!(output.stdout, display_local_path(effective_shell_scratch));
+    assert_eq!(
+        normalize_absolute_request_path(Path::new(&output.stdout)).unwrap(),
+        normalize_absolute_request_path(effective_shell_scratch).unwrap()
+    );
 
     provider.delete_path(&scratch_path, false).await.unwrap();
     assert!(matches!(

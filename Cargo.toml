@@ -25,6 +25,16 @@ members = [
 exclude = ["packages/starweaver-py"]
 resolver = "2"
 
+# Keep local build artifacts bounded. Full debug information and incremental
+# caches grow very quickly across this large, all-features workspace.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
+
 [workspace.package]
 version = "0.10.0"
 edition = "2024"

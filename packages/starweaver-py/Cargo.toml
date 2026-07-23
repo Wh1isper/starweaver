@@ -9,6 +9,16 @@ repository = "https://github.com/Wh1isper/starweaver"
 homepage = "https://github.com/Wh1isper/starweaver"
 description = "Python bindings for Starweaver"
 
+# This package is excluded from the root workspace and therefore needs its own
+# bounded development profiles.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
+
 [lib]
 name = "starweaver_py"
 crate-type = ["cdylib"]
