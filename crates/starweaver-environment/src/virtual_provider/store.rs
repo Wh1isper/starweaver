@@ -3,15 +3,15 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    DEFAULT_TMP_DIR, EnvironmentError, EnvironmentResult, is_tmp_path, join_logical_path,
-    logical_ancestors, normalize_tmp_filename,
+    DEFAULT_SCRATCH_DIR, EnvironmentError, EnvironmentResult, is_scratch_path, join_logical_path,
+    logical_ancestors, normalize_scratch_filename,
 };
 
 use super::VirtualEnvironmentProvider;
 
 impl VirtualEnvironmentProvider {
     pub(super) fn check_file(&self, path: &str, write: bool) -> EnvironmentResult<()> {
-        if is_tmp_path(path) || self.policy.files.permits(path, write) {
+        if is_scratch_path(path) || self.policy.files.permits(path, write) {
             Ok(())
         } else {
             Err(EnvironmentError::AccessDenied(path.to_string()))
@@ -60,13 +60,13 @@ impl VirtualEnvironmentProvider {
         Ok(())
     }
 
-    pub(super) fn tmp_file_path(&self, filename: &str) -> EnvironmentResult<String> {
-        let filename = normalize_tmp_filename(filename)?;
-        let relative = self.tmp_namespace.as_deref().map_or_else(
+    pub(super) fn scratch_file_path(&self, filename: &str) -> EnvironmentResult<String> {
+        let filename = normalize_scratch_filename(filename)?;
+        let relative = self.scratch_namespace.as_deref().map_or_else(
             || filename.clone(),
             |namespace| join_logical_path(namespace, &filename),
         );
-        Ok(join_logical_path(DEFAULT_TMP_DIR, &relative))
+        Ok(join_logical_path(DEFAULT_SCRATCH_DIR, &relative))
     }
 
     pub(super) fn path_exists_unchecked(&self, path: &str) -> EnvironmentResult<bool> {

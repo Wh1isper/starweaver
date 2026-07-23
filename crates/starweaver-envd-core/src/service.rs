@@ -8,7 +8,7 @@ use crate::{
     FileCopyRequest, FileCreateDirRequest, FileDeleteRequest, FileGlobMatch, FileGlobRequest,
     FileGrepMatch, FileGrepRequest, FileListRequest, FileListResult, FileMoveRequest,
     FileReadRequest, FileReadResult, FileStat, FileStatRequest, FileWriteRequest, FileWriteResult,
-    FileWriteTmpRequest, FileWriteTmpResult, InitializeEnvdRequest, InitializeEnvdResult,
+    FileWriteScratchRequest, FileWriteScratchResult, InitializeEnvdRequest, InitializeEnvdResult,
     MutationResult, OpenEnvironmentRequest, ProcessInputRequest, ProcessKillRequest,
     ProcessListResult, ProcessSignalRequest, ProcessSnapshot, ProcessStartRequest,
     ProcessWaitRequest, ShellReviewContextRequest, ShellReviewContextResult,
@@ -65,8 +65,11 @@ pub trait EnvdService: Send + Sync {
     /// Copy a path.
     async fn file_copy(&self, request: FileCopyRequest) -> EnvdResult<MutationResult>;
 
-    /// Write a temporary file.
-    async fn file_write_tmp(&self, request: FileWriteTmpRequest) -> EnvdResult<FileWriteTmpResult>;
+    /// Write a scratch file.
+    async fn file_write_scratch(
+        &self,
+        request: FileWriteScratchRequest,
+    ) -> EnvdResult<FileWriteScratchResult>;
 
     /// Stat a path.
     async fn file_stat(&self, request: FileStatRequest) -> EnvdResult<FileStat>;

@@ -8,7 +8,7 @@ use starweaver_envd_core::{
     CommandRunRequest, EnvdRpcError, EnvdService, EnvironmentContextRequest, EnvironmentRequest,
     FileCopyRequest, FileCreateDirRequest, FileDeleteRequest, FileGlobRequest, FileGrepRequest,
     FileListRequest, FileMoveRequest, FileReadRequest, FileStatRequest, FileWriteRequest,
-    FileWriteTmpRequest, INVALID_PARAMS, InitializeEnvdRequest, METHOD_NOT_FOUND,
+    FileWriteScratchRequest, INVALID_PARAMS, InitializeEnvdRequest, METHOD_NOT_FOUND,
     OpenEnvironmentRequest, ProcessInputRequest, ProcessKillRequest, ProcessSignalRequest,
     ProcessStartRequest, ProcessWaitRequest, ShellReviewContextRequest, error_response,
     parse_json_rpc_text, success_response,
@@ -98,8 +98,8 @@ impl EnvdRpcService {
                 self.call(params, |request| self.service.file_copy(request))
                     .await
             }
-            "file.write_tmp" => {
-                self.call(params, |request| self.service.file_write_tmp(request))
+            "file.write_scratch" => {
+                self.call(params, |request| self.service.file_write_scratch(request))
                     .await
             }
             "file.stat" => {
@@ -210,7 +210,7 @@ const fn _method_type_check() {
     let _ = std::any::TypeId::of::<FileDeleteRequest>();
     let _ = std::any::TypeId::of::<FileMoveRequest>();
     let _ = std::any::TypeId::of::<FileCopyRequest>();
-    let _ = std::any::TypeId::of::<FileWriteTmpRequest>();
+    let _ = std::any::TypeId::of::<FileWriteScratchRequest>();
     let _ = std::any::TypeId::of::<FileStatRequest>();
     let _ = std::any::TypeId::of::<FileListRequest>();
     let _ = std::any::TypeId::of::<FileGlobRequest>();

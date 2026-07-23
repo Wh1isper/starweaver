@@ -29,6 +29,10 @@ flowchart TD
 
 Method mapping:
 
+Scratch is owned by the concrete environment behind the attachment. The adapter
+returns its provider-visible path unchanged so ordinary file operations and the
+same provider's shell can share it.
+
 | `EnvironmentProvider` method | `EnvdService` method        |
 | ---------------------------- | --------------------------- |
 | `read_text`                  | `file_read`                 |
@@ -38,7 +42,7 @@ Method mapping:
 | `delete_path`                | file mutation method        |
 | `move_path`                  | file mutation method        |
 | `copy_path`                  | file mutation method        |
-| `write_tmp_file`             | scratch/tmp write method    |
+| `write_scratch_file`         | `file_write_scratch`        |
 | `stat`                       | `file_stat`                 |
 | `list`                       | `file_list`                 |
 | `glob`                       | `file_glob`                 |

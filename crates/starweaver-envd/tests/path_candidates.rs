@@ -13,7 +13,7 @@ async fn envd_provider_preserves_shell_context_path_candidates()
     let temp = tempfile::tempdir()?;
     std::fs::create_dir_all(temp.path().join("src"))?;
     std::fs::write(temp.path().join("src/lib.rs"), "lib")?;
-    let local = Arc::new(LocalEnvironmentProvider::new(temp.path()));
+    let local = Arc::new(LocalEnvironmentProvider::new(temp.path())?);
     let envd = Arc::new(LocalEnvd::new(local.clone()));
     let provider = EnvdEnvironmentProvider::new(envd.clone(), envd.environment_id())
         .with_shell_review_context(local.shell_review_context());

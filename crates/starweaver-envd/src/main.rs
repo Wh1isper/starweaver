@@ -18,7 +18,14 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let provider = LocalEnvironmentProvider::new(cli.root).with_policy(EnvironmentPolicy {
+    let provider = match LocalEnvironmentProvider::new(cli.root) {
+        Ok(provider) => provider,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::from(2);
+        }
+    }
+    .with_policy(EnvironmentPolicy {
         files: if cli.read_only {
             FilePolicy::read_only()
         } else {

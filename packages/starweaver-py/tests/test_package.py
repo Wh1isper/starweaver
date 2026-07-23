@@ -3391,7 +3391,7 @@ Read primary sources before answering.
             },
             resources=[ResourceRef.typed("resource://artifact", kind="media")],
             shell_outputs={"echo ok": "ok\n"},
-            tmp_namespace="pytest",
+            scratch_namespace="pytest",
         )
 
         assert await environment.read_text("README.md") == "workspace readme"
@@ -3628,9 +3628,11 @@ def test_python_environment_provider_adapts_to_native_trait() -> None:
         with pytest.raises(StateError, match="not found"):
             await environment.read_text("notes/copy.txt")
 
-        tmp_path = await environment.write_tmp_file("spill.txt", b"spilled")
-        assert tmp_path == ".tmp/spill.txt"
-        assert await environment.read_text(tmp_path) == "spilled"
+        scratch_path = await environment.write_scratch_file("spill.txt", b"spilled")
+        assert scratch_path == ".starweaver/scratch/spill.txt"
+        assert await environment.read_text(scratch_path) == "spilled"
+        with pytest.raises(StateError, match="scratch filename"):
+            await environment.write_scratch_file("../escape.txt", b"blocked")
 
         shell = await environment.run_shell("echo bridged", cwd="/workspace")
         assert shell["stdout"] == "python:echo bridged"

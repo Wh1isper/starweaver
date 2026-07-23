@@ -6,10 +6,9 @@ use std::{
 };
 
 use crate::{
-    DEFAULT_TMP_DIR, EnvironmentError, EnvironmentResult, absolute_request_path,
-    display_local_path, is_absolute_request_path, is_tmp_path, map_io_error,
-    normalize_absolute_request_path, normalize_local_config_path, normalize_path,
-    normalize_requested_path, normalize_str_path, push_unique_path,
+    EnvironmentError, EnvironmentResult, absolute_request_path, display_local_path,
+    is_absolute_request_path, map_io_error, normalize_absolute_request_path,
+    normalize_local_config_path, normalize_path, normalize_requested_path, push_unique_path,
 };
 
 use super::LocalEnvironmentProvider;
@@ -21,7 +20,8 @@ impl LocalEnvironmentProvider {
         write: bool,
     ) -> EnvironmentResult<PathBuf> {
         let (_, filesystem_path) = self.resolve_authorized_request_path(path, write)?;
-        let allow_trusted_allowed_root_ancestors = !self.path_targets_managed_tmp(&filesystem_path);
+        let allow_trusted_allowed_root_ancestors =
+            !self.path_targets_managed_scratch(&filesystem_path);
         self.resolve_physical_path(
             &filesystem_path,
             write,
@@ -41,7 +41,8 @@ impl LocalEnvironmentProvider {
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => return Err(map_io_error(&filesystem_path, &error)),
         }
-        let allow_trusted_allowed_root_ancestors = !self.path_targets_managed_tmp(&filesystem_path);
+        let allow_trusted_allowed_root_ancestors =
+            !self.path_targets_managed_scratch(&filesystem_path);
         self.resolve_physical_path(
             &filesystem_path,
             false,
@@ -64,7 +65,7 @@ impl LocalEnvironmentProvider {
         write: bool,
     ) -> EnvironmentResult<(String, PathBuf)> {
         let (visible_path, filesystem_path) = self.resolve_request_path_with_logical_path(path)?;
-        if !self.path_targets_managed_tmp(&filesystem_path)
+        if !self.path_targets_managed_scratch(&filesystem_path)
             && !self.policy.files.permits(&visible_path, write)
         {
             return Err(EnvironmentError::AccessDenied(path.to_string()));
@@ -72,28 +73,31 @@ impl LocalEnvironmentProvider {
         Ok((visible_path, filesystem_path))
     }
 
-    pub(super) fn resolve_tmp_relative_path(
+    pub(super) fn resolve_scratch_relative_path(
         &self,
         relative_path: &str,
         write: bool,
     ) -> EnvironmentResult<PathBuf> {
-        let tmp_dir = self.tmp_dir_path().ok_or_else(|| {
-            EnvironmentError::Provider("local temporary directory is unavailable".to_string())
-        })?;
+        let scratch_dir = self.scratch_dir_path();
         // `tempfile` can return a path beneath a platform-owned symlink (such
         // as macOS `/var`). Normalize only the managed directory's parent so
         // the managed directory itself remains visible to the containment
         // check if it has been replaced with a symlink.
-        let parent = tmp_dir.parent().ok_or_else(|| {
-            EnvironmentError::InvalidRequest("local temporary directory has no parent".to_string())
+        let parent = scratch_dir.parent().ok_or_else(|| {
+            EnvironmentError::InvalidRequest("local scratch directory has no parent".to_string())
         })?;
-        let file_name = tmp_dir.file_name().ok_or_else(|| {
-            EnvironmentError::InvalidRequest("local temporary directory has no name".to_string())
+        let file_name = scratch_dir.file_name().ok_or_else(|| {
+            EnvironmentError::InvalidRequest("local scratch directory has no name".to_string())
         })?;
-        let path = normalize_local_config_path(parent.to_path_buf())
-            .join(file_name)
-            .join(relative_path);
-        self.resolve_physical_path(&path, write, &display_local_path(&path), false)
+        let normalized_relative_path = normalize_requested_path(relative_path)?;
+        let scratch_root = normalize_local_config_path(parent.to_path_buf()).join(file_name);
+        let path = scratch_root.join(normalized_relative_path);
+        let requested_path = display_local_path(&path);
+        let resolved_path = self.resolve_physical_path(&path, write, &requested_path, false)?;
+        if !resolved_path.starts_with(&scratch_root) {
+            return Err(EnvironmentError::AccessDenied(requested_path));
+        }
+        Ok(resolved_path)
     }
 
     fn resolve_physical_path(
@@ -127,7 +131,7 @@ impl LocalEnvironmentProvider {
         self.reject_existing_symlink_components(
             parent,
             requested_path,
-            !self.path_targets_managed_tmp(path),
+            !self.path_targets_managed_scratch(path),
         )?;
         let resolved_parent = normalize_local_config_path(parent.to_path_buf());
         if !self.is_under_allowed_roots(&resolved_parent) {
@@ -154,7 +158,7 @@ impl LocalEnvironmentProvider {
                 Ok(metadata) if metadata.file_type().is_symlink() => {
                     let resolved_component = normalize_local_config_path(current.clone());
                     let is_trusted_allowed_root_ancestor = allow_trusted_allowed_root_ancestors
-                        && self.allowed_paths.iter().any(|allowed_root| {
+                        && self.effective_allowed_paths.iter().any(|allowed_root| {
                             allowed_root != &resolved_component
                                 && allowed_root.starts_with(&resolved_component)
                         });
@@ -189,29 +193,23 @@ impl LocalEnvironmentProvider {
         if logical_path == "." {
             logical_path.clear();
         }
-        if let Some(tmp_path) = self.managed_tmp_path(&logical_path)? {
-            return Ok((logical_path, tmp_path));
-        }
         Ok((logical_path.clone(), self.root.join(&logical_path)))
     }
 
     pub(super) fn is_under_allowed_roots(&self, path: &Path) -> bool {
-        self.allowed_paths
+        self.effective_allowed_paths
             .iter()
             .any(|allowed_path| path == allowed_path || path.starts_with(allowed_path))
     }
 
     pub(super) fn is_exact_allowed_root(&self, path: &Path) -> bool {
-        self.allowed_paths
+        self.effective_allowed_paths
             .iter()
             .any(|allowed_path| path == allowed_path)
     }
 
     pub(super) fn logical_provider_path(&self, path: &Path) -> EnvironmentResult<String> {
         let path = normalize_local_config_path(path.to_path_buf());
-        if self.path_is_managed_tmp(&path) {
-            return Ok(display_local_path(&path));
-        }
         if let Ok(relative) = path.strip_prefix(&self.root) {
             return Ok(normalize_path(relative));
         }
@@ -242,51 +240,33 @@ impl LocalEnvironmentProvider {
     }
 
     pub(super) fn rebuild_allowed_paths_with_managed_roots(&mut self, paths: Vec<PathBuf>) {
-        let mut allowed_paths = Vec::new();
+        let mut configured_allowed_paths = Vec::new();
         for path in paths {
-            push_unique_path(&mut allowed_paths, normalize_local_config_path(path));
-        }
-        push_unique_path(&mut allowed_paths, self.root.clone());
-        if let Some(tmp_dir) = self.tmp_dir_path() {
             push_unique_path(
-                &mut allowed_paths,
-                normalize_local_config_path(tmp_dir.to_path_buf()),
+                &mut configured_allowed_paths,
+                normalize_local_config_path(path),
             );
         }
-        self.allowed_paths = allowed_paths;
+        push_unique_path(&mut configured_allowed_paths, self.root.clone());
+        self.configured_allowed_paths = configured_allowed_paths;
+        self.rebuild_effective_allowed_paths();
     }
 
-    pub(super) fn managed_tmp_path(
-        &self,
-        logical_path: &str,
-    ) -> EnvironmentResult<Option<PathBuf>> {
-        if !is_tmp_path(logical_path) {
-            return Ok(None);
-        }
-        let Some(tmp_dir) = self.tmp_dir_path() else {
-            return Ok(None);
-        };
-        let normalized = normalize_str_path(logical_path);
-        let relative = normalized
-            .strip_prefix(DEFAULT_TMP_DIR)
-            .and_then(|suffix| suffix.strip_prefix('/'))
-            .unwrap_or_default();
-        if relative.is_empty() {
-            return Ok(Some(tmp_dir.to_path_buf()));
-        }
-        Ok(Some(tmp_dir.join(normalize_requested_path(relative)?)))
+    pub(super) fn rebuild_effective_allowed_paths(&mut self) {
+        let scratch_dir = normalize_local_config_path(self.scratch_dir_path().to_path_buf());
+        self.effective_allowed_paths = self.configured_allowed_paths.clone();
+        push_unique_path(&mut self.effective_allowed_paths, scratch_dir);
     }
 
-    fn path_targets_managed_tmp(&self, path: &Path) -> bool {
-        self.tmp_dir_path()
-            .is_some_and(|tmp_dir| path == tmp_dir || path.starts_with(tmp_dir))
+    fn path_targets_managed_scratch(&self, path: &Path) -> bool {
+        let scratch_dir = self.scratch_dir_path();
+        path == scratch_dir || path.starts_with(scratch_dir)
     }
 
-    pub(crate) fn path_is_managed_tmp(&self, path: &Path) -> bool {
+    #[cfg(test)]
+    pub(crate) fn path_is_managed_scratch(&self, path: &Path) -> bool {
         let path = normalize_local_config_path(path.to_path_buf());
-        self.tmp_dir_path().is_some_and(|tmp_dir| {
-            let tmp_dir = normalize_local_config_path(tmp_dir.to_path_buf());
-            path == tmp_dir || path.starts_with(tmp_dir)
-        })
+        let scratch_dir = normalize_local_config_path(self.scratch_dir_path().to_path_buf());
+        path == scratch_dir || path.starts_with(scratch_dir)
     }
 }

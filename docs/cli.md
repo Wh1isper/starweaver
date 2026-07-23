@@ -650,6 +650,8 @@ shell_enabled = false
 
 Profiles can request `environment`, `filesystem`, and `shell` toolsets. Local policy still governs actual file and shell behavior.
 
+The local provider creates one exclusive scratch directory beneath the operating-system temp directory and exposes it to its shell through `TMPDIR`, `TMP`, and `TEMP`. If OS-temp creation fails, it falls back to `<workspace>/.starweaver/tmp/<instance-id>`. When `.starweaver/tmp/.gitignore` is absent, initialization creates it with `*` so generated fallback contents stay outside Git status; an existing regular ignore file is preserved. Final provider release removes only the exclusive instance directory. Startup does not scan or reclaim sibling instance directories.
+
 ## Local storage
 
 The CLI and RPC resolve the same canonical local session database, `$STARWEAVER_CONFIG_DIR/starweaver.sqlite` by default. Without that override, both products use the same shared platform resolver: `$HOME/.starweaver` on Unix and the native Windows profile (`USERPROFILE`, then `HOMEDRIVE` + `HOMEPATH`, with `HOME` compatibility fallback) on Windows. If no platform user profile can be resolved, startup fails and asks for `STARWEAVER_CONFIG_DIR` instead of silently creating a process-relative machine database. This keeps a native external host/RPC process and a terminal CLI on the same database even when their working directories differ. `STARWEAVER_SESSION_DB` overrides it for both products (`STARWEAVER_STORE` remains a compatibility alias).

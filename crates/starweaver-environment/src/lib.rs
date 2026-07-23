@@ -24,16 +24,22 @@ pub(crate) use file_tree::{
     file_tree_directory_is_visible, render_local_file_tree_listing,
     render_virtual_file_tree_listing,
 };
+#[cfg(test)]
 pub(crate) use local_io::{
-    copy_local_dir, create_local_tmp_dir, map_io_error, prepare_local_destination,
+    LOCAL_WORKSPACE_TMP_DIR, create_local_scratch_dir_with_workspace_fallback_from,
+    create_local_workspace_tmp_dir,
+};
+pub(crate) use local_io::{
+    copy_local_dir, create_local_scratch_dir, create_local_scratch_dir_with_workspace_fallback,
+    map_io_error, prepare_local_destination,
 };
 pub(crate) use path::{
-    DEFAULT_TMP_DIR, DEFAULT_VISIBLE_DOT_DIR_NAMES, LOCAL_TMP_DIR_PREFIX, PathGlob,
+    DEFAULT_SCRATCH_DIR, DEFAULT_VISIBLE_DOT_DIR_NAMES, LOCAL_SCRATCH_DIR_PREFIX, PathGlob,
     absolute_request_path, display_local_path, include_path, is_absolute_request_path,
-    is_provider_visible_absolute_path, is_tmp_path, join_logical_path, logical_ancestors,
+    is_provider_visible_absolute_path, is_scratch_path, join_logical_path, logical_ancestors,
     normalize_absolute_request_path, normalize_local_config_path, normalize_path,
-    normalize_requested_path, normalize_str_path, normalize_tmp_filename, normalize_tmp_namespace,
-    parent_path, path_contains, provider_visible_path_allowed_by_context,
+    normalize_requested_path, normalize_scratch_filename, normalize_scratch_namespace,
+    normalize_str_path, parent_path, path_contains, provider_visible_path_allowed_by_context,
     push_shell_review_context_path_candidates, push_unique_candidate, push_unique_path,
     replace_logical_prefix, strip_path_prefix,
 };
@@ -45,9 +51,8 @@ pub(crate) use search::{
 pub(crate) use shell::signal_process_group;
 pub(crate) use shell::{
     CapturedPipe, LocalExecutionLimiter, LocalExecutionPermit, checked_timeout_deadline,
-    kill_remaining_process_group, local_program_command, local_shell_command,
-    program_process_metadata, read_child_pipe, refresh_local_shell_process, shell_process_metadata,
-    spawn_group,
+    local_program_command, local_shell_command, program_process_metadata, read_child_pipe,
+    refresh_local_shell_process, shell_process_metadata, spawn_group, terminate_process_group,
 };
 
 pub use composite_provider::{

@@ -8,12 +8,12 @@ use starweaver_envd_core::{
     validate_envd_initialize, validate_envd_protocol,
 };
 
-const ENVD_INITIALIZE: &str = include_str!("fixtures/contracts/envd-initialize-v1.json");
+const ENVD_INITIALIZE: &str = include_str!("fixtures/contracts/envd-initialize-v2.json");
 
 #[derive(Deserialize)]
 struct EnvdInitializeFixture {
     identity: ProtocolIdentity,
-    legacy_request: InitializeEnvdRequest,
+    missing_protocol: InitializeEnvdRequest,
     current_request: InitializeEnvdRequest,
     current_result: InitializeEnvdResult,
     wrong_name: InitializeEnvdRequest,
@@ -35,11 +35,15 @@ fn envd_identity_and_initialize_result_match_the_release_fixture() {
 }
 
 #[test]
-fn envd_initialize_accepts_legacy_and_matching_major_but_rejects_wrong_peers() {
+fn envd_initialize_requires_identity_and_matching_major() {
     let fixture = serde_json::from_str::<EnvdInitializeFixture>(ENVD_INITIALIZE)
         .expect("read envd initialize fixture");
-    validate_envd_initialize(&fixture.legacy_request).expect("legacy initialize remains readable");
     validate_envd_initialize(&fixture.current_request).expect("matching major is compatible");
+
+    let missing = validate_envd_initialize(&fixture.missing_protocol)
+        .expect_err("missing protocol identity must fail");
+    assert_eq!(missing.code, EnvdErrorCode::InvalidRequest);
+    assert!(missing.message.contains("missing envd protocol identity"));
 
     let wrong_name =
         validate_envd_initialize(&fixture.wrong_name).expect_err("wrong protocol name must fail");
@@ -56,7 +60,7 @@ fn envd_initialize_accepts_legacy_and_matching_major_but_rejects_wrong_peers() {
     assert!(
         wrong_major
             .message
-            .contains("unsupported starweaver.envd major 2")
+            .contains("unsupported starweaver.envd major 1")
     );
 }
 

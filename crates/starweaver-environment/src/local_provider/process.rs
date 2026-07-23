@@ -17,9 +17,9 @@ use crate::signal_process_group;
 use crate::{
     CapturedPipe, EnvironmentError, EnvironmentResult, LocalExecutionPermit, ProcessShellProvider,
     ProgramCommand, ShellCommand, ShellProcessSnapshot, ShellProcessStatus,
-    checked_timeout_deadline, kill_remaining_process_group, local_program_command,
-    local_shell_command, program_process_metadata, read_child_pipe, refresh_local_shell_process,
-    shell_process_metadata, spawn_group,
+    checked_timeout_deadline, local_program_command, local_shell_command, program_process_metadata,
+    read_child_pipe, refresh_local_shell_process, shell_process_metadata, spawn_group,
+    terminate_process_group,
 };
 
 use super::LocalEnvironmentProvider;
@@ -40,11 +40,10 @@ pub struct LocalShellProcess {
 impl Drop for LocalShellProcess {
     fn drop(&mut self) {
         if self.completed.is_none() {
-            // Drop can run on an async worker when the last provider clone is
-            // released. Signal the whole group, but never wait or join here;
-            // the detached readers finish after the killed process closes its
-            // pipes.
-            let _ = kill_remaining_process_group(&mut self.child);
+            // Provider teardown is the final owner boundary. Terminate and reap
+            // the group leader before its scratch directory is released so the
+            // child cannot survive as either a running process or a zombie.
+            let _ = terminate_process_group(&mut self.child);
         }
         drop(self.stdout_handle.take());
         drop(self.stderr_handle.take());
@@ -97,7 +96,8 @@ impl LocalEnvironmentProvider {
             completed: None,
             execution_permit: Some(execution_permit),
         };
-        self.processes
+        self.resources
+            .processes
             .lock()
             .map_err(|error| EnvironmentError::Provider(error.to_string()))?
             .insert(process_id, local_process);
@@ -106,6 +106,7 @@ impl LocalEnvironmentProvider {
 
     pub(super) fn reap_local_processes(&self) -> EnvironmentResult<()> {
         let mut processes = self
+            .resources
             .processes
             .lock()
             .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
@@ -224,6 +225,7 @@ impl ProcessShellProvider for LocalEnvironmentProvider {
                 }
                 let snapshot = {
                     let mut processes = provider
+                        .resources
                         .processes
                         .lock()
                         .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
@@ -252,6 +254,7 @@ impl ProcessShellProvider for LocalEnvironmentProvider {
         crate::blocking::run(move || {
             let snapshots = {
                 let mut processes = provider
+                    .resources
                     .processes
                     .lock()
                     .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
@@ -283,6 +286,7 @@ impl ProcessShellProvider for LocalEnvironmentProvider {
         crate::blocking::run(move || {
             let snapshot = {
                 let mut processes = provider
+                    .resources
                     .processes
                     .lock()
                     .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
@@ -325,6 +329,7 @@ impl ProcessShellProvider for LocalEnvironmentProvider {
             {
                 let snapshot = {
                     let mut processes = provider
+                        .resources
                         .processes
                         .lock()
                         .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
@@ -357,6 +362,7 @@ impl ProcessShellProvider for LocalEnvironmentProvider {
         crate::blocking::run(move || {
             let snapshot = {
                 let mut processes = provider
+                    .resources
                     .processes
                     .lock()
                     .map_err(|error| EnvironmentError::Provider(error.to_string()))?;

@@ -210,10 +210,12 @@ mod tests {
 
     fn local_process_provider(root: &std::path::Path) -> DynProcessShellProvider {
         Arc::new(
-            LocalEnvironmentProvider::new(root).with_policy(EnvironmentPolicy {
-                files: FilePolicy::read_only(),
-                shell: ShellPolicy::allow_all(),
-            }),
+            LocalEnvironmentProvider::new(root)
+                .unwrap()
+                .with_policy(EnvironmentPolicy {
+                    files: FilePolicy::read_only(),
+                    shell: ShellPolicy::allow_all(),
+                }),
         )
     }
 

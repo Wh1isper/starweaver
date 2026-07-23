@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     EnvironmentError, EnvironmentPolicy, EnvironmentResult, EnvironmentState, FilePolicy,
-    ResourceRef, ShellOutput, ShellPolicy, ShellProcessSnapshot, normalize_tmp_namespace,
+    ResourceRef, ShellOutput, ShellPolicy, ShellProcessSnapshot, normalize_scratch_namespace,
 };
 
 mod impls;
@@ -19,7 +19,7 @@ mod store;
 pub struct VirtualEnvironmentProvider {
     id: String,
     policy: EnvironmentPolicy,
-    tmp_namespace: Option<String>,
+    scratch_namespace: Option<String>,
     files: Arc<Mutex<BTreeMap<String, String>>>,
     binary_files: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
     directories: Arc<Mutex<BTreeSet<String>>>,
@@ -38,7 +38,7 @@ impl VirtualEnvironmentProvider {
                 files: FilePolicy::read_write(),
                 shell: ShellPolicy::allow_all(),
             },
-            tmp_namespace: None,
+            scratch_namespace: None,
             files: Arc::new(Mutex::new(BTreeMap::new())),
             binary_files: Arc::new(Mutex::new(BTreeMap::new())),
             directories: Arc::new(Mutex::new(BTreeSet::new())),
@@ -99,14 +99,17 @@ impl VirtualEnvironmentProvider {
         self
     }
 
-    /// Set a provider-scoped temporary file namespace.
+    /// Set a provider-scoped scratch file namespace.
     ///
     /// Namespaces isolate tool-generated large output files under a stable
-    /// subdirectory of the provider temporary root.
-    #[must_use]
-    pub fn with_tmp_namespace(mut self, namespace: impl AsRef<str>) -> Self {
-        self.tmp_namespace = normalize_tmp_namespace(namespace.as_ref()).ok();
-        self
+    /// subdirectory of the provider scratch root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the namespace is not one safe path segment.
+    pub fn with_scratch_namespace(mut self, namespace: impl AsRef<str>) -> EnvironmentResult<Self> {
+        self.scratch_namespace = Some(normalize_scratch_namespace(namespace.as_ref())?);
+        Ok(self)
     }
 
     /// Add a virtual UTF-8 text file.

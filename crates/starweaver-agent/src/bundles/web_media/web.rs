@@ -16,7 +16,7 @@ use crate::bundles::helpers::{tool_execution_error, tool_feedback, tool_invalid_
 use crate::bundles::output::{
     DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT, append_guidance, dump_tool_output,
     environment_provider_from_context, fit_text_fields_to_limit, output_too_large_message,
-    tool_output_size, write_tmp_output,
+    tool_output_size, write_scratch_output,
 };
 
 mod fetch_image;
@@ -355,7 +355,7 @@ async fn guard_text_result(
         .to_string();
     let provider = environment_provider_from_context(context);
     let output_path =
-        write_tmp_output(provider.as_deref(), prefix, extension, full_text.as_bytes()).await;
+        write_scratch_output(provider.as_deref(), prefix, extension, full_text.as_bytes()).await;
     let mut preview = match result {
         Value::Object(map) => map,
         other => {
@@ -390,7 +390,7 @@ async fn guard_search_result(context: &ToolContext, result: Value, prefix: &str)
     let serialized = dump_tool_output(&result);
     let provider = environment_provider_from_context(context);
     let output_path =
-        write_tmp_output(provider.as_deref(), prefix, "json", serialized.as_bytes()).await;
+        write_scratch_output(provider.as_deref(), prefix, "json", serialized.as_bytes()).await;
     let note = output_too_large_message(
         serialized.chars().count(),
         output_path.as_deref(),

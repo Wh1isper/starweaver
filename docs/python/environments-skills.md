@@ -164,9 +164,22 @@ async def bind_product_environment() -> EnvironmentProvider:
 The native bridge schedules sync or async Python callbacks on the captured
 event loop and validates results against the Rust `EnvironmentProvider` trait.
 Core callbacks cover `read_text`, `read_bytes`, `write_text`, `create_dir`,
-`delete_path`, `move_path`, `copy_path`, `write_tmp_file`, `stat`, `list`,
+`delete_path`, `move_path`, `copy_path`, `write_scratch_file`, `stat`, `list`,
 `run_shell`, and `export_state`. Background process methods remain available
 from native providers that implement the Rust `ProcessShellProvider` extension.
+
+Scratch is provider-owned ephemeral storage, not a separate file-operator API.
+`write_scratch_file()` returns a path accepted by the same provider's normal
+file methods. Native local providers return an absolute path and release their
+exclusive directory when the last provider handle is dropped. They prefer the
+operating-system temporary directory and fall back to an exclusive
+`<workspace>/.starweaver/tmp/<instance-id>` child only when OS-temp creation
+fails. Fallback initialization creates `.starweaver/tmp/.gitignore` with `*`
+when absent; the shared tmp root remains after instance cleanup, and startup
+never scans or reclaims sibling instances. Virtual and the default Python
+implementation use `.starweaver/scratch`. The optional
+`scratch_namespace` constructor argument must be one safe path segment and is
+validated instead of being silently ignored.
 
 Use `WorkspaceBinding` and `VirtualMount` when an application needs multiple
 providers behind one agent-facing environment namespace:

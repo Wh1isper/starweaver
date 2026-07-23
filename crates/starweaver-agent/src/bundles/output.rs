@@ -11,7 +11,7 @@ use crate::bundles::environment::EnvironmentHandle;
 /// Default hard limit for model-visible structured tool output previews.
 pub const DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT: usize = 20_000;
 
-/// Serialize a JSON tool result for size checks and temp spill files.
+/// Serialize a JSON tool result for size checks and scratch spill files.
 #[must_use]
 pub fn dump_tool_output(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
@@ -60,8 +60,8 @@ pub fn append_guidance(value: Option<&str>, guidance: &str) -> String {
     }
 }
 
-/// Write large tool output to the environment temp area when available.
-pub async fn write_tmp_output(
+/// Write large tool output to the environment scratch area when available.
+pub async fn write_scratch_output(
     provider: Option<&dyn EnvironmentProvider>,
     prefix: &str,
     extension: &str,
@@ -73,7 +73,7 @@ pub async fn write_tmp_output(
         Uuid::new_v4().simple(),
         extension.trim_start_matches('.')
     );
-    provider.write_tmp_file(&filename, content).await.ok()
+    provider.write_scratch_file(&filename, content).await.ok()
 }
 
 /// Truncate text to a hard character budget including the suffix.

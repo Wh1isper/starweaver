@@ -136,9 +136,13 @@ impl EnvironmentProvider for SwitchableEnvironmentProvider {
             .await
     }
 
-    async fn write_tmp_file(&self, filename: &str, content: &[u8]) -> EnvironmentResult<String> {
+    async fn write_scratch_file(
+        &self,
+        filename: &str,
+        content: &[u8],
+    ) -> EnvironmentResult<String> {
         self.current_provider()?
-            .write_tmp_file(filename, content)
+            .write_scratch_file(filename, content)
             .await
     }
 
