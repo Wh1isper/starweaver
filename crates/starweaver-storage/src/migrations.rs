@@ -1192,7 +1192,7 @@ mod tests {
             .expect("legacy full checkpoint");
 
         let applied = apply_sqlite_migrations(&mut connection).expect("migrate legacy database");
-        assert_eq!(applied.len(), 11);
+        assert_eq!(applied.len(), 17);
         assert_eq!(
             scalar_string(&connection, "SELECT record FROM session_records"),
             r#"{"kind":"legacy-session"}"#
@@ -1454,6 +1454,12 @@ mod tests {
                 "20260718_000009_incremental_local_store_imports",
                 "20260718_000010_durable_replay_source_selection",
                 "20260718_000011_local_store_import_tombstones",
+                "20260721_000012_durable_host_events",
+                "20260721_000013_stable_keyset_pages",
+                "20260721_000014_model_selection_receipts",
+                "20260721_000015_interaction_mutation_receipts",
+                "20260721_000016_environment_aggregate",
+                "20260721_000017_durable_run_control_effects",
             ]
         );
         let migrated_checkpoint = from_versioned_json::<AgentCheckpoint>(&scalar_string(
@@ -1486,6 +1492,10 @@ mod tests {
         connection
             .execute_batch(
                 r"
+                CREATE TABLE session_records (
+                    session_id TEXT PRIMARY KEY, record TEXT NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
                 CREATE TABLE run_records (
                     session_id TEXT NOT NULL, run_id TEXT NOT NULL, record TEXT NOT NULL,
                     sequence_no INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
@@ -1622,6 +1632,12 @@ mod tests {
                 "20260718_000009_incremental_local_store_imports",
                 "20260718_000010_durable_replay_source_selection",
                 "20260718_000011_local_store_import_tombstones",
+                "20260721_000012_durable_host_events",
+                "20260721_000013_stable_keyset_pages",
+                "20260721_000014_model_selection_receipts",
+                "20260721_000015_interaction_mutation_receipts",
+                "20260721_000016_environment_aggregate",
+                "20260721_000017_durable_run_control_effects",
             ]
         );
         let moved = from_versioned_json::<ReplaySnapshot>(&scalar_string(

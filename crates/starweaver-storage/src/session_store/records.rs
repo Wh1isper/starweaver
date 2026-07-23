@@ -48,6 +48,13 @@ pub fn load_session_record(
     deserialize_json_record(&payload)
 }
 
+pub fn advance_run_revision(run: &mut RunRecord) -> SessionStoreResult<()> {
+    run.revision = run.revision.checked_add(1).ok_or_else(|| {
+        SessionStoreError::Failed(format!("run {} revision overflow", run.run_id.as_str()))
+    })?;
+    Ok(())
+}
+
 pub fn allocate_or_reuse_run_sequence(
     connection: &Connection,
     run: &mut RunRecord,

@@ -1,0 +1,131 @@
+{
+  "components": {
+    "schemas": {
+      "SessionSearchHit": {
+        "additionalProperties": false,
+        "properties": {
+          "highlights": {
+            "items": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "minItems": 0,
+            "type": "array"
+          },
+          "scoreBasisPoints": {
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionSummary"
+          }
+        },
+        "required": [
+          "session",
+          "scoreBasisPoints",
+          "highlights"
+        ],
+        "type": "object"
+      },
+      "SessionSearchMode": {
+        "enum": [
+          "literal",
+          "hybrid"
+        ],
+        "type": "string"
+      },
+      "SessionSearchParams": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "oneOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/SessionSearchMode"
+          },
+          "profile": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "query": {
+            "oneOf": [
+              {
+                "maxLength": 4096,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "mode",
+          "limit"
+        ],
+        "type": "object"
+      },
+      "SessionSearchResult": {
+        "additionalProperties": false,
+        "properties": {
+          "hits": {
+            "items": {
+              "$ref": "#/components/schemas/SessionSearchHit"
+            },
+            "maxItems": 100,
+            "minItems": 0,
+            "type": "array"
+          },
+          "page": {
+            "$ref": "#/components/schemas/PageInfo"
+          }
+        },
+        "required": [
+          "hits",
+          "page"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

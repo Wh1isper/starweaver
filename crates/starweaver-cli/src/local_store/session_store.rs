@@ -1,18 +1,26 @@
 //! CLI adapter over the shared `SQLite` session store.
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use starweaver_context::ResumableState;
-use starweaver_core::{RunId, SessionId};
+use starweaver_core::{RunId, SessionId, SubagentAttemptId};
 use starweaver_runtime::{AgentCheckpoint, AgentStreamRecord};
 use starweaver_session::{
-    AcquireRunAdmission, ApprovalRecord, CompactRunTrace, CompactSessionTrace, DeferredToolRecord,
-    DurableControlReceipt, EnvironmentStateRef, HitlResumeAbortOutcome, HitlResumeClaim,
-    ManagedRunTarget, PendingStreamPublication, RunAdmissionLease, RunAdmissionReceipt,
-    RunEvidenceCommit, RunRecord, RunStatus, SessionContinuationFence, SessionFilter,
-    SessionRecord, SessionStatus, SessionStore, SessionStoreResult, StreamCursorRef,
+    AcquireBackgroundSubagentContinuation, AcquireRunAdmission, AdmitRunControl, ApprovalRecord,
+    BackgroundSubagentArtifact, BackgroundSubagentContinuationReceipt, BackgroundSubagentRecord,
+    BackgroundSubagentTerminalCommit, CompactRunTrace, CompactSessionTrace, DeferredToolRecord,
+    DurableBackgroundSubagentDeliveryClaim, DurableBackgroundSubagentDeliveryRelease,
+    DurableControlReceipt, DurableHostEventClass, DurableHostEventPage, DurableHostEventQuery,
+    DurableHostEventRecord, DurableHostEventScope, DurableRunControlIntent,
+    DurableRunControlStatus, EnvironmentStateRef, HitlResumeAbortOutcome, HitlResumeClaim,
+    ManagedRunTarget, PendingHostEventPublication, PendingStreamPublication, RunAdmissionLease,
+    RunAdmissionReceipt, RunEvidenceCommit, RunRecord, RunStatus, RunTerminalProjection,
+    SessionContinuationFence, SessionFilter, SessionPage, SessionPageQuery, SessionRecord,
+    SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreResult, StreamCursorRef,
     StreamPublicationTarget, UpdateManagedSession,
 };
 use starweaver_storage::SqliteSessionStore;
+use starweaver_stream::ReplayEvent;
 
 use crate::config::CliConfig;
 
@@ -258,6 +266,10 @@ impl SessionStore for LocalSessionStore {
         self.store.list_sessions(filter).await
     }
 
+    async fn list_session_page(&self, query: SessionPageQuery) -> SessionStoreResult<SessionPage> {
+        self.store.list_session_page(query).await
+    }
+
     async fn update_session_status(
         &self,
         session_id: &SessionId,
@@ -406,5 +418,371 @@ impl SessionStore for LocalSessionStore {
         session_id: &SessionId,
     ) -> SessionStoreResult<CompactSessionTrace> {
         self.store.compact_session_trace(session_id).await
+    }
+
+    async fn commit_run_evidence_fenced(
+        &self,
+        lease: &RunAdmissionLease,
+        commit: RunEvidenceCommit,
+    ) -> SessionStoreResult<RunRecord> {
+        self.store.commit_run_evidence_fenced(lease, commit).await
+    }
+
+    async fn append_replay_events_fenced(
+        &self,
+        lease: &RunAdmissionLease,
+        events: Vec<ReplayEvent>,
+    ) -> SessionStoreResult<()> {
+        self.store.append_replay_events_fenced(lease, events).await
+    }
+
+    async fn commit_checkpoint_fenced(
+        &self,
+        lease: &RunAdmissionLease,
+        checkpoint: AgentCheckpoint,
+    ) -> SessionStoreResult<()> {
+        self.store.commit_checkpoint_fenced(lease, checkpoint).await
+    }
+
+    async fn enqueue_host_event_publications(
+        &self,
+        publications: Vec<PendingHostEventPublication>,
+    ) -> SessionStoreResult<()> {
+        self.store
+            .enqueue_host_event_publications(publications)
+            .await
+    }
+
+    async fn pending_host_event_publications(
+        &self,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<PendingHostEventPublication>> {
+        self.store.pending_host_event_publications(limit).await
+    }
+
+    async fn materialize_host_event_publications(
+        &self,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<DurableHostEventRecord>> {
+        self.store.materialize_host_event_publications(limit).await
+    }
+
+    async fn replay_host_events(
+        &self,
+        query: DurableHostEventQuery,
+    ) -> SessionStoreResult<DurableHostEventPage> {
+        self.store.replay_host_events(query).await
+    }
+
+    async fn host_event_fence(
+        &self,
+        scope: &DurableHostEventScope,
+        event_classes: &[DurableHostEventClass],
+    ) -> SessionStoreResult<Option<u64>> {
+        self.store.host_event_fence(scope, event_classes).await
+    }
+
+    async fn create_session_idempotent_with_host_events(
+        &self,
+        session: SessionRecord,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+        publications: Vec<PendingHostEventPublication>,
+    ) -> SessionStoreResult<SessionRecord> {
+        self.store
+            .create_session_idempotent_with_host_events(
+                session,
+                idempotency_key,
+                command_fingerprint,
+                publications,
+            )
+            .await
+    }
+
+    async fn load_session_mutation_receipt(
+        &self,
+        namespace_id: &str,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<Option<SessionRecord>> {
+        self.store
+            .load_session_mutation_receipt(namespace_id, idempotency_key, command_fingerprint)
+            .await
+    }
+
+    async fn update_managed_session_with_host_events(
+        &self,
+        command: UpdateManagedSession,
+        command_fingerprint: &str,
+        publications: Vec<PendingHostEventPublication>,
+    ) -> SessionStoreResult<SessionRecord> {
+        self.store
+            .update_managed_session_with_host_events(command, command_fingerprint, publications)
+            .await
+    }
+
+    async fn tombstone_session_idempotent_with_host_events(
+        &self,
+        session_id: &SessionId,
+        fence_id: &str,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+        publications: Vec<PendingHostEventPublication>,
+    ) -> SessionStoreResult<SessionRecord> {
+        self.store
+            .tombstone_session_idempotent_with_host_events(
+                session_id,
+                fence_id,
+                idempotency_key,
+                command_fingerprint,
+                publications,
+            )
+            .await
+    }
+
+    async fn load_run_admission_receipt(
+        &self,
+        namespace_id: &str,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<Option<RunAdmissionReceipt>> {
+        self.store
+            .load_run_admission_receipt(namespace_id, idempotency_key, command_fingerprint)
+            .await
+    }
+
+    async fn update_run_status_fenced(
+        &self,
+        lease: &RunAdmissionLease,
+        status: RunStatus,
+        output_preview: Option<String>,
+    ) -> SessionStoreResult<RunRecord> {
+        self.store
+            .update_run_status_fenced(lease, status, output_preview)
+            .await
+    }
+
+    async fn finalize_run_admission(
+        &self,
+        lease: &RunAdmissionLease,
+        terminal: RunTerminalProjection,
+    ) -> SessionStoreResult<RunRecord> {
+        self.store.finalize_run_admission(lease, terminal).await
+    }
+
+    async fn admit_run_control(
+        &self,
+        request: AdmitRunControl,
+    ) -> SessionStoreResult<DurableRunControlIntent> {
+        self.store.admit_run_control(request).await
+    }
+
+    async fn load_run_control_intent(
+        &self,
+        target: &ManagedRunTarget,
+        operation_id: &str,
+    ) -> SessionStoreResult<Option<DurableRunControlIntent>> {
+        self.store
+            .load_run_control_intent(target, operation_id)
+            .await
+    }
+
+    async fn list_run_control_intents(
+        &self,
+        target: &ManagedRunTarget,
+        statuses: &[DurableRunControlStatus],
+        limit: usize,
+    ) -> SessionStoreResult<Vec<DurableRunControlIntent>> {
+        self.store
+            .list_run_control_intents(target, statuses, limit)
+            .await
+    }
+
+    async fn advance_run_control_intent(
+        &self,
+        lease: &RunAdmissionLease,
+        operation_id: &str,
+        expected: DurableRunControlStatus,
+        next: DurableRunControlStatus,
+        occurred_at: DateTime<Utc>,
+    ) -> SessionStoreResult<DurableRunControlIntent> {
+        self.store
+            .advance_run_control_intent(lease, operation_id, expected, next, occurred_at)
+            .await
+    }
+
+    async fn reconcile_run_control_intent(
+        &self,
+        target: &ManagedRunTarget,
+        operation_id: &str,
+        occurred_at: DateTime<Utc>,
+    ) -> SessionStoreResult<DurableRunControlIntent> {
+        self.store
+            .reconcile_run_control_intent(target, operation_id, occurred_at)
+            .await
+    }
+
+    async fn record_background_subagent_acceptance(
+        &self,
+        record: BackgroundSubagentRecord,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        self.store
+            .record_background_subagent_acceptance(record)
+            .await
+    }
+
+    async fn update_background_subagent_execution(
+        &self,
+        record: BackgroundSubagentRecord,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        self.store
+            .update_background_subagent_execution(record)
+            .await
+    }
+
+    async fn heartbeat_background_subagent(
+        &self,
+        attempt_id: &SubagentAttemptId,
+        host_instance_id: &str,
+        fencing_generation: u64,
+        lease_expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        self.store
+            .heartbeat_background_subagent(
+                attempt_id,
+                host_instance_id,
+                fencing_generation,
+                lease_expires_at,
+            )
+            .await
+    }
+
+    async fn commit_background_subagent_terminal(
+        &self,
+        commit: BackgroundSubagentTerminalCommit,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        self.store.commit_background_subagent_terminal(commit).await
+    }
+
+    async fn load_background_subagent_artifact(
+        &self,
+        artifact_ref: &str,
+    ) -> SessionStoreResult<BackgroundSubagentArtifact> {
+        self.store
+            .load_background_subagent_artifact(artifact_ref)
+            .await
+    }
+
+    async fn expire_background_subagent_retention(
+        &self,
+        namespace_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<BackgroundSubagentRecord>> {
+        self.store
+            .expire_background_subagent_retention(namespace_id, now, limit)
+            .await
+    }
+
+    async fn record_background_subagent_terminal(
+        &self,
+        record: BackgroundSubagentRecord,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        self.store.record_background_subagent_terminal(record).await
+    }
+
+    async fn load_background_subagent(
+        &self,
+        attempt_id: &SubagentAttemptId,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        self.store.load_background_subagent(attempt_id).await
+    }
+
+    async fn list_background_subagents(
+        &self,
+        namespace_id: &str,
+        session_id: Option<&SessionId>,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<BackgroundSubagentRecord>> {
+        self.store
+            .list_background_subagents(namespace_id, session_id, limit)
+            .await
+    }
+
+    async fn list_pending_background_subagents(
+        &self,
+        namespace_id: &str,
+        session_id: Option<&SessionId>,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<BackgroundSubagentRecord>> {
+        self.store
+            .list_pending_background_subagents(namespace_id, session_id, limit)
+            .await
+    }
+
+    async fn claim_background_subagent_delivery(
+        &self,
+        attempt_id: &SubagentAttemptId,
+        claim: DurableBackgroundSubagentDeliveryClaim,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        self.store
+            .claim_background_subagent_delivery(attempt_id, claim)
+            .await
+    }
+
+    async fn acknowledge_background_subagent_delivery(
+        &self,
+        attempt_id: &SubagentAttemptId,
+        claim_id: &str,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        self.store
+            .acknowledge_background_subagent_delivery(attempt_id, claim_id)
+            .await
+    }
+
+    async fn release_background_subagent_delivery(
+        &self,
+        attempt_id: &SubagentAttemptId,
+        claim_id: &str,
+        release: DurableBackgroundSubagentDeliveryRelease,
+    ) -> SessionStoreResult<BackgroundSubagentRecord> {
+        self.store
+            .release_background_subagent_delivery(attempt_id, claim_id, release)
+            .await
+    }
+
+    async fn acquire_background_subagent_continuation(
+        &self,
+        request: AcquireBackgroundSubagentContinuation,
+    ) -> SessionStoreResult<BackgroundSubagentContinuationReceipt> {
+        self.store
+            .acquire_background_subagent_continuation(request)
+            .await
+    }
+
+    async fn reconcile_background_subagents(
+        &self,
+        namespace_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<Vec<BackgroundSubagentRecord>> {
+        self.store
+            .reconcile_background_subagents(namespace_id, now)
+            .await
+    }
+
+    async fn latest_checkpoint(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+    ) -> SessionStoreResult<Option<AgentCheckpoint>> {
+        self.store.latest_checkpoint(session_id, run_id).await
+    }
+
+    async fn resume_snapshot(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+    ) -> SessionStoreResult<SessionResumeSnapshot> {
+        self.store.resume_snapshot(session_id, run_id).await
     }
 }

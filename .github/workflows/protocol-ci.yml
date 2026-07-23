@@ -1,0 +1,187 @@
+name: Host Protocol CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protocol-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  idl-source:
+    name: IDL source and profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: make rpc-idl-source-check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: starweaver-host-public-bundle
+          path: |
+            protocol/host/generated/starweaver-host.openrpc.json
+            protocol/host/generated/manifest.json
+          if-no-files-found: error
+
+  generated-drift:
+    name: Generated drift (${{ matrix.os }})
+    needs: idl-source
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: make rpc-idl-drift-check
+      - name: Prove check mode is read-only
+        run: git diff --exit-code && test -z "$(git status --short)"
+
+  rust-protocol:
+    name: Generated Rust protocol
+    needs: generated-drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p starweaver-rpc-core --all-targets --locked
+      - run: cargo clippy -p starweaver-rpc-core --all-targets --locked -- -D warnings
+      - run: make architecture-check
+
+  typescript-protocol:
+    name: Generated TypeScript protocol
+    needs: generated-drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: make rpc-idl-fixtures-check
+
+  cross-language:
+    name: Cross-language fixtures
+    needs: [rust-protocol, typescript-protocol]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: make rpc-idl-check
+
+  host-contracts:
+    name: Host contracts and transports
+    needs: [rust-protocol, cross-language]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: make rpc-contracts-check
+
+  desktop-protocol:
+    name: Desktop generated boundary
+    needs: [generated-drift, cross-language]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-tauri-linux
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: make desktop-check
+
+  independent-client:
+    name: Independent bundle-only client
+    needs: host-contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: make rpc-independent-client-check
+
+  protocol-acceptance:
+    name: Protocol acceptance
+    if: always()
+    needs:
+      - idl-source
+      - generated-drift
+      - rust-protocol
+      - typescript-protocol
+      - cross-language
+      - host-contracts
+      - desktop-protocol
+      - independent-client
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every protocol gate
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          failed = {name: data["result"] for name, data in needs.items() if data["result"] != "success"}
+          if failed:
+              print(f"protocol gates did not all succeed: {failed}", file=sys.stderr)
+              raise SystemExit(1)
+          PY

@@ -435,8 +435,8 @@ async fn live_control_steering_reaches_active_runtime_context() {
     let mut handle = session.stream("deploy");
     recv_until_tool_call(&mut handle).await;
 
-    let receipt = handle
-        .control_handle()
+    let control = handle.control_handle();
+    let receipt = control
         .steer("ui-1", "Use the safe rollout path.")
         .await
         .unwrap();
@@ -450,6 +450,12 @@ async fn live_control_steering_reaches_active_runtime_context() {
             .is_some_and(|id| id.starts_with("run_"))
     );
     assert_eq!(receipt.session_id.as_deref(), Some(session_id.as_str()));
+    let duplicate = control
+        .steer("ui-1", "This exact operation retry must not be injected.")
+        .await
+        .unwrap();
+    assert_eq!(duplicate, receipt);
+    assert!(duplicate.pending_delivery);
 
     while handle.recv().await.is_some() {}
     let result = handle.join().await.unwrap();
@@ -466,6 +472,7 @@ async fn live_control_steering_reaches_active_runtime_context() {
         result.context.steering_messages,
         vec!["Use the safe rollout path.".to_string()]
     );
+    assert!(control.operation_consumed("ui-1"));
     let captured = captured.lock().unwrap().clone();
     assert_eq!(captured.len(), 2);
     assert!(format!("{:?}", captured[1]).contains("Steering update from the user"));

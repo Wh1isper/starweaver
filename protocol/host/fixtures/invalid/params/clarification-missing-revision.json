@@ -1,0 +1,9 @@
+{
+  "method": "clarification.resolve",
+  "params": {
+    "answers": [],
+    "clarificationId": "clarification_example",
+    "idempotencyKey": "missing-revision",
+    "response": "Use the default"
+  }
+}

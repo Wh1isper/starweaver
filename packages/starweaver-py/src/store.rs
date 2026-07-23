@@ -12,8 +12,9 @@ use starweaver_runtime::{AgentCheckpoint, AgentStreamRecord};
 use starweaver_session::{
     ApprovalRecord, CompactRunTrace, CompactSessionTrace, DeferredToolRecord, EnvironmentStateRef,
     HitlResumeClaim, PendingStreamPublication, RunEvidenceCommit, RunRecord, RunStatus,
-    SessionFilter, SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore,
-    SessionStoreError, SessionStoreResult, StreamCursorRef, StreamPublicationTarget,
+    SessionFilter, SessionPage, SessionPageKey, SessionPageQuery, SessionRecord,
+    SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError, SessionStoreResult,
+    StreamCursorRef, StreamPublicationTarget,
 };
 use starweaver_storage::{
     SqliteMigrationStatus, SqliteReplayEventLog, SqliteSessionStore, SqliteStreamArchive,
@@ -60,6 +61,21 @@ pub struct PyPythonSessionStore {
 struct PythonSessionStore {
     store: Py<PyAny>,
     event_loop: Py<PyAny>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct PythonSessionPage {
+    sessions: Vec<SessionRecord>,
+    next_key: Option<PythonSessionPageKey>,
+    has_more: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct PythonSessionPageKey {
+    updated_at: String,
+    session_id: String,
 }
 
 unsafe impl Send for PythonSessionStore {}
@@ -755,6 +771,40 @@ impl SessionStore for PythonSessionStore {
             store.call_method1(py, "list_sessions", (filter,))
         })
         .await
+    }
+
+    async fn list_session_page(&self, query: SessionPageQuery) -> SessionStoreResult<SessionPage> {
+        let query = json!({
+            "after": query.after().map(|key| json!({
+                "updatedAt": key.updated_at,
+                "sessionId": key.session_id,
+            })),
+            "limit": query.limit(),
+        });
+        let page: PythonSessionPage = self
+            .call_json("list_session_page", move |py, store| {
+                let query = serialize_to_py(py, &query)?;
+                store.call_method1(py, "list_session_page", (query,))
+            })
+            .await?;
+        let next_key = page
+            .next_key
+            .map(|key| {
+                Ok(SessionPageKey {
+                    updated_at: key.updated_at.parse().map_err(|_| {
+                        SessionStoreError::Failed(
+                            "list_session_page returned an invalid updatedAt".to_string(),
+                        )
+                    })?,
+                    session_id: SessionId::from_string(key.session_id),
+                })
+            })
+            .transpose()?;
+        Ok(SessionPage {
+            sessions: page.sessions,
+            next_key,
+            has_more: page.has_more,
+        })
     }
 
     async fn update_session_status(

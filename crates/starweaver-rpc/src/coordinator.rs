@@ -22,29 +22,23 @@ use starweaver_agent::{
     environment_binding_class,
 };
 use starweaver_core::{ConversationId, RunId, SessionId, SubagentAttemptId};
-use starweaver_environment::{
-    ShellProcessStatus, SwitchableEnvironmentProvider, SwitchableEnvironmentTarget,
-};
-use starweaver_rpc_core::{
-    ALREADY_EXISTS, EnvironmentActiveMountParams, EnvironmentActiveUnmountParams,
-    EnvironmentAttachmentRef, INVALID_PARAMS, RUN_CONFLICT, RpcError,
-};
 use starweaver_runtime::{AgentInput, AgentStreamRecord};
 use starweaver_session::{
-    AcquireBackgroundSubagentContinuation, AcquireRunAdmission, AgentSessionOperation,
-    AgentSessionScope, BackgroundSubagentContinuationCause, BackgroundSubagentRecord,
-    ContinuationEffectState, DurableBackgroundSubagentDeliveryStatus,
-    DurableBackgroundSubagentRetentionStatus, DurableControlReceipt, HitlResumeAbortOutcome,
-    HitlResumeClaim, InputPart, LOCAL_SESSION_NAMESPACE, ManagedRunTarget, PreparedContinuation,
-    RunAdmissionLease, RunAdmissionReceipt, RunRecord, RunStatus, RunTerminalError,
-    RunTerminalProjection, SessionDeletionFence, SessionResumeSnapshot, SessionStatus,
-    SessionStore, SessionStoreError,
+    AcquireBackgroundSubagentContinuation, AcquireRunAdmission, AdmitRunControl,
+    AgentSessionOperation, AgentSessionScope, BackgroundSubagentContinuationCause,
+    BackgroundSubagentRecord, ContinuationEffectState, DurableBackgroundSubagentDeliveryStatus,
+    DurableBackgroundSubagentRetentionStatus, DurableRunControlEffect, DurableRunControlIntent,
+    DurableRunControlStatus, HitlResumeAbortOutcome, HitlResumeClaim, InputPart,
+    LOCAL_SESSION_NAMESPACE, ManagedRunTarget, PreparedContinuation, RunAdmissionLease,
+    RunAdmissionReceipt, RunRecord, RunStatus, RunTerminalError, RunTerminalProjection,
+    SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError,
+    deterministic_run_control_operation_id, deterministic_run_control_receipt_id,
 };
 use starweaver_storage::{DurableReplaySource, SqliteStorage};
 use starweaver_stream::{
     DefaultDisplayMessageProjector, DisplayMessageProjector, DisplayProjectionContext,
-    EnvironmentLifecycleEvent, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayEventLog,
-    ReplayScope, StreamArchive, StreamTerminalMarker,
+    ReplayCursor, ReplayEvent, ReplayEventKind, ReplayEventLog, ReplayScope, StreamArchive,
+    StreamTerminalMarker,
 };
 use tokio::{
     sync::{Mutex as AsyncMutex, watch},
@@ -55,8 +49,9 @@ use crate::{
     RpcAgentCatalog, RpcConfig, RpcHostError, RpcHostResult,
     environment::{
         effective_rpc_environment_attachments, resolve_rpc_environment,
-        resolve_rpc_environment_target, safe_rpc_environment_attachments,
+        safe_rpc_environment_attachments,
     },
+    environment_contract::{EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef},
     environment_manager::EnvironmentAttachmentManager,
     session_management::{RpcAgentSessionAdapter, command_fingerprint},
     session_tools::{deferred_toolset_for_session, deferred_toolset_summary},
@@ -227,10 +222,31 @@ struct ActiveRun {
     next_event_sequence: usize,
     terminal_replay_sequence: Arc<AtomicUsize>,
     replay_error: Option<String>,
-    environment: Arc<SwitchableEnvironmentProvider>,
-    environment_attachments: Vec<EnvironmentAttachmentRef>,
-    environment_binding_version: u64,
-    environment_idempotency: HashMap<String, EnvironmentMutationRecord>,
+}
+
+#[cfg(test)]
+struct RunControlFixturePause {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    paused: AtomicBool,
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl starweaver_agent::AgentCapability for RunControlFixturePause {
+    async fn validate_output_with_context(
+        &self,
+        _state: &mut starweaver_agent::AgentRunState,
+        _context: &mut starweaver_agent::AgentContext,
+        _output: &str,
+    ) -> starweaver_agent::CapabilityResult<()> {
+        if self.paused.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        self.entered.notify_one();
+        self.release.notified().await;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -238,32 +254,6 @@ struct TerminalRun {
     target: ManagedRunTarget,
     status: RpcRunStatus,
     events: Vec<ReplayEvent>,
-}
-
-#[derive(Clone)]
-struct EnvironmentMutationRecord {
-    params_digest: String,
-    result: Value,
-}
-
-/// RPC-owned active mount mutation outcome used by the service boundary.
-#[derive(Debug)]
-pub struct RpcActiveMountOutcome {
-    /// Wire result.
-    pub result: Value,
-    /// Whether this request applied a new mutation rather than replaying an idempotent result.
-    #[cfg(test)]
-    pub applied: bool,
-}
-
-/// RPC-owned active unmount mutation outcome used by the service boundary.
-#[derive(Debug)]
-pub struct RpcActiveUnmountOutcome {
-    /// Wire result.
-    pub result: Value,
-    /// Whether this request applied a new mutation rather than replaying an idempotent result.
-    #[cfg(test)]
-    pub applied: bool,
 }
 
 /// Thin RPC-owned registry around live SDK control handles.
@@ -321,8 +311,8 @@ impl RpcRuntimeCoordinator {
     )> {
         let binding_class = environment_binding_class(attachments.iter().map(|attachment| {
             let mode = match attachment.resolved_mode() {
-                starweaver_rpc_core::EnvironmentAttachmentAccessMode::ReadOnly => "read_only",
-                starweaver_rpc_core::EnvironmentAttachmentAccessMode::ReadWrite => "read_write",
+                EnvironmentAttachmentAccessMode::ReadOnly => "read_only",
+                EnvironmentAttachmentAccessMode::ReadWrite => "read_write",
             };
             (attachment.kind.clone(), mode.to_string())
         }));
@@ -377,6 +367,28 @@ impl RpcRuntimeCoordinator {
         Ok(supervisor)
     }
 
+    async fn reconcile_expired_run_admissions_once(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> RpcHostResult<Vec<ManagedRunTarget>> {
+        let reconciled = self
+            .storage
+            .session_store()
+            .reconcile_expired_run_admissions(LOCAL_SESSION_NAMESPACE, now)
+            .await?;
+        if !reconciled.is_empty() {
+            let mut active = self.active.lock().map_err(active_registry_error)?;
+            for target in &reconciled {
+                if let Some(run) = active.remove(target) {
+                    let _ = run.control.interrupt(Some(
+                        "run admission lease expired and was durably reconciled".to_string(),
+                    ));
+                }
+            }
+        }
+        Ok(reconciled)
+    }
+
     fn ensure_background_reconciler(&self) -> RpcHostResult<()> {
         let mut slot = self
             .background_reconciler
@@ -395,6 +407,9 @@ impl RpcRuntimeCoordinator {
                 if !coordinator.accepting.load(Ordering::Acquire) {
                     return;
                 }
+                let _ = coordinator
+                    .reconcile_expired_run_admissions_once(chrono::Utc::now())
+                    .await;
                 let store = coordinator.storage.session_store();
                 let _ = store
                     .expire_background_subagent_retention(
@@ -1302,48 +1317,6 @@ impl RpcRuntimeCoordinator {
             };
         let control = handle.control_handle();
         supervisor.begin_parent_run(run_id.clone());
-        if let Err(error) = self
-            .environment_manager
-            .mark_run_started(run_id.as_str(), &resolved_environment.attachments)
-        {
-            let _ = control.interrupt(Some("environment lease registration failed".to_string()));
-            let hitl_completion_error = if let Some(launch) = hitl_launch.as_ref() {
-                runtime
-                    .finish_hitl_stream(
-                        input,
-                        handle,
-                        &launch.snapshot,
-                        &launch.results,
-                        launch.claim_id.clone(),
-                    )
-                    .await
-                    .err()
-            } else {
-                let _ = runtime.finish_stream(input, handle).await;
-                None
-            };
-            supervisor.end_parent_run(&run_id);
-            if let Some(hitl_error) = hitl_completion_error {
-                return Err(RpcHostError::Runtime(format!(
-                    "{}; HITL stream completion requires atomic reconciliation: {hitl_error}",
-                    error.message
-                )));
-            }
-            let cleanup = self
-                .finalize_preworker_failure(
-                    &admission,
-                    "environment_lease_registration_failed",
-                    "environment lease registration failed",
-                )
-                .await;
-            if let Err(cleanup_error) = cleanup {
-                return Err(RpcHostError::Runtime(format!(
-                    "{}; admission cleanup requires reconciliation: {cleanup_error}",
-                    error.message
-                )));
-            }
-            return Err(RpcHostError::Invalid(error.message));
-        }
         let initial_status = RpcRunStatus {
             session_id: session_id.as_str().to_string(),
             run_id: run_id.as_str().to_string(),
@@ -1363,10 +1336,6 @@ impl RpcRuntimeCoordinator {
             next_event_sequence: 0,
             terminal_replay_sequence,
             replay_error: None,
-            environment: Arc::clone(&resolved_environment.switchable),
-            environment_attachments: resolved_environment.attachments.clone(),
-            environment_binding_version: 1,
-            environment_idempotency: HashMap::new(),
         };
         self.active
             .lock()
@@ -1403,7 +1372,6 @@ impl RpcRuntimeCoordinator {
                 let _ = runtime.finish_stream(input, handle).await;
                 None
             };
-            let _ = self.environment_manager.mark_run_finished(run_id.as_str());
             supervisor.end_parent_run(&run_id);
             if let Some(hitl_error) = hitl_completion_error {
                 return Err(RpcHostError::Runtime(format!(
@@ -1428,7 +1396,6 @@ impl RpcRuntimeCoordinator {
 
         let active = Arc::clone(&self.active);
         let terminal = Arc::clone(&self.terminal);
-        let environment_manager = self.environment_manager.clone();
         let replay_log = self.storage.replay_event_log();
         let store = self.storage.session_store();
         let worker_session_id = session_id.clone();
@@ -1465,10 +1432,36 @@ impl RpcRuntimeCoordinator {
                         match store.heartbeat_run_admission(&worker_lease, expires).await {
                             Ok(renewed) => {
                                 worker_lease = renewed.clone();
-                                if let Ok(mut registry) = active.lock()
+                                let control = if let Ok(mut registry) = active.lock()
                                     && let Some(run) = registry.get_mut(&worker_target)
                                 {
                                     run.lease = renewed;
+                                    Some(run.control.clone())
+                                } else {
+                                    None
+                                };
+                                if let Some(control) = control
+                                    && let Ok(intents) = store
+                                        .list_run_control_intents(
+                                            &worker_target,
+                                            &[DurableRunControlStatus::Delivered],
+                                            200,
+                                        )
+                                        .await
+                                {
+                                    for intent in intents {
+                                        if control.operation_consumed(&intent.operation_id) {
+                                            let _ = store
+                                                .advance_run_control_intent(
+                                                    &worker_lease,
+                                                    &intent.operation_id,
+                                                    DurableRunControlStatus::Delivered,
+                                                    DurableRunControlStatus::Consumed,
+                                                    chrono::Utc::now(),
+                                                )
+                                                .await;
+                                        }
+                                    }
                                 }
                             }
                             Err(_) => {
@@ -1563,14 +1556,6 @@ impl RpcRuntimeCoordinator {
                     && let Some(active_run) = registry.get(&worker_target)
                 {
                     let _ = active_run.status_tx.send(final_status.clone());
-                }
-                if environment_manager
-                    .mark_run_finished(worker_run_id.as_str())
-                    .is_err()
-                {
-                    final_status
-                        .error
-                        .get_or_insert_with(|| "environment lease cleanup failed".to_string());
                 }
                 let removed = active
                     .lock()
@@ -1751,14 +1736,6 @@ impl RpcRuntimeCoordinator {
                 && let Some(active_run) = registry.get(&worker_target)
             {
                 let _ = active_run.status_tx.send(final_status.clone());
-            }
-            if environment_manager
-                .mark_run_finished(worker_run_id.as_str())
-                .is_err()
-            {
-                final_status
-                    .error
-                    .get_or_insert_with(|| "environment lease cleanup failed".to_string());
             }
             let removed = active
                 .lock()
@@ -1993,7 +1970,7 @@ impl RpcRuntimeCoordinator {
     ///
     /// # Errors
     ///
-    /// Returns an error when the target is not locally active or the fenced receipt is rejected.
+    /// Returns an error when durable admission or operation-id-aware runtime delivery fails.
     pub async fn steer(
         &self,
         session_id: &SessionId,
@@ -2014,86 +1991,53 @@ impl RpcRuntimeCoordinator {
         text: String,
         idempotency_key: Option<String>,
     ) -> RpcHostResult<Value> {
+        self.steer_idempotent_bound(
+            session_id,
+            run_id,
+            steering_id,
+            text,
+            idempotency_key,
+            LOCAL_SESSION_NAMESPACE.to_string(),
+        )
+        .await
+    }
+
+    /// Queue steering bound to an explicit product authority identity.
+    pub(crate) async fn steer_idempotent_bound(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+        steering_id: String,
+        text: String,
+        idempotency_key: Option<String>,
+        authority_binding: String,
+    ) -> RpcHostResult<Value> {
         let target = Self::target(session_id, run_id);
         let idempotency_key = idempotency_key.unwrap_or_else(|| steering_id.clone());
-        let fingerprint = command_fingerprint("steer_session_run", &(&target, &steering_id, &text))
-            .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
-        let store = self.storage.session_store();
-        let existing = store
-            .load_control_receipt(&target, &idempotency_key)
-            .await?;
-        if let Some(existing) = existing.as_ref()
-            && existing.command_fingerprint != fingerprint
-        {
-            return Err(starweaver_session::SessionStoreError::IdempotencyConflict(
+        let fingerprint = command_fingerprint(
+            "steer_session_run",
+            &(&authority_binding, &target, &steering_id, &text),
+        )
+        .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+        let (intent, idempotent, pending_delivery) = self
+            .admit_and_deliver_run_control(
+                target,
+                authority_binding,
+                steering_id,
                 idempotency_key,
+                fingerprint,
+                DurableRunControlEffect::Steer { text },
             )
-            .into());
-        }
-        if let Some(existing) = existing.as_ref()
-            && existing.state == "accepted"
-        {
-            return Ok(json!({
-                "sessionId": session_id.as_str(),
-                "runId": run_id.as_str(),
-                "steeringId": existing.operation_id,
-                "queued": true,
-                "receiptId": existing.receipt_id,
-                "fencingGeneration": existing.fencing_generation,
-                "idempotent": true,
-            }));
-        }
-        let (control, lease) = self.control(&target)?;
-        let reserved = if let Some(existing) = existing {
-            if existing.fencing_generation != lease.fencing_generation {
-                return Err(RpcHostError::NotFound(
-                    "control receipt belongs to a stale fencing generation".to_string(),
-                ));
-            }
-            existing
-        } else {
-            store
-                .reserve_control_receipt(DurableControlReceipt {
-                    receipt_id: format!("control_{}", uuid::Uuid::new_v4()),
-                    target: target.clone(),
-                    operation_id: steering_id.clone(),
-                    operation: "steer".to_string(),
-                    idempotency_key,
-                    command_fingerprint: fingerprint,
-                    fencing_generation: lease.fencing_generation,
-                    state: "reserved".to_string(),
-                    created_at: chrono::Utc::now(),
-                })
-                .await?
-        };
-        if reserved.state == "accepted" {
-            return Ok(json!({
-                "sessionId": session_id.as_str(),
-                "runId": run_id.as_str(),
-                "steeringId": reserved.operation_id,
-                "queued": true,
-                "receiptId": reserved.receipt_id,
-                "fencingGeneration": reserved.fencing_generation,
-                "idempotent": true,
-            }));
-        }
-        let receipt = control
-            .steer(steering_id, text)
-            .await
-            .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
-        let accepted = self
-            .storage
-            .session_store()
-            .update_control_receipt_state(&reserved.receipt_id, "accepted")
             .await?;
         Ok(json!({
             "sessionId": session_id.as_str(),
             "runId": run_id.as_str(),
-            "steeringId": receipt.id,
-            "queued": receipt.pending_delivery,
-            "receiptId": accepted.receipt_id,
-            "fencingGeneration": accepted.fencing_generation,
-            "idempotent": false,
+            "steeringId": intent.operation_id,
+            "queued": pending_delivery,
+            "receiptId": intent.receipt.receipt_id,
+            "fencingGeneration": intent.fencing_generation,
+            "effectState": intent.status.as_str(),
+            "idempotent": idempotent,
         }))
     }
 
@@ -2101,7 +2045,7 @@ impl RpcRuntimeCoordinator {
     ///
     /// # Errors
     ///
-    /// Returns an error when the target is not locally active or the fenced receipt is rejected.
+    /// Returns an error when durable admission or operation-id-aware runtime delivery fails.
     pub async fn cancel(
         &self,
         session_id: &SessionId,
@@ -2127,85 +2071,190 @@ impl RpcRuntimeCoordinator {
         reason: Option<String>,
         idempotency_key: Option<String>,
     ) -> RpcHostResult<Value> {
+        self.cancel_idempotent_bound(
+            session_id,
+            run_id,
+            operation_id,
+            reason,
+            idempotency_key,
+            LOCAL_SESSION_NAMESPACE.to_string(),
+        )
+        .await
+    }
+
+    /// Cooperatively interrupt bound to an explicit product authority identity.
+    pub(crate) async fn cancel_idempotent_bound(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+        operation_id: String,
+        reason: Option<String>,
+        idempotency_key: Option<String>,
+        authority_binding: String,
+    ) -> RpcHostResult<Value> {
         let target = Self::target(session_id, run_id);
         let idempotency_key = idempotency_key.unwrap_or_else(|| operation_id.clone());
-        let fingerprint =
-            command_fingerprint("interrupt_session_run", &(&target, &operation_id, &reason))
-                .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
-        let store = self.storage.session_store();
-        let existing = store
-            .load_control_receipt(&target, &idempotency_key)
-            .await?;
-        if let Some(existing) = existing.as_ref()
-            && existing.command_fingerprint != fingerprint
-        {
-            return Err(starweaver_session::SessionStoreError::IdempotencyConflict(
+        let fingerprint = command_fingerprint(
+            "interrupt_session_run",
+            &(&authority_binding, &target, &operation_id, &reason),
+        )
+        .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+        let (intent, idempotent, _pending_delivery) = self
+            .admit_and_deliver_run_control(
+                target,
+                authority_binding,
+                operation_id,
                 idempotency_key,
+                fingerprint,
+                DurableRunControlEffect::Interrupt { reason },
             )
-            .into());
-        }
-        if let Some(existing) = existing.as_ref()
-            && existing.state == "accepted"
-        {
-            return Ok(json!({
-                "sessionId": session_id.as_str(),
-                "runId": run_id.as_str(),
-                "cancelled": true,
-                "controlId": existing.operation_id,
-                "receiptId": existing.receipt_id,
-                "fencingGeneration": existing.fencing_generation,
-                "idempotent": true,
-            }));
-        }
-        let (control, lease) = self.control(&target)?;
-        let reserved = if let Some(existing) = existing {
-            if existing.fencing_generation != lease.fencing_generation {
-                return Err(RpcHostError::NotFound(
-                    "control receipt belongs to a stale fencing generation".to_string(),
-                ));
-            }
-            existing
-        } else {
-            store
-                .reserve_control_receipt(DurableControlReceipt {
-                    receipt_id: format!("control_{}", uuid::Uuid::new_v4()),
-                    target,
-                    operation_id: operation_id.clone(),
-                    operation: "interrupt".to_string(),
-                    idempotency_key,
-                    command_fingerprint: fingerprint,
-                    fencing_generation: lease.fencing_generation,
-                    state: "reserved".to_string(),
-                    created_at: chrono::Utc::now(),
-                })
-                .await?
-        };
-        if reserved.state == "accepted" {
-            return Ok(json!({
-                "sessionId": session_id.as_str(),
-                "runId": run_id.as_str(),
-                "cancelled": true,
-                "controlId": reserved.operation_id,
-                "receiptId": reserved.receipt_id,
-                "fencingGeneration": reserved.fencing_generation,
-                "idempotent": true,
-            }));
-        }
-        let receipt = control.interrupt(reason);
-        let accepted = self
-            .storage
-            .session_store()
-            .update_control_receipt_state(&reserved.receipt_id, "accepted")
             .await?;
         Ok(json!({
             "sessionId": session_id.as_str(),
             "runId": run_id.as_str(),
-            "cancelled": true,
-            "controlId": receipt.id,
-            "receiptId": accepted.receipt_id,
-            "fencingGeneration": accepted.fencing_generation,
-            "idempotent": false,
+            "cancelled": intent.status != DurableRunControlStatus::Reconciled,
+            "controlId": intent.operation_id,
+            "receiptId": intent.receipt.receipt_id,
+            "fencingGeneration": intent.fencing_generation,
+            "effectState": intent.status.as_str(),
+            "idempotent": idempotent,
         }))
+    }
+
+    async fn admit_and_deliver_run_control(
+        &self,
+        target: ManagedRunTarget,
+        authority_binding: String,
+        operation_id: String,
+        idempotency_key: String,
+        command_fingerprint: String,
+        effect: DurableRunControlEffect,
+    ) -> RpcHostResult<(DurableRunControlIntent, bool, bool)> {
+        if authority_binding.is_empty() || operation_id.is_empty() || idempotency_key.is_empty() {
+            return Err(RpcHostError::Invalid(
+                "run control authority, operation id, and idempotency key are required".to_string(),
+            ));
+        }
+        let store = self.storage.session_store();
+        let existing_receipt = store
+            .load_control_receipt(&target, &idempotency_key)
+            .await?;
+        let mut idempotent = existing_receipt.is_some();
+        let mut intent = if let Some(receipt) = existing_receipt {
+            if receipt.command_fingerprint != command_fingerprint {
+                return Err(SessionStoreError::IdempotencyConflict(idempotency_key).into());
+            }
+            let existing = store
+                .load_run_control_intent(&target, &receipt.operation_id)
+                .await?
+                .ok_or_else(|| {
+                    RpcHostError::Runtime(
+                        "legacy control receipt has no durable effect intent".to_string(),
+                    )
+                })?;
+            if existing.authority_binding != authority_binding
+                || existing.operation_id != operation_id
+                || existing.idempotency_key != idempotency_key
+                || existing.command_fingerprint != command_fingerprint
+                || existing.effect != effect
+            {
+                return Err(SessionStoreError::IdempotencyConflict(idempotency_key).into());
+            }
+            existing
+        } else {
+            let (_control, lease) = self.control(&target)?;
+            let receipt_identity = deterministic_run_control_operation_id(
+                effect.operation(),
+                &authority_binding,
+                &target,
+                &idempotency_key,
+                &command_fingerprint,
+            );
+            let receipt_id = deterministic_run_control_receipt_id(&receipt_identity);
+            let created_at = chrono::Utc::now();
+            let admitted = store
+                .admit_run_control(AdmitRunControl {
+                    lease,
+                    authority_binding,
+                    operation_id,
+                    receipt_id,
+                    idempotency_key,
+                    command_fingerprint,
+                    effect,
+                    created_at,
+                })
+                .await?;
+            // A concurrent exact request can win between the initial read and admission. Stores
+            // preserve the winner's timestamp, which lets this caller project replay accurately.
+            idempotent = admitted.created_at != created_at;
+            admitted
+        };
+
+        if intent.status == DurableRunControlStatus::Pending {
+            let (control, lease) = self.control(&target)?;
+            if intent.admission_id != lease.admission_id
+                || intent.host_instance_id != lease.host_instance_id
+                || intent.fencing_generation != lease.fencing_generation
+            {
+                return Err(SessionStoreError::StaleFence(
+                    "pending run control intent belongs to a stale runtime owner".to_string(),
+                )
+                .into());
+            }
+            let pending_delivery = match &intent.effect {
+                DurableRunControlEffect::Steer { text } => {
+                    control
+                        .steer(intent.operation_id.clone(), text.clone())
+                        .await
+                        .map_err(|error| RpcHostError::Runtime(error.to_string()))?
+                        .pending_delivery
+                }
+                DurableRunControlEffect::Interrupt { reason } => {
+                    control
+                        .interrupt_idempotent(intent.operation_id.clone(), reason.clone())
+                        .pending_delivery
+                }
+            };
+            intent = store
+                .advance_run_control_intent(
+                    &lease,
+                    &intent.operation_id,
+                    DurableRunControlStatus::Pending,
+                    DurableRunControlStatus::Delivered,
+                    chrono::Utc::now(),
+                )
+                .await?;
+            if control.operation_consumed(&intent.operation_id) {
+                intent = store
+                    .advance_run_control_intent(
+                        &lease,
+                        &intent.operation_id,
+                        DurableRunControlStatus::Delivered,
+                        DurableRunControlStatus::Consumed,
+                        chrono::Utc::now(),
+                    )
+                    .await?;
+            }
+            return Ok((intent, idempotent, pending_delivery));
+        }
+
+        if intent.status == DurableRunControlStatus::Delivered
+            && let Ok((control, lease)) = self.control(&target)
+            && control.operation_consumed(&intent.operation_id)
+        {
+            intent = store
+                .advance_run_control_intent(
+                    &lease,
+                    &intent.operation_id,
+                    DurableRunControlStatus::Delivered,
+                    DurableRunControlStatus::Consumed,
+                    chrono::Utc::now(),
+                )
+                .await?;
+        }
+        let pending_delivery = matches!(intent.effect, DurableRunControlEffect::Steer { .. })
+            && intent.status != DurableRunControlStatus::Reconciled;
+        Ok((intent, true, pending_delivery))
     }
 
     /// Replay persisted events plus the process-local live or bounded terminal tail.
@@ -2536,10 +2585,10 @@ impl RpcRuntimeCoordinator {
     ///
     /// Returns an error when durable admission reconciliation fails.
     pub async fn reconcile_startup(&self) -> RpcHostResult<Vec<ManagedRunTarget>> {
-        let store = self.storage.session_store();
-        let reconciled_runs = store
-            .reconcile_expired_run_admissions(LOCAL_SESSION_NAMESPACE, chrono::Utc::now())
+        let reconciled_runs = self
+            .reconcile_expired_run_admissions_once(chrono::Utc::now())
             .await?;
+        let store = self.storage.session_store();
         store
             .expire_background_subagent_retention(
                 LOCAL_SESSION_NAMESPACE,
@@ -2755,40 +2804,12 @@ impl RpcRuntimeCoordinator {
         Ok(())
     }
 
-    pub(crate) async fn tombstone_session_fenced(
+    pub(crate) async fn quiesce_session_for_deletion(
         &self,
         session_id: &SessionId,
         timeout: Duration,
-    ) -> RpcHostResult<starweaver_session::SessionRecord> {
+    ) -> RpcHostResult<()> {
         let store = self.storage.session_store();
-        let session = store.load_session(session_id).await?;
-        if session.status == SessionStatus::Deleted {
-            return Ok(session);
-        }
-        let fence_id = match &session.deletion_fence {
-            SessionDeletionFence::Stable => {
-                let fence_id = format!("rpc-admin-delete:{}", uuid::Uuid::new_v4());
-                let idempotency_key = fence_id.clone();
-                let fingerprint = command_fingerprint(
-                    "rpc_admin_delete_session",
-                    &(session_id.as_str(), session.revision, fence_id.as_str()),
-                )
-                .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
-                store
-                    .acquire_session_deletion_fence(
-                        session_id,
-                        session.revision,
-                        &fence_id,
-                        "rpc-admin",
-                        &idempotency_key,
-                        &fingerprint,
-                    )
-                    .await?;
-                fence_id
-            }
-            SessionDeletionFence::Deleting { fence_id, .. }
-            | SessionDeletionFence::Deleted { fence_id, .. } => fence_id.clone(),
-        };
         self.cancel_session_subagents(session_id, timeout).await?;
         for run in store.list_runs(session_id).await? {
             if run.status.is_active() {
@@ -2811,20 +2832,21 @@ impl RpcRuntimeCoordinator {
             .map_err(active_registry_error)?
             .get(session_id)
             .cloned();
-        if let Some(supervisor) = supervisor.as_ref() {
+        if let Some(supervisor) = supervisor {
             supervisor
                 .shutdown_checked(Some(timeout))
                 .await
                 .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
         }
-        let tombstoned = store.tombstone_session(session_id, &fence_id).await?;
-        if supervisor.is_some() {
-            self.supervisors
-                .lock()
-                .map_err(active_registry_error)?
-                .remove(session_id);
-        }
-        Ok(tombstoned)
+        Ok(())
+    }
+
+    pub(crate) fn forget_deleted_session(&self, session_id: &SessionId) -> RpcHostResult<()> {
+        self.supervisors
+            .lock()
+            .map_err(active_registry_error)?
+            .remove(session_id);
+        Ok(())
     }
 
     pub(crate) fn is_controllable(&self, target: &ManagedRunTarget) -> bool {
@@ -2837,549 +2859,84 @@ impl RpcRuntimeCoordinator {
         ManagedRunTarget::new(LOCAL_SESSION_NAMESPACE, session_id.clone(), run_id.clone())
     }
 
-    #[allow(clippy::significant_drop_tightening)]
-    pub(crate) fn active_run_session_id(&self, run_id: &str) -> Result<String, RpcError> {
-        let registry = self
-            .active
-            .lock()
-            .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
-        let run = active_mutable_run(&registry, run_id)?;
-        Ok(run.lease.target.session_id.as_str().to_string())
-    }
-
-    #[allow(clippy::significant_drop_tightening)]
-    pub(crate) fn active_environment_list(&self, run_id: &str) -> Result<Value, RpcError> {
-        let registry = self
-            .active
-            .lock()
-            .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
-        let run = active_mutable_run(&registry, run_id)?;
-        Ok(json!({
-            "runId": run_id,
-            "environment": environment_summary(
-                run.environment_binding_version,
-                &run.environment_attachments,
-            ),
-        }))
-    }
-
-    #[allow(clippy::significant_drop_tightening, clippy::too_many_lines)]
-    pub(crate) async fn active_environment_mount(
+    #[cfg(test)]
+    pub(crate) async fn install_active_run_control_fixture(
         &self,
-        params: &EnvironmentActiveMountParams,
-        attachment: EnvironmentAttachmentRef,
-        params_digest: &str,
-    ) -> Result<RpcActiveMountOutcome, RpcError> {
-        let coordinator = self.clone();
-        let params = params.clone();
-        let params_digest = params_digest.to_string();
-        tokio::spawn(async move {
-            coordinator
-                .active_environment_mount_owned(params, attachment, params_digest)
-                .await
-        })
-        .await
-        .map_err(|error| {
-            RpcError::new(RUN_CONFLICT, format!("active mount task failed: {error}"))
-        })?
-    }
-
-    #[allow(clippy::significant_drop_tightening, clippy::too_many_lines)]
-    async fn active_environment_mount_owned(
-        &self,
-        params: EnvironmentActiveMountParams,
-        attachment: EnvironmentAttachmentRef,
-        params_digest: String,
-    ) -> Result<RpcActiveMountOutcome, RpcError> {
-        let publish_lock = {
-            let registry = self
-                .active
-                .lock()
-                .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
-            Arc::clone(&active_mutable_run(&registry, &params.run_id)?.replay_publish_lock)
+    ) -> RpcHostResult<(
+        SessionId,
+        RunId,
+        starweaver_agent::AgentStreamHandle,
+        Arc<tokio::sync::Notify>,
+    )> {
+        let session = self
+            .storage
+            .create_session(Some("default".to_string()), None)?;
+        let run_id = RunId::new();
+        let mut record = RunRecord::new(
+            session.session_id.clone(),
+            run_id.clone(),
+            ConversationId::new(),
+        );
+        record.status = RunStatus::Queued;
+        let admission = self
+            .storage
+            .session_store()
+            .acquire_run_admission(AcquireRunAdmission {
+                run: record,
+                namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+                host_instance_id: (*self.host_instance_id).clone(),
+                admission_id: format!("run-control-fixture-admission-{}", run_id.as_str()),
+                lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+                idempotency_key: format!("run-control-fixture-{}", run_id.as_str()),
+                command_fingerprint: "run-control-fixture-v1".to_string(),
+                replaces_waiting_run_id: None,
+                hitl_resume_claim_id: None,
+            })
+            .await?;
+        self.storage
+            .session_store()
+            .update_run_status_fenced(&admission.lease, RunStatus::Running, None)
+            .await?;
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let handle =
+            starweaver_agent::AgentBuilder::new(Arc::new(starweaver_agent::FunctionModel::new(
+                |_messages, _settings, _info| Ok(starweaver_model::ModelResponse::text("fixture")),
+            )))
+            .capability(Arc::new(RunControlFixturePause {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+                paused: AtomicBool::new(false),
+            }))
+            .build_app()
+            .stream("fixture");
+        entered.notified().await;
+        let control = handle.control_handle();
+        let target = Self::target(&session.session_id, &run_id);
+        let initial_status = RpcRunStatus {
+            session_id: session.session_id.as_str().to_string(),
+            run_id: run_id.as_str().to_string(),
+            status: "running".to_string(),
+            output_preview: None,
+            error: None,
+            continuation_effect: None,
         };
-        let _publish_guard = publish_lock.lock().await;
-        let mutation_key = params
-            .idempotency_key
-            .as_deref()
-            .map(|key| format!("mount:{key}"));
-        let (
-            previous_target,
-            previous_attachment,
-            mounted,
+        let (status_tx, _) = watch::channel(initial_status);
+        self.active.lock().map_err(active_registry_error)?.insert(
             target,
-            previous_binding_version,
-            binding_version,
-            event_sequence,
-            session_id,
-            run_id,
-            lease,
-            environment,
-            control,
-        ) = {
-            let registry = self
-                .active
-                .lock()
-                .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
-            let run = active_mutable_run(&registry, &params.run_id)?;
-            if let Some(key) = mutation_key.as_ref()
-                && let Some(record) = run.environment_idempotency.get(key)
-            {
-                ensure_idempotency_digest(record, &params_digest)?;
-                return Ok(RpcActiveMountOutcome {
-                    result: record.result.clone(),
-                    #[cfg(test)]
-                    applied: false,
-                });
-            }
-            ensure_expected_binding(
-                run.environment_binding_version,
-                params.expected_binding_version,
-            )?;
-            let existing_index = run
-                .environment_attachments
-                .iter()
-                .position(|current| current.id == attachment.id);
-            if existing_index.is_some() && !params.replace {
-                return Err(RpcError::new(
-                    ALREADY_EXISTS,
-                    format!("environment mount already exists: {}", attachment.id),
-                ));
-            }
-            let previous_attachment =
-                existing_index.map(|index| run.environment_attachments[index].clone());
-            let mut mounted = attachment;
-            let mut updated = run.environment_attachments.clone();
-            if let Some(index) = existing_index {
-                if updated[index].is_default && !mounted.is_default {
-                    mounted.is_default = true;
-                }
-                if updated[index].is_default_for_shell && !mounted.is_default_for_shell {
-                    mounted.is_default_for_shell = true;
-                }
-                updated[index] = mounted.clone();
-            } else {
-                updated.push(mounted.clone());
-            }
-            normalize_default_flags(&mut updated)?;
-            let previous_target = resolve_rpc_environment_target(
-                &self.config.workspace_root,
-                run.lease.target.session_id.as_str(),
-                &run.environment_attachments,
-            )
-            .map_err(RpcError::from)?;
-            let target = resolve_rpc_environment_target(
-                &self.config.workspace_root,
-                run.lease.target.session_id.as_str(),
-                &updated,
-            )
-            .map_err(RpcError::from)?;
-            (
-                previous_target,
-                previous_attachment,
-                mounted,
-                target,
-                run.environment_binding_version,
-                run.environment_binding_version.saturating_add(1),
-                run.next_event_sequence,
-                run.lease.target.session_id.clone(),
-                run.lease.target.run_id.clone(),
-                run.lease.clone(),
-                Arc::clone(&run.environment),
-                run.control.clone(),
-            )
-        };
-        let operation_id = format!("envop_{}", uuid::Uuid::new_v4());
-        let lifecycle_event = environment_lifecycle_event(
-            event_sequence,
-            &session_id,
-            &run_id,
-            binding_version,
-            &target.attachments,
-            &operation_id,
-            "environment_mounted",
-            &json!({"action": "mounted", "mount": mount_summary(&mounted, "ready")}),
+            ActiveRun {
+                status_tx,
+                control,
+                lease: admission.lease,
+                events: Vec::new(),
+                replay_publish_lock: Arc::new(AsyncMutex::new(())),
+                next_display_sequence: 0,
+                next_event_sequence: 0,
+                terminal_replay_sequence: Arc::new(AtomicUsize::new(0)),
+                replay_error: None,
+            },
         );
-        let mut result = json!({
-            "runId": params.run_id,
-            "operationId": operation_id,
-            "mountId": mounted.id,
-            "replace": params.replace,
-            "mount": mount_summary(&mounted, "ready"),
-            "previousBindingVersion": previous_binding_version,
-            "bindingVersion": binding_version,
-            "environment": environment_summary(binding_version, &target.attachments),
-            "eventCursor": cursor_value(&params.run_id, lifecycle_event.sequence),
-            "contextInjectionRequested": params.inject_context,
-        });
-
-        self.environment_manager.replace_run_attachment(
-            &params.run_id,
-            previous_attachment.as_ref(),
-            Some(&mounted),
-        )?;
-        let replacement = SwitchableEnvironmentTarget::new(
-            target.provider.clone(),
-            target.provider.clone().process_shell_provider(),
-        );
-        if let Err(error) = environment.replace_target(replacement) {
-            let manager_rollback = self.environment_manager.replace_run_attachment(
-                &params.run_id,
-                Some(&mounted),
-                previous_attachment.as_ref(),
-            );
-            if let Err(rollback) = manager_rollback {
-                return Err(RpcError::new(
-                    RUN_CONFLICT,
-                    format!("{error}; active mount lease rollback failed: {rollback:?}"),
-                ));
-            }
-            return Err(RpcError::new(RUN_CONFLICT, error.to_string()));
-        }
-        if let Err(error) = self
-            .storage
-            .session_store()
-            .append_replay_events_fenced(&lease, vec![lifecycle_event.clone()])
-            .await
-        {
-            let rollback_target = SwitchableEnvironmentTarget::new(
-                previous_target.provider.clone(),
-                previous_target.provider.clone().process_shell_provider(),
-            );
-            let provider_rollback = environment.replace_target(rollback_target);
-            let lease_rollback = self.environment_manager.replace_run_attachment(
-                &params.run_id,
-                Some(&mounted),
-                previous_attachment.as_ref(),
-            );
-            if provider_rollback.is_err() || lease_rollback.is_err() {
-                return Err(RpcError::new(
-                    RUN_CONFLICT,
-                    format!(
-                        "{error}; active mount rollback failed: provider={:?}, lease={:?}",
-                        provider_rollback.err(),
-                        lease_rollback.err().map(|error| error.message)
-                    ),
-                ));
-            }
-            return Err(RpcError::new(RUN_CONFLICT, error.to_string()));
-        }
-        {
-            let mut registry = self
-                .active
-                .lock()
-                .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
-            let run = active_mutable_run_mut(&mut registry, &params.run_id)?;
-            debug_assert_eq!(run.environment_binding_version, previous_binding_version);
-            debug_assert_eq!(run.next_event_sequence, event_sequence);
-            run.environment_attachments = target.attachments;
-            run.environment_binding_version = binding_version;
-            run.next_event_sequence = event_sequence.saturating_add(1);
-            run.terminal_replay_sequence
-                .store(run.next_event_sequence, Ordering::Release);
-            push_cached_event(run, lifecycle_event);
-        }
-        if params.inject_context {
-            let injected = control
-                .steer(
-                    operation_id,
-                    format!(
-                        "Environment mount {} is now available at /environment/{}.",
-                        attachment_id_from_result(&result),
-                        attachment_id_from_result(&result),
-                    ),
-                )
-                .await
-                .is_ok();
-            if let Some(object) = result.as_object_mut() {
-                object.insert("contextInjected".to_string(), json!(injected));
-            }
-        }
-        if let Some(key) = mutation_key {
-            let mut registry = self
-                .active
-                .lock()
-                .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
-            active_mutable_run_mut(&mut registry, &params.run_id)?
-                .environment_idempotency
-                .insert(
-                    key,
-                    EnvironmentMutationRecord {
-                        params_digest,
-                        result: result.clone(),
-                    },
-                );
-        }
-        Ok(RpcActiveMountOutcome {
-            result,
-            #[cfg(test)]
-            applied: true,
-        })
-    }
-
-    #[allow(clippy::significant_drop_tightening, clippy::too_many_lines)]
-    pub(crate) async fn active_environment_unmount(
-        &self,
-        params: &EnvironmentActiveUnmountParams,
-        params_digest: &str,
-    ) -> Result<RpcActiveUnmountOutcome, RpcError> {
-        let coordinator = self.clone();
-        let params = params.clone();
-        let params_digest = params_digest.to_string();
-        tokio::spawn(async move {
-            coordinator
-                .active_environment_unmount_owned(params, params_digest)
-                .await
-        })
-        .await
-        .map_err(|error| {
-            RpcError::new(RUN_CONFLICT, format!("active unmount task failed: {error}"))
-        })?
-    }
-
-    #[allow(clippy::significant_drop_tightening, clippy::too_many_lines)]
-    async fn active_environment_unmount_owned(
-        &self,
-        params: EnvironmentActiveUnmountParams,
-        params_digest: String,
-    ) -> Result<RpcActiveUnmountOutcome, RpcError> {
-        let publish_lock = {
-            let registry = self
-                .active
-                .lock()
-                .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
-            Arc::clone(&active_mutable_run(&registry, &params.run_id)?.replay_publish_lock)
-        };
-        let _publish_guard = publish_lock.lock().await;
-        let mutation_key = params
-            .idempotency_key
-            .as_deref()
-            .map(|key| format!("unmount:{key}"));
-        let (
-            removed,
-            mut updated,
-            previous_attachments,
-            previous_binding_version,
-            event_sequence,
-            environment,
-            session_id,
-            run_id,
-            lease,
-            control,
-        ) = {
-            let registry = self
-                .active
-                .lock()
-                .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
-            let run = active_mutable_run(&registry, &params.run_id)?;
-            if let Some(key) = mutation_key.as_ref()
-                && let Some(record) = run.environment_idempotency.get(key)
-            {
-                ensure_idempotency_digest(record, &params_digest)?;
-                return Ok(RpcActiveUnmountOutcome {
-                    result: record.result.clone(),
-                    #[cfg(test)]
-                    applied: false,
-                });
-            }
-            ensure_expected_binding(
-                run.environment_binding_version,
-                params.expected_binding_version,
-            )?;
-            let index = run
-                .environment_attachments
-                .iter()
-                .position(|attachment| attachment.id == params.mount_id)
-                .ok_or_else(|| {
-                    RpcError::new(
-                        INVALID_PARAMS,
-                        format!("environment mount not found: {}", params.mount_id),
-                    )
-                })?;
-            if run.environment_attachments.len() == 1 {
-                return Err(RpcError::new(
-                    RUN_CONFLICT,
-                    "cannot unmount the only active environment mount",
-                ));
-            }
-            let previous_attachments = run.environment_attachments.clone();
-            let mut updated = previous_attachments.clone();
-            let removed = updated.remove(index);
-            apply_unmount_defaults(&removed, &mut updated, &params)?;
-            (
-                removed,
-                updated,
-                previous_attachments,
-                run.environment_binding_version,
-                run.next_event_sequence,
-                Arc::clone(&run.environment),
-                run.lease.target.session_id.clone(),
-                run.lease.target.run_id.clone(),
-                run.lease.clone(),
-                run.control.clone(),
-            )
-        };
-        if let Some(process_provider) = environment
-            .process_provider()
-            .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?
-        {
-            let live = process_provider
-                .list_processes()
-                .await
-                .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?
-                .into_iter()
-                .any(|process| {
-                    process.status == ShellProcessStatus::Running
-                        && process
-                            .process_id
-                            .strip_prefix(&params.mount_id)
-                            .is_some_and(|suffix| suffix.starts_with(':'))
-                });
-            if live {
-                return Err(RpcError::new(
-                    RUN_CONFLICT,
-                    format!(
-                        "environment mount has live background processes: {}",
-                        params.mount_id
-                    ),
-                ));
-            }
-        }
-        normalize_default_flags(&mut updated)?;
-        let previous_target = resolve_rpc_environment_target(
-            &self.config.workspace_root,
-            session_id.as_str(),
-            &previous_attachments,
-        )
-        .map_err(RpcError::from)?;
-        let target = resolve_rpc_environment_target(
-            &self.config.workspace_root,
-            session_id.as_str(),
-            &updated,
-        )
-        .map_err(RpcError::from)?;
-        let binding_version = previous_binding_version.saturating_add(1);
-        let operation_id = format!("envop_{}", uuid::Uuid::new_v4());
-        let lifecycle_event = environment_lifecycle_event(
-            event_sequence,
-            &session_id,
-            &run_id,
-            binding_version,
-            &target.attachments,
-            &operation_id,
-            "environment_unmounted",
-            &json!({
-                "action": "unmounted",
-                "removedMount": mount_summary(&removed, "detached"),
-            }),
-        );
-        let mut result = json!({
-            "runId": params.run_id,
-            "operationId": operation_id,
-            "mountId": removed.id,
-            "removedMount": mount_summary(&removed, "detached"),
-            "previousBindingVersion": previous_binding_version,
-            "bindingVersion": binding_version,
-            "environment": environment_summary(binding_version, &target.attachments),
-            "eventCursor": cursor_value(&params.run_id, lifecycle_event.sequence),
-            "contextInjectionRequested": params.inject_context,
-        });
-
-        self.environment_manager
-            .replace_run_attachment(&params.run_id, Some(&removed), None)?;
-        let replacement = SwitchableEnvironmentTarget::new(
-            target.provider.clone(),
-            target.provider.clone().process_shell_provider(),
-        );
-        if let Err(error) = environment.replace_target(replacement) {
-            let manager_rollback = self.environment_manager.replace_run_attachment(
-                &params.run_id,
-                None,
-                Some(&removed),
-            );
-            if let Err(rollback) = manager_rollback {
-                return Err(RpcError::new(
-                    RUN_CONFLICT,
-                    format!("{error}; active unmount lease rollback failed: {rollback:?}"),
-                ));
-            }
-            return Err(RpcError::new(RUN_CONFLICT, error.to_string()));
-        }
-        if let Err(error) = self
-            .storage
-            .session_store()
-            .append_replay_events_fenced(&lease, vec![lifecycle_event.clone()])
-            .await
-        {
-            let rollback_target = SwitchableEnvironmentTarget::new(
-                previous_target.provider.clone(),
-                previous_target.provider.clone().process_shell_provider(),
-            );
-            let provider_rollback = environment.replace_target(rollback_target);
-            let manager_rollback = self.environment_manager.replace_run_attachment(
-                &params.run_id,
-                None,
-                Some(&removed),
-            );
-            if provider_rollback.is_err() || manager_rollback.is_err() {
-                return Err(RpcError::new(
-                    RUN_CONFLICT,
-                    format!(
-                        "{error}; active unmount rollback failed: provider={:?}, lease={:?}",
-                        provider_rollback.err(),
-                        manager_rollback.err().map(|error| error.message)
-                    ),
-                ));
-            }
-            return Err(RpcError::new(RUN_CONFLICT, error.to_string()));
-        }
-        {
-            let mut registry = self
-                .active
-                .lock()
-                .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
-            let run = active_mutable_run_mut(&mut registry, &params.run_id)?;
-            debug_assert_eq!(run.environment_binding_version, previous_binding_version);
-            debug_assert_eq!(run.next_event_sequence, event_sequence);
-            run.environment_attachments = target.attachments;
-            run.environment_binding_version = binding_version;
-            run.next_event_sequence = event_sequence.saturating_add(1);
-            run.terminal_replay_sequence
-                .store(run.next_event_sequence, Ordering::Release);
-            push_cached_event(run, lifecycle_event);
-        }
-        if params.inject_context {
-            let injected = control
-                .steer(
-                    operation_id,
-                    format!("Environment mount {} was removed.", params.mount_id),
-                )
-                .await
-                .is_ok();
-            if let Some(object) = result.as_object_mut() {
-                object.insert("contextInjected".to_string(), json!(injected));
-            }
-        }
-        if let Some(key) = mutation_key {
-            let mut registry = self
-                .active
-                .lock()
-                .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
-            active_mutable_run_mut(&mut registry, &params.run_id)?
-                .environment_idempotency
-                .insert(
-                    key,
-                    EnvironmentMutationRecord {
-                        params_digest,
-                        result: result.clone(),
-                    },
-                );
-        }
-        Ok(RpcActiveUnmountOutcome {
-            result,
-            #[cfg(test)]
-            applied: true,
-        })
+        Ok((session.session_id, run_id, handle, release))
     }
 
     fn control(
@@ -3399,251 +2956,6 @@ impl RpcRuntimeCoordinator {
                 ))
             })
     }
-}
-
-fn active_mutable_run<'a>(
-    registry: &'a HashMap<ManagedRunTarget, ActiveRun>,
-    run_id: &str,
-) -> Result<&'a ActiveRun, RpcError> {
-    let mut matches = registry
-        .iter()
-        .filter(|(target, _)| target.run_id.as_str() == run_id)
-        .map(|(_, run)| run);
-    let run = matches
-        .next()
-        .ok_or_else(|| RpcError::new(RUN_CONFLICT, format!("active run not found: {run_id}")))?;
-    if matches.next().is_some() {
-        return Err(RpcError::new(
-            RUN_CONFLICT,
-            format!("ambiguous run id requires composite session identity: {run_id}"),
-        ));
-    }
-    Ok(run)
-}
-
-fn active_mutable_run_mut<'a>(
-    registry: &'a mut HashMap<ManagedRunTarget, ActiveRun>,
-    run_id: &str,
-) -> Result<&'a mut ActiveRun, RpcError> {
-    let keys = registry
-        .keys()
-        .filter(|target| target.run_id.as_str() == run_id)
-        .cloned()
-        .collect::<Vec<_>>();
-    if keys.len() > 1 {
-        return Err(RpcError::new(
-            RUN_CONFLICT,
-            format!("ambiguous run id requires composite session identity: {run_id}"),
-        ));
-    }
-    let key = keys
-        .first()
-        .ok_or_else(|| RpcError::new(RUN_CONFLICT, format!("active run not found: {run_id}")))?;
-    registry
-        .get_mut(key)
-        .ok_or_else(|| RpcError::new(RUN_CONFLICT, format!("active run not found: {run_id}")))
-}
-
-fn ensure_expected_binding(current: u64, expected: Option<u64>) -> Result<(), RpcError> {
-    if expected.is_some_and(|expected| expected != current) {
-        return Err(RpcError::new(
-            RUN_CONFLICT,
-            format!(
-                "environment binding version conflict: expected {}, current {current}",
-                expected.unwrap_or_default()
-            ),
-        ));
-    }
-    Ok(())
-}
-
-fn ensure_idempotency_digest(
-    record: &EnvironmentMutationRecord,
-    params_digest: &str,
-) -> Result<(), RpcError> {
-    if record.params_digest == params_digest {
-        Ok(())
-    } else {
-        Err(RpcError::new(
-            RUN_CONFLICT,
-            "idempotency key was already used with different active environment params",
-        ))
-    }
-}
-
-fn normalize_default_flags(attachments: &mut [EnvironmentAttachmentRef]) -> Result<(), RpcError> {
-    if attachments.is_empty() {
-        return Err(RpcError::new(
-            RUN_CONFLICT,
-            "active environment requires at least one mount",
-        ));
-    }
-    let default_count = attachments
-        .iter()
-        .filter(|attachment| attachment.is_default)
-        .count();
-    if default_count == 0 && attachments.len() == 1 {
-        attachments[0].is_default = true;
-    } else if default_count != 1 {
-        return Err(RpcError::new(
-            INVALID_PARAMS,
-            "active environment requires exactly one default mount",
-        ));
-    }
-    let shell_default_count = attachments
-        .iter()
-        .filter(|attachment| attachment.is_default_for_shell)
-        .count();
-    if shell_default_count > 1 {
-        return Err(RpcError::new(
-            INVALID_PARAMS,
-            "active environment allows at most one default shell mount",
-        ));
-    }
-    if let Some(shell_default) = attachments
-        .iter()
-        .find(|attachment| attachment.is_default_for_shell)
-        && !matches!(
-            shell_default.resolved_mode(),
-            starweaver_rpc_core::EnvironmentAttachmentAccessMode::ReadWrite
-        )
-    {
-        return Err(RpcError::new(
-            INVALID_PARAMS,
-            "default shell mount must be read-write",
-        ));
-    }
-    if shell_default_count == 0
-        && let Some(default) = attachments.iter_mut().find(|attachment| {
-            attachment.is_default
-                && matches!(
-                    attachment.resolved_mode(),
-                    starweaver_rpc_core::EnvironmentAttachmentAccessMode::ReadWrite
-                )
-        })
-    {
-        default.is_default_for_shell = true;
-    }
-    Ok(())
-}
-
-fn apply_unmount_defaults(
-    removed: &EnvironmentAttachmentRef,
-    updated: &mut [EnvironmentAttachmentRef],
-    params: &EnvironmentActiveUnmountParams,
-) -> Result<(), RpcError> {
-    if removed.is_default {
-        let new_default = params.new_default_mount_id.as_deref().ok_or_else(|| {
-            RpcError::new(
-                INVALID_PARAMS,
-                "newDefaultMountId is required when removing the default mount",
-            )
-        })?;
-        let replacement = updated
-            .iter_mut()
-            .find(|attachment| attachment.id == new_default)
-            .ok_or_else(|| {
-                RpcError::new(
-                    INVALID_PARAMS,
-                    format!("new default environment mount not found: {new_default}"),
-                )
-            })?;
-        replacement.is_default = true;
-    }
-    if removed.is_default_for_shell {
-        for attachment in updated.iter_mut() {
-            attachment.is_default_for_shell = false;
-        }
-        if let Some(new_default) = params.new_default_shell_mount_id.as_deref() {
-            let replacement = updated
-                .iter_mut()
-                .find(|attachment| attachment.id == new_default)
-                .ok_or_else(|| {
-                    RpcError::new(
-                        INVALID_PARAMS,
-                        format!("new default shell mount not found: {new_default}"),
-                    )
-                })?;
-            replacement.is_default_for_shell = true;
-        }
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn environment_lifecycle_event(
-    sequence: usize,
-    session_id: &SessionId,
-    run_id: &RunId,
-    binding_version: u64,
-    attachments: &[EnvironmentAttachmentRef],
-    operation_id: &str,
-    operation_kind: &str,
-    extra: &Value,
-) -> ReplayEvent {
-    let extra = extra.as_object().cloned().unwrap_or_default();
-    let lifecycle = EnvironmentLifecycleEvent {
-        operation_kind: operation_kind.to_string(),
-        session_id: session_id.as_str().to_string(),
-        run_id: run_id.as_str().to_string(),
-        binding_version,
-        environment: environment_summary(binding_version, attachments),
-        operation_id: Some(operation_id.to_string()),
-        extra,
-    };
-    ReplayEvent::new(
-        ReplayScope::run(run_id.as_str()),
-        sequence,
-        ReplayEventKind::EnvironmentLifecycle(Box::new(lifecycle)),
-    )
-}
-
-fn environment_summary(binding_version: u64, attachments: &[EnvironmentAttachmentRef]) -> Value {
-    json!({
-        "bindingVersion": binding_version,
-        "defaultMountId": attachments
-            .iter()
-            .find(|attachment| attachment.is_default)
-            .map(|attachment| attachment.id.clone()),
-        "defaultShellMountId": attachments
-            .iter()
-            .find(|attachment| attachment.is_default_for_shell)
-            .map(|attachment| attachment.id.clone()),
-        "mounts": attachments
-            .iter()
-            .map(|attachment| mount_summary(attachment, "ready"))
-            .collect::<Vec<_>>(),
-    })
-}
-
-fn mount_summary(attachment: &EnvironmentAttachmentRef, status: &str) -> Value {
-    json!({
-        "id": attachment.id,
-        "kind": attachment.kind,
-        "root": format!("/environment/{}", attachment.id),
-        "mode": attachment.resolved_mode(),
-        "default": attachment.is_default,
-        "defaultForShell": attachment.is_default_for_shell,
-        "status": status,
-        "environmentId": attachment.environment_id,
-        // Arbitrary attachment metadata remains provider-private until a typed safe allowlist
-        // exists; lifecycle replay must not turn extension values into durable diagnostics.
-        "metadata": {},
-    })
-}
-
-fn cursor_value(run_id: &str, sequence: usize) -> Value {
-    json!(ReplayCursor::replay_event(
-        ReplayScope::run(run_id),
-        sequence,
-    ))
-}
-
-fn attachment_id_from_result(result: &Value) -> &str {
-    result
-        .get("mountId")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown")
 }
 
 async fn publish_record(
@@ -3953,18 +3265,17 @@ mod tests {
     )]
 
     use super::*;
+    use crate::environment_contract::{
+        EnvironmentAttachmentAccessMode, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
+        LOCAL_ENVIRONMENT_ATTACHMENT_KIND,
+    };
     use rusqlite::Connection;
     use starweaver_agent::{
         AgentRuntimeBuilder, DynToolset, FunctionTool, StaticToolset, TestModel, ToolContext,
         ToolResult,
     };
-    use starweaver_environment::EnvironmentProvider;
     use starweaver_model::{
         ModelResponse, ModelResponsePart, ProviderPartInfo, ToolCallPart, tool_call_response,
-    };
-    use starweaver_rpc_core::{
-        EnvironmentAttachmentAccessMode, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
-        LOCAL_ENVIRONMENT_ATTACHMENT_KIND,
     };
     use starweaver_session::{ApprovalStatus, DurableBackgroundSubagentDeliveryRelease};
     use starweaver_stream::AgentStreamEvent;
@@ -4018,7 +3329,6 @@ mod tests {
             mode: Some(EnvironmentAttachmentAccessMode::ReadWrite),
             is_default,
             is_default_for_shell: is_default,
-            attachment_lease_id: None,
             endpoint_ref: None,
             environment_id: None,
             auth_token: None,
@@ -4060,12 +3370,7 @@ mod tests {
             .update_run_status_fenced(&admission.lease, RunStatus::Running, None)
             .await
             .unwrap();
-        let resolved = resolve_rpc_environment(
-            &coordinator.config.workspace_root,
-            session.session_id.as_str(),
-            &attachments,
-        )
-        .unwrap();
+        let _ = attachments;
         let handle = starweaver_agent::AgentBuilder::new(Arc::new(
             starweaver_agent::TestModel::with_text("fixture"),
         ))
@@ -4094,10 +3399,6 @@ mod tests {
                 next_event_sequence: 0,
                 terminal_replay_sequence: Arc::new(AtomicUsize::new(0)),
                 replay_error: None,
-                environment: resolved.switchable,
-                environment_attachments: resolved.attachments,
-                environment_binding_version: 1,
-                environment_idempotency: HashMap::new(),
             },
         );
         (session.session_id, run_id, handle)
@@ -5054,7 +4355,6 @@ mod tests {
                 mode: Some(EnvironmentAttachmentAccessMode::ReadWrite),
                 is_default: true,
                 is_default_for_shell: true,
-                attachment_lease_id: None,
                 endpoint_ref: Some(private_endpoint),
                 environment_id: Some("environment-safe-id".to_string()),
                 auth_token: Some("private-bearer".to_string()),
@@ -5711,317 +5011,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_mount_replay_failure_leaves_binding_and_idempotency_unchanged() {
-        let temp = tempfile::tempdir().unwrap();
-        let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
-        std::fs::write(
-            config.workspace_root.join("environment-fixture.txt"),
-            "before",
-        )
-        .unwrap();
-        let storage = SqliteStorage::open(&config.database_path).unwrap();
-        let coordinator = RpcRuntimeCoordinator::new(
-            config.clone(),
-            RpcAgentCatalog::new(config.clone()).unwrap(),
-            storage,
-            EnvironmentAttachmentManager::new(),
-        );
-        let (_session_id, run_id, _handle) = insert_active_environment_fixture(
-            &coordinator,
-            vec![local_attachment(LOCAL_ENVIRONMENT_ATTACHMENT_ID, true)],
-        )
-        .await;
-        let before = coordinator
-            .active_environment_list(run_id.as_str())
-            .unwrap();
-        let connection = Connection::open(&config.database_path).unwrap();
-        connection
-            .execute_batch(
-                "CREATE TRIGGER fail_environment_mount_replay
-                 BEFORE INSERT ON replay_events
-                 BEGIN
-                   SELECT RAISE(ABORT, 'injected active mount replay failure');
-                 END;",
-            )
-            .unwrap();
-        drop(connection);
-
-        let attachment = local_attachment("extra", false);
-        let params = EnvironmentActiveMountParams {
-            run_id: run_id.as_str().to_string(),
-            attachment: attachment.clone(),
-            replace: false,
-            inject_context: false,
-            expected_binding_version: Some(1),
-            idempotency_key: Some("mount-once".to_string()),
-        };
-        let error = coordinator
-            .active_environment_mount(&params, attachment.clone(), "mount-digest")
-            .await
-            .unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("injected active mount replay failure")
-        );
-        assert_eq!(
-            coordinator
-                .active_environment_list(run_id.as_str())
-                .unwrap(),
-            before
-        );
-        let environment = {
-            let registry = coordinator.active.lock().unwrap();
-            let run = active_mutable_run(&registry, run_id.as_str()).unwrap();
-            assert_eq!(run.environment_binding_version, 1);
-            assert_eq!(run.next_event_sequence, 0);
-            assert_eq!(run.terminal_replay_sequence.load(Ordering::Acquire), 0);
-            assert!(run.events.is_empty());
-            assert!(run.environment_idempotency.is_empty());
-            Arc::clone(&run.environment)
-        };
-        assert_eq!(
-            environment
-                .read_text("/environment/local/environment-fixture.txt")
-                .await
-                .unwrap(),
-            "before"
-        );
-        assert!(
-            environment
-                .read_text("/environment/extra/environment-fixture.txt")
-                .await
-                .is_err()
-        );
-
-        let connection = Connection::open(&config.database_path).unwrap();
-        connection
-            .execute_batch("DROP TRIGGER fail_environment_mount_replay;")
-            .unwrap();
-        drop(connection);
-        let applied = coordinator
-            .active_environment_mount(&params, attachment.clone(), "mount-digest")
-            .await
-            .unwrap();
-        assert!(applied.applied);
-        let replayed = coordinator
-            .active_environment_mount(&params, attachment, "mount-digest")
-            .await
-            .unwrap();
-        assert!(!replayed.applied);
-        assert_eq!(replayed.result, applied.result);
-    }
-
-    #[tokio::test]
-    async fn active_unmount_replay_failure_leaves_binding_and_idempotency_unchanged() {
-        let temp = tempfile::tempdir().unwrap();
-        let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
-        std::fs::write(
-            config.workspace_root.join("environment-fixture.txt"),
-            "before",
-        )
-        .unwrap();
-        let storage = SqliteStorage::open(&config.database_path).unwrap();
-        let coordinator = RpcRuntimeCoordinator::new(
-            config.clone(),
-            RpcAgentCatalog::new(config.clone()).unwrap(),
-            storage,
-            EnvironmentAttachmentManager::new(),
-        );
-        let (_session_id, run_id, _handle) = insert_active_environment_fixture(
-            &coordinator,
-            vec![
-                local_attachment(LOCAL_ENVIRONMENT_ATTACHMENT_ID, true),
-                local_attachment("extra", false),
-            ],
-        )
-        .await;
-        let before = coordinator
-            .active_environment_list(run_id.as_str())
-            .unwrap();
-        let connection = Connection::open(&config.database_path).unwrap();
-        connection
-            .execute_batch(
-                "CREATE TRIGGER fail_environment_unmount_replay
-                 BEFORE INSERT ON replay_events
-                 BEGIN
-                   SELECT RAISE(ABORT, 'injected active unmount replay failure');
-                 END;",
-            )
-            .unwrap();
-        drop(connection);
-
-        let params = EnvironmentActiveUnmountParams {
-            run_id: run_id.as_str().to_string(),
-            mount_id: "extra".to_string(),
-            new_default_mount_id: None,
-            new_default_shell_mount_id: None,
-            inject_context: false,
-            expected_binding_version: Some(1),
-            idempotency_key: Some("unmount-once".to_string()),
-        };
-        let error = coordinator
-            .active_environment_unmount(&params, "unmount-digest")
-            .await
-            .unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("injected active unmount replay failure")
-        );
-        assert_eq!(
-            coordinator
-                .active_environment_list(run_id.as_str())
-                .unwrap(),
-            before
-        );
-        let environment = {
-            let registry = coordinator.active.lock().unwrap();
-            let run = active_mutable_run(&registry, run_id.as_str()).unwrap();
-            assert_eq!(run.environment_binding_version, 1);
-            assert_eq!(run.next_event_sequence, 0);
-            assert_eq!(run.terminal_replay_sequence.load(Ordering::Acquire), 0);
-            assert!(run.events.is_empty());
-            assert!(run.environment_idempotency.is_empty());
-            Arc::clone(&run.environment)
-        };
-        assert_eq!(
-            environment
-                .read_text("/environment/extra/environment-fixture.txt")
-                .await
-                .unwrap(),
-            "before"
-        );
-
-        let connection = Connection::open(&config.database_path).unwrap();
-        connection
-            .execute_batch("DROP TRIGGER fail_environment_unmount_replay;")
-            .unwrap();
-        drop(connection);
-        let applied = coordinator
-            .active_environment_unmount(&params, "unmount-digest")
-            .await
-            .unwrap();
-        assert!(applied.applied);
-        let replayed = coordinator
-            .active_environment_unmount(&params, "unmount-digest")
-            .await
-            .unwrap();
-        assert!(!replayed.applied);
-        assert_eq!(replayed.result, applied.result);
-        let environment = {
-            let registry = coordinator.active.lock().unwrap();
-            let run = active_mutable_run(&registry, run_id.as_str()).unwrap();
-            Arc::clone(&run.environment)
-        };
-        assert!(
-            environment
-                .read_text("/environment/extra/environment-fixture.txt")
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn stale_environment_owner_cannot_publish_or_change_binding() {
-        let temp = tempfile::tempdir().unwrap();
-        let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
-        std::fs::write(
-            config.workspace_root.join("environment-fixture.txt"),
-            "before",
-        )
-        .unwrap();
-        let storage = SqliteStorage::open(&config.database_path).unwrap();
-        let coordinator = RpcRuntimeCoordinator::new(
-            config.clone(),
-            RpcAgentCatalog::new(config.clone()).unwrap(),
-            storage,
-            EnvironmentAttachmentManager::new(),
-        );
-        let (session_id, run_id, _handle) = insert_active_environment_fixture(
-            &coordinator,
-            vec![local_attachment(LOCAL_ENVIRONMENT_ATTACHMENT_ID, true)],
-        )
-        .await;
-        let old_lease = {
-            let registry = coordinator.active.lock().unwrap();
-            active_mutable_run(&registry, run_id.as_str())
-                .unwrap()
-                .lease
-                .clone()
-        };
-        coordinator
-            .storage
-            .session_store()
-            .reconcile_expired_run_admissions(
-                LOCAL_SESSION_NAMESPACE,
-                old_lease.lease_expires_at + chrono::Duration::seconds(1),
-            )
-            .await
-            .unwrap();
-        let replacement_run =
-            RunRecord::new(session_id.clone(), RunId::new(), ConversationId::new());
-        coordinator
-            .storage
-            .session_store()
-            .acquire_run_admission(AcquireRunAdmission {
-                run: replacement_run,
-                namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
-                host_instance_id: "replacement-host".to_string(),
-                admission_id: "replacement-admission".to_string(),
-                lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
-                idempotency_key: "replacement-start".to_string(),
-                command_fingerprint: "replacement-start-v1".to_string(),
-                replaces_waiting_run_id: None,
-                hitl_resume_claim_id: None,
-            })
-            .await
-            .unwrap();
-
-        let attachment = local_attachment("extra", false);
-        let params = EnvironmentActiveMountParams {
-            run_id: run_id.as_str().to_string(),
-            attachment: attachment.clone(),
-            replace: false,
-            inject_context: false,
-            expected_binding_version: Some(1),
-            idempotency_key: Some("stale-mount".to_string()),
-        };
-        let error = coordinator
-            .active_environment_mount(&params, attachment, "stale-mount-digest")
-            .await
-            .unwrap_err();
-        assert_eq!(error.code, RUN_CONFLICT);
-        let (environment, binding_version, event_count) = {
-            let registry = coordinator.active.lock().unwrap();
-            let run = active_mutable_run(&registry, run_id.as_str()).unwrap();
-            (
-                Arc::clone(&run.environment),
-                run.environment_binding_version,
-                run.events.len(),
-            )
-        };
-        assert_eq!(binding_version, 1);
-        assert_eq!(event_count, 0);
-        assert!(
-            environment
-                .read_text("/environment/extra/environment-fixture.txt")
-                .await
-                .is_err()
-        );
-        let durable = coordinator
-            .storage
-            .replay_event_log()
-            .replay_after(&ReplayScope::run(run_id.as_str()), None, None)
-            .await
-            .unwrap();
-        assert!(durable.is_empty());
-    }
-
-    #[tokio::test]
     async fn display_projection_batch_rolls_back_when_second_event_fails() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
@@ -6089,10 +5078,11 @@ mod tests {
                 .len()
                 > 1
         );
+        let target = RpcRuntimeCoordinator::target(&projection_context.session_id, &run_id);
         publish_record(
             &coordinator.active,
             &coordinator.storage.session_store(),
-            &RpcRuntimeCoordinator::target(&projection_context.session_id, &run_id),
+            &target,
             &projection_context,
             &record,
         )
@@ -6106,154 +5096,11 @@ mod tests {
             .unwrap();
         assert!(durable.is_empty(), "the first event must roll back");
         let registry = coordinator.active.lock().unwrap();
-        let run = active_mutable_run(&registry, run_id.as_str()).unwrap();
+        let run = registry.get(&target).unwrap();
         assert_eq!(run.next_display_sequence, 0);
         assert_eq!(run.next_event_sequence, 0);
         assert!(run.events.is_empty());
         assert!(run.replay_error.is_some());
-    }
-
-    #[tokio::test]
-    async fn cancelled_active_mount_request_finishes_once_and_replays_exact_result() {
-        let temp = tempfile::tempdir().unwrap();
-        let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
-        let storage = SqliteStorage::open(&config.database_path).unwrap();
-        let coordinator = RpcRuntimeCoordinator::new(
-            config.clone(),
-            RpcAgentCatalog::new(config.clone()).unwrap(),
-            storage,
-            EnvironmentAttachmentManager::new(),
-        );
-        let (_session_id, run_id, _handle) = insert_active_environment_fixture(
-            &coordinator,
-            vec![local_attachment(LOCAL_ENVIRONMENT_ATTACHMENT_ID, true)],
-        )
-        .await;
-        let publish_lock = {
-            let registry = coordinator.active.lock().unwrap();
-            Arc::clone(
-                &active_mutable_run(&registry, run_id.as_str())
-                    .unwrap()
-                    .replay_publish_lock,
-            )
-        };
-        let guard = publish_lock.lock().await;
-        let attachment = local_attachment("extra", false);
-        let params = EnvironmentActiveMountParams {
-            run_id: run_id.as_str().to_string(),
-            attachment: attachment.clone(),
-            replace: false,
-            inject_context: true,
-            expected_binding_version: Some(1),
-            idempotency_key: Some("lost-response".to_string()),
-        };
-        let request_coordinator = coordinator.clone();
-        let request_params = params.clone();
-        let request_attachment = attachment.clone();
-        let request = tokio::spawn(async move {
-            request_coordinator
-                .active_environment_mount(
-                    &request_params,
-                    request_attachment,
-                    "lost-response-digest",
-                )
-                .await
-        });
-        tokio::task::yield_now().await;
-        request.abort();
-        drop(guard);
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let ready = coordinator
-                    .active_environment_list(run_id.as_str())
-                    .ok()
-                    .and_then(|value| value["environment"]["bindingVersion"].as_u64())
-                    == Some(2);
-                if ready {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-
-        let replayed = coordinator
-            .active_environment_mount(&params, attachment, "lost-response-digest")
-            .await
-            .unwrap();
-        assert!(!replayed.applied);
-        assert_eq!(replayed.result["bindingVersion"], 2);
-        let registry = coordinator.active.lock().unwrap();
-        let run = active_mutable_run(&registry, run_id.as_str()).unwrap();
-        assert_eq!(run.environment_binding_version, 2);
-        assert_eq!(run.next_event_sequence, 1);
-        assert_eq!(run.events.len(), 1);
-        assert_eq!(run.environment_idempotency.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn terminal_publication_barrier_rejects_waiting_environment_mutation() {
-        let temp = tempfile::tempdir().unwrap();
-        let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
-        let storage = SqliteStorage::open(&config.database_path).unwrap();
-        let coordinator = RpcRuntimeCoordinator::new(
-            config,
-            RpcAgentCatalog::new(RpcConfig::for_tests(temp.path())).unwrap(),
-            storage,
-            EnvironmentAttachmentManager::new(),
-        );
-        let (session_id, run_id, _handle) = insert_active_environment_fixture(
-            &coordinator,
-            vec![local_attachment(LOCAL_ENVIRONMENT_ATTACHMENT_ID, true)],
-        )
-        .await;
-        let target = RpcRuntimeCoordinator::target(&session_id, &run_id);
-        let (publish_lock, environment) = {
-            let registry = coordinator.active.lock().unwrap();
-            let run = registry.get(&target).unwrap();
-            (
-                Arc::clone(&run.replay_publish_lock),
-                Arc::clone(&run.environment),
-            )
-        };
-        let guard = publish_lock.lock().await;
-        let attachment = local_attachment("extra", false);
-        let params = EnvironmentActiveMountParams {
-            run_id: run_id.as_str().to_string(),
-            attachment: attachment.clone(),
-            replace: false,
-            inject_context: false,
-            expected_binding_version: Some(1),
-            idempotency_key: Some("terminal-race".to_string()),
-        };
-        let request_coordinator = coordinator.clone();
-        let request = tokio::spawn(async move {
-            request_coordinator
-                .active_environment_mount(&params, attachment, "terminal-race-digest")
-                .await
-        });
-        tokio::task::yield_now().await;
-        coordinator.active.lock().unwrap().remove(&target).unwrap();
-        drop(guard);
-        let error = request.await.unwrap().unwrap_err();
-        assert_eq!(error.code, RUN_CONFLICT);
-        assert!(error.message.contains("active run not found"));
-        assert!(
-            environment
-                .read_text("/environment/extra/environment-fixture.txt")
-                .await
-                .is_err()
-        );
-        let durable = coordinator
-            .storage
-            .replay_event_log()
-            .replay_after(&ReplayScope::run(run_id.as_str()), None, None)
-            .await
-            .unwrap();
-        assert!(durable.is_empty());
     }
 
     #[tokio::test]
@@ -6489,7 +5336,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_reconciliation_preserves_unexpired_foreign_lease() {
+    async fn online_reconciliation_terminalizes_a_lease_that_expires_after_startup() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
         std::fs::create_dir_all(&config.workspace_root).unwrap();
@@ -6533,5 +5380,43 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+
+        let reconciled = coordinator
+            .reconcile_expired_run_admissions_once(
+                receipt.lease.lease_expires_at + chrono::Duration::seconds(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reconciled, vec![receipt.lease.target.clone()]);
+        assert!(
+            storage
+                .session_store()
+                .load_run_admission(&receipt.lease.target)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            storage
+                .session_store()
+                .load_run(
+                    &receipt.lease.target.session_id,
+                    &receipt.lease.target.run_id,
+                )
+                .await
+                .unwrap()
+                .status,
+            RunStatus::Cancelled
+        );
+        assert!(
+            !storage
+                .session_store()
+                .pending_host_event_publications(100)
+                .await
+                .unwrap()
+                .is_empty(),
+            "online expiry reconciliation must atomically publish terminal events"
+        );
+        coordinator.shutdown(Duration::from_secs(5)).await.unwrap();
     }
 }

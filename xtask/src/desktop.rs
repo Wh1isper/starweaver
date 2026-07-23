@@ -269,11 +269,21 @@ fn check_renderer_boundary(desktop_root: &Path) -> Result<(), String> {
     let source_root = desktop_root.join("src");
     let allowed_bridge = source_root.join("bridge/desktop.ts");
     let allowed_bridge_test = source_root.join("bridge/desktop.test.ts");
+    let allowed_generated_host_client = source_root.join("generated/host/client.ts");
     let mut renderer_sources = source_files(&source_root)?;
     renderer_sources.push(desktop_root.join("index.html"));
     for path in renderer_sources {
         let text = fs::read_to_string(&path).map_err(|error| error.to_string())?;
-        if text.contains("@tauri-apps/api") && path != allowed_bridge && path != allowed_bridge_test
+        if text.contains("@starweaver/host-protocol") {
+            return Err(format!(
+                "renderer must not import the complete host protocol package: {}",
+                path.display()
+            ));
+        }
+        if text.contains("@tauri-apps/api")
+            && path != allowed_bridge
+            && path != allowed_bridge_test
+            && path != allowed_generated_host_client
         {
             return Err(format!(
                 "renderer Tauri API import must stay in src/bridge/desktop.ts: {}",
@@ -332,6 +342,8 @@ fn check_renderer_boundary(desktop_root: &Path) -> Result<(), String> {
         }
     }
 
+    check_generated_host_surface(desktop_root, &allowed_generated_host_client)?;
+
     let package = read_json(&desktop_root.join("package.json"))?;
     for section in ["dependencies", "devDependencies"] {
         for name in package
@@ -345,6 +357,75 @@ fn check_renderer_boundary(desktop_root: &Path) -> Result<(), String> {
                     "renderer package {name} is forbidden until a scoped capability is specified"
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+fn check_generated_host_surface(desktop_root: &Path, client_path: &Path) -> Result<(), String> {
+    let manifest = read_json(&desktop_root.join("host-bridge/manifest.yaml"))?;
+    let operations = manifest
+        .get("operations")
+        .and_then(Value::as_object)
+        .ok_or("Desktop host surface operations must be an object")?;
+    if operations.len() != 26 {
+        return Err(format!(
+            "Desktop generated host surface must expose exactly 26 renderer user intents, found {}",
+            operations.len()
+        ));
+    }
+    for backend_owned in [
+        "initialize",
+        "shutdown",
+        "events.replay",
+        "events.subscribe",
+        "events.unsubscribe",
+        "environment.attach",
+    ] {
+        if operations.contains_key(backend_owned) {
+            return Err(format!(
+                "Desktop renderer surface must not expose backend-owned operation {backend_owned}"
+            ));
+        }
+    }
+
+    let client = fs::read_to_string(client_path).map_err(|error| error.to_string())?;
+    if client.matches("@tauri-apps/api/core").count() != 1
+        || client
+            .matches("return this.execute(this.prepare({ kind:")
+            .count()
+            != operations.len()
+        || client.matches("invoke(").count() != 6
+        || client.contains("invoke(\"")
+        || !client.contains("operationAcknowledgementToken")
+        || !client.contains("acknowledgeOperation")
+        || client.contains("@starweaver/host-protocol")
+    {
+        return Err(
+            "generated Desktop host client must use only its closed operation union and six fixed commands"
+                .to_string(),
+        );
+    }
+    for (constant, command) in [
+        ("ACKNOWLEDGE_HOST_EVENT_COMMAND", "acknowledge_host_event"),
+        (
+            "ACKNOWLEDGE_HOST_OPERATION_COMMAND",
+            "acknowledge_host_operation",
+        ),
+        ("EXECUTE_HOST_OPERATION_COMMAND", "execute_host_operation"),
+        (
+            "LIST_PENDING_HOST_OPERATIONS_COMMAND",
+            "list_pending_host_operations",
+        ),
+        ("SUBSCRIBE_HOST_EVENTS_COMMAND", "subscribe_host_events"),
+        ("UNSUBSCRIBE_HOST_EVENTS_COMMAND", "unsubscribe_host_events"),
+    ] {
+        if !client.contains(&format!(
+            "export const {constant} = \"{command}\" as const;"
+        )) {
+            return Err(format!(
+                "generated Desktop host client omitted fixed command {command}"
+            ));
         }
     }
     Ok(())
@@ -387,6 +468,69 @@ fn check_security_configuration(desktop_root: &Path) -> Result<(), String> {
         return Err(format!(
             "Desktop capability platforms do not cover exactly Linux, macOS, and Windows: {platforms:?}"
         ));
+    }
+
+    let generated_capability =
+        read_json(&desktop_root.join("src-tauri/capabilities/generated-host.json"))?;
+    let generated_permissions = string_set(&generated_capability, "permissions")?;
+    let expected_generated_permissions = BTreeSet::from([
+        "allow-acknowledge-host-event",
+        "allow-acknowledge-host-operation",
+        "allow-execute-host-operation",
+        "allow-list-pending-host-operations",
+        "allow-subscribe-host-events",
+        "allow-unsubscribe-host-events",
+    ]);
+    if generated_permissions != expected_generated_permissions {
+        return Err(format!(
+            "generated Desktop host capability has unexpected permissions: {generated_permissions:?}"
+        ));
+    }
+    for (file, identifier, command) in [
+        (
+            "acknowledge_host_event.toml",
+            "allow-acknowledge-host-event",
+            "acknowledge_host_event",
+        ),
+        (
+            "acknowledge_host_operation.toml",
+            "allow-acknowledge-host-operation",
+            "acknowledge_host_operation",
+        ),
+        (
+            "execute_host_operation.toml",
+            "allow-execute-host-operation",
+            "execute_host_operation",
+        ),
+        (
+            "list_pending_host_operations.toml",
+            "allow-list-pending-host-operations",
+            "list_pending_host_operations",
+        ),
+        (
+            "subscribe_host_events.toml",
+            "allow-subscribe-host-events",
+            "subscribe_host_events",
+        ),
+        (
+            "unsubscribe_host_events.toml",
+            "allow-unsubscribe-host-events",
+            "unsubscribe_host_events",
+        ),
+    ] {
+        let permission = fs::read_to_string(
+            desktop_root
+                .join("src-tauri/permissions/autogenerated")
+                .join(file),
+        )
+        .map_err(|error| error.to_string())?;
+        if !permission.contains(&format!("identifier = \"{identifier}\""))
+            || !permission.contains(&format!("commands.allow = [\"{command}\"]"))
+        {
+            return Err(format!(
+                "generated Desktop permission {file} does not match {command}"
+            ));
+        }
     }
 
     let config = read_json(&desktop_root.join("src-tauri/tauri.conf.json"))?;
@@ -432,9 +576,16 @@ fn check_security_configuration(desktop_root: &Path) -> Result<(), String> {
     {
         return Err("Desktop must not expose the global Tauri API".to_string());
     }
-    if security.get("capabilities") != Some(&Value::Array(vec![Value::String("main".to_string())]))
+    if security.get("capabilities")
+        != Some(&Value::Array(vec![
+            Value::String("main".to_string()),
+            Value::String("generated-host".to_string()),
+        ]))
     {
-        return Err("Desktop must explicitly select only the main capability".to_string());
+        return Err(
+            "Desktop must explicitly select only the reviewed shell and generated host capabilities"
+                .to_string(),
+        );
     }
 
     let build_script = fs::read_to_string(desktop_root.join("src-tauri/build.rs"))

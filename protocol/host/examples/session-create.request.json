@@ -1,0 +1,32 @@
+{
+  "jsonrpc": "2.0",
+  "id": "req_session_create",
+  "method": "session.create",
+  "params": {
+    "deferredTools": [
+      {
+        "description": "Render one reviewed chart",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title"
+          ],
+          "type": "object"
+        },
+        "inputSchemaDigest": "sha256:c0f00621ba42dc1169cada464288b7e72467105c72f48a996833673ce4435390",
+        "instructions": [
+          "Return the rendered chart reference."
+        ],
+        "name": "render_chart"
+      }
+    ],
+    "idempotencyKey": "session-create-example",
+    "profile": "default",
+    "title": "Chart review"
+  }
+}

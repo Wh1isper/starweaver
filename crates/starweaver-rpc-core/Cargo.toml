@@ -13,11 +13,11 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-starweaver-core.workspace = true
-starweaver-session.workspace = true
-starweaver-stream.workspace = true
 
 [dev-dependencies]
 jsonschema.workspace = true

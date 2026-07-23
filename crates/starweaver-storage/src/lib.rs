@@ -20,8 +20,11 @@
 
 mod blocking;
 pub(crate) mod domain;
+mod environment_aggregate;
+mod interaction_mutations;
 mod local_database;
 mod migrations;
+mod model_selection;
 mod replay_log;
 mod schema;
 mod session_search;
@@ -88,6 +91,12 @@ mod tests {
                 "20260718_000009_incremental_local_store_imports",
                 "20260718_000010_durable_replay_source_selection",
                 "20260718_000011_local_store_import_tombstones",
+                "20260721_000012_durable_host_events",
+                "20260721_000013_stable_keyset_pages",
+                "20260721_000014_model_selection_receipts",
+                "20260721_000015_interaction_mutation_receipts",
+                "20260721_000016_environment_aggregate",
+                "20260721_000017_durable_run_control_effects",
             ]
         );
         let second = migrate_sqlite_database(&database_path).expect("second migration");
@@ -122,6 +131,17 @@ mod tests {
         "local_store_import_sessions",
         "replay_source_selections",
         "local_store_import_tombstones",
+        "host_event_log_state",
+        "host_event_records",
+        "host_event_outbox_state",
+        "host_event_publication_outbox",
+        "model_selection_records",
+        "model_selection_mutation_receipts",
+        "interaction_mutation_receipts",
+        "environment_attachment_records",
+        "environment_mount_records",
+        "environment_mutation_receipts",
+        "run_control_intents",
     ];
 
     const FOUNDATION_INDEXES: &[&str] = &[
@@ -131,6 +151,28 @@ mod tests {
         "ix_stream_publication_outbox_session",
         "ix_local_store_import_sessions_session",
         "ix_local_store_import_tombstones_session",
+        "ix_host_event_records_session_position",
+        "ix_host_event_records_run_position",
+        "ix_host_event_records_class_position",
+        "ix_host_event_outbox_sequence",
+        "ix_session_records_updated_identity",
+        "ix_approval_records_updated_identity",
+        "ix_approval_records_session_updated_identity",
+        "ix_approval_records_run_updated_identity",
+        "ix_approval_records_session_run_updated_identity",
+        "ix_deferred_records_updated_identity",
+        "ix_deferred_records_session_updated_identity",
+        "ix_deferred_records_run_updated_identity",
+        "ix_deferred_records_session_run_updated_identity",
+        "ix_model_selection_receipts_created",
+        "ix_interaction_mutation_receipts_created",
+        "ix_environment_attachments_list",
+        "ix_environment_attachments_scope_list",
+        "ix_environment_mounts_run",
+        "ix_environment_mounts_attachment",
+        "ix_environment_receipts_created",
+        "ix_run_control_inbox",
+        "ix_run_control_admission",
     ];
 
     fn assert_table_exists(connection: &Connection, table: &str) {

@@ -1,0 +1,96 @@
+{
+  "components": {
+    "schemas": {
+      "DiagnosticsGetParams": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "DiagnosticsGetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "pendingRecoveryItems": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/ProtocolIdentity"
+          },
+          "runtimeStatus": {
+            "enum": [
+              "ready",
+              "degraded",
+              "draining"
+            ],
+            "type": "string"
+          },
+          "sdk": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "storageCurrent": {
+            "type": "boolean"
+          },
+          "version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sdk",
+          "version",
+          "runtimeStatus",
+          "protocol",
+          "storageCurrent",
+          "pendingRecoveryItems"
+        ],
+        "type": "object"
+      },
+      "ShutdownParams": {
+        "additionalProperties": false,
+        "properties": {
+          "deadlineMs": {
+            "maximum": 60000,
+            "minimum": 100,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deadlineMs"
+        ],
+        "type": "object"
+      },
+      "ShutdownResult": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "draining",
+              "shutdown"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

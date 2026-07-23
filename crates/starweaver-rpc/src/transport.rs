@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::{self, BufRead as _, Read as _, Write as _},
+    io::{self, Read as _, Write as _},
     net::{IpAddr, TcpListener, TcpStream},
     str::FromStr as _,
     sync::{
@@ -13,16 +13,17 @@ use std::{
 };
 
 use serde_json::{Value, json};
+use starweaver_rpc_core::generated as host;
 
 use crate::{
     RpcConfig, RpcHostError, RpcHostResult,
-    auth::{RpcHttpCredential, RpcHttpScope, required_scope},
+    auth::{RpcHttpCredential, RpcHttpScope},
     environment_manager::MAX_READINESS_TIMEOUT_MS,
-    service::RpcService,
+    service::{RpcNotificationOutput, RpcService},
 };
 
 const DEFAULT_HTTP_PATH: &str = "/rpc";
-const MAX_HTTP_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RPC_FRAME_BYTES: usize = 8 * 1024 * 1024;
 const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
 const MAX_HTTP_CONNECTIONS: usize = 64;
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -37,8 +38,14 @@ const STDIO_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(12);
 const STDIO_QUEUE_RETRY: Duration = Duration::from_millis(5);
 
 struct StdioOutput {
-    value: Value,
+    bytes: Vec<u8>,
     flushed: Option<mpsc::SyncSender<()>>,
+}
+
+enum StdioInput {
+    Frame(Vec<u8>),
+    Eof,
+    Failed(RpcHostError),
 }
 
 struct StdioThread {
@@ -69,6 +76,44 @@ fn join_stdio_thread(thread: StdioThread, deadline: Instant, label: &str) -> Rpc
             Err(RpcHostError::Runtime(format!(
                 "stdio {label} did not stop before the shutdown deadline; detached blocked thread"
             )))
+        }
+    }
+}
+
+fn encode_stdio_output(
+    value: Value,
+    flushed: Option<mpsc::SyncSender<()>>,
+) -> RpcHostResult<StdioOutput> {
+    let bytes = serde_json::to_vec(&value).map_err(|error| {
+        RpcHostError::Runtime(format!("failed to encode JSON-RPC frame: {error}"))
+    })?;
+    if bytes.len() > MAX_RPC_FRAME_BYTES {
+        return Err(RpcHostError::Runtime(
+            "encoded JSON-RPC frame exceeds the frame limit".to_string(),
+        ));
+    }
+    Ok(StdioOutput { bytes, flushed })
+}
+
+fn read_bounded_stdio_frame(reader: &mut impl io::BufRead) -> RpcHostResult<Option<Vec<u8>>> {
+    let mut frame = Vec::new();
+    loop {
+        let available = reader.fill_buf().map_err(RpcHostError::Io)?;
+        if available.is_empty() {
+            return Ok((!frame.is_empty()).then_some(frame));
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let consumed = newline.map_or(available.len(), |position| position + 1);
+        let payload = newline.unwrap_or(available.len());
+        if frame.len().saturating_add(payload) > MAX_RPC_FRAME_BYTES {
+            return Err(RpcHostError::Invalid(format!(
+                "stdio JSON-RPC frame exceeds the {MAX_RPC_FRAME_BYTES}-byte limit"
+            )));
+        }
+        frame.extend_from_slice(&available[..payload]);
+        reader.consume(consumed);
+        if newline.is_some() {
+            return Ok(Some(frame));
         }
     }
 }
@@ -109,10 +154,10 @@ pub fn run_stdio(config: &RpcConfig) -> RpcHostResult<()> {
     let writer = spawn_stdio_thread(move || {
         let mut stdout = io::stdout();
         while let Ok(frame) = outbound_receiver.recv() {
-            if serde_json::to_writer(&mut stdout, &frame.value).is_err() {
-                break;
-            }
-            if stdout.write_all(b"\n").is_err() || stdout.flush().is_err() {
+            if stdout.write_all(&frame.bytes).is_err()
+                || stdout.write_all(b"\n").is_err()
+                || stdout.flush().is_err()
+            {
                 break;
             }
             if let Some(flushed) = frame.flushed {
@@ -120,44 +165,90 @@ pub fn run_stdio(config: &RpcConfig) -> RpcHostResult<()> {
             }
         }
     });
+
     let (notification_sender, mut notification_receiver) =
-        tokio::sync::mpsc::channel::<Value>(STDIO_OUTBOUND_CAPACITY);
+        tokio::sync::mpsc::channel::<RpcNotificationOutput>(STDIO_OUTBOUND_CAPACITY);
+    let service = RpcService::live(config.clone())?;
+    let connection = service.live_connection(notification_sender.clone());
+    let (transport_failed_sender, transport_failed_receiver) = mpsc::sync_channel(1);
     let notification_output = outbound_sender.clone();
     let notification_forwarder = spawn_stdio_thread(move || {
-        while let Some(value) = notification_receiver.blocking_recv() {
-            if send_stdio_output(
-                &notification_output,
-                StdioOutput {
-                    value,
-                    flushed: None,
-                },
-                Instant::now() + STDIO_RESPONSE_DEADLINE,
-            )
-            .is_err()
-            {
+        let mut failed = false;
+        while let Some(frame) = notification_receiver.blocking_recv() {
+            let (flushed_sender, flushed_receiver) = mpsc::sync_channel(0);
+            let deadline = Instant::now() + STDIO_RESPONSE_DEADLINE;
+            let Ok(encoded) = encode_stdio_output(frame.value, Some(flushed_sender)) else {
+                failed = true;
                 break;
+            };
+            if send_stdio_output(&notification_output, encoded, deadline).is_err()
+                || flushed_receiver
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .is_err()
+            {
+                failed = true;
+                break;
+            }
+            let _ = frame.flushed.send(());
+        }
+        if failed {
+            let _ = transport_failed_sender.try_send(());
+        }
+    });
+
+    // Keep transport failure observable while stdin is idle. A dedicated bounded reader also
+    // ensures that notification backpressure can fail the whole connection instead of leaving a
+    // logically live process blocked forever in `read`.
+    let (input_sender, input_receiver) = mpsc::sync_channel(1);
+    let stdin_reader = spawn_stdio_thread(move || {
+        let stdin = io::stdin();
+        let mut input = stdin.lock();
+        loop {
+            match read_bounded_stdio_frame(&mut input) {
+                Ok(Some(frame)) => {
+                    if input_sender.send(StdioInput::Frame(frame)).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => {
+                    let _ = input_sender.send(StdioInput::Eof);
+                    break;
+                }
+                Err(error) => {
+                    let _ = input_sender.send(StdioInput::Failed(error));
+                    break;
+                }
             }
         }
     });
-    let service = RpcService::live(config.clone())?;
-    let connection = service.live_connection(notification_sender.clone());
-    let stdin = io::stdin();
+
     let serve_result = (|| -> RpcHostResult<()> {
-        for line in stdin.lock().lines() {
-            let line = line.map_err(RpcHostError::Io)?;
+        loop {
+            if transport_failed_receiver.try_recv().is_ok() {
+                return Err(RpcHostError::Runtime(
+                    "stdio notification transport failed; connection closed for replay recovery"
+                        .to_string(),
+                ));
+            }
+            let frame = match input_receiver.recv_timeout(Duration::from_millis(25)) {
+                Ok(StdioInput::Frame(frame)) => frame,
+                Ok(StdioInput::Eof) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Ok(StdioInput::Failed(error)) => return Err(error),
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            };
+            let line = std::str::from_utf8(&frame).map_err(|_| {
+                RpcHostError::Invalid("stdio JSON-RPC frame must be valid UTF-8".to_string())
+            })?;
             if line.trim().is_empty() {
                 continue;
             }
-            let outcome = connection.handle_text(&line);
+            let outcome = connection.handle_text(line);
             if let Some(response) = outcome.response {
                 let (flushed_sender, flushed_receiver) = mpsc::sync_channel(0);
                 let response_deadline = Instant::now() + STDIO_RESPONSE_DEADLINE;
                 send_stdio_output(
                     &outbound_sender,
-                    StdioOutput {
-                        value: response,
-                        flushed: Some(flushed_sender),
-                    },
+                    encode_stdio_output(response, Some(flushed_sender))?,
                     response_deadline,
                 )?;
                 flushed_receiver
@@ -178,8 +269,16 @@ pub fn run_stdio(config: &RpcConfig) -> RpcHostResult<()> {
         }
         Ok(())
     })();
+    let close_result = connection.close();
     drop(connection);
     drop(notification_sender);
+    drop(input_receiver);
+    // A reader blocked in the operating system's stdin cannot be cancelled portably. Detaching it
+    // is bounded and safe here; standalone process exit reclaims it, while a completed reader has
+    // already released stdin.
+    drop(stdin_reader.handle);
+    drop(stdin_reader.completed);
+
     let shutdown_deadline = Instant::now() + STDIO_SHUTDOWN_DEADLINE;
     let forwarder_result = join_stdio_thread(
         notification_forwarder,
@@ -196,7 +295,12 @@ pub fn run_stdio(config: &RpcConfig) -> RpcHostResult<()> {
     let writer_result = join_stdio_thread(writer, shutdown_deadline, "response writer");
 
     let mut result = serve_result;
-    for cleanup in [forwarder_result, shutdown_result, writer_result] {
+    for cleanup in [
+        close_result,
+        forwarder_result,
+        shutdown_result,
+        writer_result,
+    ] {
         if result.is_ok() {
             result = cleanup;
         }
@@ -396,22 +500,31 @@ fn handle_http_connection(
             "Content-Type must be application/json",
         );
     }
-    let Some(method) = request_method(&request.body) else {
-        return write_http_text(
-            &mut stream,
-            "400 Bad Request",
-            "JSON-RPC method is required",
+    // Generated metadata is the authorization authority. Unknown or structurally unsafe
+    // requests reach the generated decoder only for an administrative caller and never inherit
+    // read access.
+    let authorized = request_method(&request.body)
+        .and_then(|method| host::Method::parse(&method))
+        .map_or_else(
+            || {
+                security
+                    .credential
+                    .authorizes(supplied_token, RpcHttpScope::Admin)
+            },
+            |method| {
+                security
+                    .credential
+                    .authorizes_method(supplied_token, method)
+            },
         );
-    };
-    // Unknown methods retain JSON-RPC's method-not-found response for an
-    // administrative caller, but never inherit read authority. A newly added
-    // handler that is missing from the scope registry is therefore fail-closed
-    // for read/run/approval credentials.
-    let scope = required_scope(&method).unwrap_or(RpcHttpScope::Admin);
-    if !security.credential.authorizes(supplied_token, scope) {
+    if !authorized {
         return write_http_text(&mut stream, "403 Forbidden", "insufficient RPC scope");
     }
-    let outcome = service.handle_text(&request.body);
+    let outcome = service.handle_text_for_authority(
+        &request.body,
+        &security.credential.authority_identity(),
+        security.credential.scope_names(),
+    );
     if outcome.shutdown {
         shutdown.store(true, Ordering::SeqCst);
     }
@@ -514,14 +627,20 @@ fn read_http_request(stream: &mut TcpStream) -> io::Result<Result<HttpRequest, H
     let deadline = Instant::now() + HTTP_REQUEST_TIMEOUT;
     let mut buffer = Vec::new();
     let header_end = loop {
+        if let Some(header_end) = http_header_end(&buffer) {
+            if header_end > MAX_HTTP_HEADER_BYTES {
+                return Ok(Err(http_text_response(
+                    "413 Payload Too Large",
+                    "request headers too large",
+                )));
+            }
+            break header_end;
+        }
         if buffer.len() > MAX_HTTP_HEADER_BYTES {
             return Ok(Err(http_text_response(
                 "413 Payload Too Large",
-                "request too large",
+                "request headers too large",
             )));
-        }
-        if let Some(header_end) = http_header_end(&buffer) {
-            break header_end;
         }
         let mut chunk = [0_u8; 4096];
         let read = read_with_deadline(stream, &mut chunk, deadline)?;
@@ -551,7 +670,7 @@ fn read_http_request(stream: &mut TcpStream) -> io::Result<Result<HttpRequest, H
             "request too large",
         )));
     };
-    if request_end > MAX_HTTP_REQUEST_BYTES {
+    if content_length > MAX_RPC_FRAME_BYTES {
         return Ok(Err(http_text_response(
             "413 Payload Too Large",
             "request too large",
@@ -707,6 +826,12 @@ fn write_http_json(stream: &mut TcpStream, status: &'static str, body: &Value) -
             format!("failed to encode JSON-RPC response: {error}"),
         )
     })?;
+    if body.len() > MAX_RPC_FRAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "encoded JSON-RPC response exceeds the frame limit",
+        ));
+    }
     let response = HttpResponse {
         status,
         content_type: "application/json",
@@ -750,21 +875,31 @@ mod tests {
     }
 
     #[test]
+    fn stdio_frames_are_bounded_before_json_decoding() {
+        let mut exact = io::Cursor::new(vec![b'a'; MAX_RPC_FRAME_BYTES]);
+        let frame = read_bounded_stdio_frame(&mut exact).unwrap().unwrap();
+        assert_eq!(frame.len(), MAX_RPC_FRAME_BYTES);
+
+        let mut terminated =
+            io::Cursor::new([vec![b'b'; MAX_RPC_FRAME_BYTES], vec![b'\n']].concat());
+        let frame = read_bounded_stdio_frame(&mut terminated).unwrap().unwrap();
+        assert_eq!(frame.len(), MAX_RPC_FRAME_BYTES);
+
+        let mut oversized = io::Cursor::new(vec![b'c'; MAX_RPC_FRAME_BYTES + 1]);
+        let error = read_bounded_stdio_frame(&mut oversized).unwrap_err();
+        assert!(error.to_string().contains("exceeds"));
+    }
+
+    #[test]
     fn stdio_queue_and_thread_waits_obey_deadlines() {
         let (sender, _receiver) = mpsc::sync_channel(1);
         sender
-            .try_send(StdioOutput {
-                value: json!({"first": true}),
-                flushed: None,
-            })
+            .try_send(encode_stdio_output(json!({"first": true}), None).unwrap())
             .unwrap();
         let started = Instant::now();
         let error = send_stdio_output(
             &sender,
-            StdioOutput {
-                value: json!({"second": true}),
-                flushed: None,
-            },
+            encode_stdio_output(json!({"second": true}), None).unwrap(),
             started + Duration::from_millis(25),
         )
         .unwrap_err();

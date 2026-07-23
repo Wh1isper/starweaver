@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use starweaver_rpc_core::EnvironmentAttachmentAccessMode;
 
 fn resolver_with_current_dir(root: &Path, current_dir: &Path) -> ConfigResolver {
     ConfigResolver {

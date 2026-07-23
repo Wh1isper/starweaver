@@ -1,0 +1,7013 @@
+{
+  "components": {
+    "errors": {
+      "AlreadyExists": {
+        "code": -32011,
+        "data": {
+          "$ref": "#/components/schemas/AlreadyExistsData"
+        },
+        "message": "AlreadyExists",
+        "x-starweaver-error-data": "AlreadyExistsData"
+      },
+      "AuthorizationDenied": {
+        "code": -32017,
+        "data": {
+          "$ref": "#/components/schemas/AuthorizationDeniedData"
+        },
+        "message": "AuthorizationDenied",
+        "x-starweaver-error-data": "AuthorizationDeniedData"
+      },
+      "ConfigurationFailed": {
+        "code": -32050,
+        "data": {
+          "$ref": "#/components/schemas/ConfigurationFailedData"
+        },
+        "message": "ConfigurationFailed",
+        "x-starweaver-error-data": "ConfigurationFailedData"
+      },
+      "CursorInvalid": {
+        "code": -32016,
+        "data": {
+          "$ref": "#/components/schemas/CursorInvalidData"
+        },
+        "message": "CursorInvalid",
+        "x-starweaver-error-data": "CursorInvalidData"
+      },
+      "EnvironmentUnavailable": {
+        "code": -32031,
+        "data": {
+          "$ref": "#/components/schemas/EnvironmentUnavailableData"
+        },
+        "message": "EnvironmentUnavailable",
+        "x-starweaver-error-data": "EnvironmentUnavailableData"
+      },
+      "IdempotencyConflict": {
+        "code": -32012,
+        "data": {
+          "$ref": "#/components/schemas/IdempotencyConflictData"
+        },
+        "message": "IdempotencyConflict",
+        "x-starweaver-error-data": "IdempotencyConflictData"
+      },
+      "InternalError": {
+        "code": -32000,
+        "data": {
+          "$ref": "#/components/schemas/InternalErrorData"
+        },
+        "message": "InternalError",
+        "x-starweaver-error-data": "InternalErrorData"
+      },
+      "InvalidParams": {
+        "code": -32602,
+        "data": {
+          "$ref": "#/components/schemas/InvalidParamsData"
+        },
+        "message": "InvalidParams",
+        "x-starweaver-error-data": "InvalidParamsData"
+      },
+      "InvalidRequest": {
+        "code": -32600,
+        "data": {
+          "$ref": "#/components/schemas/InvalidRequestData"
+        },
+        "message": "InvalidRequest",
+        "x-starweaver-error-data": "InvalidRequestData"
+      },
+      "MethodNotFound": {
+        "code": -32601,
+        "data": {
+          "$ref": "#/components/schemas/MethodNotFoundData"
+        },
+        "message": "MethodNotFound",
+        "x-starweaver-error-data": "MethodNotFoundData"
+      },
+      "NotFound": {
+        "code": -32010,
+        "data": {
+          "$ref": "#/components/schemas/NotFoundData"
+        },
+        "message": "NotFound",
+        "x-starweaver-error-data": "NotFoundData"
+      },
+      "NotInitialized": {
+        "code": -32001,
+        "data": {
+          "$ref": "#/components/schemas/NotInitializedData"
+        },
+        "message": "NotInitialized",
+        "x-starweaver-error-data": "NotInitializedData"
+      },
+      "ParseError": {
+        "code": -32700,
+        "data": {
+          "$ref": "#/components/schemas/ParseErrorData"
+        },
+        "message": "ParseError",
+        "x-starweaver-error-data": "ParseErrorData"
+      },
+      "RunConflict": {
+        "code": -32013,
+        "data": {
+          "$ref": "#/components/schemas/RunConflictData"
+        },
+        "message": "RunConflict",
+        "x-starweaver-error-data": "RunConflictData"
+      },
+      "SessionSearchUnavailable": {
+        "code": -32032,
+        "data": {
+          "$ref": "#/components/schemas/SessionSearchUnavailableData"
+        },
+        "message": "SessionSearchUnavailable",
+        "x-starweaver-error-data": "SessionSearchUnavailableData"
+      },
+      "StaleFence": {
+        "code": -32014,
+        "data": {
+          "$ref": "#/components/schemas/StaleFenceData"
+        },
+        "message": "StaleFence",
+        "x-starweaver-error-data": "StaleFenceData"
+      },
+      "StorageUnavailable": {
+        "code": -32015,
+        "data": {
+          "$ref": "#/components/schemas/StorageUnavailableData"
+        },
+        "message": "StorageUnavailable",
+        "x-starweaver-error-data": "StorageUnavailableData"
+      },
+      "UnsupportedFeature": {
+        "code": -32002,
+        "data": {
+          "$ref": "#/components/schemas/UnsupportedFeatureData"
+        },
+        "message": "UnsupportedFeature",
+        "x-starweaver-error-data": "UnsupportedFeatureData"
+      }
+    },
+    "schemas": {
+      "AlreadyExistsData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "already_exists",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "ApprovalChangedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "$ref": "#/components/schemas/ApprovalSummary"
+          },
+          "kind": {
+            "const": "approval_changed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "approval"
+        ],
+        "type": "object"
+      },
+      "ApprovalDecideParams": {
+        "additionalProperties": false,
+        "properties": {
+          "approvalId": {
+            "$ref": "#/components/schemas/ApprovalId"
+          },
+          "decision": {
+            "enum": [
+              "approved",
+              "denied"
+            ],
+            "type": "string"
+          },
+          "expectedRevision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "reason": {
+            "oneOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "approvalId",
+          "expectedRevision",
+          "decision",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "ApprovalDecideResult": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "$ref": "#/components/schemas/ApprovalSummary"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "approval",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "ApprovalId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "ApprovalListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "approvals": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalSummary"
+            },
+            "maxItems": 200,
+            "minItems": 0,
+            "type": "array"
+          },
+          "page": {
+            "$ref": "#/components/schemas/PageInfo"
+          }
+        },
+        "required": [
+          "approvals",
+          "page"
+        ],
+        "type": "object"
+      },
+      "ApprovalShowParams": {
+        "additionalProperties": false,
+        "properties": {
+          "approvalId": {
+            "$ref": "#/components/schemas/ApprovalId"
+          }
+        },
+        "required": [
+          "approvalId"
+        ],
+        "type": "object"
+      },
+      "ApprovalShowResult": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "$ref": "#/components/schemas/ApprovalSummary"
+          }
+        },
+        "required": [
+          "approval"
+        ],
+        "type": "object"
+      },
+      "ApprovalStatus": {
+        "enum": [
+          "pending",
+          "approved",
+          "denied",
+          "expired",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "ApprovalSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "approvalId": {
+            "$ref": "#/components/schemas/ApprovalId"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ApprovalStatus"
+          },
+          "title": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "approvalId",
+          "sessionId",
+          "runId",
+          "status",
+          "revision",
+          "title",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "AttachmentId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "AttachmentScope": {
+        "discriminator": {
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ConnectionAttachmentScope"
+          },
+          {
+            "$ref": "#/components/schemas/SessionAttachmentScope"
+          },
+          {
+            "$ref": "#/components/schemas/RunAttachmentScope"
+          }
+        ]
+      },
+      "AuthorizationDeniedData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "authorization_denied",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "CatalogListParams": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "CatalogListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileSummary"
+            },
+            "maxItems": 256,
+            "minItems": 0,
+            "type": "array"
+          },
+          "selection": {
+            "$ref": "#/components/schemas/ModelSelection"
+          }
+        },
+        "required": [
+          "profiles",
+          "selection"
+        ],
+        "type": "object"
+      },
+      "ClarificationAnswer": {
+        "additionalProperties": false,
+        "properties": {
+          "freeText": {
+            "oneOf": [
+              {
+                "maxLength": 16384,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "question": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "selectedOptions": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 4,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "question",
+          "selectedOptions"
+        ],
+        "type": "object"
+      },
+      "ClarificationChangedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "clarification": {
+            "$ref": "#/components/schemas/ClarificationSummary"
+          },
+          "kind": {
+            "const": "clarification_changed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "clarification"
+        ],
+        "type": "object"
+      },
+      "ClarificationId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "ClarificationQuestion": {
+        "additionalProperties": false,
+        "properties": {
+          "header": {
+            "maxLength": 12,
+            "minLength": 1,
+            "type": "string"
+          },
+          "multiSelect": {
+            "type": "boolean"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/ClarificationQuestionOption"
+            },
+            "maxItems": 4,
+            "minItems": 2,
+            "type": "array"
+          },
+          "question": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "question",
+          "header",
+          "options",
+          "multiSelect"
+        ],
+        "type": "object"
+      },
+      "ClarificationQuestionOption": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "preview": {
+            "oneOf": [
+              {
+                "maxLength": 4096,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "label",
+          "description"
+        ],
+        "type": "object"
+      },
+      "ClarificationResolveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/ClarificationAnswer"
+            },
+            "maxItems": 4,
+            "minItems": 0,
+            "type": "array"
+          },
+          "clarificationId": {
+            "$ref": "#/components/schemas/ClarificationId"
+          },
+          "expectedRevision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "response": {
+            "oneOf": [
+              {
+                "maxLength": 16384,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "clarificationId",
+          "expectedRevision",
+          "answers",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "ClarificationResolveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "clarification": {
+            "$ref": "#/components/schemas/ClarificationSummary"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "clarification",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "ClarificationStatus": {
+        "enum": [
+          "pending",
+          "resolved",
+          "expired"
+        ],
+        "type": "string"
+      },
+      "ClarificationSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "clarificationId": {
+            "$ref": "#/components/schemas/ClarificationId"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/ClarificationQuestion"
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "type": "array"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ClarificationStatus"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "clarificationId",
+          "sessionId",
+          "runId",
+          "questions",
+          "status",
+          "revision",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "ClientInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version"
+        ],
+        "type": "object"
+      },
+      "ConfigurationFailedData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "configuration_failed",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "ConnectionAttachmentScope": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "connection",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "ContinuationMode": {
+        "enum": [
+          "preserve",
+          "compatible",
+          "switch"
+        ],
+        "type": "string"
+      },
+      "CursorInvalidData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "cursor_invalid",
+            "type": "string"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/CursorInvalidReason"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "reason",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "CursorInvalidReason": {
+        "enum": [
+          "malformed",
+          "integrity_failed",
+          "scope_mismatch",
+          "view_mismatch",
+          "storage_mismatch",
+          "retention_gap"
+        ],
+        "type": "string"
+      },
+      "DecimalU64": {
+        "maxLength": 20,
+        "minLength": 1,
+        "pattern": "^(0|[1-9][0-9]{0,19})$",
+        "type": "string",
+        "x-starweaver-decimal": {
+          "kind": "u64",
+          "maximum": "18446744073709551615",
+          "minimum": "0"
+        }
+      },
+      "DeferredChangedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "deferred": {
+            "$ref": "#/components/schemas/DeferredSummary"
+          },
+          "kind": {
+            "const": "deferred_changed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "deferred"
+        ],
+        "type": "object"
+      },
+      "DeferredCompleteParams": {
+        "additionalProperties": false,
+        "properties": {
+          "deferredId": {
+            "$ref": "#/components/schemas/DeferredId"
+          },
+          "expectedRevision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "resultText": {
+            "maxLength": 65536,
+            "minLength": 0,
+            "type": "string"
+          }
+        },
+        "required": [
+          "deferredId",
+          "resultText",
+          "expectedRevision",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "DeferredCompleteResult": {
+        "additionalProperties": false,
+        "properties": {
+          "deferred": {
+            "$ref": "#/components/schemas/DeferredSummary"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "deferred",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "DeferredFailParams": {
+        "additionalProperties": false,
+        "properties": {
+          "deferredId": {
+            "$ref": "#/components/schemas/DeferredId"
+          },
+          "error": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "expectedRevision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "deferredId",
+          "error",
+          "expectedRevision",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "DeferredFailResult": {
+        "additionalProperties": false,
+        "properties": {
+          "deferred": {
+            "$ref": "#/components/schemas/DeferredSummary"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "deferred",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "DeferredId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "DeferredListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "deferred": {
+            "items": {
+              "$ref": "#/components/schemas/DeferredSummary"
+            },
+            "maxItems": 200,
+            "minItems": 0,
+            "type": "array"
+          },
+          "page": {
+            "$ref": "#/components/schemas/PageInfo"
+          }
+        },
+        "required": [
+          "deferred",
+          "page"
+        ],
+        "type": "object"
+      },
+      "DeferredShowParams": {
+        "additionalProperties": false,
+        "properties": {
+          "deferredId": {
+            "$ref": "#/components/schemas/DeferredId"
+          }
+        },
+        "required": [
+          "deferredId"
+        ],
+        "type": "object"
+      },
+      "DeferredShowResult": {
+        "additionalProperties": false,
+        "properties": {
+          "deferred": {
+            "$ref": "#/components/schemas/DeferredSummary"
+          }
+        },
+        "required": [
+          "deferred"
+        ],
+        "type": "object"
+      },
+      "DeferredStatus": {
+        "enum": [
+          "pending",
+          "running",
+          "waiting",
+          "completed",
+          "failed",
+          "expired",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "DeferredSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "deferredId": {
+            "$ref": "#/components/schemas/DeferredId"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DeferredStatus"
+          },
+          "toolName": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "deferredId",
+          "sessionId",
+          "runId",
+          "toolName",
+          "status",
+          "revision",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "DeferredToolDefinition": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "maxLength": 4096,
+            "minLength": 0,
+            "type": "string"
+          },
+          "inputSchema": {
+            "$ref": "#/components/schemas/JsonObject"
+          },
+          "inputSchemaDigest": {
+            "$ref": "#/components/schemas/SchemaDigest"
+          },
+          "instructions": {
+            "items": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "minItems": 0,
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "inputSchema",
+          "inputSchemaDigest",
+          "instructions"
+        ],
+        "type": "object"
+      },
+      "DiagnosticEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "const": "diagnostic",
+            "type": "string"
+          },
+          "level": {
+            "enum": [
+              "info",
+              "warning",
+              "error"
+            ],
+            "type": "string"
+          },
+          "message": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "level",
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "DiagnosticsGetParams": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "DiagnosticsGetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "pendingRecoveryItems": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/ProtocolIdentity"
+          },
+          "runtimeStatus": {
+            "enum": [
+              "ready",
+              "degraded",
+              "draining"
+            ],
+            "type": "string"
+          },
+          "sdk": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "storageCurrent": {
+            "type": "boolean"
+          },
+          "version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sdk",
+          "version",
+          "runtimeStatus",
+          "protocol",
+          "storageCurrent",
+          "pendingRecoveryItems"
+        ],
+        "type": "object"
+      },
+      "EmptyParams": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "EmptyResult": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "EnvironmentAttachParams": {
+        "additionalProperties": false,
+        "properties": {
+          "environmentId": {
+            "$ref": "#/components/schemas/EnvironmentId"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/AttachmentScope"
+          }
+        },
+        "required": [
+          "environmentId",
+          "scope",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "EnvironmentAttachResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment": {
+            "$ref": "#/components/schemas/EnvironmentAttachment"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "attachment",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "EnvironmentAttachment": {
+        "additionalProperties": false,
+        "properties": {
+          "attachmentId": {
+            "$ref": "#/components/schemas/AttachmentId"
+          },
+          "displayName": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "environmentId": {
+            "$ref": "#/components/schemas/EnvironmentId"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/AttachmentScope"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EnvironmentStatus"
+          }
+        },
+        "required": [
+          "attachmentId",
+          "environmentId",
+          "scope",
+          "status",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "EnvironmentChangedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment": {
+            "$ref": "#/components/schemas/EnvironmentAttachment"
+          },
+          "kind": {
+            "const": "environment_changed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "attachment"
+        ],
+        "type": "object"
+      },
+      "EnvironmentDetachParams": {
+        "additionalProperties": false,
+        "properties": {
+          "attachmentId": {
+            "$ref": "#/components/schemas/AttachmentId"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "attachmentId",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "EnvironmentDetachResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment": {
+            "$ref": "#/components/schemas/EnvironmentAttachment"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "attachment",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "EnvironmentHealthParams": {
+        "additionalProperties": false,
+        "properties": {
+          "attachmentId": {
+            "$ref": "#/components/schemas/AttachmentId"
+          }
+        },
+        "required": [
+          "attachmentId"
+        ],
+        "type": "object"
+      },
+      "EnvironmentHealthResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment": {
+            "$ref": "#/components/schemas/EnvironmentAttachment"
+          },
+          "checkedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "attachment",
+          "checkedAt"
+        ],
+        "type": "object"
+      },
+      "EnvironmentId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "EnvironmentListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "oneOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "scope": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AttachmentScope"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "limit"
+        ],
+        "type": "object"
+      },
+      "EnvironmentListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentAttachment"
+            },
+            "maxItems": 200,
+            "minItems": 0,
+            "type": "array"
+          },
+          "page": {
+            "$ref": "#/components/schemas/PageInfo"
+          }
+        },
+        "required": [
+          "attachments",
+          "page"
+        ],
+        "type": "object"
+      },
+      "EnvironmentMountListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runId"
+        ],
+        "type": "object"
+      },
+      "EnvironmentMountListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "mounts": {
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentMountSummary"
+            },
+            "maxItems": 128,
+            "minItems": 0,
+            "type": "array"
+          }
+        },
+        "required": [
+          "mounts"
+        ],
+        "type": "object"
+      },
+      "EnvironmentMountParams": {
+        "additionalProperties": false,
+        "properties": {
+          "attachmentId": {
+            "$ref": "#/components/schemas/AttachmentId"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "resourceRef": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "attachmentId",
+          "sessionId",
+          "runId",
+          "resourceRef",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "EnvironmentMountResult": {
+        "additionalProperties": false,
+        "properties": {
+          "mountId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "mountId",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "EnvironmentMountSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "attachmentId": {
+            "$ref": "#/components/schemas/AttachmentId"
+          },
+          "mountId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "resourceLabel": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "mountId",
+          "attachmentId",
+          "resourceLabel"
+        ],
+        "type": "object"
+      },
+      "EnvironmentStatus": {
+        "enum": [
+          "attaching",
+          "ready",
+          "degraded",
+          "detached"
+        ],
+        "type": "string"
+      },
+      "EnvironmentUnavailableData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "environment_unavailable",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "EnvironmentUnmountParams": {
+        "additionalProperties": false,
+        "properties": {
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "mountId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "mountId",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "EnvironmentUnmountResult": {
+        "additionalProperties": false,
+        "properties": {
+          "mountId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "mountId",
+          "removed",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "EventDelivery": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "$ref": "#/components/schemas/HostEventCursor"
+          },
+          "record": {
+            "$ref": "#/components/schemas/EventRecord"
+          }
+        },
+        "required": [
+          "cursor",
+          "record"
+        ],
+        "type": "object"
+      },
+      "EventId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "EventProfile": {
+        "enum": [
+          "conversation.v1",
+          "operations.v1",
+          "desktop.conversation.v1"
+        ],
+        "type": "string"
+      },
+      "EventRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "$ref": "#/components/schemas/HostEvent"
+          },
+          "eventId": {
+            "$ref": "#/components/schemas/EventId"
+          },
+          "occurredAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ResourceScope"
+          }
+        },
+        "required": [
+          "eventId",
+          "occurredAt",
+          "scope",
+          "event"
+        ],
+        "type": "object"
+      },
+      "EventViewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "optionalFeatures": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "profile": {
+            "$ref": "#/components/schemas/EventProfile"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ResourceScope"
+          }
+        },
+        "required": [
+          "scope",
+          "profile",
+          "optionalFeatures"
+        ],
+        "type": "object"
+      },
+      "EventsReplayParams": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HostEventCursor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "limit": {
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "view": {
+            "$ref": "#/components/schemas/EventViewRequest"
+          }
+        },
+        "required": [
+          "view",
+          "limit"
+        ],
+        "type": "object"
+      },
+      "EventsReplayResult": {
+        "additionalProperties": false,
+        "properties": {
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/EventDelivery"
+            },
+            "maxItems": 500,
+            "minItems": 0,
+            "type": "array"
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "$ref": "#/components/schemas/HostEventCursor"
+          }
+        },
+        "required": [
+          "deliveries",
+          "nextCursor",
+          "hasMore"
+        ],
+        "type": "object"
+      },
+      "EventsSubscribeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HostEventCursor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "view": {
+            "$ref": "#/components/schemas/EventViewRequest"
+          }
+        },
+        "required": [
+          "view"
+        ],
+        "type": "object"
+      },
+      "EventsSubscribeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptedCursor": {
+            "$ref": "#/components/schemas/HostEventCursor"
+          },
+          "fenceCursor": {
+            "$ref": "#/components/schemas/HostEventCursor"
+          },
+          "nextDeliverySequence": {
+            "const": "1",
+            "type": "string"
+          },
+          "subscriptionId": {
+            "$ref": "#/components/schemas/SubscriptionId"
+          }
+        },
+        "required": [
+          "subscriptionId",
+          "acceptedCursor",
+          "fenceCursor",
+          "nextDeliverySequence"
+        ],
+        "type": "object"
+      },
+      "EventsUnsubscribeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "subscriptionId": {
+            "$ref": "#/components/schemas/SubscriptionId"
+          }
+        },
+        "required": [
+          "subscriptionId"
+        ],
+        "type": "object"
+      },
+      "EventsUnsubscribeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "closed": {
+            "type": "boolean"
+          },
+          "subscriptionId": {
+            "$ref": "#/components/schemas/SubscriptionId"
+          }
+        },
+        "required": [
+          "subscriptionId",
+          "closed"
+        ],
+        "type": "object"
+      },
+      "FeatureId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[a-z][a-z0-9._-]*$",
+        "type": "string"
+      },
+      "GlobalResourceScope": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "global",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "HostEvent": {
+        "discriminator": {
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SessionChangedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/RunChangedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/OutputAvailableEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ApprovalChangedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/DeferredChangedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ClarificationChangedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/EnvironmentChangedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/DiagnosticEvent"
+          }
+        ]
+      },
+      "HostEventCursor": {
+        "maxLength": 1024,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9_-]+$",
+        "type": "string"
+      },
+      "HostEventNotificationParams": {
+        "additionalProperties": false,
+        "properties": {
+          "delivery": {
+            "$ref": "#/components/schemas/EventDelivery"
+          },
+          "deliverySequence": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "subscriptionId": {
+            "$ref": "#/components/schemas/SubscriptionId"
+          }
+        },
+        "required": [
+          "subscriptionId",
+          "deliverySequence",
+          "delivery"
+        ],
+        "type": "object"
+      },
+      "IdempotencyConflictData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "idempotency_conflict",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "IdempotencyKey": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "InitializeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "clientInfo": {
+            "$ref": "#/components/schemas/ClientInfo"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/ProtocolIdentity"
+          },
+          "requiredFeatures": {
+            "items": {
+              "$ref": "#/components/schemas/FeatureId"
+            },
+            "maxItems": 128,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true,
+            "x-starweaver-canonical-order": "utf8-byte-ascending"
+          },
+          "supportedFeatures": {
+            "items": {
+              "$ref": "#/components/schemas/FeatureId"
+            },
+            "maxItems": 128,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true,
+            "x-starweaver-canonical-order": "utf8-byte-ascending"
+          }
+        },
+        "required": [
+          "protocol",
+          "clientInfo",
+          "supportedFeatures",
+          "requiredFeatures"
+        ],
+        "type": "object"
+      },
+      "InitializeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "launch": {
+            "$ref": "#/components/schemas/LaunchCompatibility"
+          },
+          "negotiatedFeatures": {
+            "items": {
+              "$ref": "#/components/schemas/FeatureId"
+            },
+            "maxItems": 128,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true,
+            "x-starweaver-canonical-order": "utf8-byte-ascending"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/ProtocolIdentity"
+          },
+          "runtimeBuild": {
+            "$ref": "#/components/schemas/RuntimeBuildIdentity"
+          },
+          "runtimeStatus": {
+            "enum": [
+              "ready",
+              "degraded"
+            ],
+            "type": "string"
+          },
+          "serverInfo": {
+            "$ref": "#/components/schemas/ServerInfo"
+          },
+          "startupReconciliation": {
+            "$ref": "#/components/schemas/StartupReconciliation"
+          },
+          "storage": {
+            "$ref": "#/components/schemas/StorageCompatibility"
+          },
+          "supportedFeatures": {
+            "items": {
+              "$ref": "#/components/schemas/FeatureId"
+            },
+            "maxItems": 128,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true,
+            "x-starweaver-canonical-order": "utf8-byte-ascending"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/WorkspaceCompatibility"
+          }
+        },
+        "required": [
+          "protocol",
+          "serverInfo",
+          "runtimeBuild",
+          "supportedFeatures",
+          "negotiatedFeatures",
+          "runtimeStatus",
+          "launch",
+          "storage",
+          "workspace",
+          "startupReconciliation"
+        ],
+        "type": "object"
+      },
+      "InputPart": {
+        "discriminator": {
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TextInputPart"
+          },
+          {
+            "$ref": "#/components/schemas/ResourceInputPart"
+          }
+        ]
+      },
+      "InteractionListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "oneOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "runId": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "sessionId": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "limit"
+        ],
+        "type": "object"
+      },
+      "InternalErrorData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "internal_error",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "InvalidParamsData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "invalid_params",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "InvalidRequestData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "invalid_request",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "JsonObject": {
+        "additionalProperties": true,
+        "type": "object",
+        "x-starweaver-json-value": "object"
+      },
+      "LaunchCapabilityCaps": {
+        "additionalProperties": false,
+        "properties": {
+          "clarifyingQuestions": {
+            "type": "boolean"
+          },
+          "hitl": {
+            "type": "boolean"
+          },
+          "nativeLocalShell": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "hitl",
+          "clarifyingQuestions",
+          "nativeLocalShell"
+        ],
+        "type": "object"
+      },
+      "LaunchCompatibility": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptedMaximumVersion": {
+            "maximum": 1,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "acceptedMinimumVersion": {
+            "maximum": 1,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "configurationGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "effectiveSchema": {
+            "$ref": "#/components/schemas/LaunchSchemaIdentity"
+          },
+          "envelopeDigest": {
+            "$ref": "#/components/schemas/SchemaDigest"
+          },
+          "mode": {
+            "enum": [
+              "standalone",
+              "workspace_execution"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "effectiveSchema",
+          "acceptedMinimumVersion",
+          "acceptedMaximumVersion",
+          "envelopeDigest",
+          "configurationGeneration",
+          "mode"
+        ],
+        "type": "object"
+      },
+      "LaunchDatabase": {
+        "additionalProperties": false,
+        "properties": {
+          "identity": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "identity",
+          "path"
+        ],
+        "type": "object"
+      },
+      "LaunchEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilityCaps": {
+            "$ref": "#/components/schemas/LaunchCapabilityCaps"
+          },
+          "configurationGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "database": {
+            "$ref": "#/components/schemas/LaunchDatabase"
+          },
+          "defaultProfile": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "type": "string"
+          },
+          "executionDomainId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "mode": {
+            "const": "workspace_execution",
+            "type": "string"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/LaunchProfile"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/LaunchProvider"
+            },
+            "maxItems": 32,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "schema": {
+            "$ref": "#/components/schemas/LaunchSchemaIdentity"
+          },
+          "stateDirectory": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/LaunchWorkspace"
+          }
+        },
+        "required": [
+          "schema",
+          "mode",
+          "database",
+          "workspace",
+          "stateDirectory",
+          "executionDomainId",
+          "configurationGeneration",
+          "defaultProfile",
+          "profiles",
+          "providers",
+          "capabilityCaps"
+        ],
+        "type": "object"
+      },
+      "LaunchProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "instructions": {
+            "items": {
+              "maxLength": 65536,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 0,
+            "type": "array"
+          },
+          "modelConfig": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "modelId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "modelSettings": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "type": "string"
+          },
+          "toolsets": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "name",
+          "modelId",
+          "instructions",
+          "toolsets"
+        ],
+        "type": "object"
+      },
+      "LaunchProvider": {
+        "additionalProperties": false,
+        "properties": {
+          "baseUrl": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "credentialEnv": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Z_][A-Z0-9_]{0,127}$",
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "endpointPath": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "LaunchSchemaIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "const": "starweaver.rpc.launch",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 1,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "version"
+        ],
+        "type": "object"
+      },
+      "LaunchWorkspace": {
+        "additionalProperties": false,
+        "properties": {
+          "identity": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "root": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "identity",
+          "root"
+        ],
+        "type": "object"
+      },
+      "MethodNotFoundData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "method_not_found",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "ModelSelectParams": {
+        "additionalProperties": false,
+        "properties": {
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "profile": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "ModelSelectResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "selection": {
+            "$ref": "#/components/schemas/ModelSelection"
+          }
+        },
+        "required": [
+          "selection",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "ModelSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "modelId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "selectedProfile": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "selectedProfile",
+          "modelId",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "ModelSelectionGetParams": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "ModelSelectionGetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "selection": {
+            "$ref": "#/components/schemas/ModelSelection"
+          }
+        },
+        "required": [
+          "selection"
+        ],
+        "type": "object"
+      },
+      "MutationReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "fingerprint": {
+            "$ref": "#/components/schemas/SchemaDigest"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "operation": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "receiptId": {
+            "$ref": "#/components/schemas/ReceiptId"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "replayed": {
+            "type": "boolean"
+          },
+          "state": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "targetRef": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "receiptId",
+          "idempotencyKey",
+          "fingerprint",
+          "operation",
+          "state",
+          "targetRef",
+          "reconciliationRequired",
+          "replayed"
+        ],
+        "type": "object"
+      },
+      "NotFoundData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "not_found",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "NotInitializedData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "not_initialized",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "OutputAvailableEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "output_available",
+            "type": "string"
+          },
+          "outputRef": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "preview": {
+            "maxLength": 4096,
+            "minLength": 0,
+            "type": "string"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "kind",
+          "sessionId",
+          "runId",
+          "outputRef",
+          "preview"
+        ],
+        "type": "object"
+      },
+      "PageInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "hasMore": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "oneOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "hasMore"
+        ],
+        "type": "object"
+      },
+      "ParseErrorData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "parse_error",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "ProfileDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "instructions": {
+            "items": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 0,
+            "type": "array"
+          },
+          "label": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "mcpServers": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 128,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "modelId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "subagents": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 128,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "toolsets": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 128,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "name",
+          "modelId",
+          "instructions",
+          "toolsets",
+          "subagents",
+          "mcpServers"
+        ],
+        "type": "object"
+      },
+      "ProfileGetParams": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "ProfileGetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "$ref": "#/components/schemas/ProfileDetail"
+          }
+        },
+        "required": [
+          "profile"
+        ],
+        "type": "object"
+      },
+      "ProfileSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "modelId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "builtin",
+              "user",
+              "workspace"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "modelId",
+          "source"
+        ],
+        "type": "object"
+      },
+      "ProtocolIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "major": {
+            "const": 1,
+            "type": "integer"
+          },
+          "name": {
+            "const": "starweaver.host",
+            "type": "string"
+          },
+          "revision": {
+            "maxLength": 32,
+            "minLength": 1,
+            "type": "string"
+          },
+          "schemaDigest": {
+            "$ref": "#/components/schemas/SchemaDigest"
+          }
+        },
+        "required": [
+          "name",
+          "major",
+          "revision",
+          "schemaDigest"
+        ],
+        "type": "object"
+      },
+      "ReceiptId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "RequestId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^.*\\S.*$",
+        "type": "string"
+      },
+      "ResourceInputPart": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "resource",
+            "type": "string"
+          },
+          "mediaType": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "uri": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "uri",
+          "mediaType"
+        ],
+        "type": "object"
+      },
+      "ResourceScope": {
+        "discriminator": {
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/GlobalResourceScope"
+          },
+          {
+            "$ref": "#/components/schemas/SessionResourceScope"
+          },
+          {
+            "$ref": "#/components/schemas/RunResourceScope"
+          }
+        ]
+      },
+      "RunAttachmentScope": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "run",
+            "type": "string"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "kind",
+          "sessionId",
+          "runId"
+        ],
+        "type": "object"
+      },
+      "RunChangedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "run_changed",
+            "type": "string"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunSummary"
+          }
+        },
+        "required": [
+          "kind",
+          "run"
+        ],
+        "type": "object"
+      },
+      "RunConflictData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "run_conflict",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "RunId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "RunInterruptParams": {
+        "additionalProperties": false,
+        "properties": {
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "reason": {
+            "oneOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runId",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "RunInterruptResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunSummary"
+          }
+        },
+        "required": [
+          "run",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "RunResourceScope": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "run",
+            "type": "string"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "kind",
+          "sessionId",
+          "runId"
+        ],
+        "type": "object"
+      },
+      "RunResumeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "continuationMode": {
+            "$ref": "#/components/schemas/ContinuationMode"
+          },
+          "environmentAttachments": {
+            "items": {
+              "$ref": "#/components/schemas/AttachmentId"
+            },
+            "maxItems": 64,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "profile": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runId",
+          "idempotencyKey",
+          "continuationMode",
+          "environmentAttachments"
+        ],
+        "type": "object"
+      },
+      "RunResumeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunSummary"
+          },
+          "sourceRunId": {
+            "$ref": "#/components/schemas/RunId"
+          }
+        },
+        "required": [
+          "run",
+          "sourceRunId",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "RunStartParams": {
+        "additionalProperties": false,
+        "properties": {
+          "continuationMode": {
+            "$ref": "#/components/schemas/ContinuationMode"
+          },
+          "environmentAttachments": {
+            "items": {
+              "$ref": "#/components/schemas/AttachmentId"
+            },
+            "maxItems": 64,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "input": {
+            "items": {
+              "$ref": "#/components/schemas/InputPart"
+            },
+            "maxItems": 128,
+            "minItems": 1,
+            "type": "array"
+          },
+          "profile": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "restoreFromRunId": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "sessionId": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "input",
+          "idempotencyKey",
+          "continuationMode",
+          "environmentAttachments"
+        ],
+        "type": "object"
+      },
+      "RunStartResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunSummary"
+          }
+        },
+        "required": [
+          "run",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "RunStatus": {
+        "enum": [
+          "queued",
+          "starting",
+          "running",
+          "waiting",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "RunStatusParams": {
+        "additionalProperties": false,
+        "properties": {
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runId"
+        ],
+        "type": "object"
+      },
+      "RunStatusResult": {
+        "additionalProperties": false,
+        "properties": {
+          "run": {
+            "$ref": "#/components/schemas/RunSummary"
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "type": "object"
+      },
+      "RunSteerParams": {
+        "additionalProperties": false,
+        "properties": {
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "text": {
+            "maxLength": 16384,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runId",
+          "text",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "RunSteerResult": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "accepted",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "RunSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "outputPreview": {
+            "oneOf": [
+              {
+                "maxLength": 4096,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "revision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runId",
+          "status",
+          "revision",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "RuntimeBuildIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "buildRevision": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "target": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "buildRevision",
+          "target"
+        ],
+        "type": "object"
+      },
+      "SchemaDigest": {
+        "maxLength": 71,
+        "minLength": 71,
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "ServerInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version"
+        ],
+        "type": "object"
+      },
+      "SessionAttachmentScope": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "session",
+            "type": "string"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "kind",
+          "sessionId"
+        ],
+        "type": "object"
+      },
+      "SessionChangedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "session_changed",
+            "type": "string"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionSummary"
+          }
+        },
+        "required": [
+          "kind",
+          "session"
+        ],
+        "type": "object"
+      },
+      "SessionCreateParams": {
+        "additionalProperties": false,
+        "properties": {
+          "deferredTools": {
+            "items": {
+              "$ref": "#/components/schemas/DeferredToolDefinition"
+            },
+            "maxItems": 64,
+            "minItems": 0,
+            "type": "array"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "profile": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "title": {
+            "oneOf": [
+              {
+                "maxLength": 512,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "idempotencyKey",
+          "deferredTools"
+        ],
+        "type": "object"
+      },
+      "SessionCreateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionSummary"
+          }
+        },
+        "required": [
+          "session",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "SessionDeleteParams": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "sessionId",
+          "expectedRevision",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "SessionDeleteResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionSummary"
+          }
+        },
+        "required": [
+          "session",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "SessionForkParams": {
+        "additionalProperties": false,
+        "properties": {
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "title": {
+            "oneOf": [
+              {
+                "maxLength": 512,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "sessionId",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "SessionForkResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionSummary"
+          },
+          "sourceRunId": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "sourceSessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "session",
+          "sourceSessionId",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "SessionGetParams": {
+        "additionalProperties": false,
+        "properties": {
+          "runLimit": {
+            "maximum": 100,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runLimit"
+        ],
+        "type": "object"
+      },
+      "SessionGetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            },
+            "maxItems": 100,
+            "minItems": 0,
+            "type": "array"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionSummary"
+          }
+        },
+        "required": [
+          "session",
+          "runs"
+        ],
+        "type": "object"
+      },
+      "SessionId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "SessionListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "oneOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "limit"
+        ],
+        "type": "object"
+      },
+      "SessionListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
+            "$ref": "#/components/schemas/PageInfo"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/SessionSummary"
+            },
+            "maxItems": 200,
+            "minItems": 0,
+            "type": "array"
+          }
+        },
+        "required": [
+          "sessions",
+          "page"
+        ],
+        "type": "object"
+      },
+      "SessionResourceScope": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "session",
+            "type": "string"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "kind",
+          "sessionId"
+        ],
+        "type": "object"
+      },
+      "SessionSearchHit": {
+        "additionalProperties": false,
+        "properties": {
+          "highlights": {
+            "items": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "minItems": 0,
+            "type": "array"
+          },
+          "scoreBasisPoints": {
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionSummary"
+          }
+        },
+        "required": [
+          "session",
+          "scoreBasisPoints",
+          "highlights"
+        ],
+        "type": "object"
+      },
+      "SessionSearchMode": {
+        "enum": [
+          "literal",
+          "hybrid"
+        ],
+        "type": "string"
+      },
+      "SessionSearchParams": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "oneOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/SessionSearchMode"
+          },
+          "profile": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "query": {
+            "oneOf": [
+              {
+                "maxLength": 4096,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "mode",
+          "limit"
+        ],
+        "type": "object"
+      },
+      "SessionSearchResult": {
+        "additionalProperties": false,
+        "properties": {
+          "hits": {
+            "items": {
+              "$ref": "#/components/schemas/SessionSearchHit"
+            },
+            "maxItems": 100,
+            "minItems": 0,
+            "type": "array"
+          },
+          "page": {
+            "$ref": "#/components/schemas/PageInfo"
+          }
+        },
+        "required": [
+          "hits",
+          "page"
+        ],
+        "type": "object"
+      },
+      "SessionSearchUnavailableData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "session_search_unavailable",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "SessionStatus": {
+        "enum": [
+          "active",
+          "archived",
+          "failed",
+          "deleted"
+        ],
+        "type": "string"
+      },
+      "SessionSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "profile": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "revision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SessionStatus"
+          },
+          "title": {
+            "oneOf": [
+              {
+                "maxLength": 512,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "workspaceLabel": {
+            "oneOf": [
+              {
+                "maxLength": 512,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "sessionId",
+          "status",
+          "revision",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "ShutdownParams": {
+        "additionalProperties": false,
+        "properties": {
+          "deadlineMs": {
+            "maximum": 60000,
+            "minimum": 100,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deadlineMs"
+        ],
+        "type": "object"
+      },
+      "ShutdownResult": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "draining",
+              "shutdown"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "StaleFenceData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "stale_fence",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "StartupReconciliation": {
+        "additionalProperties": false,
+        "properties": {
+          "changedRunState": {
+            "type": "boolean"
+          },
+          "repairedRuns": {
+            "$ref": "#/components/schemas/DecimalU64"
+          }
+        },
+        "required": [
+          "changedRunState",
+          "repairedRuns"
+        ],
+        "type": "object"
+      },
+      "StorageCompatibility": {
+        "additionalProperties": false,
+        "properties": {
+          "currentGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "maintenanceBarrierGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "maximumReadableGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "maximumWritableGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "minimumReadableGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "minimumWritableGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          }
+        },
+        "required": [
+          "currentGeneration",
+          "minimumReadableGeneration",
+          "maximumReadableGeneration",
+          "minimumWritableGeneration",
+          "maximumWritableGeneration",
+          "maintenanceBarrierGeneration"
+        ],
+        "type": "object"
+      },
+      "StorageUnavailableData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "storage_unavailable",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "SubscriptionClosedNotificationParams": {
+        "additionalProperties": false,
+        "properties": {
+          "lastFlushedCursor": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HostEventCursor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "lastFlushedDeliverySequence": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DecimalU64"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "reason": {
+            "$ref": "#/components/schemas/SubscriptionClosedReason"
+          },
+          "subscriptionId": {
+            "$ref": "#/components/schemas/SubscriptionId"
+          }
+        },
+        "required": [
+          "subscriptionId",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "SubscriptionClosedReason": {
+        "enum": [
+          "terminal",
+          "unsubscribed",
+          "overflow",
+          "authorization_changed",
+          "sequence_exhausted"
+        ],
+        "type": "string"
+      },
+      "SubscriptionId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "TextInputPart": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "text",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "text"
+        ],
+        "type": "object"
+      },
+      "Timestamp": {
+        "format": "date-time",
+        "maxLength": 40,
+        "minLength": 1,
+        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$",
+        "type": "string"
+      },
+      "UnsupportedFeatureData": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "kind": {
+            "const": "unsupported_feature",
+            "type": "string"
+          },
+          "reconciliationRequired": {
+            "type": "boolean"
+          },
+          "resourceKind": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "retryable",
+          "reconciliationRequired"
+        ],
+        "type": "object"
+      },
+      "WorkspaceCompatibility": {
+        "additionalProperties": false,
+        "properties": {
+          "executionDomainId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "workspaceIdentity": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "executionDomainId",
+          "workspaceIdentity"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Sole IDL-first starweaver.host major-1 contract.",
+    "title": "Starweaver Host Protocol",
+    "version": "0.10.0"
+  },
+  "methods": [
+    {
+      "description": "Canonical typed Starweaver host operation `initialize`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "name": "initialize",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/InitializeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/InitializeResult"
+        }
+      },
+      "summary": "Execute initialize",
+      "x-starweaver-features": [],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "InitializeParams",
+      "x-starweaver-result-type": "InitializeResult",
+      "x-starweaver-scopes": [
+        "public"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `shutdown`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        }
+      ],
+      "name": "shutdown",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ShutdownParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ShutdownResult"
+        }
+      },
+      "summary": "Execute shutdown",
+      "x-starweaver-features": [
+        "host.shutdown"
+      ],
+      "x-starweaver-idempotency": "effectful",
+      "x-starweaver-params-type": "ShutdownParams",
+      "x-starweaver-result-type": "ShutdownResult",
+      "x-starweaver-scopes": [
+        "shutdown"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `diagnostics.get`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "name": "diagnostics.get",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/DiagnosticsGetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DiagnosticsGetResult"
+        }
+      },
+      "summary": "Execute diagnostics.get",
+      "x-starweaver-features": [
+        "diagnostics.safe"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "DiagnosticsGetParams",
+      "x-starweaver-result-type": "DiagnosticsGetResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `catalog.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "name": "catalog.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/CatalogListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CatalogListResult"
+        }
+      },
+      "summary": "Execute catalog.list",
+      "x-starweaver-features": [
+        "profiles"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "CatalogListParams",
+      "x-starweaver-result-type": "CatalogListResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `profile.get`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "name": "profile.get",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ProfileGetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ProfileGetResult"
+        }
+      },
+      "summary": "Execute profile.get",
+      "x-starweaver-features": [
+        "profiles"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "ProfileGetParams",
+      "x-starweaver-result-type": "ProfileGetResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `model.selection.get`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "name": "model.selection.get",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ModelSelectionGetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ModelSelectionGetResult"
+        }
+      },
+      "summary": "Execute model.selection.get",
+      "x-starweaver-features": [
+        "profiles"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "ModelSelectionGetParams",
+      "x-starweaver-result-type": "ModelSelectionGetResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `model.select`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        }
+      ],
+      "name": "model.select",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ModelSelectParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ModelSelectResult"
+        }
+      },
+      "summary": "Execute model.select",
+      "x-starweaver-features": [
+        "profiles"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "ModelSelectParams",
+      "x-starweaver-result-type": "ModelSelectResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `session.create`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        }
+      ],
+      "name": "session.create",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/SessionCreateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionCreateResult"
+        }
+      },
+      "summary": "Execute session.create",
+      "x-starweaver-features": [
+        "sessions"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "SessionCreateParams",
+      "x-starweaver-result-type": "SessionCreateResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `session.fork`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        }
+      ],
+      "name": "session.fork",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/SessionForkParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionForkResult"
+        }
+      },
+      "summary": "Execute session.fork",
+      "x-starweaver-features": [
+        "session.fork",
+        "sessions"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "SessionForkParams",
+      "x-starweaver-result-type": "SessionForkResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `session.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "name": "session.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/SessionListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionListResult"
+        }
+      },
+      "summary": "Execute session.list",
+      "x-starweaver-features": [
+        "sessions"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "SessionListParams",
+      "x-starweaver-result-type": "SessionListResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `session.search`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "session.search",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/SessionSearchParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionSearchResult"
+        }
+      },
+      "summary": "Execute session.search",
+      "x-starweaver-features": [
+        "session.search",
+        "sessions"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "SessionSearchParams",
+      "x-starweaver-result-type": "SessionSearchResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `session.get`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "session.get",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/SessionGetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionGetResult"
+        }
+      },
+      "summary": "Execute session.get",
+      "x-starweaver-features": [
+        "sessions"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "SessionGetParams",
+      "x-starweaver-result-type": "SessionGetResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `session.delete`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        }
+      ],
+      "name": "session.delete",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/SessionDeleteParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionDeleteResult"
+        }
+      },
+      "summary": "Execute session.delete",
+      "x-starweaver-features": [
+        "sessions"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "SessionDeleteParams",
+      "x-starweaver-result-type": "SessionDeleteResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `run.start`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        }
+      ],
+      "name": "run.start",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/RunStartParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RunStartResult"
+        }
+      },
+      "summary": "Execute run.start",
+      "x-starweaver-features": [
+        "runs"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "RunStartParams",
+      "x-starweaver-result-type": "RunStartResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `run.resume`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        }
+      ],
+      "name": "run.resume",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/RunResumeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RunResumeResult"
+        }
+      },
+      "summary": "Execute run.resume",
+      "x-starweaver-features": [
+        "hitl",
+        "runs"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "RunResumeParams",
+      "x-starweaver-result-type": "RunResumeResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `run.status`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "run.status",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/RunStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RunStatusResult"
+        }
+      },
+      "summary": "Execute run.status",
+      "x-starweaver-features": [
+        "runs"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "RunStatusParams",
+      "x-starweaver-result-type": "RunStatusResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `run.interrupt`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        }
+      ],
+      "name": "run.interrupt",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/RunInterruptParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RunInterruptResult"
+        }
+      },
+      "summary": "Execute run.interrupt",
+      "x-starweaver-features": [
+        "runs"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "RunInterruptParams",
+      "x-starweaver-result-type": "RunInterruptResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `run.steer`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        }
+      ],
+      "name": "run.steer",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/RunSteerParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RunSteerResult"
+        }
+      },
+      "summary": "Execute run.steer",
+      "x-starweaver-features": [
+        "runs",
+        "steering"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "RunSteerParams",
+      "x-starweaver-result-type": "RunSteerResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `events.replay`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/CursorInvalid"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "events.replay",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/EventsReplayParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EventsReplayResult"
+        }
+      },
+      "summary": "Execute events.replay",
+      "x-starweaver-features": [
+        "events.replay"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "EventsReplayParams",
+      "x-starweaver-result-type": "EventsReplayResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `events.subscribe`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/CursorInvalid"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "events.subscribe",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/EventsSubscribeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EventsSubscribeResult"
+        }
+      },
+      "summary": "Execute events.subscribe",
+      "x-starweaver-features": [
+        "events.subscribe"
+      ],
+      "x-starweaver-idempotency": "connection",
+      "x-starweaver-params-type": "EventsSubscribeParams",
+      "x-starweaver-result-type": "EventsSubscribeResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `events.unsubscribe`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "events.unsubscribe",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/EventsUnsubscribeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EventsUnsubscribeResult"
+        }
+      },
+      "summary": "Execute events.unsubscribe",
+      "x-starweaver-features": [
+        "events.subscribe"
+      ],
+      "x-starweaver-idempotency": "connection",
+      "x-starweaver-params-type": "EventsUnsubscribeParams",
+      "x-starweaver-result-type": "EventsUnsubscribeResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `approval.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "approval.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/InteractionListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ApprovalListResult"
+        }
+      },
+      "summary": "Execute approval.list",
+      "x-starweaver-features": [
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "InteractionListParams",
+      "x-starweaver-result-type": "ApprovalListResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `approval.show`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "approval.show",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ApprovalShowParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ApprovalShowResult"
+        }
+      },
+      "summary": "Execute approval.show",
+      "x-starweaver-features": [
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "ApprovalShowParams",
+      "x-starweaver-result-type": "ApprovalShowResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `approval.decide`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        }
+      ],
+      "name": "approval.decide",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ApprovalDecideParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ApprovalDecideResult"
+        }
+      },
+      "summary": "Execute approval.decide",
+      "x-starweaver-features": [
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "ApprovalDecideParams",
+      "x-starweaver-result-type": "ApprovalDecideResult",
+      "x-starweaver-scopes": [
+        "approval"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `deferred.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "deferred.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/InteractionListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DeferredListResult"
+        }
+      },
+      "summary": "Execute deferred.list",
+      "x-starweaver-features": [
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "InteractionListParams",
+      "x-starweaver-result-type": "DeferredListResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `deferred.show`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "deferred.show",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/DeferredShowParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DeferredShowResult"
+        }
+      },
+      "summary": "Execute deferred.show",
+      "x-starweaver-features": [
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "DeferredShowParams",
+      "x-starweaver-result-type": "DeferredShowResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `deferred.complete`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        }
+      ],
+      "name": "deferred.complete",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/DeferredCompleteParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DeferredCompleteResult"
+        }
+      },
+      "summary": "Execute deferred.complete",
+      "x-starweaver-features": [
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "DeferredCompleteParams",
+      "x-starweaver-result-type": "DeferredCompleteResult",
+      "x-starweaver-scopes": [
+        "approval"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `deferred.fail`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        }
+      ],
+      "name": "deferred.fail",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/DeferredFailParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DeferredFailResult"
+        }
+      },
+      "summary": "Execute deferred.fail",
+      "x-starweaver-features": [
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "DeferredFailParams",
+      "x-starweaver-result-type": "DeferredFailResult",
+      "x-starweaver-scopes": [
+        "approval"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `clarification.resolve`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        }
+      ],
+      "name": "clarification.resolve",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ClarificationResolveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ClarificationResolveResult"
+        }
+      },
+      "summary": "Execute clarification.resolve",
+      "x-starweaver-features": [
+        "clarifications",
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "ClarificationResolveParams",
+      "x-starweaver-result-type": "ClarificationResolveResult",
+      "x-starweaver-scopes": [
+        "approval"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `environment.attach`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        },
+        {
+          "$ref": "#/components/errors/EnvironmentUnavailable"
+        }
+      ],
+      "name": "environment.attach",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/EnvironmentAttachParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EnvironmentAttachResult"
+        }
+      },
+      "summary": "Execute environment.attach",
+      "x-starweaver-features": [
+        "environment.attachments"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "EnvironmentAttachParams",
+      "x-starweaver-result-type": "EnvironmentAttachResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `environment.detach`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        },
+        {
+          "$ref": "#/components/errors/EnvironmentUnavailable"
+        }
+      ],
+      "name": "environment.detach",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/EnvironmentDetachParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EnvironmentDetachResult"
+        }
+      },
+      "summary": "Execute environment.detach",
+      "x-starweaver-features": [
+        "environment.attachments"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "EnvironmentDetachParams",
+      "x-starweaver-result-type": "EnvironmentDetachResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `environment.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/SessionSearchUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/EnvironmentUnavailable"
+        }
+      ],
+      "name": "environment.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/EnvironmentListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EnvironmentListResult"
+        }
+      },
+      "summary": "Execute environment.list",
+      "x-starweaver-features": [
+        "environment.attachments"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "EnvironmentListParams",
+      "x-starweaver-result-type": "EnvironmentListResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `environment.health`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/SessionSearchUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/EnvironmentUnavailable"
+        }
+      ],
+      "name": "environment.health",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/EnvironmentHealthParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EnvironmentHealthResult"
+        }
+      },
+      "summary": "Execute environment.health",
+      "x-starweaver-features": [
+        "environment.attachments"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "EnvironmentHealthParams",
+      "x-starweaver-result-type": "EnvironmentHealthResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `environment.mount`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        },
+        {
+          "$ref": "#/components/errors/EnvironmentUnavailable"
+        }
+      ],
+      "name": "environment.mount",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/EnvironmentMountParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EnvironmentMountResult"
+        }
+      },
+      "summary": "Execute environment.mount",
+      "x-starweaver-features": [
+        "environment.mounts"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "EnvironmentMountParams",
+      "x-starweaver-result-type": "EnvironmentMountResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `environment.unmount`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/StaleFence"
+        },
+        {
+          "$ref": "#/components/errors/EnvironmentUnavailable"
+        }
+      ],
+      "name": "environment.unmount",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/EnvironmentUnmountParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EnvironmentUnmountResult"
+        }
+      },
+      "summary": "Execute environment.unmount",
+      "x-starweaver-features": [
+        "environment.mounts"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "EnvironmentUnmountParams",
+      "x-starweaver-result-type": "EnvironmentUnmountResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `environment.mounts.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/SessionSearchUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/EnvironmentUnavailable"
+        }
+      ],
+      "name": "environment.mounts.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/EnvironmentMountListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EnvironmentMountListResult"
+        }
+      },
+      "summary": "Execute environment.mounts.list",
+      "x-starweaver-features": [
+        "environment.mounts"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "EnvironmentMountListParams",
+      "x-starweaver-result-type": "EnvironmentMountListResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    }
+  ],
+  "openrpc": "1.4.0",
+  "x-starweaver-error-data": {
+    "AlreadyExists": "AlreadyExistsData",
+    "AuthorizationDenied": "AuthorizationDeniedData",
+    "ConfigurationFailed": "ConfigurationFailedData",
+    "CursorInvalid": "CursorInvalidData",
+    "EnvironmentUnavailable": "EnvironmentUnavailableData",
+    "IdempotencyConflict": "IdempotencyConflictData",
+    "InternalError": "InternalErrorData",
+    "InvalidParams": "InvalidParamsData",
+    "InvalidRequest": "InvalidRequestData",
+    "MethodNotFound": "MethodNotFoundData",
+    "NotFound": "NotFoundData",
+    "NotInitialized": "NotInitializedData",
+    "ParseError": "ParseErrorData",
+    "RunConflict": "RunConflictData",
+    "SessionSearchUnavailable": "SessionSearchUnavailableData",
+    "StaleFence": "StaleFenceData",
+    "StorageUnavailable": "StorageUnavailableData",
+    "UnsupportedFeature": "UnsupportedFeatureData"
+  },
+  "x-starweaver-event-classes": {
+    "approval_changed": {
+      "feature": "hitl",
+      "schema": {
+        "$ref": "#/components/schemas/ApprovalChangedEvent"
+      },
+      "scopes": [
+        "approval"
+      ]
+    },
+    "clarification_changed": {
+      "feature": "clarifications",
+      "schema": {
+        "$ref": "#/components/schemas/ClarificationChangedEvent"
+      },
+      "scopes": [
+        "approval"
+      ]
+    },
+    "deferred_changed": {
+      "feature": "hitl",
+      "schema": {
+        "$ref": "#/components/schemas/DeferredChangedEvent"
+      },
+      "scopes": [
+        "approval"
+      ]
+    },
+    "diagnostic": {
+      "feature": "diagnostics.safe",
+      "schema": {
+        "$ref": "#/components/schemas/DiagnosticEvent"
+      },
+      "scopes": [
+        "admin"
+      ]
+    },
+    "environment_changed": {
+      "feature": "environment.attachments",
+      "schema": {
+        "$ref": "#/components/schemas/EnvironmentChangedEvent"
+      },
+      "scopes": [
+        "run"
+      ]
+    },
+    "output_available": {
+      "feature": "runs",
+      "schema": {
+        "$ref": "#/components/schemas/OutputAvailableEvent"
+      },
+      "scopes": [
+        "run"
+      ]
+    },
+    "run_changed": {
+      "feature": "runs",
+      "schema": {
+        "$ref": "#/components/schemas/RunChangedEvent"
+      },
+      "scopes": [
+        "run"
+      ]
+    },
+    "session_changed": {
+      "feature": "sessions",
+      "schema": {
+        "$ref": "#/components/schemas/SessionChangedEvent"
+      },
+      "scopes": [
+        "read"
+      ]
+    }
+  },
+  "x-starweaver-event-profiles": {
+    "conversation.v1": [
+      "run_changed",
+      "output_available",
+      "approval_changed",
+      "deferred_changed",
+      "clarification_changed"
+    ],
+    "desktop.conversation.v1": [
+      "run_changed",
+      "output_available",
+      "approval_changed",
+      "deferred_changed",
+      "clarification_changed"
+    ],
+    "operations.v1": [
+      "session_changed",
+      "run_changed",
+      "environment_changed",
+      "diagnostic"
+    ]
+  },
+  "x-starweaver-features": [
+    "clarifications",
+    "diagnostics.safe",
+    "environment.attachments",
+    "environment.mounts",
+    "events.replay",
+    "events.subscribe",
+    "hitl",
+    "host.shutdown",
+    "profiles",
+    "runs",
+    "session.fork",
+    "session.search",
+    "sessions",
+    "steering"
+  ],
+  "x-starweaver-notifications": [
+    {
+      "features": [
+        "events.subscribe"
+      ],
+      "name": "host.event",
+      "params": {
+        "$ref": "#/components/schemas/HostEventNotificationParams"
+      },
+      "scopes": [
+        "read"
+      ],
+      "spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "transports": [
+        "stdio"
+      ]
+    },
+    {
+      "features": [
+        "events.subscribe"
+      ],
+      "name": "subscription.closed",
+      "params": {
+        "$ref": "#/components/schemas/SubscriptionClosedNotificationParams"
+      },
+      "scopes": [
+        "read"
+      ],
+      "spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "transports": [
+        "stdio"
+      ]
+    }
+  ],
+  "x-starweaver-protocol": {
+    "major": 1,
+    "name": "starweaver.host",
+    "revision": "2026-07-21",
+    "schemaDigest": "sha256:69d2b33653ad2c5eed6b23afb4e19abd14c431240634f30ac3fe756cd4a907b5"
+  }
+}

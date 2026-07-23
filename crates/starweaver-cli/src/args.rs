@@ -227,9 +227,9 @@ pub struct RunCommand {
     /// Internal stable provider-routing affinity id.
     #[arg(skip)]
     pub session_affinity_id: Option<String>,
-    /// Internal host RPC environment attachments.
+    /// Internal CLI environment attachments.
     #[arg(skip)]
-    pub environment_attachments: Vec<starweaver_rpc_core::EnvironmentAttachmentRef>,
+    pub(crate) environment_attachments: Vec<crate::environment::EnvironmentAttachmentRef>,
     /// Internal marker requiring an exclusive durable HITL continuation claim.
     #[arg(skip)]
     pub hitl_resume: bool,

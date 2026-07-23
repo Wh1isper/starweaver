@@ -2,6 +2,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
+use serde::{Deserialize, Serialize};
 use starweaver_envd::LocalEnvd;
 use starweaver_envd_client::EnvdRpcClient;
 use starweaver_envd_core::DEFAULT_ENVIRONMENT_ID;
@@ -10,12 +11,75 @@ use starweaver_environment::{
     EnvdEnvironmentProvider, EnvironmentMount, EnvironmentMountMode, EnvironmentPolicy, FilePolicy,
     LocalEnvironmentProvider, ShellPolicy, VirtualEnvironmentProvider,
 };
-use starweaver_rpc_core::{
-    EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
-    LOCAL_ENVIRONMENT_ATTACHMENT_KIND,
-};
 
 use crate::{CliConfig, CliError, CliResult};
+
+pub(crate) const LOCAL_ENVIRONMENT_ATTACHMENT_ID: &str = "local";
+pub(crate) const LOCAL_ENVIRONMENT_ATTACHMENT_KIND: &str = "local";
+
+/// CLI-private access mode for one configured environment mount.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentAttachmentAccessMode {
+    /// Permit reads but reject writes and process execution.
+    ReadOnly,
+    /// Permit reads, writes, and process execution allowed by the provider policy.
+    #[default]
+    ReadWrite,
+}
+
+/// CLI-private provider material used while building one run environment.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct EnvironmentAttachmentRef {
+    pub id: String,
+    #[serde(default = "default_environment_attachment_kind")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<EnvironmentAttachmentAccessMode>,
+    #[serde(default, rename = "default")]
+    pub is_default: bool,
+    #[serde(default, rename = "defaultForShell")]
+    pub is_default_for_shell: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub auth_token: Option<String>,
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub metadata: serde_json::Map<String, serde_json::Value>,
+}
+
+impl EnvironmentAttachmentRef {
+    pub(crate) fn resolved_mode(&self) -> EnvironmentAttachmentAccessMode {
+        self.mode.unwrap_or_default()
+    }
+
+    pub(crate) fn requested_environment_id(&self) -> Option<&str> {
+        self.environment_id.as_deref()
+    }
+
+    pub(crate) fn requested_endpoint_ref(&self) -> Option<&str> {
+        self.endpoint_ref.as_deref()
+    }
+
+    pub(crate) fn requested_auth_token(&self) -> Option<&str> {
+        self.auth_token.as_deref()
+    }
+}
+
+pub(crate) fn is_valid_environment_attachment_id(id: &str) -> bool {
+    !id.is_empty()
+        && !matches!(id, "." | ".." | "environment")
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn default_environment_attachment_kind() -> String {
+    LOCAL_ENVIRONMENT_ATTACHMENT_KIND.to_string()
+}
 
 /// Resolved environment provider for one CLI run.
 #[derive(Clone)]
@@ -172,7 +236,6 @@ fn default_local_attachment() -> EnvironmentAttachmentRef {
         mode: Some(EnvironmentAttachmentAccessMode::ReadWrite),
         is_default: true,
         is_default_for_shell: true,
-        attachment_lease_id: None,
         endpoint_ref: None,
         environment_id: None,
         auth_token: None,
@@ -575,7 +638,6 @@ additional_dirs = ["../custom-skills"]
             mode: Some(EnvironmentAttachmentAccessMode::ReadOnly),
             is_default: false,
             is_default_for_shell: false,
-            attachment_lease_id: None,
             endpoint_ref: None,
             environment_id: None,
             auth_token: None,
@@ -631,7 +693,6 @@ additional_dirs = ["../custom-skills"]
                 mode: Some(EnvironmentAttachmentAccessMode::ReadWrite),
                 is_default: true,
                 is_default_for_shell: true,
-                attachment_lease_id: None,
                 endpoint_ref: None,
                 environment_id: None,
                 auth_token: None,
@@ -643,7 +704,6 @@ additional_dirs = ["../custom-skills"]
                 mode: Some(EnvironmentAttachmentAccessMode::ReadOnly),
                 is_default: false,
                 is_default_for_shell: false,
-                attachment_lease_id: None,
                 endpoint_ref: None,
                 environment_id: None,
                 auth_token: None,

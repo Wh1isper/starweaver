@@ -1,0 +1,15 @@
+{
+  "method": "session.create",
+  "params": {
+    "deferredTools": [
+      {
+        "description": "Invalid schema",
+        "inputSchema": [],
+        "inputSchemaDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "instructions": [],
+        "name": "invalid_tool"
+      }
+    ],
+    "idempotencyKey": "invalid-schema"
+  }
+}

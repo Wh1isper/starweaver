@@ -1,0 +1,16 @@
+{
+  "id": "req_2",
+  "jsonrpc": "2.0",
+  "method": "run.start",
+  "params": {
+    "continuationMode": "preserve",
+    "environmentAttachments": [],
+    "idempotencyKey": "run-start-example",
+    "input": [
+      {
+        "kind": "text",
+        "text": "Hello"
+      }
+    ]
+  }
+}

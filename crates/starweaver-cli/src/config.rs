@@ -8,15 +8,15 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use starweaver_model::MaxTokensParameter;
-use starweaver_rpc_core::{
-    EnvironmentAttachmentAccessMode, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
-    is_valid_environment_attachment_id,
-};
 use toml::Value;
 
 use crate::{
     CliError, CliResult,
     args::{Cli, CliCommand, ConfigCommand, HitlPolicy, OutputMode, SetupCommand, TuiRenderMode},
+    environment::{
+        EnvironmentAttachmentAccessMode, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
+        is_valid_environment_attachment_id,
+    },
     error::io_error,
     oauth::CODEX_BASE_URL,
     slash_commands::{SlashCommandDefinition, normalize_command_name, valid_command_name},

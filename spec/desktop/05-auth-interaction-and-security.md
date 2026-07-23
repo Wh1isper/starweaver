@@ -1,6 +1,6 @@
 # Authentication, Interaction, and Security
 
-Status: accepted architecture baseline; implementation planned
+Status: accepted architecture baseline; renderer/stdio/local-child controls implemented; OAuth, updater, sandbox, and SSH controls planned
 
 Desktop introduces a privileged local UI around filesystem, shell, model, and durable-control capabilities. Its security boundary is the Desktop backend plus the workspace-scoped RPC child, not the renderer.
 
@@ -83,9 +83,15 @@ HTTP scope rules must preserve least privilege:
 
 An approval includes durable identity, expected revision/fence, actor, reason, normalized decision metadata, and idempotency key. The backend shows the effective tool, arguments, workspace/environment, capability grant, and risk summary before submission.
 
+## Event Authorization
+
+Method-level authority for `events.replay` or `events.subscribe` is not sufficient by itself. The canonical closed `x-starweaver-event-classes` IDL registry binds every generated `HostEvent` variant to its exact schema, required feature, and authorization scopes; generator lint proves it is complete against both `HostEvent.oneOf` and all event profiles. Rust and complete TypeScript metadata are generated from that registry. The Desktop backend and server consume the generated admission facts rather than maintaining a renderer-controlled or handwritten competing table, and evaluate them against the typed `EventView` and caller authority identically for replay catch-up and live delivery.
+
+A versioned event-view profile is admitted only when the caller is authorized for every event class it selects. Events outside that profile belong to a separate logical projection stream and do not consume its cursor positions or pagination, so there is no per-record silent authorization filtering. Approval/deferred profiles require `approval`; execution-changing or run-control profiles require `run`; no generic read/event scope silently grants either. Authority or negotiated-feature changes invalidate the view and close active subscriptions with a typed, non-disclosing reason.
+
 ## Clarifying Questions
 
-Clarifying questions require a typed answer contract. Marking an approval `approved` without persisting normalized answers is invalid.
+Clarifying questions require a typed answer contract. Marking an approval `approved` without persisting normalized answers is invalid. The host summary retains the original one-to-four questions with header, options, and `multiSelect`; `clarification.resolve` submits closed answer items keyed by exact question text with explicit selected-option labels and optional free text, plus an optional whole-request response. Resolution is fenced by `expectedRevision` and a supervisor-owned idempotency key.
 
 The resolution path must:
 
@@ -137,7 +143,7 @@ Required controls:
 
 - bounded incremental frame decoding;
 - advertised maximum request/notification/result sizes;
-- bounded outbound queue and slow-consumer policy;
+- bounded outbound queue and slow-consumer policy, with reserved capacity/priority for responses and subscription terminal control frames;
 - generation-safe subscriptions so an old tail cannot delete a newly reused subscription ID;
 - no inherited stdin/stdout handles beyond the intended child;
 - clean environment allowlist rather than forwarding all Desktop environment variables;
@@ -145,9 +151,11 @@ Required controls:
 - no shell interpolation in local child launch arguments;
 - SSH remote commands are fixed backend-owned templates; workspace paths, provider/profile values, launch envelopes, and renderer text travel only in bounded typed frames;
 - login-shell output is bounded and ignored until an exact nonce-bound RPC marker, after which stdout purity is strict;
+- if `subscription.closed` cannot flush within its terminal-control deadline, close the transport so recovery starts from the client's last applied opaque cursor;
+- successful unsubscribe response flush is a barrier after which no event from that subscription generation may be written; and
 - process-tree or SSH-channel termination on forced shutdown.
 
-The Desktop backend avoids long blocking calls on the command connection. It uses non-blocking `run.start` plus subscription/replay. RPC should eventually support concurrent dispatch with an ordered response writer, but Desktop must not depend on `run.await`, blocking `run.prompt`, or long environment probes for responsive stop/steer/shutdown behavior.
+The Desktop backend avoids long blocking calls on the command connection. The generated contract uses non-blocking `run.start` plus durable subscription/replay and does not expose unbounded `run.await`; concurrent dispatch still requires an ordered response writer, and long environment probes cannot block responsive stop/steer/shutdown behavior.
 
 ## RPC Runtime Safety Prerequisites
 
@@ -195,7 +203,7 @@ Secret scrub tests include sentinels in:
 - environment endpoint metadata;
 - child stderr;
 - subscription failure notifications;
-- active `run.status` error projections;
+- active generated `host.event` deliveries whose `delivery.record.event.kind` is `run_status_changed` or a typed diagnostic variant;
 - updater URLs and headers.
 
 Diagnostic export requires explicit user action, previews included files, excludes OAuth/token files and the session database by default, and redacts home/workspace paths when possible.

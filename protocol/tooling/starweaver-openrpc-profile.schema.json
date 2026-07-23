@@ -1,0 +1,139 @@
+{
+  "$id": "https://starweaver.dev/protocol/openrpc-profile.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "properties": {
+    "methods": {
+      "items": {
+        "required": [
+          "name",
+          "paramStructure",
+          "params",
+          "result",
+          "errors",
+          "x-starweaver-params-type",
+          "x-starweaver-result-type",
+          "x-starweaver-features",
+          "x-starweaver-transports",
+          "x-starweaver-scopes",
+          "x-starweaver-idempotency",
+          "x-starweaver-stability",
+          "x-starweaver-spec"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "openrpc": {
+      "const": "1.4.0"
+    },
+    "x-starweaver-event-classes": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "feature": {
+            "oneOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema": {
+            "additionalProperties": false,
+            "properties": {
+              "$ref": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "$ref"
+            ],
+            "type": "object"
+          },
+          "scopes": {
+            "items": {
+              "enum": [
+                "public",
+                "read",
+                "run",
+                "approval",
+                "admin",
+                "shutdown"
+              ],
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "schema",
+          "feature",
+          "scopes"
+        ],
+        "type": "object"
+      },
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "type": "object"
+    },
+    "x-starweaver-protocol": {
+      "additionalProperties": false,
+      "properties": {
+        "major": {
+          "const": 1
+        },
+        "name": {
+          "const": "starweaver.host"
+        },
+        "revision": {
+          "maxLength": 32,
+          "minLength": 1,
+          "type": "string"
+        },
+        "schemaDigest": {
+          "oneOf": [
+            {
+              "const": "generated"
+            },
+            {
+              "maxLength": 71,
+              "minLength": 71,
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "major",
+        "revision",
+        "schemaDigest"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "openrpc",
+    "info",
+    "methods",
+    "components",
+    "x-starweaver-protocol",
+    "x-starweaver-features",
+    "x-starweaver-notifications",
+    "x-starweaver-event-classes",
+    "x-starweaver-event-profiles",
+    "x-starweaver-error-data"
+  ],
+  "type": "object"
+}

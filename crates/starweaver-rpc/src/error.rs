@@ -1,10 +1,34 @@
 //! RPC host internal error mapping.
 
-use starweaver_rpc_core::{
-    ALREADY_EXISTS, IDEMPOTENCY_CONFLICT, INVALID_PARAMS, NOT_FOUND, RUN_CONFLICT, RpcError,
-    SERVER_ERROR, STALE_FENCE, STORAGE_UNAVAILABLE,
-};
+use starweaver_rpc_core::generated as host;
 use thiserror::Error;
+
+pub(crate) const ALREADY_EXISTS: i64 = host::ERROR_CODE_ALREADY_EXISTS;
+pub(crate) const ENVIRONMENT_UNAVAILABLE: i64 = host::ERROR_CODE_ENVIRONMENT_UNAVAILABLE;
+pub(crate) const IDEMPOTENCY_CONFLICT: i64 = host::ERROR_CODE_IDEMPOTENCY_CONFLICT;
+pub(crate) const INVALID_PARAMS: i64 = host::ERROR_CODE_INVALID_PARAMS;
+pub(crate) const NOT_FOUND: i64 = host::ERROR_CODE_NOT_FOUND;
+pub(crate) const RUN_CONFLICT: i64 = host::ERROR_CODE_RUN_CONFLICT;
+pub(crate) const SERVER_ERROR: i64 = host::ERROR_CODE_INTERNAL_ERROR;
+pub(crate) const SESSION_SEARCH_UNAVAILABLE: i64 = host::ERROR_CODE_SESSION_SEARCH_UNAVAILABLE;
+pub(crate) const STALE_FENCE: i64 = host::ERROR_CODE_STALE_FENCE;
+pub(crate) const STORAGE_UNAVAILABLE: i64 = host::ERROR_CODE_STORAGE_UNAVAILABLE;
+pub(crate) const UNSUPPORTED_FEATURE: i64 = host::ERROR_CODE_UNSUPPORTED_FEATURE;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RpcError {
+    pub(crate) code: i64,
+    pub(crate) message: String,
+}
+
+impl RpcError {
+    pub(crate) fn new(code: i64, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
 
 /// Result returned by standalone RPC host internals.
 pub type RpcHostResult<T> = Result<T, RpcHostError>;

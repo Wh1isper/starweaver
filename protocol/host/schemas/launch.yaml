@@ -1,0 +1,249 @@
+{
+  "components": {
+    "schemas": {
+      "LaunchCapabilityCaps": {
+        "additionalProperties": false,
+        "properties": {
+          "clarifyingQuestions": {
+            "type": "boolean"
+          },
+          "hitl": {
+            "type": "boolean"
+          },
+          "nativeLocalShell": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "hitl",
+          "clarifyingQuestions",
+          "nativeLocalShell"
+        ],
+        "type": "object"
+      },
+      "LaunchDatabase": {
+        "additionalProperties": false,
+        "properties": {
+          "identity": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "identity",
+          "path"
+        ],
+        "type": "object"
+      },
+      "LaunchEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilityCaps": {
+            "$ref": "#/components/schemas/LaunchCapabilityCaps"
+          },
+          "configurationGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "database": {
+            "$ref": "#/components/schemas/LaunchDatabase"
+          },
+          "defaultProfile": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "type": "string"
+          },
+          "executionDomainId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "mode": {
+            "const": "workspace_execution",
+            "type": "string"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/LaunchProfile"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/LaunchProvider"
+            },
+            "maxItems": 32,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "schema": {
+            "$ref": "#/components/schemas/LaunchSchemaIdentity"
+          },
+          "stateDirectory": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/LaunchWorkspace"
+          }
+        },
+        "required": [
+          "schema",
+          "mode",
+          "database",
+          "workspace",
+          "stateDirectory",
+          "executionDomainId",
+          "configurationGeneration",
+          "defaultProfile",
+          "profiles",
+          "providers",
+          "capabilityCaps"
+        ],
+        "type": "object"
+      },
+      "LaunchProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "instructions": {
+            "items": {
+              "maxLength": 65536,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 0,
+            "type": "array"
+          },
+          "modelConfig": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "modelId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "modelSettings": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "type": "string"
+          },
+          "toolsets": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "name",
+          "modelId",
+          "instructions",
+          "toolsets"
+        ],
+        "type": "object"
+      },
+      "LaunchProvider": {
+        "additionalProperties": false,
+        "properties": {
+          "baseUrl": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "credentialEnv": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Z_][A-Z0-9_]{0,127}$",
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "endpointPath": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "LaunchSchemaIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "const": "starweaver.rpc.launch",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 1,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "version"
+        ],
+        "type": "object"
+      },
+      "LaunchWorkspace": {
+        "additionalProperties": false,
+        "properties": {
+          "identity": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "root": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "identity",
+          "root"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

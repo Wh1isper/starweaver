@@ -10,6 +10,11 @@ mod contract;
 #[tokio::test]
 async fn in_memory_store_satisfies_shared_session_store_contract() {
     let store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+    Box::pin(contract::assert_stable_session_page_contract(
+        store.clone(),
+        "memory",
+    ))
+    .await;
     Box::pin(contract::assert_session_store_contract(
         store.clone(),
         "memory",
@@ -41,6 +46,16 @@ async fn in_memory_store_satisfies_shared_session_store_contract() {
     Box::pin(
         contract::assert_terminal_evidence_admission_cleanup_contract(store.clone(), "memory"),
     )
+    .await;
+    Box::pin(contract::assert_durable_host_event_contract(
+        store.clone(),
+        "memory",
+    ))
+    .await;
+    Box::pin(contract::assert_atomic_session_host_event_contract(
+        store.clone(),
+        "memory",
+    ))
     .await;
     Box::pin(contract::assert_background_subagent_contract(
         store, "memory",

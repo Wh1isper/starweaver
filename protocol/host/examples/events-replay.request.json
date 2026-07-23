@@ -1,0 +1,16 @@
+{
+  "id": "req_3",
+  "jsonrpc": "2.0",
+  "method": "events.replay",
+  "params": {
+    "limit": 100,
+    "view": {
+      "optionalFeatures": [],
+      "profile": "conversation.v1",
+      "scope": {
+        "kind": "session",
+        "sessionId": "session_example"
+      }
+    }
+  }
+}

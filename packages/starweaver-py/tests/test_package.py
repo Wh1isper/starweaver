@@ -6041,6 +6041,47 @@ def test_run_record_and_store_status_helpers_accept_typed_inputs() -> None:
     asyncio.run(run())
 
 
+def test_python_session_store_stable_keyset_page() -> None:
+    async def run() -> None:
+        store = starweaver.InMemorySessionStore()
+        for session_id, updated_at in [
+            ("session-a", "2026-07-22T00:00:02+00:00"),
+            ("session-b", "2026-07-22T00:00:02+00:00"),
+            ("session-c", "2026-07-22T00:00:01+00:00"),
+        ]:
+            record = starweaver.SessionRecord.from_state(
+                {
+                    "agent_id": "main",
+                    "session_id": session_id,
+                    "conversation_id": f"conversation-{session_id}",
+                    "message_history": [],
+                    "metadata": {},
+                }
+            ).to_dict()
+            record["updated_at"] = updated_at
+            await store.save_session(record)
+
+        first = await store.list_session_page({"after": None, "limit": 2})
+        assert [record["session_id"] for record in first["sessions"]] == [
+            "session-b",
+            "session-a",
+        ]
+        assert first["hasMore"] is True
+        assert first["nextKey"] == {
+            "updatedAt": "2026-07-22T00:00:02+00:00",
+            "sessionId": "session-a",
+        }
+
+        second = await store.list_session_page({"after": first["nextKey"], "limit": 2})
+        assert [record["session_id"] for record in second["sessions"]] == ["session-c"]
+        assert second["hasMore"] is False
+
+        empty = await store.list_session_page({"after": second["nextKey"], "limit": 2})
+        assert empty == {"sessions": [], "nextKey": second["nextKey"], "hasMore": False}
+
+    asyncio.run(run())
+
+
 def test_python_session_store_to_native_adapts_python_backend() -> None:
     async def run() -> None:
         source_store = starweaver.InMemorySessionStore()

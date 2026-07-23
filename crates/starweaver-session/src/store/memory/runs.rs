@@ -6,7 +6,7 @@ use crate::{
     records::{RunRecord, RunStatus, RunTerminalError},
 };
 
-use super::{InMemorySessionStore, run_key, run_key_label, store_failed};
+use super::{InMemorySessionStore, advance_run_revision, run_key, run_key_label, store_failed};
 
 impl InMemorySessionStore {
     pub(super) fn append_run_record(&self, mut run: RunRecord) -> SessionStoreResult<()> {
@@ -35,7 +35,10 @@ impl InMemorySessionStore {
                 )));
             }
             run.sequence_no = persisted.sequence_no;
+            run.revision = persisted.revision;
+            advance_run_revision(&mut run)?;
         } else if run.sequence_no == 0 {
+            run.revision = 1;
             run.sequence_no = inner
                 .runs
                 .values()
@@ -53,6 +56,8 @@ impl InMemorySessionStore {
                 run.session_id.as_str(),
                 run.sequence_no
             )));
+        } else {
+            run.revision = 1;
         }
         inner.runs.insert(key, run.clone());
         if let Some(session) = inner.sessions.get_mut(&run.session_id) {
@@ -143,6 +148,7 @@ impl InMemorySessionStore {
             .get(&key)
             .cloned()
             .ok_or_else(|| SessionStoreError::NotFound(run_key_label(session_id, run_id)))?;
+        let previous = run.clone();
         update(&mut run);
         run.validate_new_write().map_err(|error| {
             SessionStoreError::Failed(format!(
@@ -150,6 +156,11 @@ impl InMemorySessionStore {
                 run.run_id.as_str()
             ))
         })?;
+        if run == previous {
+            return Ok(());
+        }
+        run.revision = previous.revision;
+        advance_run_revision(&mut run)?;
         run.updated_at = updated_at;
         let status = run.status;
         inner.runs.insert(key, run);

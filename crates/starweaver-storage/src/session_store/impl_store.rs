@@ -1,19 +1,22 @@
 use async_trait::async_trait;
-use chrono::Utc;
-use rusqlite::{OptionalExtension, TransactionBehavior, params};
+use chrono::{DateTime, Utc};
+use rusqlite::{OptionalExtension, TransactionBehavior, params, params_from_iter, types::Value};
 use starweaver_context::{AgentCheckpoint, ResumableState};
 use starweaver_core::{RunId, RunLifecycle, SessionId, SubagentAttemptId};
 use starweaver_session::{
-    AcquireBackgroundSubagentContinuation, AcquireRunAdmission, ApprovalRecord,
+    AcquireBackgroundSubagentContinuation, AcquireRunAdmission, AdmitRunControl, ApprovalRecord,
     BackgroundSubagentArtifact, BackgroundSubagentContinuationReceipt, BackgroundSubagentRecord,
     BackgroundSubagentTerminalCommit, CompactRunTrace, CompactSessionTrace, DeferredToolRecord,
     DurableBackgroundSubagentDeliveryClaim, DurableBackgroundSubagentDeliveryRelease,
-    DurableControlReceipt, EnvironmentStateRef, HitlResumeAbortOutcome, HitlResumeClaim,
-    HitlResumeClaimState, ManagedRunTarget, PendingStreamPublication, RunAdmissionLease,
-    RunAdmissionReceipt, RunEvidenceCommit, RunRecord, RunStatus, RunTerminalError,
-    RunTerminalProjection, SessionContinuationFence, SessionFilter, SessionRecord,
-    SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError, SessionStoreResult,
-    StreamCursorRef, StreamPublicationTarget, UpdateManagedSession,
+    DurableControlReceipt, DurableHostEventClass, DurableHostEventPage, DurableHostEventQuery,
+    DurableHostEventRecord, DurableHostEventScope, DurableRunControlIntent,
+    DurableRunControlStatus, EnvironmentStateRef, HitlResumeAbortOutcome, HitlResumeClaim,
+    HitlResumeClaimState, ManagedRunTarget, PendingHostEventPublication, PendingStreamPublication,
+    RunAdmissionLease, RunAdmissionReceipt, RunEvidenceCommit, RunRecord, RunStatus,
+    RunTerminalError, RunTerminalProjection, SessionContinuationFence, SessionFilter, SessionPage,
+    SessionPageKey, SessionPageQuery, SessionRecord, SessionResumeSnapshot, SessionStatus,
+    SessionStore, SessionStoreError, SessionStoreResult, StreamCursorRef, StreamPublicationTarget,
+    UpdateManagedSession,
 };
 use starweaver_stream::{
     AgentStreamRecord, InMemoryReplayEventLog, ReplayCursor, ReplayEvent, ReplayScope,
@@ -31,8 +34,9 @@ use super::{
     SqliteSessionStore,
     management::ensure_run_admission_in_transaction,
     records::{
-        allocate_or_reuse_run_sequence, apply_run_to_session, list_run_records, load_run_record,
-        load_session_record, save_run_record, save_session_record,
+        advance_run_revision, allocate_or_reuse_run_sequence, apply_run_to_session,
+        list_run_records, load_run_record, load_session_record, save_run_record,
+        save_session_record,
     },
     trace_helpers::{
         count_deferred_tools, count_pending_approvals, latest_stream_sequence, load_checkpoint_ids,
@@ -89,7 +93,13 @@ impl SqliteSessionStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(map_sqlite_session_error)?;
         let mut session = load_session_record(&transaction, &run.session_id)?;
-        allocate_or_reuse_run_sequence(&transaction, &mut run)?;
+        let existing = allocate_or_reuse_run_sequence(&transaction, &mut run)?;
+        if let Some(existing) = existing {
+            run.revision = existing.revision;
+            advance_run_revision(&mut run)?;
+        } else {
+            run.revision = 1;
+        }
         save_run_record(&transaction, &run)?;
         apply_run_to_session(&mut session, &run);
         save_session_record(&transaction, &session)?;
@@ -122,27 +132,29 @@ impl SqliteSessionStore {
             Err(SessionStoreError::NotFound(_)) => SessionRecord::new(session_id.clone()),
             Err(error) => return Err(error),
         };
-        let mut run = match load_run_record(&transaction, session_id, &checkpoint.run_id) {
-            Ok(run) => run,
-            Err(SessionStoreError::NotFound(_)) => {
-                let mut run = RunRecord::new(
-                    session_id.clone(),
-                    checkpoint.run_id.clone(),
-                    checkpoint.conversation_id.clone(),
-                );
-                run.status = checkpoint_run_status(checkpoint.resume.status);
-                run.terminal_error = checkpoint_terminal_error(checkpoint.resume.status);
-                run.trace_context = checkpoint.resume.trace_context.clone();
-                run.parent_run_id
-                    .clone_from(&checkpoint.state.parent_run_id);
-                run.parent_task_id
-                    .clone_from(&checkpoint.state.parent_task_id);
-                allocate_or_reuse_run_sequence(&transaction, &mut run)?;
-                save_run_record(&transaction, &run)?;
-                run
-            }
-            Err(error) => return Err(error),
-        };
+        let (mut run, created_run) =
+            match load_run_record(&transaction, session_id, &checkpoint.run_id) {
+                Ok(run) => (run, false),
+                Err(SessionStoreError::NotFound(_)) => {
+                    let mut run = RunRecord::new(
+                        session_id.clone(),
+                        checkpoint.run_id.clone(),
+                        checkpoint.conversation_id.clone(),
+                    );
+                    run.status = checkpoint_run_status(checkpoint.resume.status);
+                    run.terminal_error = checkpoint_terminal_error(checkpoint.resume.status);
+                    run.trace_context = checkpoint.resume.trace_context.clone();
+                    run.parent_run_id
+                        .clone_from(&checkpoint.state.parent_run_id);
+                    run.parent_task_id
+                        .clone_from(&checkpoint.state.parent_task_id);
+                    allocate_or_reuse_run_sequence(&transaction, &mut run)?;
+                    run.revision = 1;
+                    save_run_record(&transaction, &run)?;
+                    (run, true)
+                }
+                Err(error) => return Err(error),
+            };
         let inserted = transaction
             .execute(
                 "INSERT OR IGNORE INTO checkpoint_records
@@ -195,6 +207,9 @@ impl SqliteSessionStore {
             created_at,
             metadata: checkpoint.metadata,
         });
+        if !created_run {
+            advance_run_revision(&mut run)?;
+        }
         run.updated_at = created_at;
         save_run_record(&transaction, &run)?;
         apply_run_to_session(&mut session, &run);
@@ -539,6 +554,7 @@ impl SessionStore for SqliteSessionStore {
                 "hitl_resume_preparation_failed",
                 output_preview,
             ));
+            advance_run_revision(&mut target)?;
             target.updated_at = Utc::now();
             save_run_record(&transaction, &target)?;
             // This is a terminal target transition performed before the generic admission
@@ -784,6 +800,59 @@ impl SessionStore for SqliteSessionStore {
         .map_err(SessionStoreError::Failed)?
     }
 
+    async fn enqueue_host_event_publications(
+        &self,
+        publications: Vec<PendingHostEventPublication>,
+    ) -> SessionStoreResult<()> {
+        let store = self.clone();
+        crate::blocking::run(move || store.enqueue_host_event_publications_sync(publications))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn pending_host_event_publications(
+        &self,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<PendingHostEventPublication>> {
+        let store = self.clone();
+        crate::blocking::run(move || store.pending_host_event_publications_sync(limit))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn materialize_host_event_publications(
+        &self,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<DurableHostEventRecord>> {
+        let store = self.clone();
+        crate::blocking::run(move || store.materialize_host_event_publications_sync(limit))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn replay_host_events(
+        &self,
+        query: DurableHostEventQuery,
+    ) -> SessionStoreResult<DurableHostEventPage> {
+        let store = self.clone();
+        crate::blocking::run(move || store.replay_host_events_sync(query))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn host_event_fence(
+        &self,
+        scope: &DurableHostEventScope,
+        event_classes: &[DurableHostEventClass],
+    ) -> SessionStoreResult<Option<u64>> {
+        let store = self.clone();
+        let scope = scope.clone();
+        let event_classes = event_classes.to_vec();
+        crate::blocking::run(move || store.host_event_fence_sync(&scope, &event_classes))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
     async fn create_session_idempotent(
         &self,
         session: SessionRecord,
@@ -795,6 +864,28 @@ impl SessionStore for SqliteSessionStore {
         let fingerprint = command_fingerprint.to_string();
         crate::blocking::run(move || {
             store.create_session_idempotent_sync(session, &key, &fingerprint)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn create_session_idempotent_with_host_events(
+        &self,
+        session: SessionRecord,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+        publications: Vec<PendingHostEventPublication>,
+    ) -> SessionStoreResult<SessionRecord> {
+        let store = self.clone();
+        let key = idempotency_key.to_string();
+        let fingerprint = command_fingerprint.to_string();
+        crate::blocking::run(move || {
+            store.create_session_idempotent_with_host_events_sync(
+                session,
+                &key,
+                &fingerprint,
+                publications,
+            )
         })
         .await
         .map_err(SessionStoreError::Failed)?
@@ -831,6 +922,21 @@ impl SessionStore for SqliteSessionStore {
         crate::blocking::run(move || store.update_managed_session_sync(command, &fingerprint))
             .await
             .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn update_managed_session_with_host_events(
+        &self,
+        command: UpdateManagedSession,
+        command_fingerprint: &str,
+        publications: Vec<PendingHostEventPublication>,
+    ) -> SessionStoreResult<SessionRecord> {
+        let store = self.clone();
+        let fingerprint = command_fingerprint.to_string();
+        crate::blocking::run(move || {
+            store.update_managed_session_with_host_events_sync(command, &fingerprint, publications)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
     }
 
     async fn acquire_session_deletion_fence(
@@ -873,6 +979,32 @@ impl SessionStore for SqliteSessionStore {
         crate::blocking::run(move || store.tombstone_session_sync(&session_id, &fence_id))
             .await
             .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn tombstone_session_idempotent_with_host_events(
+        &self,
+        session_id: &SessionId,
+        fence_id: &str,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+        publications: Vec<PendingHostEventPublication>,
+    ) -> SessionStoreResult<SessionRecord> {
+        let store = self.clone();
+        let session_id = session_id.clone();
+        let fence_id = fence_id.to_string();
+        let idempotency_key = idempotency_key.to_string();
+        let command_fingerprint = command_fingerprint.to_string();
+        crate::blocking::run(move || {
+            store.tombstone_session_idempotent_with_host_events_sync(
+                &session_id,
+                &fence_id,
+                &idempotency_key,
+                &command_fingerprint,
+                publications,
+            )
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
     }
 
     async fn session_continuation_fence(
@@ -988,6 +1120,93 @@ impl SessionStore for SqliteSessionStore {
         let namespace_id = namespace_id.to_string();
         crate::blocking::run(move || {
             store.reconcile_expired_run_admissions_sync(&namespace_id, now)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn admit_run_control(
+        &self,
+        request: AdmitRunControl,
+    ) -> SessionStoreResult<DurableRunControlIntent> {
+        let store = self.clone();
+        crate::blocking::run(move || store.admit_run_control_sync(request))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn load_run_control_intent(
+        &self,
+        target: &ManagedRunTarget,
+        operation_id: &str,
+    ) -> SessionStoreResult<Option<DurableRunControlIntent>> {
+        let store = self.clone();
+        let target = target.clone();
+        let operation_id = operation_id.to_string();
+        crate::blocking::run(move || store.load_run_control_intent_sync(&target, &operation_id))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn list_run_control_intents(
+        &self,
+        target: &ManagedRunTarget,
+        statuses: &[DurableRunControlStatus],
+        limit: usize,
+    ) -> SessionStoreResult<Vec<DurableRunControlIntent>> {
+        let store = self.clone();
+        let target = target.clone();
+        let statuses = statuses.to_vec();
+        crate::blocking::run(move || store.list_run_control_intents_sync(&target, &statuses, limit))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn advance_run_control_intent(
+        &self,
+        lease: &RunAdmissionLease,
+        operation_id: &str,
+        expected: DurableRunControlStatus,
+        next: DurableRunControlStatus,
+        occurred_at: DateTime<Utc>,
+    ) -> SessionStoreResult<DurableRunControlIntent> {
+        let store = self.clone();
+        let lease = lease.clone();
+        let target = lease.target.clone();
+        let operation_id = operation_id.to_string();
+        crate::blocking::run(move || {
+            store.advance_run_control_intent_sync(
+                Some(&lease),
+                &target,
+                &operation_id,
+                Some(expected),
+                next,
+                occurred_at,
+            )
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn reconcile_run_control_intent(
+        &self,
+        target: &ManagedRunTarget,
+        operation_id: &str,
+        occurred_at: DateTime<Utc>,
+    ) -> SessionStoreResult<DurableRunControlIntent> {
+        let store = self.clone();
+        let target = target.clone();
+        let operation_id = operation_id.to_string();
+        let transition_target = target.clone();
+        crate::blocking::run(move || {
+            store.advance_run_control_intent_sync(
+                None,
+                &transition_target,
+                &operation_id,
+                None,
+                DurableRunControlStatus::Reconciled,
+                occurred_at,
+            )
         })
         .await
         .map_err(SessionStoreError::Failed)?
@@ -1250,10 +1469,10 @@ impl SessionStore for SqliteSessionStore {
     async fn save_session(&self, mut session: SessionRecord) -> SessionStoreResult<()> {
         let store = self.clone();
         crate::blocking::run(move || {
-            session.updated_at = Utc::now();
             let connection = store.lock()?;
             if let Ok(current) = load_session_record(&connection, &session.session_id) {
                 session.revision = current.revision.saturating_add(1);
+                session.updated_at = Utc::now();
             }
             save_session_record(&connection, &session)
         })
@@ -1311,6 +1530,83 @@ impl SessionStore for SqliteSessionStore {
                 }
             }
             Ok(sessions)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn list_session_page(&self, query: SessionPageQuery) -> SessionStoreResult<SessionPage> {
+        let store = self.clone();
+        crate::blocking::run(move || {
+            let connection = store.lock()?;
+            let fetch_limit = i64::try_from(query.limit().saturating_add(1)).map_err(|_| {
+                SessionStoreError::Failed("session page limit exceeds SQLite range".to_string())
+            })?;
+            let (cursor_clause, mut bindings) = query.after().map_or_else(
+                || ("", Vec::new()),
+                |key| {
+                    let timestamp = key.updated_at.to_rfc3339();
+                    (
+                        "WHERE (updated_at < ? OR (updated_at = ? AND session_id < ?))",
+                        vec![
+                            Value::Text(timestamp.clone()),
+                            Value::Text(timestamp),
+                            Value::Text(key.session_id.as_str().to_string()),
+                        ],
+                    )
+                },
+            );
+            bindings.push(Value::Integer(fetch_limit));
+            let sql = format!(
+                "SELECT record, updated_at, session_id FROM session_records
+                 {cursor_clause}
+                 ORDER BY updated_at DESC, session_id DESC
+                 LIMIT ?"
+            );
+            let mut statement = connection.prepare(&sql).map_err(map_sqlite_session_error)?;
+            let rows = statement
+                .query_map(params_from_iter(bindings), |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(map_sqlite_session_error)?;
+            let mut entries = Vec::new();
+            for row in rows {
+                let (record, updated_at, session_id) = row.map_err(map_sqlite_session_error)?;
+                let session = deserialize_json_record::<SessionRecord>(&record)?;
+                let updated_at = DateTime::parse_from_rfc3339(&updated_at)
+                    .map_err(|error| {
+                        SessionStoreError::Failed(format!(
+                            "invalid session page update timestamp: {error}"
+                        ))
+                    })?
+                    .with_timezone(&Utc);
+                let key = SessionPageKey {
+                    updated_at,
+                    session_id: SessionId::from_string(session_id),
+                };
+                if session.session_id != key.session_id || session.updated_at != key.updated_at {
+                    return Err(SessionStoreError::Conflict(format!(
+                        "session page index disagrees with record {}",
+                        session.session_id.as_str()
+                    )));
+                }
+                entries.push((session, key));
+            }
+            let has_more = entries.len() > query.limit();
+            entries.truncate(query.limit());
+            let next_key = entries
+                .last()
+                .map(|(_, key)| key.clone())
+                .or_else(|| query.after().cloned());
+            Ok(SessionPage {
+                sessions: entries.into_iter().map(|(session, _)| session).collect(),
+                next_key,
+                has_more,
+            })
         })
         .await
         .map_err(SessionStoreError::Failed)?
@@ -1431,6 +1727,11 @@ impl SessionStore for SqliteSessionStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(map_sqlite_session_error)?;
             let mut run = load_run_record(&transaction, session_id, run_id)?;
+            let previous_projection = (
+                run.status,
+                run.output_preview.clone(),
+                run.terminal_error.clone(),
+            );
             run.apply_legacy_status_update(status, output_preview);
             run.validate_new_write().map_err(|error| {
                 SessionStoreError::Failed(format!(
@@ -1438,6 +1739,17 @@ impl SessionStore for SqliteSessionStore {
                     run.run_id.as_str()
                 ))
             })?;
+            if previous_projection
+                == (
+                    run.status,
+                    run.output_preview.clone(),
+                    run.terminal_error.clone(),
+                )
+            {
+                transaction.commit().map_err(map_sqlite_session_error)?;
+                return Ok(());
+            }
+            advance_run_revision(&mut run)?;
             run.updated_at = Utc::now();
             save_run_record(&transaction, &run)?;
             let mut session = load_session_record(&transaction, session_id)?;
@@ -1518,6 +1830,7 @@ impl SessionStore for SqliteSessionStore {
                 created_at,
                 metadata: checkpoint.metadata,
             });
+            advance_run_revision(&mut run)?;
             run.updated_at = created_at;
             save_run_record(&transaction, &run)?;
             transaction.commit().map_err(map_sqlite_session_error)
@@ -1606,6 +1919,7 @@ impl SessionStore for SqliteSessionStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(map_sqlite_session_error)?;
             let mut run = load_run_record(&transaction, session_id, run_id)?;
+            let mut inserted_any = false;
             for (sequence, payload, record) in records {
                 let inserted = transaction
                     .execute(
@@ -1615,6 +1929,7 @@ impl SessionStore for SqliteSessionStore {
                         params![session_id.as_str(), run_id.as_str(), sequence, payload],
                     )
                     .map_err(map_sqlite_session_error)?;
+                inserted_any |= inserted == 1;
                 if inserted == 0 {
                     let persisted = transaction
                         .query_row(
@@ -1635,7 +1950,7 @@ impl SessionStore for SqliteSessionStore {
                 }
             }
             let latest_sequence = latest_stream_sequence(&transaction, session_id, run_id)?;
-            if let Some(sequence) = latest_sequence {
+            if inserted_any && let Some(sequence) = latest_sequence {
                 let cursor = StreamCursorRef::new(ReplayCursor::raw_runtime(
                     ReplayScope::run(run_id.as_str()),
                     sequence,
@@ -1643,6 +1958,7 @@ impl SessionStore for SqliteSessionStore {
                 run.stream_cursors
                     .retain(|existing| !existing.same_stream(&cursor));
                 run.stream_cursors.push(cursor.clone());
+                advance_run_revision(&mut run)?;
                 run.updated_at = Utc::now();
                 save_run_record(&transaction, &run)?;
                 let mut session = load_session_record(&transaction, session_id)?;
@@ -1719,9 +2035,18 @@ impl SessionStore for SqliteSessionStore {
                     .validate_progression(existing)
                     .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
             }
+            if run
+                .stream_cursors
+                .iter()
+                .any(|existing| existing == &cursor)
+            {
+                transaction.commit().map_err(map_sqlite_session_error)?;
+                return Ok(());
+            }
             run.stream_cursors
                 .retain(|existing| !existing.same_stream(&cursor));
             run.stream_cursors.push(cursor.clone());
+            advance_run_revision(&mut run)?;
             run.updated_at = Utc::now();
             save_run_record(&transaction, &run)?;
 

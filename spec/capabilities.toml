@@ -1,5 +1,5 @@
 schema_version = 1
-last_verified_release = "0.9.0"
+last_verified_release = "0.10.0"
 
 [[capability]]
 id = "core.versioned_contracts"
@@ -79,8 +79,8 @@ owner = "starweaver-session"
 stability = "provisional"
 status = "implemented"
 normative_spec = "spec/ops/07-session-search.md"
-implementation = ["crates/starweaver-session/src/search.rs", "crates/starweaver-storage/src/session_search.rs", "crates/starweaver-cli/src/service.rs", "crates/starweaver-rpc-core/src/lib.rs", "crates/starweaver-rpc/src/service.rs"]
-contract_tests = ["crates/starweaver-session/src/search.rs", "crates/starweaver-storage/src/session_search.rs", "crates/starweaver-cli/src/lib.rs", "crates/starweaver-rpc-core/tests/session_search.rs", "crates/starweaver-rpc/src/service.rs"]
+implementation = ["crates/starweaver-session/src/search.rs", "crates/starweaver-storage/src/session_search.rs", "crates/starweaver-cli/src/service.rs", "crates/starweaver-rpc-core/src/generated/server.rs", "crates/starweaver-rpc/src/service.rs"]
+contract_tests = ["crates/starweaver-session/src/search.rs", "crates/starweaver-storage/src/session_search.rs", "crates/starweaver-cli/src/lib.rs", "crates/starweaver-rpc-core/tests/generated_protocol.rs", "crates/starweaver-rpc/src/service.rs"]
 
 [[capability]]
 id = "session.agent_management"
@@ -177,9 +177,9 @@ id = "rpc.host_protocol_v1"
 owner = "starweaver-rpc-core"
 stability = "stable"
 status = "implemented"
-normative_spec = "spec/ops/06-json-rpc-host-protocol.md"
-implementation = ["crates/starweaver-rpc-core/src/lib.rs"]
-contract_tests = ["crates/starweaver-rpc-core/tests/protocol_contracts.rs", "crates/starweaver-rpc-core/tests/rpc_wire_conformance.rs", "crates/starweaver-rpc-core/tests/fixtures/contracts"]
+normative_spec = "spec/ops/09-rpc-idl-and-client-generation.md"
+implementation = ["protocol/host/openrpc.yaml", "crates/starweaver-rpc-core/src/generated/server.rs", "crates/starweaver-rpc-core/src/generated/dispatcher.rs"]
+contract_tests = ["crates/starweaver-rpc-core/tests/generated_protocol.rs", "protocol/host/examples", "protocol/host/fixtures"]
 
 [[capability]]
 id = "rpc.session_fork"
@@ -187,8 +187,8 @@ owner = "starweaver-rpc"
 stability = "provisional"
 status = "implemented"
 normative_spec = "spec/ops/06-json-rpc-host-protocol.md"
-implementation = ["crates/starweaver-rpc-core/src/dto.rs", "crates/starweaver-rpc/src/service.rs", "crates/starweaver-rpc/src/auth.rs"]
-contract_tests = ["crates/starweaver-rpc-core/tests/rpc_wire_conformance.rs", "crates/starweaver-rpc/src/service.rs"]
+implementation = ["crates/starweaver-rpc-core/src/generated/types.rs", "crates/starweaver-rpc/src/service.rs", "crates/starweaver-rpc/src/auth.rs"]
+contract_tests = ["crates/starweaver-rpc-core/tests/generated_protocol.rs", "crates/starweaver-rpc/src/service.rs"]
 
 [[capability]]
 id = "rpc.session_deferred_tools"
@@ -196,7 +196,7 @@ owner = "starweaver-rpc"
 stability = "provisional"
 status = "implemented"
 normative_spec = "spec/ops/06-json-rpc-host-protocol.md"
-implementation = ["crates/starweaver-rpc-core/src/dto.rs", "crates/starweaver-rpc/src/session_tools.rs", "crates/starweaver-tools/src/combinators/deferred.rs", "crates/starweaver-runtime/src/agent/run_loop.rs"]
+implementation = ["crates/starweaver-rpc-core/src/generated/types.rs", "crates/starweaver-rpc/src/session_tools.rs", "crates/starweaver-tools/src/combinators/deferred.rs", "crates/starweaver-runtime/src/agent/run_loop.rs"]
 contract_tests = ["crates/starweaver-rpc/src/service.rs", "crates/starweaver-rpc/src/session_tools.rs", "crates/starweaver-runtime/tests/tool_control_flow.rs", "crates/starweaver-tools/tests/control_flow.rs"]
 
 [[capability]]

@@ -5,7 +5,7 @@ use starweaver_core::SessionId;
 use crate::{
     error::{SessionStoreError, SessionStoreResult},
     records::{EnvironmentStateRef, SessionRecord, SessionStatus},
-    store::SessionFilter,
+    store::{SessionFilter, SessionPage, SessionPageKey, SessionPageQuery},
 };
 
 use super::{InMemorySessionStore, store_failed};
@@ -13,9 +13,9 @@ use super::{InMemorySessionStore, store_failed};
 impl InMemorySessionStore {
     pub(super) fn save_session_record(&self, mut session: SessionRecord) -> SessionStoreResult<()> {
         let mut inner = self.inner.lock().map_err(store_failed)?;
-        session.updated_at = Utc::now();
         if let Some(current) = inner.sessions.get(&session.session_id) {
             session.revision = current.revision.saturating_add(1);
+            session.updated_at = Utc::now();
         }
         inner.sessions.insert(session.session_id.clone(), session);
         Ok(())
@@ -62,6 +62,42 @@ impl InMemorySessionStore {
             sessions.truncate(limit);
         }
         Ok(sessions)
+    }
+
+    pub(super) fn list_session_record_page(
+        &self,
+        query: &SessionPageQuery,
+    ) -> SessionStoreResult<SessionPage> {
+        let inner = self.inner.lock().map_err(store_failed)?;
+        let mut sessions = inner
+            .sessions
+            .values()
+            .filter(|session| {
+                query.after().is_none_or(|after| {
+                    session.updated_at < after.updated_at
+                        || (session.updated_at == after.updated_at
+                            && session.session_id < after.session_id)
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        sessions.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| right.session_id.cmp(&left.session_id))
+        });
+        let has_more = sessions.len() > query.limit();
+        sessions.truncate(query.limit());
+        let next_key = sessions
+            .last()
+            .map(SessionPageKey::from_session)
+            .or_else(|| query.after().cloned());
+        Ok(SessionPage {
+            sessions,
+            next_key,
+            has_more,
+        })
     }
 
     pub(super) fn set_session_status(

@@ -1,0 +1,252 @@
+{
+  "components": {
+    "schemas": {
+      "FeatureId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[a-z][a-z0-9._-]*$",
+        "type": "string"
+      },
+      "InitializeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "clientInfo": {
+            "$ref": "#/components/schemas/ClientInfo"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/ProtocolIdentity"
+          },
+          "requiredFeatures": {
+            "items": {
+              "$ref": "#/components/schemas/FeatureId"
+            },
+            "maxItems": 128,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true,
+            "x-starweaver-canonical-order": "utf8-byte-ascending"
+          },
+          "supportedFeatures": {
+            "items": {
+              "$ref": "#/components/schemas/FeatureId"
+            },
+            "maxItems": 128,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true,
+            "x-starweaver-canonical-order": "utf8-byte-ascending"
+          }
+        },
+        "required": [
+          "protocol",
+          "clientInfo",
+          "supportedFeatures",
+          "requiredFeatures"
+        ],
+        "type": "object"
+      },
+      "InitializeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "launch": {
+            "$ref": "#/components/schemas/LaunchCompatibility"
+          },
+          "negotiatedFeatures": {
+            "items": {
+              "$ref": "#/components/schemas/FeatureId"
+            },
+            "maxItems": 128,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true,
+            "x-starweaver-canonical-order": "utf8-byte-ascending"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/ProtocolIdentity"
+          },
+          "runtimeBuild": {
+            "$ref": "#/components/schemas/RuntimeBuildIdentity"
+          },
+          "runtimeStatus": {
+            "enum": [
+              "ready",
+              "degraded"
+            ],
+            "type": "string"
+          },
+          "serverInfo": {
+            "$ref": "#/components/schemas/ServerInfo"
+          },
+          "startupReconciliation": {
+            "$ref": "#/components/schemas/StartupReconciliation"
+          },
+          "storage": {
+            "$ref": "#/components/schemas/StorageCompatibility"
+          },
+          "supportedFeatures": {
+            "items": {
+              "$ref": "#/components/schemas/FeatureId"
+            },
+            "maxItems": 128,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true,
+            "x-starweaver-canonical-order": "utf8-byte-ascending"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/WorkspaceCompatibility"
+          }
+        },
+        "required": [
+          "protocol",
+          "serverInfo",
+          "runtimeBuild",
+          "supportedFeatures",
+          "negotiatedFeatures",
+          "runtimeStatus",
+          "launch",
+          "storage",
+          "workspace",
+          "startupReconciliation"
+        ],
+        "type": "object"
+      },
+      "LaunchCompatibility": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptedMaximumVersion": {
+            "maximum": 1,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "acceptedMinimumVersion": {
+            "maximum": 1,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "configurationGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "effectiveSchema": {
+            "$ref": "#/components/schemas/LaunchSchemaIdentity"
+          },
+          "envelopeDigest": {
+            "$ref": "#/components/schemas/SchemaDigest"
+          },
+          "mode": {
+            "enum": [
+              "standalone",
+              "workspace_execution"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "effectiveSchema",
+          "acceptedMinimumVersion",
+          "acceptedMaximumVersion",
+          "envelopeDigest",
+          "configurationGeneration",
+          "mode"
+        ],
+        "type": "object"
+      },
+      "RuntimeBuildIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "buildRevision": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "target": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "buildRevision",
+          "target"
+        ],
+        "type": "object"
+      },
+      "StartupReconciliation": {
+        "additionalProperties": false,
+        "properties": {
+          "changedRunState": {
+            "type": "boolean"
+          },
+          "repairedRuns": {
+            "$ref": "#/components/schemas/DecimalU64"
+          }
+        },
+        "required": [
+          "changedRunState",
+          "repairedRuns"
+        ],
+        "type": "object"
+      },
+      "StorageCompatibility": {
+        "additionalProperties": false,
+        "properties": {
+          "currentGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "maintenanceBarrierGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "maximumReadableGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "maximumWritableGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "minimumReadableGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "minimumWritableGeneration": {
+            "$ref": "#/components/schemas/DecimalU64"
+          }
+        },
+        "required": [
+          "currentGeneration",
+          "minimumReadableGeneration",
+          "maximumReadableGeneration",
+          "minimumWritableGeneration",
+          "maximumWritableGeneration",
+          "maintenanceBarrierGeneration"
+        ],
+        "type": "object"
+      },
+      "WorkspaceCompatibility": {
+        "additionalProperties": false,
+        "properties": {
+          "executionDomainId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "workspaceIdentity": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "executionDomainId",
+          "workspaceIdentity"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

@@ -1,0 +1,423 @@
+{
+  "components": {
+    "schemas": {
+      "AttachmentScope": {
+        "discriminator": {
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ConnectionAttachmentScope"
+          },
+          {
+            "$ref": "#/components/schemas/SessionAttachmentScope"
+          },
+          {
+            "$ref": "#/components/schemas/RunAttachmentScope"
+          }
+        ]
+      },
+      "ConnectionAttachmentScope": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "connection",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "EnvironmentAttachParams": {
+        "additionalProperties": false,
+        "properties": {
+          "environmentId": {
+            "$ref": "#/components/schemas/EnvironmentId"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/AttachmentScope"
+          }
+        },
+        "required": [
+          "environmentId",
+          "scope",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "EnvironmentAttachResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment": {
+            "$ref": "#/components/schemas/EnvironmentAttachment"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "attachment",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "EnvironmentAttachment": {
+        "additionalProperties": false,
+        "properties": {
+          "attachmentId": {
+            "$ref": "#/components/schemas/AttachmentId"
+          },
+          "displayName": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "environmentId": {
+            "$ref": "#/components/schemas/EnvironmentId"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/AttachmentScope"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EnvironmentStatus"
+          }
+        },
+        "required": [
+          "attachmentId",
+          "environmentId",
+          "scope",
+          "status",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "EnvironmentDetachParams": {
+        "additionalProperties": false,
+        "properties": {
+          "attachmentId": {
+            "$ref": "#/components/schemas/AttachmentId"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "attachmentId",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "EnvironmentDetachResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment": {
+            "$ref": "#/components/schemas/EnvironmentAttachment"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "attachment",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "EnvironmentHealthParams": {
+        "additionalProperties": false,
+        "properties": {
+          "attachmentId": {
+            "$ref": "#/components/schemas/AttachmentId"
+          }
+        },
+        "required": [
+          "attachmentId"
+        ],
+        "type": "object"
+      },
+      "EnvironmentHealthResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment": {
+            "$ref": "#/components/schemas/EnvironmentAttachment"
+          },
+          "checkedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "attachment",
+          "checkedAt"
+        ],
+        "type": "object"
+      },
+      "EnvironmentListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "oneOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "scope": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AttachmentScope"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "limit"
+        ],
+        "type": "object"
+      },
+      "EnvironmentListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentAttachment"
+            },
+            "maxItems": 200,
+            "minItems": 0,
+            "type": "array"
+          },
+          "page": {
+            "$ref": "#/components/schemas/PageInfo"
+          }
+        },
+        "required": [
+          "attachments",
+          "page"
+        ],
+        "type": "object"
+      },
+      "EnvironmentMountListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runId"
+        ],
+        "type": "object"
+      },
+      "EnvironmentMountListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "mounts": {
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentMountSummary"
+            },
+            "maxItems": 128,
+            "minItems": 0,
+            "type": "array"
+          }
+        },
+        "required": [
+          "mounts"
+        ],
+        "type": "object"
+      },
+      "EnvironmentMountParams": {
+        "additionalProperties": false,
+        "properties": {
+          "attachmentId": {
+            "$ref": "#/components/schemas/AttachmentId"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "resourceRef": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "attachmentId",
+          "sessionId",
+          "runId",
+          "resourceRef",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "EnvironmentMountResult": {
+        "additionalProperties": false,
+        "properties": {
+          "mountId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "mountId",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "EnvironmentMountSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "attachmentId": {
+            "$ref": "#/components/schemas/AttachmentId"
+          },
+          "mountId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "resourceLabel": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "mountId",
+          "attachmentId",
+          "resourceLabel"
+        ],
+        "type": "object"
+      },
+      "EnvironmentStatus": {
+        "enum": [
+          "attaching",
+          "ready",
+          "degraded",
+          "detached"
+        ],
+        "type": "string"
+      },
+      "EnvironmentUnmountParams": {
+        "additionalProperties": false,
+        "properties": {
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "mountId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "mountId",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "EnvironmentUnmountResult": {
+        "additionalProperties": false,
+        "properties": {
+          "mountId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "mountId",
+          "removed",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "RunAttachmentScope": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "run",
+            "type": "string"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "kind",
+          "sessionId",
+          "runId"
+        ],
+        "type": "object"
+      },
+      "SessionAttachmentScope": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "session",
+            "type": "string"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "kind",
+          "sessionId"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

@@ -11,6 +11,7 @@ use starweaver_session::{SessionStoreError, SessionStoreResult};
 use crate::{SqliteStorage, blocking::BlockingOperationTracker, sqlite::SharedSqliteConnection};
 
 mod background;
+pub mod host_events;
 mod impl_store;
 mod management;
 pub use management::ensure_run_admission_in_transaction;

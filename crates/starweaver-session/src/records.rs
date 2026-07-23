@@ -637,6 +637,10 @@ const fn initial_session_revision() -> u64 {
     1
 }
 
+const fn initial_run_revision() -> u64 {
+    1
+}
+
 impl starweaver_core::VersionedRecord for SessionRecord {
     const SCHEMA: &'static str = "starweaver.session.session_record";
     const ALLOW_BARE_V0: bool = true;
@@ -679,6 +683,9 @@ pub struct RunRecord {
     pub session_id: SessionId,
     /// Run id.
     pub run_id: RunId,
+    /// Monotonic optimistic-concurrency revision.
+    #[serde(default = "initial_run_revision")]
+    pub revision: u64,
     /// Conversation id.
     pub conversation_id: ConversationId,
     /// User, API, or service input parts.
@@ -825,6 +832,7 @@ impl RunRecord {
         Self {
             session_id,
             run_id,
+            revision: initial_run_revision(),
             conversation_id,
             input: Vec::new(),
             status: RunStatus::Queued,

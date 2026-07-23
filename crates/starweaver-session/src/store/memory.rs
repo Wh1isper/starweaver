@@ -2,6 +2,7 @@
 
 mod approvals;
 mod checkpoints;
+mod host_events;
 mod runs;
 mod sessions;
 mod streams;
@@ -18,12 +19,13 @@ use starweaver_core::{RunId, RunLifecycle, SessionId};
 use starweaver_stream::{AgentStreamRecord, ReplayEvent, ReplayScope};
 
 use crate::{
-    AcquireBackgroundSubagentContinuation, AcquireRunAdmission, BackgroundSubagentArtifact,
-    BackgroundSubagentArtifactLimits, BackgroundSubagentContinuationReceipt,
-    BackgroundSubagentRecord, BackgroundSubagentTerminalCommit,
-    DurableBackgroundSubagentDeliveryClaim, DurableBackgroundSubagentDeliveryRelease,
-    DurableBackgroundSubagentDeliveryStatus, DurableBackgroundSubagentExecutionStatus,
-    DurableBackgroundSubagentResultRef, DurableControlReceipt, ManagedRunTarget,
+    AcquireBackgroundSubagentContinuation, AcquireRunAdmission, AdmitRunControl,
+    BackgroundSubagentArtifact, BackgroundSubagentArtifactLimits,
+    BackgroundSubagentContinuationReceipt, BackgroundSubagentRecord,
+    BackgroundSubagentTerminalCommit, DurableBackgroundSubagentDeliveryClaim,
+    DurableBackgroundSubagentDeliveryRelease, DurableBackgroundSubagentDeliveryStatus,
+    DurableBackgroundSubagentExecutionStatus, DurableBackgroundSubagentResultRef,
+    DurableControlReceipt, DurableRunControlIntent, DurableRunControlStatus, ManagedRunTarget,
     ManagedSessionTarget, RunAdmissionLease, RunAdmissionReceipt, SessionContinuationFence,
     SessionDeletionFence, UpdateManagedSession,
     approval::{ApprovalRecord, ApprovalStatus, DeferredToolRecord},
@@ -32,6 +34,11 @@ use crate::{
     },
     error::{SessionStoreError, SessionStoreResult},
     evidence::RunEvidenceCommit,
+    host_events::{
+        DurableHostEventClass, DurableHostEventPage, DurableHostEventQuery, DurableHostEventRecord,
+        DurableHostEventScope, EventPublicationKey, PendingHostEventPublication,
+        append_authoritative_run_publications,
+    },
     publication::{PendingStreamPublication, StreamPublicationTarget},
     records::{
         EnvironmentStateRef, ExecutionStatus, RunRecord, RunStatus, RunTerminalError,
@@ -41,7 +48,8 @@ use crate::{
     trace::{CompactRunTrace, CompactSessionTrace},
 };
 
-use super::{SessionFilter, SessionStore};
+use self::host_events::enqueue_host_event_publications_locked;
+use super::{SessionFilter, SessionPage, SessionPageQuery, SessionStore};
 
 /// In-memory session store for deterministic tests and single-process hosts.
 #[derive(Clone, Debug, Default)]
@@ -62,12 +70,22 @@ struct StoreInner {
     evidence_digests: BTreeMap<(SessionId, RunId), String>,
     hitl_resume_claims: BTreeMap<(SessionId, RunId), HitlResumeClaim>,
     stream_publication_outbox: BTreeMap<String, PendingStreamPublication>,
+    host_event_outbox: BTreeMap<EventPublicationKey, PendingHostEventPublication>,
+    host_event_outbox_order: BTreeMap<u64, EventPublicationKey>,
+    host_event_outbox_sequences: BTreeMap<EventPublicationKey, u64>,
+    last_host_event_outbox_sequence: u64,
+    host_event_records: BTreeMap<u64, DurableHostEventRecord>,
+    host_event_positions: BTreeMap<EventPublicationKey, u64>,
+    host_event_ids: BTreeMap<String, EventPublicationKey>,
+    last_host_event_position: u64,
     session_idempotency: BTreeMap<(String, String), (String, SessionRecord)>,
     run_admission_idempotency: BTreeMap<(String, String), (String, RunAdmissionReceipt)>,
     run_admissions: BTreeMap<ManagedSessionTarget, RunAdmissionLease>,
     admission_generations: BTreeMap<ManagedSessionTarget, u64>,
     control_receipts: BTreeMap<String, DurableControlReceipt>,
     control_idempotency: BTreeMap<(ManagedRunTarget, String), String>,
+    run_control_intents: BTreeMap<(ManagedRunTarget, String), DurableRunControlIntent>,
+    run_control_authority_keys: BTreeMap<(String, String), (ManagedRunTarget, String)>,
     background_subagents: BTreeMap<starweaver_core::SubagentAttemptId, BackgroundSubagentRecord>,
     background_artifacts: BTreeMap<String, BackgroundSubagentArtifact>,
     background_terminal_fingerprints: BTreeMap<starweaver_core::SubagentAttemptId, String>,
@@ -87,6 +105,13 @@ fn run_key(session_id: &SessionId, run_id: &RunId) -> (SessionId, RunId) {
 
 fn run_key_label(session_id: &SessionId, run_id: &RunId) -> String {
     format!("{}:{}", session_id.as_str(), run_id.as_str())
+}
+
+fn advance_run_revision(run: &mut RunRecord) -> SessionStoreResult<()> {
+    run.revision = run.revision.checked_add(1).ok_or_else(|| {
+        SessionStoreError::Failed(format!("run {} revision overflow", run.run_id.as_str()))
+    })?;
+    Ok(())
 }
 
 fn validate_approval_transition(
@@ -184,6 +209,23 @@ fn store_failed(
     SessionStoreError::Failed(error.to_string())
 }
 
+fn session_mutation_time(
+    publications: &[PendingHostEventPublication],
+) -> SessionStoreResult<chrono::DateTime<chrono::Utc>> {
+    let Some(first) = publications.first() else {
+        return Ok(chrono::Utc::now());
+    };
+    if publications
+        .iter()
+        .any(|publication| publication.occurred_at != first.occurred_at)
+    {
+        return Err(SessionStoreError::Conflict(
+            "session mutation publications must share one occurred_at".to_string(),
+        ));
+    }
+    Ok(first.occurred_at)
+}
+
 fn ensure_active_admission_locked(
     inner: &StoreInner,
     lease: &RunAdmissionLease,
@@ -213,6 +255,42 @@ fn ensure_active_admission_locked(
     Ok(())
 }
 
+fn reconcile_run_control_intents_locked(
+    inner: &mut StoreInner,
+    lease: &RunAdmissionLease,
+    occurred_at: chrono::DateTime<chrono::Utc>,
+) -> SessionStoreResult<()> {
+    let keys = inner
+        .run_control_intents
+        .iter()
+        .filter(|(_, intent)| {
+            intent.target == lease.target
+                && intent.admission_id == lease.admission_id
+                && intent.fencing_generation == lease.fencing_generation
+                && matches!(
+                    intent.status,
+                    DurableRunControlStatus::Pending | DurableRunControlStatus::Delivered
+                )
+        })
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    for key in keys {
+        let mut intent = inner
+            .run_control_intents
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| SessionStoreError::NotFound(key.1.clone()))?;
+        intent
+            .advance(DurableRunControlStatus::Reconciled, occurred_at)
+            .map_err(|error| SessionStoreError::Conflict(error.to_string()))?;
+        inner
+            .control_receipts
+            .insert(intent.receipt.receipt_id.clone(), intent.receipt.clone());
+        inner.run_control_intents.insert(key, intent);
+    }
+    Ok(())
+}
+
 fn apply_run_status_locked(
     inner: &mut StoreInner,
     session_id: &SessionId,
@@ -227,9 +305,15 @@ fn apply_run_status_locked(
         .runs
         .get_mut(&key)
         .ok_or_else(|| SessionStoreError::NotFound(run_key_label(session_id, run_id)))?;
+    if (run.status, &run.output_preview, &run.terminal_error)
+        == (status, &output_preview, &terminal_error)
+    {
+        return Ok(run.clone());
+    }
     run.status = status;
     run.output_preview = output_preview;
     run.terminal_error = terminal_error;
+    advance_run_revision(run)?;
     run.updated_at = updated_at;
     let result = run.clone();
     if let Some(session) = inner.sessions.get_mut(session_id) {
@@ -297,6 +381,7 @@ fn terminalize_started_hitl_source_locked(
             "admission_lease_expired",
             "interrupted after host lease expired",
         ));
+        advance_run_revision(source)?;
         source.updated_at = now;
         ContinuationEffectState::indeterminate()
             .insert_into(&mut source.metadata)
@@ -478,15 +563,21 @@ fn apply_primary_evidence(
     staged.append_run_record(commit.run.clone())?;
     staged.save_context_state_snapshot(&commit.run.session_id, commit.context_state.clone())?;
     for checkpoint in commit.checkpoints.clone() {
-        staged.append_checkpoint_record(&commit.run.session_id, checkpoint)?;
+        staged.append_checkpoint_record_with_revision(&commit.run.session_id, checkpoint, false)?;
     }
-    staged.append_stream_record_batch(
+    staged.append_stream_record_batch_with_revision(
         &commit.run.session_id,
         &commit.run.run_id,
         commit.stream_records.clone(),
+        false,
     )?;
     for cursor in commit.stream_cursors.clone() {
-        staged.save_stream_cursor_ref(&commit.run.session_id, &commit.run.run_id, cursor)?;
+        staged.save_stream_cursor_ref_with_revision(
+            &commit.run.session_id,
+            &commit.run.run_id,
+            cursor,
+            false,
+        )?;
     }
     for approval in commit.approvals.clone() {
         staged.append_approval_record(approval)?;
@@ -499,7 +590,7 @@ fn apply_primary_evidence(
 
 fn finalize_staged_evidence(
     staged: &InMemorySessionStore,
-    commit: RunEvidenceCommit,
+    mut commit: RunEvidenceCommit,
     key: (SessionId, RunId),
     digest: String,
 ) -> SessionStoreResult<(StoreInner, RunRecord)> {
@@ -527,6 +618,27 @@ fn finalize_staged_evidence(
     let committed = inner.runs.get(&target_key).cloned().ok_or_else(|| {
         SessionStoreError::NotFound(run_key_label(&commit.run.session_id, &commit.run.run_id))
     })?;
+    commit.run = committed.clone();
+    let mut authoritative_runs = vec![committed.clone()];
+    for update in &commit.related_run_updates {
+        authoritative_runs.push(
+            inner
+                .runs
+                .get(&run_key(&commit.run.session_id, &update.run_id))
+                .cloned()
+                .ok_or_else(|| {
+                    SessionStoreError::NotFound(run_key_label(
+                        &commit.run.session_id,
+                        &update.run_id,
+                    ))
+                })?,
+        );
+    }
+    append_authoritative_run_publications(
+        &mut commit.host_event_publications,
+        &format!("run-evidence:{digest}"),
+        authoritative_runs.iter(),
+    )?;
     if !commit.publication_targets.is_empty() {
         let mut publication = PendingStreamPublication::new(
             commit.run.session_id.clone(),
@@ -548,6 +660,7 @@ fn finalize_staged_evidence(
             .stream_publication_outbox
             .insert(publication.publication_id.clone(), publication);
     }
+    enqueue_host_event_publications_locked(&mut inner, &commit.host_event_publications)?;
     inner.evidence_commits.insert(key.clone(), commit);
     inner.evidence_digests.insert(key, digest);
     Ok((inner.clone(), committed))
@@ -609,6 +722,7 @@ fn acquire_run_admission_locked(
                 "admission_lease_expired",
                 "interrupted after host lease expired",
             ));
+            advance_run_revision(run)?;
             run.updated_at = now;
             if effect_started {
                 ContinuationEffectState::indeterminate()
@@ -702,6 +816,7 @@ fn acquire_run_admission_locked(
     }
     let mut run = request.run;
     run.normalize_for_admission();
+    run.revision = 1;
     run.validate_new_write().map_err(|error| {
         SessionStoreError::Failed(format!(
             "invalid admitted run state for {}: {error}",
@@ -1305,10 +1420,10 @@ impl SessionStore for InMemorySessionStore {
         if staged.load_session_record(session_id).is_err() {
             staged.save_session_record(SessionRecord::new(session_id.clone()))?;
         }
-        if staged
+        let created_run = staged
             .load_run_record(session_id, &checkpoint.run_id)
-            .is_err()
-        {
+            .is_err();
+        if created_run {
             let mut run = RunRecord::new(
                 session_id.clone(),
                 checkpoint.run_id.clone(),
@@ -1323,7 +1438,7 @@ impl SessionStore for InMemorySessionStore {
                 .clone_from(&checkpoint.state.parent_task_id);
             staged.append_run_record(run)?;
         }
-        staged.append_checkpoint_record(session_id, checkpoint)?;
+        staged.append_checkpoint_record_with_revision(session_id, checkpoint, !created_run)?;
         let staged_inner = staged.inner.lock().map_err(store_failed)?;
         *original = staged_inner.clone();
         Ok(())
@@ -1368,10 +1483,10 @@ impl SessionStore for InMemorySessionStore {
         {
             staged.save_session_record(SessionRecord::new(lease.target.session_id.clone()))?;
         }
-        if staged
+        let created_run = staged
             .load_run_record(&lease.target.session_id, &checkpoint.run_id)
-            .is_err()
-        {
+            .is_err();
+        if created_run {
             let mut run = RunRecord::new(
                 lease.target.session_id.clone(),
                 checkpoint.run_id.clone(),
@@ -1386,7 +1501,11 @@ impl SessionStore for InMemorySessionStore {
                 .clone_from(&checkpoint.state.parent_task_id);
             staged.append_run_record(run)?;
         }
-        staged.append_checkpoint_record(&lease.target.session_id, checkpoint)?;
+        staged.append_checkpoint_record_with_revision(
+            &lease.target.session_id,
+            checkpoint,
+            !created_run,
+        )?;
         let staged_inner = staged.inner.lock().map_err(store_failed)?;
         *original = staged_inner.clone();
         Ok(())
@@ -1638,6 +1757,42 @@ impl SessionStore for InMemorySessionStore {
         Ok(())
     }
 
+    async fn enqueue_host_event_publications(
+        &self,
+        publications: Vec<PendingHostEventPublication>,
+    ) -> SessionStoreResult<()> {
+        self.enqueue_host_event_publication_batch(&publications)
+    }
+
+    async fn pending_host_event_publications(
+        &self,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<PendingHostEventPublication>> {
+        self.pending_host_event_publication_batch(limit)
+    }
+
+    async fn materialize_host_event_publications(
+        &self,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<DurableHostEventRecord>> {
+        self.materialize_host_event_publication_batch(limit)
+    }
+
+    async fn replay_host_events(
+        &self,
+        query: DurableHostEventQuery,
+    ) -> SessionStoreResult<DurableHostEventPage> {
+        self.replay_host_event_page(query)
+    }
+
+    async fn host_event_fence(
+        &self,
+        scope: &DurableHostEventScope,
+        event_classes: &[DurableHostEventClass],
+    ) -> SessionStoreResult<Option<u64>> {
+        self.host_event_fence_position(scope, event_classes)
+    }
+
     async fn create_session_idempotent(
         &self,
         mut session: SessionRecord,
@@ -1668,6 +1823,44 @@ impl SessionStore for InMemorySessionStore {
             .session_idempotency
             .insert(key, (command_fingerprint.to_string(), session.clone()));
         Ok(session)
+    }
+
+    async fn create_session_idempotent_with_host_events(
+        &self,
+        mut session: SessionRecord,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+        publications: Vec<PendingHostEventPublication>,
+    ) -> SessionStoreResult<SessionRecord> {
+        let key = (session.namespace_id.clone(), idempotency_key.to_string());
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        let mut staged = inner.clone();
+        let result = if let Some((fingerprint, existing)) = staged.session_idempotency.get(&key) {
+            if fingerprint != command_fingerprint {
+                return Err(SessionStoreError::IdempotencyConflict(
+                    idempotency_key.to_string(),
+                ));
+            }
+            existing.clone()
+        } else {
+            if staged.sessions.contains_key(&session.session_id) {
+                return Err(SessionStoreError::AlreadyExists(
+                    session.session_id.as_str().to_string(),
+                ));
+            }
+            session.revision = session.revision.max(1);
+            session.updated_at = session_mutation_time(&publications)?;
+            staged
+                .sessions
+                .insert(session.session_id.clone(), session.clone());
+            staged
+                .session_idempotency
+                .insert(key, (command_fingerprint.to_string(), session.clone()));
+            session
+        };
+        enqueue_host_event_publications_locked(&mut staged, &publications)?;
+        *inner = staged;
+        Ok(result)
     }
 
     async fn load_session_mutation_receipt(
@@ -1753,6 +1946,84 @@ impl SessionStore for InMemorySessionStore {
             idempotency_key,
             (command_fingerprint.to_string(), result.clone()),
         );
+        Ok(result)
+    }
+
+    async fn update_managed_session_with_host_events(
+        &self,
+        command: UpdateManagedSession,
+        command_fingerprint: &str,
+        publications: Vec<PendingHostEventPublication>,
+    ) -> SessionStoreResult<SessionRecord> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        let mut staged = inner.clone();
+        let namespace = staged
+            .sessions
+            .get(&command.session_id)
+            .ok_or_else(|| SessionStoreError::NotFound(command.session_id.as_str().to_string()))?
+            .namespace_id
+            .clone();
+        let idempotency_key = (namespace, command.idempotency_key.clone());
+        let result = if let Some((fingerprint, existing)) =
+            staged.session_idempotency.get(&idempotency_key)
+        {
+            if fingerprint != command_fingerprint {
+                return Err(SessionStoreError::IdempotencyConflict(
+                    command.idempotency_key,
+                ));
+            }
+            existing.clone()
+        } else {
+            let session = staged
+                .sessions
+                .get_mut(&command.session_id)
+                .ok_or_else(|| {
+                    SessionStoreError::NotFound(command.session_id.as_str().to_string())
+                })?;
+            if session.revision != command.expected_revision {
+                return Err(SessionStoreError::Conflict(format!(
+                    "expected revision {}, current {}",
+                    command.expected_revision, session.revision
+                )));
+            }
+            if session.deletion_fence.blocks_continuation()
+                || session.status == SessionStatus::Deleted
+            {
+                return Err(SessionStoreError::Conflict(
+                    "session is deleting or deleted".to_string(),
+                ));
+            }
+            if let Some(title) = command.patch.title {
+                session.title = title.map(|value| value.chars().take(256).collect());
+            }
+            if let Some(profile) = command.patch.profile {
+                session.profile = profile;
+            }
+            if let Some(archived) = command.patch.archived {
+                session.status = if archived {
+                    SessionStatus::Archived
+                } else {
+                    SessionStatus::Active
+                };
+            }
+            for (key, value) in command.patch.metadata {
+                if value.is_null() {
+                    session.metadata.remove(&key);
+                } else {
+                    session.metadata.insert(key, value);
+                }
+            }
+            session.revision = session.revision.saturating_add(1);
+            session.updated_at = session_mutation_time(&publications)?;
+            let result = session.clone();
+            staged.session_idempotency.insert(
+                idempotency_key,
+                (command_fingerprint.to_string(), result.clone()),
+            );
+            result
+        };
+        enqueue_host_event_publications_locked(&mut staged, &publications)?;
+        *inner = staged;
         Ok(result)
     }
 
@@ -1887,6 +2158,104 @@ impl SessionStore for InMemorySessionStore {
         session.revision = session.revision.saturating_add(1);
         session.updated_at = chrono::Utc::now();
         Ok(session.clone())
+    }
+
+    async fn tombstone_session_idempotent_with_host_events(
+        &self,
+        session_id: &SessionId,
+        fence_id: &str,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+        publications: Vec<PendingHostEventPublication>,
+    ) -> SessionStoreResult<SessionRecord> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        let mut staged = inner.clone();
+        let namespace = staged
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| SessionStoreError::NotFound(session_id.as_str().to_string()))?
+            .namespace_id
+            .clone();
+        let receipt_key = (namespace, idempotency_key.to_string());
+        let (fingerprint, receipt_session) = staged
+            .session_idempotency
+            .get(&receipt_key)
+            .ok_or_else(|| SessionStoreError::NotFound(idempotency_key.to_string()))?;
+        if fingerprint != command_fingerprint {
+            return Err(SessionStoreError::IdempotencyConflict(
+                idempotency_key.to_string(),
+            ));
+        }
+        if receipt_session.session_id != *session_id {
+            return Err(SessionStoreError::Conflict(
+                "session deletion receipt target mismatch".to_string(),
+            ));
+        }
+        let already_deleted = staged.sessions.get(session_id).is_some_and(|session| {
+            matches!(
+                &session.deletion_fence,
+                SessionDeletionFence::Deleted {
+                    fence_id: current,
+                    ..
+                } if current == fence_id
+            )
+        });
+        if !already_deleted {
+            if staged
+                .runs
+                .values()
+                .any(|run| &run.session_id == session_id && run.status.is_active())
+            {
+                return Err(SessionStoreError::RunConflict(
+                    "session still has an active run".to_string(),
+                ));
+            }
+            let now = chrono::Utc::now();
+            if staged.background_subagents.values().any(|record| {
+                &record.parent_session_id == session_id
+                    && !record.execution_status.is_terminal()
+                    && !record.owner_lease.expired_at(now)
+            }) {
+                return Err(SessionStoreError::RunConflict(
+                    "session still has active background-subagent ownership".to_string(),
+                ));
+            }
+            let session = staged
+                .sessions
+                .get_mut(session_id)
+                .ok_or_else(|| SessionStoreError::NotFound(session_id.as_str().to_string()))?;
+            match &session.deletion_fence {
+                SessionDeletionFence::Deleting {
+                    fence_id: current, ..
+                } if current == fence_id => {}
+                _ => {
+                    return Err(SessionStoreError::Conflict(
+                        "deletion fence mismatch".to_string(),
+                    ));
+                }
+            }
+            let deleted_at = session_mutation_time(&publications)?;
+            session.status = SessionStatus::Deleted;
+            session.active_run_id = None;
+            session.deletion_fence = SessionDeletionFence::Deleted {
+                fence_id: fence_id.to_string(),
+                deleted_at,
+            };
+            session.revision = session.revision.saturating_add(1);
+            session.updated_at = deleted_at;
+        }
+        let result = staged
+            .sessions
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| SessionStoreError::NotFound(session_id.as_str().to_string()))?;
+        staged.session_idempotency.insert(
+            receipt_key,
+            (command_fingerprint.to_string(), result.clone()),
+        );
+        enqueue_host_event_publications_locked(&mut staged, &publications)?;
+        *inner = staged;
+        Ok(result)
     }
 
     async fn session_continuation_fence(
@@ -2057,33 +2426,51 @@ impl SessionStore for InMemorySessionStore {
             ));
         }
         ensure_active_admission_locked(&inner, lease, chrono::Utc::now())?;
+        let mut staged = inner.clone();
         let target_key = run_key(&lease.target.session_id, &lease.target.run_id);
-        let committed = inner.runs.get(&target_key).cloned().ok_or_else(|| {
+        let committed = staged.runs.get(&target_key).cloned().ok_or_else(|| {
             SessionStoreError::NotFound(run_key_label(
                 &lease.target.session_id,
                 &lease.target.run_id,
             ))
         })?;
-        let run = if committed.status.is_terminal() {
+        let (run, changed) = if committed.status.is_terminal() {
             // Complete run evidence may be committed before its admission lease is released.
             // Cleanup owns only the matching lease and must never replace that evidence with a
             // process-local fallback outcome.
-            committed
+            (committed, false)
         } else {
             terminal
                 .validate()
                 .map_err(|error| SessionStoreError::Conflict(error.to_string()))?;
-            apply_run_status_locked(
-                &mut inner,
-                &lease.target.session_id,
-                &lease.target.run_id,
-                terminal.status,
-                terminal.output_preview,
-                terminal.error,
-                chrono::Utc::now(),
-            )?
+            (
+                apply_run_status_locked(
+                    &mut staged,
+                    &lease.target.session_id,
+                    &lease.target.run_id,
+                    terminal.status,
+                    terminal.output_preview,
+                    terminal.error,
+                    chrono::Utc::now(),
+                )?,
+                true,
+            )
         };
-        inner.run_admissions.remove(&session_key);
+        if changed {
+            let mut publications = Vec::new();
+            append_authoritative_run_publications(
+                &mut publications,
+                &format!(
+                    "run-admission-finalize:{}:{}:{}",
+                    lease.admission_id, lease.fencing_generation, run.revision
+                ),
+                std::iter::once(&run),
+            )?;
+            enqueue_host_event_publications_locked(&mut staged, &publications)?;
+        }
+        reconcile_run_control_intents_locked(&mut staged, lease, chrono::Utc::now())?;
+        staged.run_admissions.remove(&session_key);
+        *inner = staged;
         Ok(run)
     }
 
@@ -2115,9 +2502,10 @@ impl SessionStore for InMemorySessionStore {
             .filter(|(session, lease)| {
                 session.namespace_id == namespace_id && lease.expired_at(now)
             })
-            .map(|(session, lease)| (session.clone(), lease.target.clone()))
+            .map(|(session, lease)| (session.clone(), lease.clone()))
             .collect::<Vec<_>>();
-        for (session_target, target) in &expired {
+        for (session_target, lease) in &expired {
+            let target = &lease.target;
             let replacement_key = run_key(&target.session_id, &target.run_id);
             let replacement = staged.runs.get(&replacement_key).cloned().ok_or_else(|| {
                 SessionStoreError::NotFound(run_key_label(&target.session_id, &target.run_id))
@@ -2125,6 +2513,16 @@ impl SessionStore for InMemorySessionStore {
             if replacement.status.is_active() {
                 let effect_started =
                     terminalize_started_hitl_source_locked(&mut staged, &replacement, now)?;
+                let mut authoritative_runs = Vec::with_capacity(2);
+                if effect_started
+                    && let Some(source_run_id) = replacement.restore_from_run_id.as_ref()
+                    && let Some(source) = staged
+                        .runs
+                        .get(&run_key(&target.session_id, source_run_id))
+                        .cloned()
+                {
+                    authoritative_runs.push(source);
+                }
                 let run = staged.runs.get_mut(&replacement_key).ok_or_else(|| {
                     SessionStoreError::NotFound(run_key_label(&target.session_id, &target.run_id))
                 })?;
@@ -2134,12 +2532,24 @@ impl SessionStore for InMemorySessionStore {
                     "admission_lease_expired",
                     "interrupted after host lease expired",
                 ));
+                advance_run_revision(run)?;
                 run.updated_at = now;
                 if effect_started {
                     ContinuationEffectState::indeterminate()
                         .insert_into(&mut run.metadata)
                         .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
                 }
+                authoritative_runs.push(run.clone());
+                let mut publications = Vec::new();
+                append_authoritative_run_publications(
+                    &mut publications,
+                    &format!(
+                        "run-admission-expired:{}:{}",
+                        lease.admission_id, lease.fencing_generation
+                    ),
+                    authoritative_runs.iter(),
+                )?;
+                enqueue_host_event_publications_locked(&mut staged, &publications)?;
             }
             if let Some(session) = staged.sessions.get_mut(&target.session_id) {
                 if session.active_run_id.as_ref() == Some(&target.run_id) {
@@ -2148,10 +2558,187 @@ impl SessionStore for InMemorySessionStore {
                 session.revision = session.revision.saturating_add(1);
                 session.updated_at = now;
             }
+            reconcile_run_control_intents_locked(&mut staged, lease, now)?;
             staged.run_admissions.remove(session_target);
         }
         *inner = staged;
-        Ok(expired.into_iter().map(|(_, target)| target).collect())
+        Ok(expired.into_iter().map(|(_, lease)| lease.target).collect())
+    }
+
+    async fn admit_run_control(
+        &self,
+        request: AdmitRunControl,
+    ) -> SessionStoreResult<DurableRunControlIntent> {
+        if request.authority_binding.is_empty()
+            || request.operation_id.is_empty()
+            || request.receipt_id.is_empty()
+            || request.idempotency_key.is_empty()
+            || request.command_fingerprint.is_empty()
+        {
+            return Err(SessionStoreError::Conflict(
+                "durable run control identity fields cannot be empty".to_string(),
+            ));
+        }
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        let authority_key = (
+            request.authority_binding.clone(),
+            request.idempotency_key.clone(),
+        );
+        if let Some(intent_key) = inner.run_control_authority_keys.get(&authority_key)
+            && let Some(existing) = inner.run_control_intents.get(intent_key)
+        {
+            return if existing.matches_admission(&request) {
+                Ok(existing.clone())
+            } else {
+                Err(SessionStoreError::IdempotencyConflict(
+                    request.idempotency_key,
+                ))
+            };
+        }
+        let intent_key = (request.lease.target.clone(), request.operation_id.clone());
+        if let Some(existing) = inner.run_control_intents.get(&intent_key) {
+            return if existing.matches_admission(&request) {
+                Ok(existing.clone())
+            } else {
+                Err(SessionStoreError::Conflict(format!(
+                    "run control operation {} already has different evidence",
+                    request.operation_id
+                )))
+            };
+        }
+        ensure_active_admission_locked(&inner, &request.lease, chrono::Utc::now())?;
+        let receipt_key = (
+            request.lease.target.clone(),
+            request.idempotency_key.clone(),
+        );
+        if let Some(existing_id) = inner.control_idempotency.get(&receipt_key) {
+            return Err(SessionStoreError::IdempotencyConflict(existing_id.clone()));
+        }
+        if inner.control_receipts.contains_key(&request.receipt_id) {
+            return Err(SessionStoreError::Conflict(format!(
+                "control receipt {} already exists",
+                request.receipt_id
+            )));
+        }
+        let intent = request.into_intent();
+        inner
+            .control_idempotency
+            .insert(receipt_key, intent.receipt.receipt_id.clone());
+        inner
+            .control_receipts
+            .insert(intent.receipt.receipt_id.clone(), intent.receipt.clone());
+        inner
+            .run_control_authority_keys
+            .insert(authority_key, intent_key.clone());
+        inner.run_control_intents.insert(intent_key, intent.clone());
+        Ok(intent)
+    }
+
+    async fn load_run_control_intent(
+        &self,
+        target: &ManagedRunTarget,
+        operation_id: &str,
+    ) -> SessionStoreResult<Option<DurableRunControlIntent>> {
+        let inner = self.inner.lock().map_err(store_failed)?;
+        Ok(inner
+            .run_control_intents
+            .get(&(target.clone(), operation_id.to_string()))
+            .cloned())
+    }
+
+    async fn list_run_control_intents(
+        &self,
+        target: &ManagedRunTarget,
+        statuses: &[DurableRunControlStatus],
+        limit: usize,
+    ) -> SessionStoreResult<Vec<DurableRunControlIntent>> {
+        if limit == 0 || limit > super::MAX_STABLE_PAGE_SIZE {
+            return Err(SessionStoreError::Conflict(format!(
+                "run control page limit must be between 1 and {}",
+                super::MAX_STABLE_PAGE_SIZE
+            )));
+        }
+        let inner = self.inner.lock().map_err(store_failed)?;
+        let mut intents = inner
+            .run_control_intents
+            .values()
+            .filter(|intent| {
+                intent.target == *target
+                    && (statuses.is_empty() || statuses.contains(&intent.status))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        intents.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.operation_id.cmp(&right.operation_id))
+        });
+        intents.truncate(limit);
+        Ok(intents)
+    }
+
+    async fn advance_run_control_intent(
+        &self,
+        lease: &RunAdmissionLease,
+        operation_id: &str,
+        expected: DurableRunControlStatus,
+        next: DurableRunControlStatus,
+        occurred_at: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<DurableRunControlIntent> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        ensure_active_admission_locked(&inner, lease, chrono::Utc::now())?;
+        let key = (lease.target.clone(), operation_id.to_string());
+        let mut intent = inner
+            .run_control_intents
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| SessionStoreError::NotFound(operation_id.to_string()))?;
+        if intent.admission_id != lease.admission_id
+            || intent.host_instance_id != lease.host_instance_id
+            || intent.fencing_generation != lease.fencing_generation
+        {
+            return Err(SessionStoreError::StaleFence(
+                "run control intent belongs to a stale admission".to_string(),
+            ));
+        }
+        if intent.status != expected && intent.status != next {
+            return Err(SessionStoreError::Conflict(format!(
+                "run control operation {operation_id} is {}, expected {}",
+                intent.status.as_str(),
+                expected.as_str()
+            )));
+        }
+        intent
+            .advance(next, occurred_at)
+            .map_err(|error| SessionStoreError::Conflict(error.to_string()))?;
+        inner
+            .control_receipts
+            .insert(intent.receipt.receipt_id.clone(), intent.receipt.clone());
+        inner.run_control_intents.insert(key, intent.clone());
+        Ok(intent)
+    }
+
+    async fn reconcile_run_control_intent(
+        &self,
+        target: &ManagedRunTarget,
+        operation_id: &str,
+        occurred_at: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<DurableRunControlIntent> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        let key = (target.clone(), operation_id.to_string());
+        let mut intent = inner
+            .run_control_intents
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| SessionStoreError::NotFound(operation_id.to_string()))?;
+        intent
+            .advance(DurableRunControlStatus::Reconciled, occurred_at)
+            .map_err(|error| SessionStoreError::Conflict(error.to_string()))?;
+        inner
+            .control_receipts
+            .insert(intent.receipt.receipt_id.clone(), intent.receipt.clone());
+        inner.run_control_intents.insert(key, intent.clone());
+        Ok(intent)
     }
 
     async fn load_control_receipt(
@@ -2923,6 +3510,10 @@ impl SessionStore for InMemorySessionStore {
 
     async fn list_sessions(&self, filter: SessionFilter) -> SessionStoreResult<Vec<SessionRecord>> {
         self.list_session_records(filter)
+    }
+
+    async fn list_session_page(&self, query: SessionPageQuery) -> SessionStoreResult<SessionPage> {
+        self.list_session_record_page(&query)
     }
 
     async fn update_session_status(

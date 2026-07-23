@@ -1,0 +1,19 @@
+{
+  "method": "initialize",
+  "params": {
+    "clientInfo": {
+      "name": "invalid-client",
+      "version": "0.10.0"
+    },
+    "protocol": {
+      "major": 1,
+      "name": "starweaver.host",
+      "revision": "2026-07-21",
+      "schemaDigest": "sha256:a4db512d5254bf66dedfacac0b3c8609bb767eb449472245ac3a43e067f13226"
+    },
+    "requiredFeatures": [],
+    "supportedFeatures": [
+      "Runs"
+    ]
+  }
+}

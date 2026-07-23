@@ -247,25 +247,52 @@ install-script-check: ## Validate GitHub install and update script semantics
 	@echo "Checking install script"
 	@$(XTASK) check-install-script
 
+.PHONY: rpc-idl-generate
+rpc-idl-generate: ## Generate the bundled host IDL, Rust bindings, and Desktop safe surface
+	@$(XTASK) generate-rpc-idl
+
+.PHONY: rpc-typescript-generate
+rpc-typescript-generate: ## Generate complete TypeScript host bindings into OUTPUT=<directory>
+	@$(XTASK) generate-rpc-typescript --output "$(OUTPUT)"
+
+.PHONY: rpc-idl-source-check
+rpc-idl-source-check: ## Validate canonical OpenRPC source, extensions, references, and digest
+	@$(XTASK) check-rpc-idl-source
+
+.PHONY: rpc-idl-fixtures-check
+rpc-idl-fixtures-check: ## Validate canonical and invalid host protocol fixtures
+	@$(XTASK) check-rpc-idl-fixtures
+
+.PHONY: rpc-idl-drift-check
+rpc-idl-drift-check: ## Regenerate in temporary state and compare all tracked outputs read-only
+	@$(XTASK) check-rpc-idl
+
+.PHONY: rpc-idl-boundaries-check
+rpc-idl-boundaries-check: architecture-check desktop-boundaries-check ## Validate generated authority and deleted handwritten boundary
+	@cargo test -p starweaver-rpc-core --test generated_protocol --locked
+
+.PHONY: rpc-idl-check
+rpc-idl-check: rpc-idl-source-check rpc-idl-drift-check rpc-idl-fixtures-check rpc-idl-boundaries-check desktop-frontend-check ## Run IDL source, generation, boundaries, Rust/Desktop, and fixture checks
+
 .PHONY: rpc-contracts-check
-rpc-contracts-check: ## Validate RPC v1 corpus, schema, typed decode, stdio, and loopback HTTP
-	@echo "Checking RPC v1 wire contracts across transports"
+rpc-contracts-check: ## Validate generated host bindings, typed service behavior, stdio, and loopback HTTP
+	@echo "Checking generated starweaver.host contracts across transports"
 	@$(XTASK) check-rpc-contracts
 
-.PHONY: rpc-contracts-generate
-rpc-contracts-generate: ## Regenerate the deterministic RPC v1 corpus schema
-	@echo "Generating RPC v1 wire contract schema"
-	@$(XTASK) generate-rpc-contracts
-
 .PHONY: rpc-transports-check
-rpc-transports-check: ## Validate RPC v1 corpus/schema plus stdio and loopback HTTP
-	@echo "Checking RPC v1 wire contracts through stdio and loopback HTTP"
+rpc-transports-check: ## Validate the exact generated host identity through stdio and loopback HTTP
+	@echo "Checking generated starweaver.host identity through stdio and loopback HTTP"
 	@$(XTASK) check-rpc-transports
 
 .PHONY: rpc-interop-e2e
 rpc-interop-e2e: ## Run real CLI/RPC bidirectional subprocess interoperability
 	@echo "Checking CLI/RPC bidirectional interoperability"
 	@$(XTASK) check-rpc-interop-e2e
+
+.PHONY: rpc-independent-client-check
+rpc-independent-client-check: ## Run the bundle-only independent Python client through stdio and HTTP
+	@cargo build -p starweaver-rpc --bin starweaver-rpc --locked
+	@python3 tests/protocol-client/client.py --rpc-binary "target/debug/starweaver-rpc$(if $(filter Windows_NT,$(OS)),.exe,)" --bundle protocol/host/generated/starweaver-host.openrpc.json
 
 .PHONY: rpc-integration-check
 rpc-integration-check: ## Validate RPC transports and CLI interoperability with shared binaries
@@ -277,7 +304,7 @@ rpc-ci-check: test ## Run ordered workspace and shared-binary RPC integration te
 	@$(MAKE) --no-print-directory rpc-integration-check
 
 .PHONY: scripts-check
-scripts-check: architecture-check capability-check desktop-boundaries-check cli-examples-check install-script-check ## Validate repository automation scripts through xtask
+scripts-check: architecture-check capability-check desktop-boundaries-check rpc-idl-source-check rpc-idl-drift-check cli-examples-check install-script-check ## Validate repository automation scripts through xtask
 	@echo "Checking repository scripts"
 	@$(XTASK) check-repository-scripts
 

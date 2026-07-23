@@ -1,7 +1,7 @@
 //! Live SDK streaming helpers.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -414,28 +414,63 @@ pub struct AgentControlHandle {
     cancellation_token: CancellationToken,
     latest_context: Arc<tokio::sync::Mutex<AgentContext>>,
     pending_messages: Arc<tokio::sync::Mutex<VecDeque<BusMessage>>>,
+    delivery_lock: Arc<tokio::sync::Mutex<()>>,
+    accepted_operations: Arc<Mutex<HashMap<String, AgentControlReceipt>>>,
+    consumed_operation_ids: Arc<Mutex<HashSet<String>>>,
     finished: Arc<AtomicBool>,
     receiver_closed: Arc<AtomicBool>,
 }
 
 impl AgentControlHandle {
     /// Request cooperative cancellation of the active run.
+    ///
+    /// This compatibility wrapper uses the historical `interrupt` operation identity. Durable
+    /// callers should use [`Self::interrupt_idempotent`] with their deterministic operation id.
     #[must_use]
     pub fn interrupt(&self, reason: Option<String>) -> AgentControlReceipt {
+        self.interrupt_idempotent("interrupt", reason)
+    }
+
+    /// Request cooperative cancellation exactly once for one operation identity.
+    #[must_use]
+    pub fn interrupt_idempotent(
+        &self,
+        operation_id: impl Into<String>,
+        reason: Option<String>,
+    ) -> AgentControlReceipt {
+        let operation_id = operation_id.into();
         let reason = reason.unwrap_or_else(|| "agent stream interruption requested".to_string());
+        let mut accepted = self
+            .accepted_operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = accepted.get(&operation_id) {
+            return existing.clone();
+        }
+        let receipt = AgentControlReceipt {
+            id: operation_id.clone(),
+            kind: AgentControlKind::Interrupt,
+            pending_delivery: false,
+            run_id: None,
+            session_id: None,
+        };
+        accepted.insert(operation_id.clone(), receipt.clone());
+        drop(accepted);
         match self.interrupt_reason.lock() {
             Ok(mut stored) => *stored = Some(reason),
             Err(error) => *error.into_inner() = Some(reason),
         }
         self.interrupted.store(true, Ordering::SeqCst);
         self.cancellation_token.cancel();
-        AgentControlReceipt {
-            id: "interrupt".to_string(),
-            kind: AgentControlKind::Interrupt,
-            pending_delivery: false,
-            run_id: None,
-            session_id: None,
+        match self.consumed_operation_ids.lock() {
+            Ok(mut consumed) => {
+                consumed.insert(operation_id);
+            }
+            Err(error) => {
+                error.into_inner().insert(operation_id);
+            }
         }
+        receipt
     }
 
     /// Queue a message for injection into the active runtime context.
@@ -499,6 +534,18 @@ impl AgentControlHandle {
     ) -> Result<AgentControlReceipt, AgentControlError> {
         let id = id.into();
         let text = text.into();
+        // Serialize exact retries with queue acceptance so every accepted operation ID returns the
+        // original receipt and a conflicting payload can never cross the delivery boundary.
+        let _delivery_guard = self.delivery_lock.lock().await;
+        {
+            let accepted = self
+                .accepted_operations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(existing) = accepted.get(&id) {
+                return Ok(existing.clone());
+            }
+        }
         let mut message = BusMessage::text(text, "user").with_id(id.clone());
         message.metadata.insert(
             "starweaver.topic".to_string(),
@@ -506,7 +553,20 @@ impl AgentControlHandle {
         );
         let mut receipt = self.send_message(message).await?;
         receipt.kind = AgentControlKind::Steering;
+        self.accepted_operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, receipt.clone());
         Ok(receipt)
+    }
+
+    /// Return whether a deterministic operation crossed the runtime consumption boundary.
+    #[must_use]
+    pub fn operation_consumed(&self, operation_id: &str) -> bool {
+        match self.consumed_operation_ids.lock() {
+            Ok(consumed) => consumed.contains(operation_id),
+            Err(error) => error.into_inner().contains(operation_id),
+        }
     }
 
     /// Export the latest observed recoverable run state.
@@ -517,6 +577,7 @@ impl AgentControlHandle {
     fn drain_capability(&self) -> Arc<dyn AgentCapability> {
         Arc::new(AgentControlDrainCapability {
             pending_messages: self.pending_messages.clone(),
+            consumed_operation_ids: self.consumed_operation_ids.clone(),
             finished: self.finished.clone(),
         })
     }
@@ -543,6 +604,9 @@ fn new_control_handle(
         cancellation_token,
         latest_context,
         pending_messages: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
+        delivery_lock: Arc::new(tokio::sync::Mutex::new(())),
+        accepted_operations: Arc::new(Mutex::new(HashMap::new())),
+        consumed_operation_ids: Arc::new(Mutex::new(HashSet::new())),
         finished: Arc::new(AtomicBool::new(false)),
         receiver_closed,
     }
@@ -633,6 +697,7 @@ impl AgentControlErrorCode {
 
 struct AgentControlDrainCapability {
     pending_messages: Arc<tokio::sync::Mutex<VecDeque<BusMessage>>>,
+    consumed_operation_ids: Arc<Mutex<HashSet<String>>>,
     finished: Arc<AtomicBool>,
 }
 
@@ -676,19 +741,23 @@ impl AgentCapability for AgentControlDrainCapability {
 impl AgentControlDrainCapability {
     async fn drain(&self, context: &mut AgentContext) {
         let mut pending = self.pending_messages.lock().await;
-        drain_pending_control_messages(&mut pending, context);
+        drain_pending_control_messages(&mut pending, context, &self.consumed_operation_ids);
     }
 
     async fn drain_before_terminal_guard(&self, context: &mut AgentContext) {
         let mut pending = self.pending_messages.lock().await;
-        drain_pending_control_messages(&mut pending, context);
+        drain_pending_control_messages(&mut pending, context, &self.consumed_operation_ids);
         if !has_pending_runtime_steering(context) {
             self.finished.store(true, Ordering::SeqCst);
         }
     }
 }
 
-fn drain_pending_control_messages(pending: &mut VecDeque<BusMessage>, context: &mut AgentContext) {
+fn drain_pending_control_messages(
+    pending: &mut VecDeque<BusMessage>,
+    context: &mut AgentContext,
+    consumed_operation_ids: &Mutex<HashSet<String>>,
+) {
     while let Some(message) = pending.pop_front() {
         let id = message.id.clone();
         let existed = context
@@ -702,6 +771,14 @@ fn drain_pending_control_messages(pending: &mut VecDeque<BusMessage>, context: &
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned);
         let accepted = context.send_message(message);
+        match consumed_operation_ids.lock() {
+            Ok(mut consumed) => {
+                consumed.insert(id.clone());
+            }
+            Err(error) => {
+                error.into_inner().insert(id.clone());
+            }
+        }
         if existed {
             continue;
         }

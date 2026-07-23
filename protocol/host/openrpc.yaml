@@ -1,0 +1,3051 @@
+{
+  "components": {
+    "errors": {
+      "AlreadyExists": {
+        "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+      },
+      "AuthorizationDenied": {
+        "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+      },
+      "ConfigurationFailed": {
+        "$ref": "./schemas/errors.yaml#/components/errors/ConfigurationFailed"
+      },
+      "CursorInvalid": {
+        "$ref": "./schemas/errors.yaml#/components/errors/CursorInvalid"
+      },
+      "EnvironmentUnavailable": {
+        "$ref": "./schemas/errors.yaml#/components/errors/EnvironmentUnavailable"
+      },
+      "IdempotencyConflict": {
+        "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+      },
+      "InternalError": {
+        "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+      },
+      "InvalidParams": {
+        "$ref": "./schemas/errors.yaml#/components/errors/InvalidParams"
+      },
+      "InvalidRequest": {
+        "$ref": "./schemas/errors.yaml#/components/errors/InvalidRequest"
+      },
+      "MethodNotFound": {
+        "$ref": "./schemas/errors.yaml#/components/errors/MethodNotFound"
+      },
+      "NotFound": {
+        "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+      },
+      "NotInitialized": {
+        "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+      },
+      "ParseError": {
+        "$ref": "./schemas/errors.yaml#/components/errors/ParseError"
+      },
+      "RunConflict": {
+        "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+      },
+      "SessionSearchUnavailable": {
+        "$ref": "./schemas/errors.yaml#/components/errors/SessionSearchUnavailable"
+      },
+      "StaleFence": {
+        "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+      },
+      "StorageUnavailable": {
+        "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+      },
+      "UnsupportedFeature": {
+        "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+      }
+    },
+    "schemas": {
+      "AlreadyExistsData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/AlreadyExistsData"
+      },
+      "ApprovalChangedEvent": {
+        "$ref": "./schemas/events.yaml#/components/schemas/ApprovalChangedEvent"
+      },
+      "ApprovalDecideParams": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/ApprovalDecideParams"
+      },
+      "ApprovalDecideResult": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/ApprovalDecideResult"
+      },
+      "ApprovalId": {
+        "$ref": "./schemas/common.yaml#/components/schemas/ApprovalId"
+      },
+      "ApprovalListResult": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/ApprovalListResult"
+      },
+      "ApprovalShowParams": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/ApprovalShowParams"
+      },
+      "ApprovalShowResult": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/ApprovalShowResult"
+      },
+      "ApprovalStatus": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/ApprovalStatus"
+      },
+      "ApprovalSummary": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/ApprovalSummary"
+      },
+      "AttachmentId": {
+        "$ref": "./schemas/common.yaml#/components/schemas/AttachmentId"
+      },
+      "AttachmentScope": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/AttachmentScope"
+      },
+      "AuthorizationDeniedData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/AuthorizationDeniedData"
+      },
+      "CatalogListParams": {
+        "$ref": "./schemas/profiles.yaml#/components/schemas/CatalogListParams"
+      },
+      "CatalogListResult": {
+        "$ref": "./schemas/profiles.yaml#/components/schemas/CatalogListResult"
+      },
+      "ClarificationChangedEvent": {
+        "$ref": "./schemas/events.yaml#/components/schemas/ClarificationChangedEvent"
+      },
+      "ClarificationId": {
+        "$ref": "./schemas/common.yaml#/components/schemas/ClarificationId"
+      },
+      "ClarificationResolveParams": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/ClarificationResolveParams"
+      },
+      "ClarificationResolveResult": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/ClarificationResolveResult"
+      },
+      "ClarificationStatus": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/ClarificationStatus"
+      },
+      "ClarificationSummary": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/ClarificationSummary"
+      },
+      "ClientInfo": {
+        "$ref": "./schemas/common.yaml#/components/schemas/ClientInfo"
+      },
+      "ConfigurationFailedData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/ConfigurationFailedData"
+      },
+      "ConnectionAttachmentScope": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/ConnectionAttachmentScope"
+      },
+      "ContinuationMode": {
+        "$ref": "./schemas/runs.yaml#/components/schemas/ContinuationMode"
+      },
+      "CursorInvalidData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/CursorInvalidData"
+      },
+      "CursorInvalidReason": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/CursorInvalidReason"
+      },
+      "DecimalU64": {
+        "$ref": "./schemas/common.yaml#/components/schemas/DecimalU64"
+      },
+      "DeferredChangedEvent": {
+        "$ref": "./schemas/events.yaml#/components/schemas/DeferredChangedEvent"
+      },
+      "DeferredCompleteParams": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredCompleteParams"
+      },
+      "DeferredCompleteResult": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredCompleteResult"
+      },
+      "DeferredFailParams": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredFailParams"
+      },
+      "DeferredFailResult": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredFailResult"
+      },
+      "DeferredId": {
+        "$ref": "./schemas/common.yaml#/components/schemas/DeferredId"
+      },
+      "DeferredListResult": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredListResult"
+      },
+      "DeferredShowParams": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredShowParams"
+      },
+      "DeferredShowResult": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredShowResult"
+      },
+      "DeferredStatus": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredStatus"
+      },
+      "DeferredSummary": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredSummary"
+      },
+      "DeferredToolDefinition": {
+        "$ref": "./schemas/sessions.yaml#/components/schemas/DeferredToolDefinition"
+      },
+      "DiagnosticEvent": {
+        "$ref": "./schemas/events.yaml#/components/schemas/DiagnosticEvent"
+      },
+      "DiagnosticsGetParams": {
+        "$ref": "./schemas/management.yaml#/components/schemas/DiagnosticsGetParams"
+      },
+      "DiagnosticsGetResult": {
+        "$ref": "./schemas/management.yaml#/components/schemas/DiagnosticsGetResult"
+      },
+      "EmptyParams": {
+        "$ref": "./schemas/common.yaml#/components/schemas/EmptyParams"
+      },
+      "EmptyResult": {
+        "$ref": "./schemas/common.yaml#/components/schemas/EmptyResult"
+      },
+      "EnvironmentAttachParams": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentAttachParams"
+      },
+      "EnvironmentAttachResult": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentAttachResult"
+      },
+      "EnvironmentAttachment": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentAttachment"
+      },
+      "EnvironmentChangedEvent": {
+        "$ref": "./schemas/events.yaml#/components/schemas/EnvironmentChangedEvent"
+      },
+      "EnvironmentDetachParams": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentDetachParams"
+      },
+      "EnvironmentDetachResult": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentDetachResult"
+      },
+      "EnvironmentHealthParams": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentHealthParams"
+      },
+      "EnvironmentHealthResult": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentHealthResult"
+      },
+      "EnvironmentId": {
+        "$ref": "./schemas/common.yaml#/components/schemas/EnvironmentId"
+      },
+      "EnvironmentListParams": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentListParams"
+      },
+      "EnvironmentListResult": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentListResult"
+      },
+      "EnvironmentMountListParams": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentMountListParams"
+      },
+      "EnvironmentMountListResult": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentMountListResult"
+      },
+      "EnvironmentMountParams": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentMountParams"
+      },
+      "EnvironmentMountResult": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentMountResult"
+      },
+      "EnvironmentMountSummary": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentMountSummary"
+      },
+      "EnvironmentStatus": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentStatus"
+      },
+      "EnvironmentUnavailableData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/EnvironmentUnavailableData"
+      },
+      "EnvironmentUnmountParams": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentUnmountParams"
+      },
+      "EnvironmentUnmountResult": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentUnmountResult"
+      },
+      "EventDelivery": {
+        "$ref": "./schemas/events.yaml#/components/schemas/EventDelivery"
+      },
+      "EventId": {
+        "$ref": "./schemas/common.yaml#/components/schemas/EventId"
+      },
+      "EventProfile": {
+        "$ref": "./schemas/events.yaml#/components/schemas/EventProfile"
+      },
+      "EventRecord": {
+        "$ref": "./schemas/events.yaml#/components/schemas/EventRecord"
+      },
+      "EventViewRequest": {
+        "$ref": "./schemas/events.yaml#/components/schemas/EventViewRequest"
+      },
+      "EventsReplayParams": {
+        "$ref": "./schemas/events.yaml#/components/schemas/EventsReplayParams"
+      },
+      "EventsReplayResult": {
+        "$ref": "./schemas/events.yaml#/components/schemas/EventsReplayResult"
+      },
+      "EventsSubscribeParams": {
+        "$ref": "./schemas/events.yaml#/components/schemas/EventsSubscribeParams"
+      },
+      "EventsSubscribeResult": {
+        "$ref": "./schemas/events.yaml#/components/schemas/EventsSubscribeResult"
+      },
+      "EventsUnsubscribeParams": {
+        "$ref": "./schemas/events.yaml#/components/schemas/EventsUnsubscribeParams"
+      },
+      "EventsUnsubscribeResult": {
+        "$ref": "./schemas/events.yaml#/components/schemas/EventsUnsubscribeResult"
+      },
+      "FeatureId": {
+        "$ref": "./schemas/initialize.yaml#/components/schemas/FeatureId"
+      },
+      "GlobalResourceScope": {
+        "$ref": "./schemas/common.yaml#/components/schemas/GlobalResourceScope"
+      },
+      "HostEvent": {
+        "$ref": "./schemas/events.yaml#/components/schemas/HostEvent"
+      },
+      "HostEventCursor": {
+        "$ref": "./schemas/common.yaml#/components/schemas/HostEventCursor"
+      },
+      "HostEventNotificationParams": {
+        "$ref": "./schemas/events.yaml#/components/schemas/HostEventNotificationParams"
+      },
+      "IdempotencyConflictData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/IdempotencyConflictData"
+      },
+      "IdempotencyKey": {
+        "$ref": "./schemas/common.yaml#/components/schemas/IdempotencyKey"
+      },
+      "InitializeParams": {
+        "$ref": "./schemas/initialize.yaml#/components/schemas/InitializeParams"
+      },
+      "InitializeResult": {
+        "$ref": "./schemas/initialize.yaml#/components/schemas/InitializeResult"
+      },
+      "InputPart": {
+        "$ref": "./schemas/common.yaml#/components/schemas/InputPart"
+      },
+      "InteractionListParams": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/InteractionListParams"
+      },
+      "InternalErrorData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/InternalErrorData"
+      },
+      "InvalidParamsData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/InvalidParamsData"
+      },
+      "InvalidRequestData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/InvalidRequestData"
+      },
+      "LaunchCapabilityCaps": {
+        "$ref": "./schemas/launch.yaml#/components/schemas/LaunchCapabilityCaps"
+      },
+      "LaunchCompatibility": {
+        "$ref": "./schemas/initialize.yaml#/components/schemas/LaunchCompatibility"
+      },
+      "LaunchDatabase": {
+        "$ref": "./schemas/launch.yaml#/components/schemas/LaunchDatabase"
+      },
+      "LaunchEnvelope": {
+        "$ref": "./schemas/launch.yaml#/components/schemas/LaunchEnvelope"
+      },
+      "LaunchProfile": {
+        "$ref": "./schemas/launch.yaml#/components/schemas/LaunchProfile"
+      },
+      "LaunchProvider": {
+        "$ref": "./schemas/launch.yaml#/components/schemas/LaunchProvider"
+      },
+      "LaunchSchemaIdentity": {
+        "$ref": "./schemas/launch.yaml#/components/schemas/LaunchSchemaIdentity"
+      },
+      "LaunchWorkspace": {
+        "$ref": "./schemas/launch.yaml#/components/schemas/LaunchWorkspace"
+      },
+      "MethodNotFoundData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/MethodNotFoundData"
+      },
+      "ModelSelectParams": {
+        "$ref": "./schemas/profiles.yaml#/components/schemas/ModelSelectParams"
+      },
+      "ModelSelectResult": {
+        "$ref": "./schemas/profiles.yaml#/components/schemas/ModelSelectResult"
+      },
+      "ModelSelection": {
+        "$ref": "./schemas/profiles.yaml#/components/schemas/ModelSelection"
+      },
+      "ModelSelectionGetParams": {
+        "$ref": "./schemas/profiles.yaml#/components/schemas/ModelSelectionGetParams"
+      },
+      "ModelSelectionGetResult": {
+        "$ref": "./schemas/profiles.yaml#/components/schemas/ModelSelectionGetResult"
+      },
+      "MutationReceipt": {
+        "$ref": "./schemas/common.yaml#/components/schemas/MutationReceipt"
+      },
+      "NotFoundData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/NotFoundData"
+      },
+      "NotInitializedData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/NotInitializedData"
+      },
+      "OutputAvailableEvent": {
+        "$ref": "./schemas/events.yaml#/components/schemas/OutputAvailableEvent"
+      },
+      "PageInfo": {
+        "$ref": "./schemas/common.yaml#/components/schemas/PageInfo"
+      },
+      "ParseErrorData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/ParseErrorData"
+      },
+      "ProfileDetail": {
+        "$ref": "./schemas/profiles.yaml#/components/schemas/ProfileDetail"
+      },
+      "ProfileGetParams": {
+        "$ref": "./schemas/profiles.yaml#/components/schemas/ProfileGetParams"
+      },
+      "ProfileGetResult": {
+        "$ref": "./schemas/profiles.yaml#/components/schemas/ProfileGetResult"
+      },
+      "ProfileSummary": {
+        "$ref": "./schemas/profiles.yaml#/components/schemas/ProfileSummary"
+      },
+      "ProtocolIdentity": {
+        "$ref": "./schemas/common.yaml#/components/schemas/ProtocolIdentity"
+      },
+      "ReceiptId": {
+        "$ref": "./schemas/common.yaml#/components/schemas/ReceiptId"
+      },
+      "RequestId": {
+        "$ref": "./schemas/common.yaml#/components/schemas/RequestId"
+      },
+      "ResourceInputPart": {
+        "$ref": "./schemas/common.yaml#/components/schemas/ResourceInputPart"
+      },
+      "ResourceScope": {
+        "$ref": "./schemas/common.yaml#/components/schemas/ResourceScope"
+      },
+      "RunAttachmentScope": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/RunAttachmentScope"
+      },
+      "RunChangedEvent": {
+        "$ref": "./schemas/events.yaml#/components/schemas/RunChangedEvent"
+      },
+      "RunConflictData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/RunConflictData"
+      },
+      "RunId": {
+        "$ref": "./schemas/common.yaml#/components/schemas/RunId"
+      },
+      "RunInterruptParams": {
+        "$ref": "./schemas/runs.yaml#/components/schemas/RunInterruptParams"
+      },
+      "RunInterruptResult": {
+        "$ref": "./schemas/runs.yaml#/components/schemas/RunInterruptResult"
+      },
+      "RunResourceScope": {
+        "$ref": "./schemas/common.yaml#/components/schemas/RunResourceScope"
+      },
+      "RunResumeParams": {
+        "$ref": "./schemas/runs.yaml#/components/schemas/RunResumeParams"
+      },
+      "RunResumeResult": {
+        "$ref": "./schemas/runs.yaml#/components/schemas/RunResumeResult"
+      },
+      "RunStartParams": {
+        "$ref": "./schemas/runs.yaml#/components/schemas/RunStartParams"
+      },
+      "RunStartResult": {
+        "$ref": "./schemas/runs.yaml#/components/schemas/RunStartResult"
+      },
+      "RunStatus": {
+        "$ref": "./schemas/runs.yaml#/components/schemas/RunStatus"
+      },
+      "RunStatusParams": {
+        "$ref": "./schemas/runs.yaml#/components/schemas/RunStatusParams"
+      },
+      "RunStatusResult": {
+        "$ref": "./schemas/runs.yaml#/components/schemas/RunStatusResult"
+      },
+      "RunSteerParams": {
+        "$ref": "./schemas/runs.yaml#/components/schemas/RunSteerParams"
+      },
+      "RunSteerResult": {
+        "$ref": "./schemas/runs.yaml#/components/schemas/RunSteerResult"
+      },
+      "RunSummary": {
+        "$ref": "./schemas/runs.yaml#/components/schemas/RunSummary"
+      },
+      "RuntimeBuildIdentity": {
+        "$ref": "./schemas/initialize.yaml#/components/schemas/RuntimeBuildIdentity"
+      },
+      "SchemaDigest": {
+        "$ref": "./schemas/common.yaml#/components/schemas/SchemaDigest"
+      },
+      "ServerInfo": {
+        "$ref": "./schemas/common.yaml#/components/schemas/ServerInfo"
+      },
+      "SessionAttachmentScope": {
+        "$ref": "./schemas/environments.yaml#/components/schemas/SessionAttachmentScope"
+      },
+      "SessionChangedEvent": {
+        "$ref": "./schemas/events.yaml#/components/schemas/SessionChangedEvent"
+      },
+      "SessionCreateParams": {
+        "$ref": "./schemas/sessions.yaml#/components/schemas/SessionCreateParams"
+      },
+      "SessionCreateResult": {
+        "$ref": "./schemas/sessions.yaml#/components/schemas/SessionCreateResult"
+      },
+      "SessionDeleteParams": {
+        "$ref": "./schemas/sessions.yaml#/components/schemas/SessionDeleteParams"
+      },
+      "SessionDeleteResult": {
+        "$ref": "./schemas/sessions.yaml#/components/schemas/SessionDeleteResult"
+      },
+      "SessionForkParams": {
+        "$ref": "./schemas/sessions.yaml#/components/schemas/SessionForkParams"
+      },
+      "SessionForkResult": {
+        "$ref": "./schemas/sessions.yaml#/components/schemas/SessionForkResult"
+      },
+      "SessionGetParams": {
+        "$ref": "./schemas/sessions.yaml#/components/schemas/SessionGetParams"
+      },
+      "SessionGetResult": {
+        "$ref": "./schemas/sessions.yaml#/components/schemas/SessionGetResult"
+      },
+      "SessionId": {
+        "$ref": "./schemas/common.yaml#/components/schemas/SessionId"
+      },
+      "SessionListParams": {
+        "$ref": "./schemas/sessions.yaml#/components/schemas/SessionListParams"
+      },
+      "SessionListResult": {
+        "$ref": "./schemas/sessions.yaml#/components/schemas/SessionListResult"
+      },
+      "SessionResourceScope": {
+        "$ref": "./schemas/common.yaml#/components/schemas/SessionResourceScope"
+      },
+      "SessionSearchHit": {
+        "$ref": "./schemas/search.yaml#/components/schemas/SessionSearchHit"
+      },
+      "SessionSearchMode": {
+        "$ref": "./schemas/search.yaml#/components/schemas/SessionSearchMode"
+      },
+      "SessionSearchParams": {
+        "$ref": "./schemas/search.yaml#/components/schemas/SessionSearchParams"
+      },
+      "SessionSearchResult": {
+        "$ref": "./schemas/search.yaml#/components/schemas/SessionSearchResult"
+      },
+      "SessionSearchUnavailableData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/SessionSearchUnavailableData"
+      },
+      "SessionStatus": {
+        "$ref": "./schemas/sessions.yaml#/components/schemas/SessionStatus"
+      },
+      "SessionSummary": {
+        "$ref": "./schemas/sessions.yaml#/components/schemas/SessionSummary"
+      },
+      "ShutdownParams": {
+        "$ref": "./schemas/management.yaml#/components/schemas/ShutdownParams"
+      },
+      "ShutdownResult": {
+        "$ref": "./schemas/management.yaml#/components/schemas/ShutdownResult"
+      },
+      "StaleFenceData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/StaleFenceData"
+      },
+      "StartupReconciliation": {
+        "$ref": "./schemas/initialize.yaml#/components/schemas/StartupReconciliation"
+      },
+      "StorageCompatibility": {
+        "$ref": "./schemas/initialize.yaml#/components/schemas/StorageCompatibility"
+      },
+      "StorageUnavailableData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/StorageUnavailableData"
+      },
+      "SubscriptionClosedNotificationParams": {
+        "$ref": "./schemas/events.yaml#/components/schemas/SubscriptionClosedNotificationParams"
+      },
+      "SubscriptionClosedReason": {
+        "$ref": "./schemas/events.yaml#/components/schemas/SubscriptionClosedReason"
+      },
+      "SubscriptionId": {
+        "$ref": "./schemas/common.yaml#/components/schemas/SubscriptionId"
+      },
+      "TextInputPart": {
+        "$ref": "./schemas/common.yaml#/components/schemas/TextInputPart"
+      },
+      "Timestamp": {
+        "$ref": "./schemas/common.yaml#/components/schemas/Timestamp"
+      },
+      "UnsupportedFeatureData": {
+        "$ref": "./schemas/errors.yaml#/components/schemas/UnsupportedFeatureData"
+      },
+      "WorkspaceCompatibility": {
+        "$ref": "./schemas/initialize.yaml#/components/schemas/WorkspaceCompatibility"
+      },
+      "JsonObject": {
+        "$ref": "./schemas/common.yaml#/components/schemas/JsonObject"
+      },
+      "ClarificationQuestionOption": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/ClarificationQuestionOption"
+      },
+      "ClarificationQuestion": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/ClarificationQuestion"
+      },
+      "ClarificationAnswer": {
+        "$ref": "./schemas/interactions.yaml#/components/schemas/ClarificationAnswer"
+      }
+    }
+  },
+  "info": {
+    "description": "Sole IDL-first starweaver.host major-1 contract.",
+    "title": "Starweaver Host Protocol",
+    "version": "0.10.0"
+  },
+  "methods": [
+    {
+      "description": "Canonical typed Starweaver host operation `initialize`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        }
+      ],
+      "name": "initialize",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/initialize.yaml#/components/schemas/InitializeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/initialize.yaml#/components/schemas/InitializeResult"
+        }
+      },
+      "summary": "Execute initialize",
+      "x-starweaver-features": [],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "InitializeParams",
+      "x-starweaver-result-type": "InitializeResult",
+      "x-starweaver-scopes": [
+        "public"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `shutdown`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        }
+      ],
+      "name": "shutdown",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/management.yaml#/components/schemas/ShutdownParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/management.yaml#/components/schemas/ShutdownResult"
+        }
+      },
+      "summary": "Execute shutdown",
+      "x-starweaver-features": [
+        "host.shutdown"
+      ],
+      "x-starweaver-idempotency": "effectful",
+      "x-starweaver-params-type": "ShutdownParams",
+      "x-starweaver-result-type": "ShutdownResult",
+      "x-starweaver-scopes": [
+        "shutdown"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `diagnostics.get`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        }
+      ],
+      "name": "diagnostics.get",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/management.yaml#/components/schemas/DiagnosticsGetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/management.yaml#/components/schemas/DiagnosticsGetResult"
+        }
+      },
+      "summary": "Execute diagnostics.get",
+      "x-starweaver-features": [
+        "diagnostics.safe"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "DiagnosticsGetParams",
+      "x-starweaver-result-type": "DiagnosticsGetResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `catalog.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        }
+      ],
+      "name": "catalog.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/profiles.yaml#/components/schemas/CatalogListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/profiles.yaml#/components/schemas/CatalogListResult"
+        }
+      },
+      "summary": "Execute catalog.list",
+      "x-starweaver-features": [
+        "profiles"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "CatalogListParams",
+      "x-starweaver-result-type": "CatalogListResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `profile.get`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        }
+      ],
+      "name": "profile.get",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/profiles.yaml#/components/schemas/ProfileGetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/profiles.yaml#/components/schemas/ProfileGetResult"
+        }
+      },
+      "summary": "Execute profile.get",
+      "x-starweaver-features": [
+        "profiles"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "ProfileGetParams",
+      "x-starweaver-result-type": "ProfileGetResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `model.selection.get`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        }
+      ],
+      "name": "model.selection.get",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/profiles.yaml#/components/schemas/ModelSelectionGetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/profiles.yaml#/components/schemas/ModelSelectionGetResult"
+        }
+      },
+      "summary": "Execute model.selection.get",
+      "x-starweaver-features": [
+        "profiles"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "ModelSelectionGetParams",
+      "x-starweaver-result-type": "ModelSelectionGetResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `model.select`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        }
+      ],
+      "name": "model.select",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/profiles.yaml#/components/schemas/ModelSelectParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/profiles.yaml#/components/schemas/ModelSelectResult"
+        }
+      },
+      "summary": "Execute model.select",
+      "x-starweaver-features": [
+        "profiles"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "ModelSelectParams",
+      "x-starweaver-result-type": "ModelSelectResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `session.create`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        }
+      ],
+      "name": "session.create",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/sessions.yaml#/components/schemas/SessionCreateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/sessions.yaml#/components/schemas/SessionCreateResult"
+        }
+      },
+      "summary": "Execute session.create",
+      "x-starweaver-features": [
+        "sessions"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "SessionCreateParams",
+      "x-starweaver-result-type": "SessionCreateResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `session.fork`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        }
+      ],
+      "name": "session.fork",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/sessions.yaml#/components/schemas/SessionForkParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/sessions.yaml#/components/schemas/SessionForkResult"
+        }
+      },
+      "summary": "Execute session.fork",
+      "x-starweaver-features": [
+        "session.fork",
+        "sessions"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "SessionForkParams",
+      "x-starweaver-result-type": "SessionForkResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `session.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        }
+      ],
+      "name": "session.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/sessions.yaml#/components/schemas/SessionListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/sessions.yaml#/components/schemas/SessionListResult"
+        }
+      },
+      "summary": "Execute session.list",
+      "x-starweaver-features": [
+        "sessions"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "SessionListParams",
+      "x-starweaver-result-type": "SessionListResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `session.search`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "session.search",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/search.yaml#/components/schemas/SessionSearchParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/search.yaml#/components/schemas/SessionSearchResult"
+        }
+      },
+      "summary": "Execute session.search",
+      "x-starweaver-features": [
+        "session.search",
+        "sessions"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "SessionSearchParams",
+      "x-starweaver-result-type": "SessionSearchResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `session.get`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "session.get",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/sessions.yaml#/components/schemas/SessionGetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/sessions.yaml#/components/schemas/SessionGetResult"
+        }
+      },
+      "summary": "Execute session.get",
+      "x-starweaver-features": [
+        "sessions"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "SessionGetParams",
+      "x-starweaver-result-type": "SessionGetResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `session.delete`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        }
+      ],
+      "name": "session.delete",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/sessions.yaml#/components/schemas/SessionDeleteParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/sessions.yaml#/components/schemas/SessionDeleteResult"
+        }
+      },
+      "summary": "Execute session.delete",
+      "x-starweaver-features": [
+        "sessions"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "SessionDeleteParams",
+      "x-starweaver-result-type": "SessionDeleteResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `run.start`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        }
+      ],
+      "name": "run.start",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/runs.yaml#/components/schemas/RunStartParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/runs.yaml#/components/schemas/RunStartResult"
+        }
+      },
+      "summary": "Execute run.start",
+      "x-starweaver-features": [
+        "runs"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "RunStartParams",
+      "x-starweaver-result-type": "RunStartResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `run.resume`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        }
+      ],
+      "name": "run.resume",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/runs.yaml#/components/schemas/RunResumeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/runs.yaml#/components/schemas/RunResumeResult"
+        }
+      },
+      "summary": "Execute run.resume",
+      "x-starweaver-features": [
+        "hitl",
+        "runs"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "RunResumeParams",
+      "x-starweaver-result-type": "RunResumeResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `run.status`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "run.status",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/runs.yaml#/components/schemas/RunStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/runs.yaml#/components/schemas/RunStatusResult"
+        }
+      },
+      "summary": "Execute run.status",
+      "x-starweaver-features": [
+        "runs"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "RunStatusParams",
+      "x-starweaver-result-type": "RunStatusResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `run.interrupt`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        }
+      ],
+      "name": "run.interrupt",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/runs.yaml#/components/schemas/RunInterruptParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/runs.yaml#/components/schemas/RunInterruptResult"
+        }
+      },
+      "summary": "Execute run.interrupt",
+      "x-starweaver-features": [
+        "runs"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "RunInterruptParams",
+      "x-starweaver-result-type": "RunInterruptResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `run.steer`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        }
+      ],
+      "name": "run.steer",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/runs.yaml#/components/schemas/RunSteerParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/runs.yaml#/components/schemas/RunSteerResult"
+        }
+      },
+      "summary": "Execute run.steer",
+      "x-starweaver-features": [
+        "runs",
+        "steering"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "RunSteerParams",
+      "x-starweaver-result-type": "RunSteerResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `events.replay`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/CursorInvalid"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "events.replay",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/events.yaml#/components/schemas/EventsReplayParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/events.yaml#/components/schemas/EventsReplayResult"
+        }
+      },
+      "summary": "Execute events.replay",
+      "x-starweaver-features": [
+        "events.replay"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "EventsReplayParams",
+      "x-starweaver-result-type": "EventsReplayResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `events.subscribe`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/CursorInvalid"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "events.subscribe",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/events.yaml#/components/schemas/EventsSubscribeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/events.yaml#/components/schemas/EventsSubscribeResult"
+        }
+      },
+      "summary": "Execute events.subscribe",
+      "x-starweaver-features": [
+        "events.subscribe"
+      ],
+      "x-starweaver-idempotency": "connection",
+      "x-starweaver-params-type": "EventsSubscribeParams",
+      "x-starweaver-result-type": "EventsSubscribeResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `events.unsubscribe`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "events.unsubscribe",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/events.yaml#/components/schemas/EventsUnsubscribeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/events.yaml#/components/schemas/EventsUnsubscribeResult"
+        }
+      },
+      "summary": "Execute events.unsubscribe",
+      "x-starweaver-features": [
+        "events.subscribe"
+      ],
+      "x-starweaver-idempotency": "connection",
+      "x-starweaver-params-type": "EventsUnsubscribeParams",
+      "x-starweaver-result-type": "EventsUnsubscribeResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `approval.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "approval.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/interactions.yaml#/components/schemas/InteractionListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/interactions.yaml#/components/schemas/ApprovalListResult"
+        }
+      },
+      "summary": "Execute approval.list",
+      "x-starweaver-features": [
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "InteractionListParams",
+      "x-starweaver-result-type": "ApprovalListResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `approval.show`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "approval.show",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/interactions.yaml#/components/schemas/ApprovalShowParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/interactions.yaml#/components/schemas/ApprovalShowResult"
+        }
+      },
+      "summary": "Execute approval.show",
+      "x-starweaver-features": [
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "ApprovalShowParams",
+      "x-starweaver-result-type": "ApprovalShowResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `approval.decide`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        }
+      ],
+      "name": "approval.decide",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/interactions.yaml#/components/schemas/ApprovalDecideParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/interactions.yaml#/components/schemas/ApprovalDecideResult"
+        }
+      },
+      "summary": "Execute approval.decide",
+      "x-starweaver-features": [
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "ApprovalDecideParams",
+      "x-starweaver-result-type": "ApprovalDecideResult",
+      "x-starweaver-scopes": [
+        "approval"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `deferred.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "deferred.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/interactions.yaml#/components/schemas/InteractionListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredListResult"
+        }
+      },
+      "summary": "Execute deferred.list",
+      "x-starweaver-features": [
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "InteractionListParams",
+      "x-starweaver-result-type": "DeferredListResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `deferred.show`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "deferred.show",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredShowParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredShowResult"
+        }
+      },
+      "summary": "Execute deferred.show",
+      "x-starweaver-features": [
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "DeferredShowParams",
+      "x-starweaver-result-type": "DeferredShowResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `deferred.complete`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        }
+      ],
+      "name": "deferred.complete",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredCompleteParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredCompleteResult"
+        }
+      },
+      "summary": "Execute deferred.complete",
+      "x-starweaver-features": [
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "DeferredCompleteParams",
+      "x-starweaver-result-type": "DeferredCompleteResult",
+      "x-starweaver-scopes": [
+        "approval"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `deferred.fail`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        }
+      ],
+      "name": "deferred.fail",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredFailParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/interactions.yaml#/components/schemas/DeferredFailResult"
+        }
+      },
+      "summary": "Execute deferred.fail",
+      "x-starweaver-features": [
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "DeferredFailParams",
+      "x-starweaver-result-type": "DeferredFailResult",
+      "x-starweaver-scopes": [
+        "approval"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `clarification.resolve`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        }
+      ],
+      "name": "clarification.resolve",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/interactions.yaml#/components/schemas/ClarificationResolveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/interactions.yaml#/components/schemas/ClarificationResolveResult"
+        }
+      },
+      "summary": "Execute clarification.resolve",
+      "x-starweaver-features": [
+        "clarifications",
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "ClarificationResolveParams",
+      "x-starweaver-result-type": "ClarificationResolveResult",
+      "x-starweaver-scopes": [
+        "approval"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `environment.attach`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/EnvironmentUnavailable"
+        }
+      ],
+      "name": "environment.attach",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentAttachParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentAttachResult"
+        }
+      },
+      "summary": "Execute environment.attach",
+      "x-starweaver-features": [
+        "environment.attachments"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "EnvironmentAttachParams",
+      "x-starweaver-result-type": "EnvironmentAttachResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `environment.detach`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/EnvironmentUnavailable"
+        }
+      ],
+      "name": "environment.detach",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentDetachParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentDetachResult"
+        }
+      },
+      "summary": "Execute environment.detach",
+      "x-starweaver-features": [
+        "environment.attachments"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "EnvironmentDetachParams",
+      "x-starweaver-result-type": "EnvironmentDetachResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `environment.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/SessionSearchUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/EnvironmentUnavailable"
+        }
+      ],
+      "name": "environment.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentListResult"
+        }
+      },
+      "summary": "Execute environment.list",
+      "x-starweaver-features": [
+        "environment.attachments"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "EnvironmentListParams",
+      "x-starweaver-result-type": "EnvironmentListResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `environment.health`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/SessionSearchUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/EnvironmentUnavailable"
+        }
+      ],
+      "name": "environment.health",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentHealthParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentHealthResult"
+        }
+      },
+      "summary": "Execute environment.health",
+      "x-starweaver-features": [
+        "environment.attachments"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "EnvironmentHealthParams",
+      "x-starweaver-result-type": "EnvironmentHealthResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `environment.mount`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/EnvironmentUnavailable"
+        }
+      ],
+      "name": "environment.mount",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentMountParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentMountResult"
+        }
+      },
+      "summary": "Execute environment.mount",
+      "x-starweaver-features": [
+        "environment.mounts"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "EnvironmentMountParams",
+      "x-starweaver-result-type": "EnvironmentMountResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `environment.unmount`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AlreadyExists"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StaleFence"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/EnvironmentUnavailable"
+        }
+      ],
+      "name": "environment.unmount",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentUnmountParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentUnmountResult"
+        }
+      },
+      "summary": "Execute environment.unmount",
+      "x-starweaver-features": [
+        "environment.mounts"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "EnvironmentUnmountParams",
+      "x-starweaver-result-type": "EnvironmentUnmountResult",
+      "x-starweaver-scopes": [
+        "run"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `environment.mounts.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/SessionSearchUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/EnvironmentUnavailable"
+        }
+      ],
+      "name": "environment.mounts.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentMountListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/environments.yaml#/components/schemas/EnvironmentMountListResult"
+        }
+      },
+      "summary": "Execute environment.mounts.list",
+      "x-starweaver-features": [
+        "environment.mounts"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "EnvironmentMountListParams",
+      "x-starweaver-result-type": "EnvironmentMountListResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    }
+  ],
+  "openrpc": "1.4.0",
+  "x-starweaver-error-data": {
+    "AlreadyExists": "AlreadyExistsData",
+    "AuthorizationDenied": "AuthorizationDeniedData",
+    "ConfigurationFailed": "ConfigurationFailedData",
+    "CursorInvalid": "CursorInvalidData",
+    "EnvironmentUnavailable": "EnvironmentUnavailableData",
+    "IdempotencyConflict": "IdempotencyConflictData",
+    "InternalError": "InternalErrorData",
+    "InvalidParams": "InvalidParamsData",
+    "InvalidRequest": "InvalidRequestData",
+    "MethodNotFound": "MethodNotFoundData",
+    "NotFound": "NotFoundData",
+    "NotInitialized": "NotInitializedData",
+    "ParseError": "ParseErrorData",
+    "RunConflict": "RunConflictData",
+    "SessionSearchUnavailable": "SessionSearchUnavailableData",
+    "StaleFence": "StaleFenceData",
+    "StorageUnavailable": "StorageUnavailableData",
+    "UnsupportedFeature": "UnsupportedFeatureData"
+  },
+  "x-starweaver-event-classes": {
+    "approval_changed": {
+      "feature": "hitl",
+      "schema": {
+        "$ref": "./schemas/events.yaml#/components/schemas/ApprovalChangedEvent"
+      },
+      "scopes": [
+        "approval"
+      ]
+    },
+    "clarification_changed": {
+      "feature": "clarifications",
+      "schema": {
+        "$ref": "./schemas/events.yaml#/components/schemas/ClarificationChangedEvent"
+      },
+      "scopes": [
+        "approval"
+      ]
+    },
+    "deferred_changed": {
+      "feature": "hitl",
+      "schema": {
+        "$ref": "./schemas/events.yaml#/components/schemas/DeferredChangedEvent"
+      },
+      "scopes": [
+        "approval"
+      ]
+    },
+    "diagnostic": {
+      "feature": "diagnostics.safe",
+      "schema": {
+        "$ref": "./schemas/events.yaml#/components/schemas/DiagnosticEvent"
+      },
+      "scopes": [
+        "admin"
+      ]
+    },
+    "environment_changed": {
+      "feature": "environment.attachments",
+      "schema": {
+        "$ref": "./schemas/events.yaml#/components/schemas/EnvironmentChangedEvent"
+      },
+      "scopes": [
+        "run"
+      ]
+    },
+    "output_available": {
+      "feature": "runs",
+      "schema": {
+        "$ref": "./schemas/events.yaml#/components/schemas/OutputAvailableEvent"
+      },
+      "scopes": [
+        "run"
+      ]
+    },
+    "run_changed": {
+      "feature": "runs",
+      "schema": {
+        "$ref": "./schemas/events.yaml#/components/schemas/RunChangedEvent"
+      },
+      "scopes": [
+        "run"
+      ]
+    },
+    "session_changed": {
+      "feature": "sessions",
+      "schema": {
+        "$ref": "./schemas/events.yaml#/components/schemas/SessionChangedEvent"
+      },
+      "scopes": [
+        "read"
+      ]
+    }
+  },
+  "x-starweaver-event-profiles": {
+    "conversation.v1": [
+      "run_changed",
+      "output_available",
+      "approval_changed",
+      "deferred_changed",
+      "clarification_changed"
+    ],
+    "desktop.conversation.v1": [
+      "run_changed",
+      "output_available",
+      "approval_changed",
+      "deferred_changed",
+      "clarification_changed"
+    ],
+    "operations.v1": [
+      "session_changed",
+      "run_changed",
+      "environment_changed",
+      "diagnostic"
+    ]
+  },
+  "x-starweaver-features": [
+    "clarifications",
+    "diagnostics.safe",
+    "environment.attachments",
+    "environment.mounts",
+    "events.replay",
+    "events.subscribe",
+    "hitl",
+    "host.shutdown",
+    "profiles",
+    "runs",
+    "session.fork",
+    "session.search",
+    "sessions",
+    "steering"
+  ],
+  "x-starweaver-notifications": [
+    {
+      "features": [
+        "events.subscribe"
+      ],
+      "name": "host.event",
+      "params": {
+        "$ref": "./schemas/events.yaml#/components/schemas/HostEventNotificationParams"
+      },
+      "scopes": [
+        "read"
+      ],
+      "spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "transports": [
+        "stdio"
+      ]
+    },
+    {
+      "features": [
+        "events.subscribe"
+      ],
+      "name": "subscription.closed",
+      "params": {
+        "$ref": "./schemas/events.yaml#/components/schemas/SubscriptionClosedNotificationParams"
+      },
+      "scopes": [
+        "read"
+      ],
+      "spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "transports": [
+        "stdio"
+      ]
+    }
+  ],
+  "x-starweaver-protocol": {
+    "major": 1,
+    "name": "starweaver.host",
+    "revision": "2026-07-21",
+    "schemaDigest": "generated"
+  }
+}

@@ -1,15 +1,19 @@
 //! Atomic product-neutral SQLite storage operations.
 
-use chrono::Utc;
-use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
+use chrono::{DateTime, Utc};
+use rusqlite::{
+    OptionalExtension, Transaction, TransactionBehavior, params, params_from_iter,
+    types::Value as SqlValue,
+};
 use serde_json::Value;
 use starweaver_context::{AgentCheckpoint, ResumableState};
 use starweaver_core::{RunId, SessionId};
 use starweaver_session::{
     ApprovalDecision, ApprovalRecord, ApprovalStatus, CheckpointRef, DeferredToolRecord,
-    ExecutionStatus, HitlResumeClaim, HitlResumeClaimState, PendingStreamPublication,
-    RunAdmissionLease, RunEvidenceCommit, RunRecord, RunStatus, SessionRecord, SessionStoreError,
-    SessionStoreResult,
+    ExecutionStatus, HitlResumeClaim, HitlResumeClaimState, InteractionPage, InteractionPageKey,
+    InteractionPageQuery, PendingStreamPublication, RunAdmissionLease, RunEvidenceCommit,
+    RunRecord, RunStatus, SessionRecord, SessionStoreError, SessionStoreResult,
+    append_authoritative_run_publications,
 };
 use starweaver_stream::{AgentStreamRecord, DisplayMessage, ReplayEvent, ReplayScope};
 
@@ -17,9 +21,11 @@ use crate::{
     SqliteStorage,
     session_store::{
         ensure_run_admission_in_transaction,
+        host_events::enqueue_host_event_publications_in_transaction,
         records::{
-            allocate_or_reuse_run_sequence, apply_run_to_session, list_run_records,
-            load_run_record, load_session_record, save_run_record, save_session_record,
+            advance_run_revision, allocate_or_reuse_run_sequence, apply_run_to_session,
+            list_run_records, load_run_record, load_session_record, save_run_record,
+            save_session_record,
         },
     },
     sqlite::{
@@ -48,6 +54,7 @@ pub enum EvidenceWritePoint {
     Session,
     EvidenceDigest,
     PublicationOutbox,
+    HostEventOutbox,
     TransactionCommitted,
 }
 
@@ -271,6 +278,7 @@ impl SqliteStorage {
                 run.run_id.as_str()
             )));
         }
+        run.revision = 1;
         run.validate_new_write().map_err(|error| {
             SessionStoreError::Failed(format!(
                 "invalid run state for {}: {error}",
@@ -343,6 +351,7 @@ impl SqliteStorage {
         commit.run.stream_cursors.clone_from(&commit.stream_cursors);
         commit.validate_structure()?;
         let evidence_digest = commit.digest()?;
+        let evidence_transition_identity = format!("run-evidence:{evidence_digest}");
         let publication = if commit.publication_targets.is_empty() {
             None
         } else {
@@ -490,9 +499,16 @@ impl SqliteStorage {
             )));
         }
         commit.validate_terminal_projections()?;
+        if let Some(existing) = existing_run.as_ref() {
+            commit.run.revision = existing.revision;
+            advance_run_revision(&mut commit.run)?;
+        } else {
+            commit.run.revision = 1;
+        }
         if let Some(lease) = admission_lease {
             ensure_run_admission_in_transaction(&transaction, lease, Utc::now())?;
         }
+        let mut authoritative_related_runs = Vec::new();
         for (update_index, (update, (approval_payloads, deferred_payloads))) in commit
             .related_run_updates
             .iter()
@@ -541,8 +557,10 @@ impl SqliteStorage {
             source.status = update.status;
             source.output_preview.clone_from(&update.output_preview);
             source.terminal_error.clone_from(&update.terminal_error);
+            advance_run_revision(&mut source)?;
             source.updated_at = commit.run.updated_at;
             save_run_record(&transaction, &source)?;
+            authoritative_related_runs.push(source.clone());
             after_write(EvidenceWritePoint::RelatedRun(update_index))?;
             apply_run_to_session(&mut session, &source);
             for (record_index, (approval, payload)) in
@@ -775,6 +793,21 @@ impl SqliteStorage {
             )
             .map_err(map_sqlite_session_error)?;
         after_write(EvidenceWritePoint::EvidenceDigest)?;
+        let mut authoritative_runs = Vec::with_capacity(authoritative_related_runs.len() + 1);
+        authoritative_runs.push(commit.run.clone());
+        authoritative_runs.extend(authoritative_related_runs);
+        append_authoritative_run_publications(
+            &mut commit.host_event_publications,
+            &evidence_transition_identity,
+            authoritative_runs.iter(),
+        )?;
+        enqueue_host_event_publications_in_transaction(
+            &transaction,
+            &commit.host_event_publications,
+        )?;
+        if !commit.host_event_publications.is_empty() {
+            after_write(EvidenceWritePoint::HostEventOutbox)?;
+        }
         if let (Some(publication), Some(payload)) =
             (publication.as_ref(), publication_payload.as_deref())
         {
@@ -925,9 +958,22 @@ impl SqliteStorage {
     ) -> SessionStoreResult<Vec<ApprovalRecord>> {
         self.list_hitl_records(
             "approval_records",
+            "approval_id",
             session_id.map(SessionId::as_str),
             run_id.map(RunId::as_str),
         )
+    }
+
+    /// Return one storage-bounded stable keyset page of approvals.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error for an invalid query, SQLite failure, or malformed durable record.
+    pub fn list_approval_page(
+        &self,
+        query: InteractionPageQuery,
+    ) -> SessionStoreResult<InteractionPage<ApprovalRecord>> {
+        self.list_hitl_record_page("approval_records", "approval_id", query)
     }
 
     /// Load an approval by globally unique id, rejecting ambiguous legacy data.
@@ -986,6 +1032,7 @@ impl SqliteStorage {
             )));
         }
         approval.status = status;
+        approval.revision = approval.revision.saturating_add(1);
         approval.updated_at = Utc::now();
         approval.decision = Some(ApprovalDecision {
             status,
@@ -1018,9 +1065,22 @@ impl SqliteStorage {
     ) -> SessionStoreResult<Vec<DeferredToolRecord>> {
         self.list_hitl_records(
             "deferred_tool_records",
+            "deferred_id",
             session_id.map(SessionId::as_str),
             run_id.map(RunId::as_str),
         )
+    }
+
+    /// Return one storage-bounded stable keyset page of deferred-tool records.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error for an invalid query, SQLite failure, or malformed durable record.
+    pub fn list_deferred_tool_page(
+        &self,
+        query: InteractionPageQuery,
+    ) -> SessionStoreResult<InteractionPage<DeferredToolRecord>> {
+        self.list_hitl_record_page("deferred_tool_records", "deferred_id", query)
     }
 
     /// Load a deferred tool by globally unique id, rejecting ambiguous legacy data.
@@ -1076,6 +1136,7 @@ impl SqliteStorage {
         }
         deferred.status = status;
         deferred.response = response;
+        deferred.revision = deferred.revision.saturating_add(1);
         deferred.updated_at = Utc::now();
         update_hitl_record(
             &transaction,
@@ -1119,6 +1180,14 @@ impl SqliteStorage {
         let run_ids = load_run_ids(&transaction, session_id)?;
         for run_id in &run_ids {
             delete_run_evidence(&transaction, session_id, run_id)?;
+        }
+        for table in ["host_event_records", "host_event_publication_outbox"] {
+            transaction
+                .execute(
+                    &format!("DELETE FROM {table} WHERE session_id = ?1"),
+                    params![session_id.as_str()],
+                )
+                .map_err(map_sqlite_session_error)?;
         }
         transaction
             .execute(
@@ -1202,6 +1271,7 @@ impl SqliteStorage {
     fn list_hitl_records<T>(
         &self,
         table: &str,
+        id_column: &str,
         session_id: Option<&str>,
         run_id: Option<&str>,
     ) -> SessionStoreResult<Vec<T>>
@@ -1214,13 +1284,97 @@ impl SqliteStorage {
                 "SELECT record FROM {table}
                  WHERE (?1 IS NULL OR session_id = ?1)
                    AND (?2 IS NULL OR run_id = ?2)
-                 ORDER BY updated_at DESC"
+                 ORDER BY updated_at DESC, {id_column} DESC"
             ))
             .map_err(map_sqlite_session_error)?;
         let rows = statement
             .query_map(params![session_id, run_id], |row| row.get::<_, String>(0))
             .map_err(map_sqlite_session_error)?;
         collect_json_record_rows(rows)
+    }
+
+    fn list_hitl_record_page<T>(
+        &self,
+        table: &str,
+        id_column: &str,
+        query: InteractionPageQuery,
+    ) -> SessionStoreResult<InteractionPage<T>>
+    where
+        T: serde::de::DeserializeOwned + starweaver_core::VersionedRecord,
+    {
+        let connection = self.lock()?;
+        let fetch_limit = i64::try_from(query.limit().saturating_add(1)).map_err(|_| {
+            SessionStoreError::Failed("interaction page limit exceeds SQLite range".to_string())
+        })?;
+        let mut clauses = Vec::new();
+        let mut bindings = Vec::new();
+        if let Some(session_id) = query.session_id() {
+            clauses.push("session_id = ?");
+            bindings.push(SqlValue::Text(session_id.as_str().to_string()));
+        }
+        if let Some(run_id) = query.run_id() {
+            clauses.push("run_id = ?");
+            bindings.push(SqlValue::Text(run_id.as_str().to_string()));
+        }
+        if let Some(after) = query.after() {
+            clauses.push("(updated_at < ? OR (updated_at = ? AND __ID__ < ?))");
+            let timestamp = after.updated_at.to_rfc3339();
+            bindings.push(SqlValue::Text(timestamp.clone()));
+            bindings.push(SqlValue::Text(timestamp));
+            bindings.push(SqlValue::Text(after.interaction_id.clone()));
+        }
+        let where_clause = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", clauses.join(" AND ")).replace("__ID__", id_column)
+        };
+        bindings.push(SqlValue::Integer(fetch_limit));
+        let sql = format!(
+            "SELECT record, updated_at, {id_column} FROM {table}
+             {where_clause}
+             ORDER BY updated_at DESC, {id_column} DESC
+             LIMIT ?"
+        );
+        let mut statement = connection.prepare(&sql).map_err(map_sqlite_session_error)?;
+        let rows = statement
+            .query_map(params_from_iter(bindings), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(map_sqlite_session_error)?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let (record, updated_at, interaction_id) = row.map_err(map_sqlite_session_error)?;
+            let record = deserialize_json_record::<T>(&record)?;
+            let updated_at = DateTime::parse_from_rfc3339(&updated_at)
+                .map_err(|error| {
+                    SessionStoreError::Failed(format!(
+                        "invalid interaction page update timestamp: {error}"
+                    ))
+                })?
+                .with_timezone(&Utc);
+            entries.push((
+                record,
+                InteractionPageKey {
+                    updated_at,
+                    interaction_id,
+                },
+            ));
+        }
+        let has_more = entries.len() > query.limit();
+        entries.truncate(query.limit());
+        let next_key = entries
+            .last()
+            .map(|(_, key)| key.clone())
+            .or_else(|| query.after().cloned());
+        Ok(InteractionPage {
+            records: entries.into_iter().map(|(record, _)| record).collect(),
+            next_key,
+            has_more,
+        })
     }
 
     fn load_unique_hitl_record<T>(
@@ -1812,6 +1966,17 @@ fn delete_run_evidence(
             .execute(
                 "DELETE FROM display_snapshot_records WHERE scope = ?1",
                 params![scope],
+            )
+            .map_err(map_sqlite_session_error)?;
+    }
+    for table in ["host_event_records", "host_event_publication_outbox"] {
+        transaction
+            .execute(
+                &format!(
+                    "DELETE FROM {table}
+                     WHERE scope_kind = 'run' AND session_id = ?1 AND run_id = ?2"
+                ),
+                params![session_id.as_str(), run_id.as_str()],
             )
             .map_err(map_sqlite_session_error)?;
     }

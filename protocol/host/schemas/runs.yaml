@@ -1,0 +1,356 @@
+{
+  "components": {
+    "schemas": {
+      "ContinuationMode": {
+        "enum": [
+          "preserve",
+          "compatible",
+          "switch"
+        ],
+        "type": "string"
+      },
+      "RunInterruptParams": {
+        "additionalProperties": false,
+        "properties": {
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "reason": {
+            "oneOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runId",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "RunInterruptResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunSummary"
+          }
+        },
+        "required": [
+          "run",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "RunResumeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "continuationMode": {
+            "$ref": "#/components/schemas/ContinuationMode"
+          },
+          "environmentAttachments": {
+            "items": {
+              "$ref": "#/components/schemas/AttachmentId"
+            },
+            "maxItems": 64,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "profile": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runId",
+          "idempotencyKey",
+          "continuationMode",
+          "environmentAttachments"
+        ],
+        "type": "object"
+      },
+      "RunResumeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunSummary"
+          },
+          "sourceRunId": {
+            "$ref": "#/components/schemas/RunId"
+          }
+        },
+        "required": [
+          "run",
+          "sourceRunId",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "RunStartParams": {
+        "additionalProperties": false,
+        "properties": {
+          "continuationMode": {
+            "$ref": "#/components/schemas/ContinuationMode"
+          },
+          "environmentAttachments": {
+            "items": {
+              "$ref": "#/components/schemas/AttachmentId"
+            },
+            "maxItems": 64,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "input": {
+            "items": {
+              "$ref": "#/components/schemas/InputPart"
+            },
+            "maxItems": 128,
+            "minItems": 1,
+            "type": "array"
+          },
+          "profile": {
+            "oneOf": [
+              {
+                "maxLength": 128,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "restoreFromRunId": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "sessionId": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          }
+        },
+        "required": [
+          "input",
+          "idempotencyKey",
+          "continuationMode",
+          "environmentAttachments"
+        ],
+        "type": "object"
+      },
+      "RunStartResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunSummary"
+          }
+        },
+        "required": [
+          "run",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "RunStatus": {
+        "enum": [
+          "queued",
+          "starting",
+          "running",
+          "waiting",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "RunStatusParams": {
+        "additionalProperties": false,
+        "properties": {
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runId"
+        ],
+        "type": "object"
+      },
+      "RunStatusResult": {
+        "additionalProperties": false,
+        "properties": {
+          "run": {
+            "$ref": "#/components/schemas/RunSummary"
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "type": "object"
+      },
+      "RunSteerParams": {
+        "additionalProperties": false,
+        "properties": {
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "text": {
+            "maxLength": 16384,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runId",
+          "text",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "RunSteerResult": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          }
+        },
+        "required": [
+          "accepted",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "RunSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "diagnosticRef": {
+            "oneOf": [
+              {
+                "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "outputPreview": {
+            "oneOf": [
+              {
+                "maxLength": 4096,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "revision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runId",
+          "status",
+          "revision",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

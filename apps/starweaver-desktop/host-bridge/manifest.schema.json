@@ -1,0 +1,128 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://starweaver.dev/schemas/desktop-host-surface-v1.json",
+  "title": "Starweaver Desktop host authority surface",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "protocol",
+    "commands",
+    "rendererInputVariants",
+    "operations",
+    "notifications"
+  ],
+  "properties": {
+    "$schema": { "const": "./manifest.schema.json" },
+    "schemaVersion": { "const": 1 },
+    "protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "major", "digest"],
+      "properties": {
+        "name": { "const": "starweaver.host" },
+        "major": { "const": 1 },
+        "digest": {
+          "const": "sha256:69d2b33653ad2c5eed6b23afb4e19abd14c431240634f30ac3fe756cd4a907b5",
+          "description": "Exact reviewed ProtocolIr digest; protocol changes require an explicit renderer-surface review."
+        }
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acknowledge",
+        "acknowledgeOperation",
+        "execute",
+        "listPendingOperations",
+        "subscribe",
+        "unsubscribe"
+      ],
+      "properties": {
+        "acknowledge": { "const": "acknowledge_host_event" },
+        "acknowledgeOperation": { "const": "acknowledge_host_operation" },
+        "execute": { "const": "execute_host_operation" },
+        "listPendingOperations": { "const": "list_pending_host_operations" },
+        "subscribe": { "const": "subscribe_host_events" },
+        "unsubscribe": { "const": "unsubscribe_host_events" }
+      }
+    },
+    "rendererInputVariants": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": { "type": "string", "pattern": "^[A-Z][A-Za-z0-9]*$" }
+      },
+      "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" }
+    },
+    "operations": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/definitions/operation" },
+      "propertyNames": { "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9]*)*$" }
+    },
+    "notifications": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/definitions/notification" },
+      "propertyNames": { "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9]*)*$" }
+    }
+  },
+  "definitions": {
+    "fieldNames": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]*$" }
+    },
+    "inputAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rendererProvided",
+        "supervisorConstructed",
+        "supervisorOverridden",
+        "forbidden"
+      ],
+      "properties": {
+        "rendererProvided": { "$ref": "#/definitions/fieldNames" },
+        "supervisorConstructed": { "$ref": "#/definitions/fieldNames" },
+        "supervisorOverridden": { "$ref": "#/definitions/fieldNames" },
+        "forbidden": { "$ref": "#/definitions/fieldNames" }
+      }
+    },
+    "outputAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["select", "transform", "forbidden"],
+      "properties": {
+        "select": { "$ref": "#/definitions/fieldNames" },
+        "transform": { "$ref": "#/definitions/fieldNames" },
+        "forbidden": { "$ref": "#/definitions/fieldNames" }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "output"],
+      "properties": {
+        "input": { "$ref": "#/definitions/inputAuthority" },
+        "output": { "$ref": "#/definitions/outputAuthority" }
+      }
+    },
+    "notification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "projection", "output"],
+      "properties": {
+        "profile": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "projection": { "type": "string", "pattern": "^[A-Z][A-Za-z0-9]*$" },
+        "output": { "$ref": "#/definitions/outputAuthority" }
+      }
+    }
+  }
+}
