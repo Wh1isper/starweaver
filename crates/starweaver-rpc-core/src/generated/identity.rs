@@ -2,9 +2,9 @@
 
 pub const PROTOCOL_NAME: &str = "starweaver.host";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_REVISION: &str = "2026-07-21";
+pub const PROTOCOL_REVISION: &str = "2026-07-24";
 pub const SCHEMA_DIGEST: &str =
-    "sha256:69d2b33653ad2c5eed6b23afb4e19abd14c431240634f30ac3fe756cd4a907b5";
+    "sha256:2a9e9fad809f55e34f2b701aed6008b2a91148c19f3988a8e79b5c00d404e6dd";
 pub const PROTOCOL_IDENTITY: ProtocolIdentityRef = ProtocolIdentityRef {
     name: PROTOCOL_NAME,
     major: PROTOCOL_MAJOR,

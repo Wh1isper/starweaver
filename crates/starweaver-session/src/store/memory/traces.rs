@@ -77,7 +77,10 @@ impl InMemorySessionStore {
         Ok(CompactSessionTrace {
             session_id: session.session_id.clone(),
             title: session.title.clone(),
-            workspace: session.workspace.clone(),
+            workspace: session
+                .workspace
+                .as_ref()
+                .map(|provenance| provenance.display_value().to_string()),
             profile: session.profile.clone(),
             status: session.status,
             runs: runs.len(),

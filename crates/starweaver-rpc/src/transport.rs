@@ -148,7 +148,7 @@ fn send_stdio_output(
 }
 
 /// Run the JSON-RPC stdio server until stdin closes or `shutdown` is requested.
-pub fn run_stdio(config: &RpcConfig) -> RpcHostResult<()> {
+pub fn run_stdio(config: &RpcConfig, register_standalone_workspace: bool) -> RpcHostResult<()> {
     let (outbound_sender, outbound_receiver) =
         mpsc::sync_channel::<StdioOutput>(STDIO_OUTBOUND_CAPACITY);
     let writer = spawn_stdio_thread(move || {
@@ -169,6 +169,9 @@ pub fn run_stdio(config: &RpcConfig) -> RpcHostResult<()> {
     let (notification_sender, mut notification_receiver) =
         tokio::sync::mpsc::channel::<RpcNotificationOutput>(STDIO_OUTBOUND_CAPACITY);
     let service = RpcService::live(config.clone())?;
+    if register_standalone_workspace {
+        service.register_standalone_initial_workspace()?;
+    }
     let connection = service.live_connection(notification_sender.clone());
     let (transport_failed_sender, transport_failed_receiver) = mpsc::sync_channel(1);
     let notification_output = outbound_sender.clone();
@@ -309,7 +312,12 @@ pub fn run_stdio(config: &RpcConfig) -> RpcHostResult<()> {
 }
 
 /// Run the JSON-RPC HTTP server until `shutdown` is requested or the listener fails.
-pub fn run_http(config: &RpcConfig, host: &str, port: u16) -> RpcHostResult<()> {
+pub fn run_http(
+    config: &RpcConfig,
+    host: &str,
+    port: u16,
+    register_standalone_workspace: bool,
+) -> RpcHostResult<()> {
     validate_http_host(host)?;
     let credential = config.http_auth.load_credential(&config.state_dir)?;
     let listener = TcpListener::bind((host, port)).map_err(|error| {
@@ -334,6 +342,9 @@ pub fn run_http(config: &RpcConfig, host: &str, port: u16) -> RpcHostResult<()> 
     ));
     eprintln!("starweaver rpc http listening on http://{local_address}{DEFAULT_HTTP_PATH}");
     let service = RpcService::replay_only(config.clone())?;
+    if register_standalone_workspace {
+        service.register_standalone_initial_workspace()?;
+    }
     let served = serve_http(&listener, &service, &security);
     let shutdown = service.shutdown_owned_runtime(Duration::from_secs(10));
     served.and(shutdown)

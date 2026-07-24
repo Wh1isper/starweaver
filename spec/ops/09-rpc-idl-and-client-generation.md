@@ -27,7 +27,7 @@ OpenRPC is selected because the product protocol is JSON-RPC. Its method, params
 
 This choice preserves the product properties that matter for Starweaver:
 
-- one readable protocol over local child stdio and SSH-carried stdio;
+- one readable protocol over local child stdio and SSH-forwarded private endpoints;
 - simple implementation by independent clients in any language;
 - direct golden-frame and invalid-frame conformance testing;
 - natural representation of tagged agent events and bounded extension data;
@@ -76,19 +76,19 @@ The incompatible rebase intentionally retains protocol major `1` because no old-
 
 ## Ownership
 
-| Concern                                                                                       | Owner                                                                                                        |
-| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Canonical host IDL source and public bundled artifact                                         | repository-level `protocol/host/` tree                                                                       |
-| IDL profile, bundling, linting, semantic-diff checks, and generators                          | repository `xtask` automation                                                                                |
-| Generated Rust wire types, server trait, dispatcher, and protocol codecs                      | `starweaver-rpc-core`                                                                                        |
-| Rust handlers, authorization, coordination, subscriptions, and transports                     | `starweaver-rpc`                                                                                             |
-| Complete generated TypeScript protocol model and codecs                                       | caller-selected on-demand generator output, excluded from repository workspaces and Desktop renderer imports |
-| Desktop operation authority manifest and generated safe TypeScript bridge/client              | Starweaver Desktop                                                                                           |
-| Child process, stdio/SSH transport, request identity, retries, replay recovery, and authority | Desktop privileged Rust backend                                                                              |
-| Renderer intents, safe view models, and presentation state                                    | Desktop TypeScript application layer                                                                         |
-| Durable and product-neutral domain semantics                                                  | existing owning crates and specs                                                                             |
-| Handwritten behavior inventory                                                                | `06-json-rpc-host-protocol.md`                                                                               |
-| Desktop process and connection lifecycle                                                      | `../desktop/` specifications                                                                                 |
+| Concern                                                                                             | Owner                                                                                                        |
+| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Canonical host IDL source and public bundled artifact                                               | repository-level `protocol/host/` tree                                                                       |
+| IDL profile, bundling, linting, semantic-diff checks, and generators                                | repository `xtask` automation                                                                                |
+| Generated Rust wire types, server trait, dispatcher, and protocol codecs                            | `starweaver-rpc-core`                                                                                        |
+| Rust handlers, authorization, coordination, subscriptions, and transports                           | `starweaver-rpc`                                                                                             |
+| Complete generated TypeScript protocol model and codecs                                             | caller-selected on-demand generator output, excluded from repository workspaces and Desktop renderer imports |
+| Desktop operation authority manifest and generated safe TypeScript bridge/client                    | Starweaver Desktop                                                                                           |
+| Domain-host process, stdio/SSH transport, request identity, retries, replay recovery, and authority | Desktop privileged Rust backend                                                                              |
+| Renderer intents, safe view models, and presentation state                                          | Desktop TypeScript application layer                                                                         |
+| Durable and product-neutral domain semantics                                                        | existing owning crates and specs                                                                             |
+| Handwritten behavior inventory                                                                      | `06-json-rpc-host-protocol.md`                                                                               |
+| Desktop process and connection lifecycle                                                            | `../desktop/` specifications                                                                                 |
 
 Generated wire types never import Rust crate paths. Handwritten adapters convert between generated wire projections and product-neutral domain types. This conversion boundary prevents storage or runtime implementation details from becoming accidental public protocol.
 
@@ -429,9 +429,26 @@ Rules:
 - feature-gated methods and events on a stateful connection require membership in that set;
 - capabilities report effective instance state and never replace vocabulary features;
 - revision is an exact, non-ordered artifact identity and schema digest is the exact canonical-bundle identity; and
-- reconnect identity, runtime identity, storage compatibility, and safe workspace identity are typed members of the initial generated contract.
+- reconnect identity, runtime identity, storage compatibility, and safe execution-domain/workspace-registry capabilities are typed members of the generated contract.
 
 Feature IDs are lowercase ASCII tokens matching `^[a-z][a-z0-9._-]*$` and are sorted by ascending unsigned UTF-8 byte sequence, which is equivalent to ASCII lexical order for this alphabet. They are versioned semantic capabilities, not build flags. Enabling server configuration never claims client support. The canonical initialize request/result pair is shared unchanged by Rust, TypeScript, and independent-client fixtures.
+
+## Planned Domain-Host Workspace and Configuration Surface
+
+Desktop's accepted product topology requires one long-lived RPC host per execution domain rather than one process per workspace. Before that topology is enabled, the canonical IDL must atomically add:
+
+- a domain-level launch/initialize contract whose bootstrap identity is independent of any workspace root;
+- typed workspace register/list/remove methods that retain canonical paths as host-private authority and return safe opaque workspace IDs;
+- a required opaque `workspaceId` on `session.create`, with RPC durably binding the session to that registered workspace;
+- `config.get`, `config.validate`, `config.update`, `config.reload`, `config.activate`, and `config.discard` methods over RPC-owned runtime configuration;
+- desired and active runtime-config revisions with monotonic generation plus opaque etag;
+- a negotiated `config.reload.v1` feature and safe `config.changed` notification;
+- typed configuration validation/conflict/restart-required results and errors; and
+- receipt/idempotency coverage for workspace authority changes and config update/reload/activate/discard mutations, with a supervisor-bound activation ID for restart-required promotion.
+
+The Desktop authority manifest exposes only closed safe workspace/config DTOs. The renderer cannot submit canonical paths as ordinary host params, raw config documents, config source paths, expected revisions, idempotency keys, restart policy, secrets, or complete admin params. The privileged backend supplies authority-bearing fields only after independent native user presence or managed policy is bound to the exact domain/revision/candidate fingerprint for security- or destination-changing mutations; a closed DTO alone never confers admin authority. RPC remains the parser, validator, persistence owner, journal recovery owner, and atomic snapshot publisher.
+
+Behavior, hot/restart classification, active-run snapshot pinning, SSH behavior, and acceptance tests are normative in `../desktop/08-configuration-and-reload.md` and `../desktop/04-workspaces-sessions-and-runs.md`. These additions must be made in `protocol/host/` first and regenerated into Rust and Desktop TypeScript; no handwritten Desktop-only DTO may precede the IDL.
 
 ## Errors
 

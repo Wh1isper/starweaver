@@ -649,6 +649,780 @@ impl From<HostError> for ClarificationResolveError {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConfigActivateError {
+    NotInitialized {
+        message: String,
+        data: NotInitializedData,
+    },
+    UnsupportedFeature {
+        message: String,
+        data: UnsupportedFeatureData,
+    },
+    InvalidParams {
+        message: String,
+        data: InvalidParamsData,
+    },
+    NotFound {
+        message: String,
+        data: NotFoundData,
+    },
+    StorageUnavailable {
+        message: String,
+        data: StorageUnavailableData,
+    },
+    AuthorizationDenied {
+        message: String,
+        data: AuthorizationDeniedData,
+    },
+    ConfigurationFailed {
+        message: String,
+        data: ConfigurationFailedData,
+    },
+    IdempotencyConflict {
+        message: String,
+        data: IdempotencyConflictData,
+    },
+    RunConflict {
+        message: String,
+        data: RunConflictData,
+    },
+    InternalError {
+        message: String,
+        data: InternalErrorData,
+    },
+}
+impl From<ConfigActivateError> for HostError {
+    fn from(error: ConfigActivateError) -> Self {
+        match error {
+            ConfigActivateError::NotInitialized { message, data } => Self {
+                code: -32001,
+                message,
+                data: HostErrorData::NotInitialized(data),
+            },
+            ConfigActivateError::UnsupportedFeature { message, data } => Self {
+                code: -32002,
+                message,
+                data: HostErrorData::UnsupportedFeature(data),
+            },
+            ConfigActivateError::InvalidParams { message, data } => Self {
+                code: -32602,
+                message,
+                data: HostErrorData::InvalidParams(data),
+            },
+            ConfigActivateError::NotFound { message, data } => Self {
+                code: -32010,
+                message,
+                data: HostErrorData::NotFound(data),
+            },
+            ConfigActivateError::StorageUnavailable { message, data } => Self {
+                code: -32015,
+                message,
+                data: HostErrorData::StorageUnavailable(data),
+            },
+            ConfigActivateError::AuthorizationDenied { message, data } => Self {
+                code: -32017,
+                message,
+                data: HostErrorData::AuthorizationDenied(data),
+            },
+            ConfigActivateError::ConfigurationFailed { message, data } => Self {
+                code: -32050,
+                message,
+                data: HostErrorData::ConfigurationFailed(data),
+            },
+            ConfigActivateError::IdempotencyConflict { message, data } => Self {
+                code: -32012,
+                message,
+                data: HostErrorData::IdempotencyConflict(data),
+            },
+            ConfigActivateError::RunConflict { message, data } => Self {
+                code: -32013,
+                message,
+                data: HostErrorData::RunConflict(data),
+            },
+            ConfigActivateError::InternalError { message, data } => Self {
+                code: -32000,
+                message,
+                data: HostErrorData::InternalError(data),
+            },
+        }
+    }
+}
+impl From<HostError> for ConfigActivateError {
+    fn from(error: HostError) -> Self {
+        match (error.message, error.data) {
+            (message, HostErrorData::NotInitialized(data)) => {
+                Self::NotInitialized { message, data }
+            }
+            (message, HostErrorData::UnsupportedFeature(data)) => {
+                Self::UnsupportedFeature { message, data }
+            }
+            (message, HostErrorData::InvalidParams(data)) => Self::InvalidParams { message, data },
+            (message, HostErrorData::NotFound(data)) => Self::NotFound { message, data },
+            (message, HostErrorData::StorageUnavailable(data)) => {
+                Self::StorageUnavailable { message, data }
+            }
+            (message, HostErrorData::AuthorizationDenied(data)) => {
+                Self::AuthorizationDenied { message, data }
+            }
+            (message, HostErrorData::ConfigurationFailed(data)) => {
+                Self::ConfigurationFailed { message, data }
+            }
+            (message, HostErrorData::IdempotencyConflict(data)) => {
+                Self::IdempotencyConflict { message, data }
+            }
+            (message, HostErrorData::RunConflict(data)) => Self::RunConflict { message, data },
+            (message, HostErrorData::InternalError(data)) => Self::InternalError { message, data },
+            (_, _) => Self::InternalError {
+                message: "internal error".to_string(),
+                data: InternalErrorData {
+                    kind: InternalErrorDataKind::Value,
+                    retryable: false,
+                    reconciliation_required: true,
+                    diagnostic_ref: None,
+                    resource_kind: None,
+                },
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConfigDiscardError {
+    NotInitialized {
+        message: String,
+        data: NotInitializedData,
+    },
+    UnsupportedFeature {
+        message: String,
+        data: UnsupportedFeatureData,
+    },
+    InvalidParams {
+        message: String,
+        data: InvalidParamsData,
+    },
+    NotFound {
+        message: String,
+        data: NotFoundData,
+    },
+    StorageUnavailable {
+        message: String,
+        data: StorageUnavailableData,
+    },
+    AuthorizationDenied {
+        message: String,
+        data: AuthorizationDeniedData,
+    },
+    ConfigurationFailed {
+        message: String,
+        data: ConfigurationFailedData,
+    },
+    IdempotencyConflict {
+        message: String,
+        data: IdempotencyConflictData,
+    },
+    RunConflict {
+        message: String,
+        data: RunConflictData,
+    },
+    InternalError {
+        message: String,
+        data: InternalErrorData,
+    },
+}
+impl From<ConfigDiscardError> for HostError {
+    fn from(error: ConfigDiscardError) -> Self {
+        match error {
+            ConfigDiscardError::NotInitialized { message, data } => Self {
+                code: -32001,
+                message,
+                data: HostErrorData::NotInitialized(data),
+            },
+            ConfigDiscardError::UnsupportedFeature { message, data } => Self {
+                code: -32002,
+                message,
+                data: HostErrorData::UnsupportedFeature(data),
+            },
+            ConfigDiscardError::InvalidParams { message, data } => Self {
+                code: -32602,
+                message,
+                data: HostErrorData::InvalidParams(data),
+            },
+            ConfigDiscardError::NotFound { message, data } => Self {
+                code: -32010,
+                message,
+                data: HostErrorData::NotFound(data),
+            },
+            ConfigDiscardError::StorageUnavailable { message, data } => Self {
+                code: -32015,
+                message,
+                data: HostErrorData::StorageUnavailable(data),
+            },
+            ConfigDiscardError::AuthorizationDenied { message, data } => Self {
+                code: -32017,
+                message,
+                data: HostErrorData::AuthorizationDenied(data),
+            },
+            ConfigDiscardError::ConfigurationFailed { message, data } => Self {
+                code: -32050,
+                message,
+                data: HostErrorData::ConfigurationFailed(data),
+            },
+            ConfigDiscardError::IdempotencyConflict { message, data } => Self {
+                code: -32012,
+                message,
+                data: HostErrorData::IdempotencyConflict(data),
+            },
+            ConfigDiscardError::RunConflict { message, data } => Self {
+                code: -32013,
+                message,
+                data: HostErrorData::RunConflict(data),
+            },
+            ConfigDiscardError::InternalError { message, data } => Self {
+                code: -32000,
+                message,
+                data: HostErrorData::InternalError(data),
+            },
+        }
+    }
+}
+impl From<HostError> for ConfigDiscardError {
+    fn from(error: HostError) -> Self {
+        match (error.message, error.data) {
+            (message, HostErrorData::NotInitialized(data)) => {
+                Self::NotInitialized { message, data }
+            }
+            (message, HostErrorData::UnsupportedFeature(data)) => {
+                Self::UnsupportedFeature { message, data }
+            }
+            (message, HostErrorData::InvalidParams(data)) => Self::InvalidParams { message, data },
+            (message, HostErrorData::NotFound(data)) => Self::NotFound { message, data },
+            (message, HostErrorData::StorageUnavailable(data)) => {
+                Self::StorageUnavailable { message, data }
+            }
+            (message, HostErrorData::AuthorizationDenied(data)) => {
+                Self::AuthorizationDenied { message, data }
+            }
+            (message, HostErrorData::ConfigurationFailed(data)) => {
+                Self::ConfigurationFailed { message, data }
+            }
+            (message, HostErrorData::IdempotencyConflict(data)) => {
+                Self::IdempotencyConflict { message, data }
+            }
+            (message, HostErrorData::RunConflict(data)) => Self::RunConflict { message, data },
+            (message, HostErrorData::InternalError(data)) => Self::InternalError { message, data },
+            (_, _) => Self::InternalError {
+                message: "internal error".to_string(),
+                data: InternalErrorData {
+                    kind: InternalErrorDataKind::Value,
+                    retryable: false,
+                    reconciliation_required: true,
+                    diagnostic_ref: None,
+                    resource_kind: None,
+                },
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConfigGetError {
+    NotInitialized {
+        message: String,
+        data: NotInitializedData,
+    },
+    UnsupportedFeature {
+        message: String,
+        data: UnsupportedFeatureData,
+    },
+    StorageUnavailable {
+        message: String,
+        data: StorageUnavailableData,
+    },
+    AuthorizationDenied {
+        message: String,
+        data: AuthorizationDeniedData,
+    },
+    InternalError {
+        message: String,
+        data: InternalErrorData,
+    },
+}
+impl From<ConfigGetError> for HostError {
+    fn from(error: ConfigGetError) -> Self {
+        match error {
+            ConfigGetError::NotInitialized { message, data } => Self {
+                code: -32001,
+                message,
+                data: HostErrorData::NotInitialized(data),
+            },
+            ConfigGetError::UnsupportedFeature { message, data } => Self {
+                code: -32002,
+                message,
+                data: HostErrorData::UnsupportedFeature(data),
+            },
+            ConfigGetError::StorageUnavailable { message, data } => Self {
+                code: -32015,
+                message,
+                data: HostErrorData::StorageUnavailable(data),
+            },
+            ConfigGetError::AuthorizationDenied { message, data } => Self {
+                code: -32017,
+                message,
+                data: HostErrorData::AuthorizationDenied(data),
+            },
+            ConfigGetError::InternalError { message, data } => Self {
+                code: -32000,
+                message,
+                data: HostErrorData::InternalError(data),
+            },
+        }
+    }
+}
+impl From<HostError> for ConfigGetError {
+    fn from(error: HostError) -> Self {
+        match (error.message, error.data) {
+            (message, HostErrorData::NotInitialized(data)) => {
+                Self::NotInitialized { message, data }
+            }
+            (message, HostErrorData::UnsupportedFeature(data)) => {
+                Self::UnsupportedFeature { message, data }
+            }
+            (message, HostErrorData::StorageUnavailable(data)) => {
+                Self::StorageUnavailable { message, data }
+            }
+            (message, HostErrorData::AuthorizationDenied(data)) => {
+                Self::AuthorizationDenied { message, data }
+            }
+            (message, HostErrorData::InternalError(data)) => Self::InternalError { message, data },
+            (_, _) => Self::InternalError {
+                message: "internal error".to_string(),
+                data: InternalErrorData {
+                    kind: InternalErrorDataKind::Value,
+                    retryable: false,
+                    reconciliation_required: true,
+                    diagnostic_ref: None,
+                    resource_kind: None,
+                },
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConfigReloadError {
+    NotInitialized {
+        message: String,
+        data: NotInitializedData,
+    },
+    UnsupportedFeature {
+        message: String,
+        data: UnsupportedFeatureData,
+    },
+    InvalidParams {
+        message: String,
+        data: InvalidParamsData,
+    },
+    NotFound {
+        message: String,
+        data: NotFoundData,
+    },
+    StorageUnavailable {
+        message: String,
+        data: StorageUnavailableData,
+    },
+    AuthorizationDenied {
+        message: String,
+        data: AuthorizationDeniedData,
+    },
+    ConfigurationFailed {
+        message: String,
+        data: ConfigurationFailedData,
+    },
+    IdempotencyConflict {
+        message: String,
+        data: IdempotencyConflictData,
+    },
+    RunConflict {
+        message: String,
+        data: RunConflictData,
+    },
+    InternalError {
+        message: String,
+        data: InternalErrorData,
+    },
+}
+impl From<ConfigReloadError> for HostError {
+    fn from(error: ConfigReloadError) -> Self {
+        match error {
+            ConfigReloadError::NotInitialized { message, data } => Self {
+                code: -32001,
+                message,
+                data: HostErrorData::NotInitialized(data),
+            },
+            ConfigReloadError::UnsupportedFeature { message, data } => Self {
+                code: -32002,
+                message,
+                data: HostErrorData::UnsupportedFeature(data),
+            },
+            ConfigReloadError::InvalidParams { message, data } => Self {
+                code: -32602,
+                message,
+                data: HostErrorData::InvalidParams(data),
+            },
+            ConfigReloadError::NotFound { message, data } => Self {
+                code: -32010,
+                message,
+                data: HostErrorData::NotFound(data),
+            },
+            ConfigReloadError::StorageUnavailable { message, data } => Self {
+                code: -32015,
+                message,
+                data: HostErrorData::StorageUnavailable(data),
+            },
+            ConfigReloadError::AuthorizationDenied { message, data } => Self {
+                code: -32017,
+                message,
+                data: HostErrorData::AuthorizationDenied(data),
+            },
+            ConfigReloadError::ConfigurationFailed { message, data } => Self {
+                code: -32050,
+                message,
+                data: HostErrorData::ConfigurationFailed(data),
+            },
+            ConfigReloadError::IdempotencyConflict { message, data } => Self {
+                code: -32012,
+                message,
+                data: HostErrorData::IdempotencyConflict(data),
+            },
+            ConfigReloadError::RunConflict { message, data } => Self {
+                code: -32013,
+                message,
+                data: HostErrorData::RunConflict(data),
+            },
+            ConfigReloadError::InternalError { message, data } => Self {
+                code: -32000,
+                message,
+                data: HostErrorData::InternalError(data),
+            },
+        }
+    }
+}
+impl From<HostError> for ConfigReloadError {
+    fn from(error: HostError) -> Self {
+        match (error.message, error.data) {
+            (message, HostErrorData::NotInitialized(data)) => {
+                Self::NotInitialized { message, data }
+            }
+            (message, HostErrorData::UnsupportedFeature(data)) => {
+                Self::UnsupportedFeature { message, data }
+            }
+            (message, HostErrorData::InvalidParams(data)) => Self::InvalidParams { message, data },
+            (message, HostErrorData::NotFound(data)) => Self::NotFound { message, data },
+            (message, HostErrorData::StorageUnavailable(data)) => {
+                Self::StorageUnavailable { message, data }
+            }
+            (message, HostErrorData::AuthorizationDenied(data)) => {
+                Self::AuthorizationDenied { message, data }
+            }
+            (message, HostErrorData::ConfigurationFailed(data)) => {
+                Self::ConfigurationFailed { message, data }
+            }
+            (message, HostErrorData::IdempotencyConflict(data)) => {
+                Self::IdempotencyConflict { message, data }
+            }
+            (message, HostErrorData::RunConflict(data)) => Self::RunConflict { message, data },
+            (message, HostErrorData::InternalError(data)) => Self::InternalError { message, data },
+            (_, _) => Self::InternalError {
+                message: "internal error".to_string(),
+                data: InternalErrorData {
+                    kind: InternalErrorDataKind::Value,
+                    retryable: false,
+                    reconciliation_required: true,
+                    diagnostic_ref: None,
+                    resource_kind: None,
+                },
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConfigUpdateError {
+    NotInitialized {
+        message: String,
+        data: NotInitializedData,
+    },
+    UnsupportedFeature {
+        message: String,
+        data: UnsupportedFeatureData,
+    },
+    InvalidParams {
+        message: String,
+        data: InvalidParamsData,
+    },
+    NotFound {
+        message: String,
+        data: NotFoundData,
+    },
+    StorageUnavailable {
+        message: String,
+        data: StorageUnavailableData,
+    },
+    AuthorizationDenied {
+        message: String,
+        data: AuthorizationDeniedData,
+    },
+    ConfigurationFailed {
+        message: String,
+        data: ConfigurationFailedData,
+    },
+    IdempotencyConflict {
+        message: String,
+        data: IdempotencyConflictData,
+    },
+    RunConflict {
+        message: String,
+        data: RunConflictData,
+    },
+    InternalError {
+        message: String,
+        data: InternalErrorData,
+    },
+}
+impl From<ConfigUpdateError> for HostError {
+    fn from(error: ConfigUpdateError) -> Self {
+        match error {
+            ConfigUpdateError::NotInitialized { message, data } => Self {
+                code: -32001,
+                message,
+                data: HostErrorData::NotInitialized(data),
+            },
+            ConfigUpdateError::UnsupportedFeature { message, data } => Self {
+                code: -32002,
+                message,
+                data: HostErrorData::UnsupportedFeature(data),
+            },
+            ConfigUpdateError::InvalidParams { message, data } => Self {
+                code: -32602,
+                message,
+                data: HostErrorData::InvalidParams(data),
+            },
+            ConfigUpdateError::NotFound { message, data } => Self {
+                code: -32010,
+                message,
+                data: HostErrorData::NotFound(data),
+            },
+            ConfigUpdateError::StorageUnavailable { message, data } => Self {
+                code: -32015,
+                message,
+                data: HostErrorData::StorageUnavailable(data),
+            },
+            ConfigUpdateError::AuthorizationDenied { message, data } => Self {
+                code: -32017,
+                message,
+                data: HostErrorData::AuthorizationDenied(data),
+            },
+            ConfigUpdateError::ConfigurationFailed { message, data } => Self {
+                code: -32050,
+                message,
+                data: HostErrorData::ConfigurationFailed(data),
+            },
+            ConfigUpdateError::IdempotencyConflict { message, data } => Self {
+                code: -32012,
+                message,
+                data: HostErrorData::IdempotencyConflict(data),
+            },
+            ConfigUpdateError::RunConflict { message, data } => Self {
+                code: -32013,
+                message,
+                data: HostErrorData::RunConflict(data),
+            },
+            ConfigUpdateError::InternalError { message, data } => Self {
+                code: -32000,
+                message,
+                data: HostErrorData::InternalError(data),
+            },
+        }
+    }
+}
+impl From<HostError> for ConfigUpdateError {
+    fn from(error: HostError) -> Self {
+        match (error.message, error.data) {
+            (message, HostErrorData::NotInitialized(data)) => {
+                Self::NotInitialized { message, data }
+            }
+            (message, HostErrorData::UnsupportedFeature(data)) => {
+                Self::UnsupportedFeature { message, data }
+            }
+            (message, HostErrorData::InvalidParams(data)) => Self::InvalidParams { message, data },
+            (message, HostErrorData::NotFound(data)) => Self::NotFound { message, data },
+            (message, HostErrorData::StorageUnavailable(data)) => {
+                Self::StorageUnavailable { message, data }
+            }
+            (message, HostErrorData::AuthorizationDenied(data)) => {
+                Self::AuthorizationDenied { message, data }
+            }
+            (message, HostErrorData::ConfigurationFailed(data)) => {
+                Self::ConfigurationFailed { message, data }
+            }
+            (message, HostErrorData::IdempotencyConflict(data)) => {
+                Self::IdempotencyConflict { message, data }
+            }
+            (message, HostErrorData::RunConflict(data)) => Self::RunConflict { message, data },
+            (message, HostErrorData::InternalError(data)) => Self::InternalError { message, data },
+            (_, _) => Self::InternalError {
+                message: "internal error".to_string(),
+                data: InternalErrorData {
+                    kind: InternalErrorDataKind::Value,
+                    retryable: false,
+                    reconciliation_required: true,
+                    diagnostic_ref: None,
+                    resource_kind: None,
+                },
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConfigValidateError {
+    NotInitialized {
+        message: String,
+        data: NotInitializedData,
+    },
+    UnsupportedFeature {
+        message: String,
+        data: UnsupportedFeatureData,
+    },
+    InvalidParams {
+        message: String,
+        data: InvalidParamsData,
+    },
+    NotFound {
+        message: String,
+        data: NotFoundData,
+    },
+    StorageUnavailable {
+        message: String,
+        data: StorageUnavailableData,
+    },
+    AuthorizationDenied {
+        message: String,
+        data: AuthorizationDeniedData,
+    },
+    ConfigurationFailed {
+        message: String,
+        data: ConfigurationFailedData,
+    },
+    IdempotencyConflict {
+        message: String,
+        data: IdempotencyConflictData,
+    },
+    RunConflict {
+        message: String,
+        data: RunConflictData,
+    },
+    InternalError {
+        message: String,
+        data: InternalErrorData,
+    },
+}
+impl From<ConfigValidateError> for HostError {
+    fn from(error: ConfigValidateError) -> Self {
+        match error {
+            ConfigValidateError::NotInitialized { message, data } => Self {
+                code: -32001,
+                message,
+                data: HostErrorData::NotInitialized(data),
+            },
+            ConfigValidateError::UnsupportedFeature { message, data } => Self {
+                code: -32002,
+                message,
+                data: HostErrorData::UnsupportedFeature(data),
+            },
+            ConfigValidateError::InvalidParams { message, data } => Self {
+                code: -32602,
+                message,
+                data: HostErrorData::InvalidParams(data),
+            },
+            ConfigValidateError::NotFound { message, data } => Self {
+                code: -32010,
+                message,
+                data: HostErrorData::NotFound(data),
+            },
+            ConfigValidateError::StorageUnavailable { message, data } => Self {
+                code: -32015,
+                message,
+                data: HostErrorData::StorageUnavailable(data),
+            },
+            ConfigValidateError::AuthorizationDenied { message, data } => Self {
+                code: -32017,
+                message,
+                data: HostErrorData::AuthorizationDenied(data),
+            },
+            ConfigValidateError::ConfigurationFailed { message, data } => Self {
+                code: -32050,
+                message,
+                data: HostErrorData::ConfigurationFailed(data),
+            },
+            ConfigValidateError::IdempotencyConflict { message, data } => Self {
+                code: -32012,
+                message,
+                data: HostErrorData::IdempotencyConflict(data),
+            },
+            ConfigValidateError::RunConflict { message, data } => Self {
+                code: -32013,
+                message,
+                data: HostErrorData::RunConflict(data),
+            },
+            ConfigValidateError::InternalError { message, data } => Self {
+                code: -32000,
+                message,
+                data: HostErrorData::InternalError(data),
+            },
+        }
+    }
+}
+impl From<HostError> for ConfigValidateError {
+    fn from(error: HostError) -> Self {
+        match (error.message, error.data) {
+            (message, HostErrorData::NotInitialized(data)) => {
+                Self::NotInitialized { message, data }
+            }
+            (message, HostErrorData::UnsupportedFeature(data)) => {
+                Self::UnsupportedFeature { message, data }
+            }
+            (message, HostErrorData::InvalidParams(data)) => Self::InvalidParams { message, data },
+            (message, HostErrorData::NotFound(data)) => Self::NotFound { message, data },
+            (message, HostErrorData::StorageUnavailable(data)) => {
+                Self::StorageUnavailable { message, data }
+            }
+            (message, HostErrorData::AuthorizationDenied(data)) => {
+                Self::AuthorizationDenied { message, data }
+            }
+            (message, HostErrorData::ConfigurationFailed(data)) => {
+                Self::ConfigurationFailed { message, data }
+            }
+            (message, HostErrorData::IdempotencyConflict(data)) => {
+                Self::IdempotencyConflict { message, data }
+            }
+            (message, HostErrorData::RunConflict(data)) => Self::RunConflict { message, data },
+            (message, HostErrorData::InternalError(data)) => Self::InternalError { message, data },
+            (_, _) => Self::InternalError {
+                message: "internal error".to_string(),
+                data: InternalErrorData {
+                    kind: InternalErrorDataKind::Value,
+                    retryable: false,
+                    reconciliation_required: true,
+                    diagnostic_ref: None,
+                    resource_kind: None,
+                },
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DeferredCompleteError {
     NotInitialized {
         message: String,
@@ -4378,6 +5152,366 @@ impl From<HostError> for ShutdownError {
             }
             (message, HostErrorData::RunConflict(data)) => Self::RunConflict { message, data },
             (message, HostErrorData::StaleFence(data)) => Self::StaleFence { message, data },
+            (_, _) => Self::InternalError {
+                message: "internal error".to_string(),
+                data: InternalErrorData {
+                    kind: InternalErrorDataKind::Value,
+                    retryable: false,
+                    reconciliation_required: true,
+                    diagnostic_ref: None,
+                    resource_kind: None,
+                },
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceListError {
+    NotInitialized {
+        message: String,
+        data: NotInitializedData,
+    },
+    UnsupportedFeature {
+        message: String,
+        data: UnsupportedFeatureData,
+    },
+    StorageUnavailable {
+        message: String,
+        data: StorageUnavailableData,
+    },
+    AuthorizationDenied {
+        message: String,
+        data: AuthorizationDeniedData,
+    },
+    InternalError {
+        message: String,
+        data: InternalErrorData,
+    },
+}
+impl From<WorkspaceListError> for HostError {
+    fn from(error: WorkspaceListError) -> Self {
+        match error {
+            WorkspaceListError::NotInitialized { message, data } => Self {
+                code: -32001,
+                message,
+                data: HostErrorData::NotInitialized(data),
+            },
+            WorkspaceListError::UnsupportedFeature { message, data } => Self {
+                code: -32002,
+                message,
+                data: HostErrorData::UnsupportedFeature(data),
+            },
+            WorkspaceListError::StorageUnavailable { message, data } => Self {
+                code: -32015,
+                message,
+                data: HostErrorData::StorageUnavailable(data),
+            },
+            WorkspaceListError::AuthorizationDenied { message, data } => Self {
+                code: -32017,
+                message,
+                data: HostErrorData::AuthorizationDenied(data),
+            },
+            WorkspaceListError::InternalError { message, data } => Self {
+                code: -32000,
+                message,
+                data: HostErrorData::InternalError(data),
+            },
+        }
+    }
+}
+impl From<HostError> for WorkspaceListError {
+    fn from(error: HostError) -> Self {
+        match (error.message, error.data) {
+            (message, HostErrorData::NotInitialized(data)) => {
+                Self::NotInitialized { message, data }
+            }
+            (message, HostErrorData::UnsupportedFeature(data)) => {
+                Self::UnsupportedFeature { message, data }
+            }
+            (message, HostErrorData::StorageUnavailable(data)) => {
+                Self::StorageUnavailable { message, data }
+            }
+            (message, HostErrorData::AuthorizationDenied(data)) => {
+                Self::AuthorizationDenied { message, data }
+            }
+            (message, HostErrorData::InternalError(data)) => Self::InternalError { message, data },
+            (_, _) => Self::InternalError {
+                message: "internal error".to_string(),
+                data: InternalErrorData {
+                    kind: InternalErrorDataKind::Value,
+                    retryable: false,
+                    reconciliation_required: true,
+                    diagnostic_ref: None,
+                    resource_kind: None,
+                },
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceRegisterError {
+    NotInitialized {
+        message: String,
+        data: NotInitializedData,
+    },
+    UnsupportedFeature {
+        message: String,
+        data: UnsupportedFeatureData,
+    },
+    InvalidParams {
+        message: String,
+        data: InvalidParamsData,
+    },
+    NotFound {
+        message: String,
+        data: NotFoundData,
+    },
+    StorageUnavailable {
+        message: String,
+        data: StorageUnavailableData,
+    },
+    AuthorizationDenied {
+        message: String,
+        data: AuthorizationDeniedData,
+    },
+    ConfigurationFailed {
+        message: String,
+        data: ConfigurationFailedData,
+    },
+    IdempotencyConflict {
+        message: String,
+        data: IdempotencyConflictData,
+    },
+    RunConflict {
+        message: String,
+        data: RunConflictData,
+    },
+    InternalError {
+        message: String,
+        data: InternalErrorData,
+    },
+}
+impl From<WorkspaceRegisterError> for HostError {
+    fn from(error: WorkspaceRegisterError) -> Self {
+        match error {
+            WorkspaceRegisterError::NotInitialized { message, data } => Self {
+                code: -32001,
+                message,
+                data: HostErrorData::NotInitialized(data),
+            },
+            WorkspaceRegisterError::UnsupportedFeature { message, data } => Self {
+                code: -32002,
+                message,
+                data: HostErrorData::UnsupportedFeature(data),
+            },
+            WorkspaceRegisterError::InvalidParams { message, data } => Self {
+                code: -32602,
+                message,
+                data: HostErrorData::InvalidParams(data),
+            },
+            WorkspaceRegisterError::NotFound { message, data } => Self {
+                code: -32010,
+                message,
+                data: HostErrorData::NotFound(data),
+            },
+            WorkspaceRegisterError::StorageUnavailable { message, data } => Self {
+                code: -32015,
+                message,
+                data: HostErrorData::StorageUnavailable(data),
+            },
+            WorkspaceRegisterError::AuthorizationDenied { message, data } => Self {
+                code: -32017,
+                message,
+                data: HostErrorData::AuthorizationDenied(data),
+            },
+            WorkspaceRegisterError::ConfigurationFailed { message, data } => Self {
+                code: -32050,
+                message,
+                data: HostErrorData::ConfigurationFailed(data),
+            },
+            WorkspaceRegisterError::IdempotencyConflict { message, data } => Self {
+                code: -32012,
+                message,
+                data: HostErrorData::IdempotencyConflict(data),
+            },
+            WorkspaceRegisterError::RunConflict { message, data } => Self {
+                code: -32013,
+                message,
+                data: HostErrorData::RunConflict(data),
+            },
+            WorkspaceRegisterError::InternalError { message, data } => Self {
+                code: -32000,
+                message,
+                data: HostErrorData::InternalError(data),
+            },
+        }
+    }
+}
+impl From<HostError> for WorkspaceRegisterError {
+    fn from(error: HostError) -> Self {
+        match (error.message, error.data) {
+            (message, HostErrorData::NotInitialized(data)) => {
+                Self::NotInitialized { message, data }
+            }
+            (message, HostErrorData::UnsupportedFeature(data)) => {
+                Self::UnsupportedFeature { message, data }
+            }
+            (message, HostErrorData::InvalidParams(data)) => Self::InvalidParams { message, data },
+            (message, HostErrorData::NotFound(data)) => Self::NotFound { message, data },
+            (message, HostErrorData::StorageUnavailable(data)) => {
+                Self::StorageUnavailable { message, data }
+            }
+            (message, HostErrorData::AuthorizationDenied(data)) => {
+                Self::AuthorizationDenied { message, data }
+            }
+            (message, HostErrorData::ConfigurationFailed(data)) => {
+                Self::ConfigurationFailed { message, data }
+            }
+            (message, HostErrorData::IdempotencyConflict(data)) => {
+                Self::IdempotencyConflict { message, data }
+            }
+            (message, HostErrorData::RunConflict(data)) => Self::RunConflict { message, data },
+            (message, HostErrorData::InternalError(data)) => Self::InternalError { message, data },
+            (_, _) => Self::InternalError {
+                message: "internal error".to_string(),
+                data: InternalErrorData {
+                    kind: InternalErrorDataKind::Value,
+                    retryable: false,
+                    reconciliation_required: true,
+                    diagnostic_ref: None,
+                    resource_kind: None,
+                },
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceRemoveError {
+    NotInitialized {
+        message: String,
+        data: NotInitializedData,
+    },
+    UnsupportedFeature {
+        message: String,
+        data: UnsupportedFeatureData,
+    },
+    InvalidParams {
+        message: String,
+        data: InvalidParamsData,
+    },
+    NotFound {
+        message: String,
+        data: NotFoundData,
+    },
+    StorageUnavailable {
+        message: String,
+        data: StorageUnavailableData,
+    },
+    AuthorizationDenied {
+        message: String,
+        data: AuthorizationDeniedData,
+    },
+    ConfigurationFailed {
+        message: String,
+        data: ConfigurationFailedData,
+    },
+    IdempotencyConflict {
+        message: String,
+        data: IdempotencyConflictData,
+    },
+    RunConflict {
+        message: String,
+        data: RunConflictData,
+    },
+    InternalError {
+        message: String,
+        data: InternalErrorData,
+    },
+}
+impl From<WorkspaceRemoveError> for HostError {
+    fn from(error: WorkspaceRemoveError) -> Self {
+        match error {
+            WorkspaceRemoveError::NotInitialized { message, data } => Self {
+                code: -32001,
+                message,
+                data: HostErrorData::NotInitialized(data),
+            },
+            WorkspaceRemoveError::UnsupportedFeature { message, data } => Self {
+                code: -32002,
+                message,
+                data: HostErrorData::UnsupportedFeature(data),
+            },
+            WorkspaceRemoveError::InvalidParams { message, data } => Self {
+                code: -32602,
+                message,
+                data: HostErrorData::InvalidParams(data),
+            },
+            WorkspaceRemoveError::NotFound { message, data } => Self {
+                code: -32010,
+                message,
+                data: HostErrorData::NotFound(data),
+            },
+            WorkspaceRemoveError::StorageUnavailable { message, data } => Self {
+                code: -32015,
+                message,
+                data: HostErrorData::StorageUnavailable(data),
+            },
+            WorkspaceRemoveError::AuthorizationDenied { message, data } => Self {
+                code: -32017,
+                message,
+                data: HostErrorData::AuthorizationDenied(data),
+            },
+            WorkspaceRemoveError::ConfigurationFailed { message, data } => Self {
+                code: -32050,
+                message,
+                data: HostErrorData::ConfigurationFailed(data),
+            },
+            WorkspaceRemoveError::IdempotencyConflict { message, data } => Self {
+                code: -32012,
+                message,
+                data: HostErrorData::IdempotencyConflict(data),
+            },
+            WorkspaceRemoveError::RunConflict { message, data } => Self {
+                code: -32013,
+                message,
+                data: HostErrorData::RunConflict(data),
+            },
+            WorkspaceRemoveError::InternalError { message, data } => Self {
+                code: -32000,
+                message,
+                data: HostErrorData::InternalError(data),
+            },
+        }
+    }
+}
+impl From<HostError> for WorkspaceRemoveError {
+    fn from(error: HostError) -> Self {
+        match (error.message, error.data) {
+            (message, HostErrorData::NotInitialized(data)) => {
+                Self::NotInitialized { message, data }
+            }
+            (message, HostErrorData::UnsupportedFeature(data)) => {
+                Self::UnsupportedFeature { message, data }
+            }
+            (message, HostErrorData::InvalidParams(data)) => Self::InvalidParams { message, data },
+            (message, HostErrorData::NotFound(data)) => Self::NotFound { message, data },
+            (message, HostErrorData::StorageUnavailable(data)) => {
+                Self::StorageUnavailable { message, data }
+            }
+            (message, HostErrorData::AuthorizationDenied(data)) => {
+                Self::AuthorizationDenied { message, data }
+            }
+            (message, HostErrorData::ConfigurationFailed(data)) => {
+                Self::ConfigurationFailed { message, data }
+            }
+            (message, HostErrorData::IdempotencyConflict(data)) => {
+                Self::IdempotencyConflict { message, data }
+            }
+            (message, HostErrorData::RunConflict(data)) => Self::RunConflict { message, data },
+            (message, HostErrorData::InternalError(data)) => Self::InternalError { message, data },
             (_, _) => Self::InternalError {
                 message: "internal error".to_string(),
                 data: InternalErrorData {

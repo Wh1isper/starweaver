@@ -31,6 +31,7 @@ FEATURES = [
     "session.search",
     "sessions",
     "steering",
+    "workspace.registry",
 ]
 
 
@@ -48,6 +49,7 @@ def load_bundle(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     methods = {entry.get("name") for entry in bundle.get("methods", [])}
     required = {
         "initialize",
+        "workspace.list",
         "session.list",
         "session.create",
         "session.get",
@@ -173,6 +175,11 @@ def run_stdio(
         if initialized.get("protocol") != protocol:
             fail("stdio initialize identity differs from the public bundle")
 
+        workspaces = expect_result(
+            client.call(request("workspace-list", "workspace.list", {"limit": 1})),
+            "workspace.list",
+        )
+        workspace_id = workspaces["workspaces"][0]["workspaceId"]
         expect_result(
             client.call(request("session-list", "session.list", {"limit": 10})),
             "session.list",
@@ -196,6 +203,7 @@ def run_stdio(
                         "deferredTools": [],
                         "profile": "general",
                         "title": "Independent protocol proof",
+                        "workspaceId": workspace_id,
                     },
                 )
             ),

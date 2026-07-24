@@ -440,6 +440,324 @@ pub struct ClientInfo {
     pub version: String,
 }
 
+/// Generated closed object `ConfigActivateParams`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigActivateParams {
+    /// Wire field `activationId`.
+    pub activation_id: ConfigActivationId,
+    /// Wire field `authorization`.
+    pub authorization: String,
+    /// Wire field `desiredEtag`.
+    pub desired_etag: ConfigEtag,
+    /// Wire field `idempotencyKey`.
+    pub idempotency_key: IdempotencyKey,
+}
+
+/// Generated closed object `ConfigActivateResult`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigActivateResult {
+    /// Wire field `receipt`.
+    pub receipt: MutationReceipt,
+    /// Wire field `status`.
+    pub status: ConfigStatus,
+}
+
+/// Validated generated string `ConfigActivationId`.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct ConfigActivationId(String);
+impl ConfigActivationId {
+    pub fn new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        validate_string(&value, 1, 128, "ConfigActivationId")?;
+        Ok(Self(value))
+    }
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+impl<'de> Deserialize<'de> for ConfigActivationId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+impl fmt::Display for ConfigActivationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Generated string enum `ConfigCategory`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ConfigCategory {
+    #[serde(rename = "default_profile")]
+    DefaultProfile,
+    #[serde(rename = "profiles")]
+    Profiles,
+    #[serde(rename = "providers")]
+    Providers,
+    #[serde(rename = "tools")]
+    Tools,
+    #[serde(rename = "mcp")]
+    Mcp,
+    #[serde(rename = "environment")]
+    Environment,
+    #[serde(rename = "sandbox")]
+    Sandbox,
+    #[serde(rename = "runtime")]
+    Runtime,
+}
+
+/// Generated closed object `ConfigChangedNotificationParams`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigChangedNotificationParams {
+    /// Wire field `status`.
+    pub status: ConfigStatus,
+}
+
+/// Generated closed object `ConfigDiscardParams`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigDiscardParams {
+    /// Wire field `authorization`.
+    pub authorization: String,
+    /// Wire field `desiredEtag`.
+    pub desired_etag: ConfigEtag,
+    /// Wire field `idempotencyKey`.
+    pub idempotency_key: IdempotencyKey,
+}
+
+/// Generated closed object `ConfigDiscardResult`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigDiscardResult {
+    /// Wire field `receipt`.
+    pub receipt: MutationReceipt,
+    /// Wire field `status`.
+    pub status: ConfigStatus,
+}
+
+/// Generated closed object `ConfigDocument`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigDocument {
+    /// Wire field `defaultProfile`.
+    pub default_profile: String,
+    /// Wire field `profiles`.
+    pub profiles: Vec<LaunchProfile>,
+    /// Wire field `providers`.
+    pub providers: Vec<ConfigProvider>,
+}
+
+/// Validated generated string `ConfigEtag`.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct ConfigEtag(String);
+impl ConfigEtag {
+    pub fn new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        validate_string(&value, 1, 128, "ConfigEtag")?;
+        Ok(Self(value))
+    }
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+impl<'de> Deserialize<'de> for ConfigEtag {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+impl fmt::Display for ConfigEtag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Generated closed object `ConfigGetParams`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigGetParams {}
+
+/// Generated closed object `ConfigGetResult`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigGetResult {
+    /// Wire field `config`.
+    pub config: ConfigDocument,
+    /// Wire field `status`.
+    pub status: ConfigStatus,
+}
+
+/// Generated closed object `ConfigIssue`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigIssue {
+    /// Wire field `category`.
+    pub category: ConfigCategory,
+    /// Wire field `code`.
+    pub code: String,
+    /// Wire field `message`.
+    pub message: String,
+    /// Wire field `severity`.
+    pub severity: String,
+}
+
+/// Generated closed object `ConfigProvider`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigProvider {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Wire field `baseUrl`.
+    pub base_url: Option<String>,
+    /// Wire field `enabled`.
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Wire field `endpointPath`.
+    pub endpoint_path: Option<String>,
+    /// Wire field `name`.
+    pub name: String,
+}
+
+/// Generated string enum `ConfigReloadMode`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ConfigReloadMode {
+    #[serde(rename = "dry_run")]
+    DryRun,
+    #[serde(rename = "commit")]
+    Commit,
+}
+
+/// Generated closed object `ConfigReloadParams`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigReloadParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Wire field `authorization`.
+    pub authorization: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Wire field `candidateEtag`.
+    pub candidate_etag: Option<ConfigEtag>,
+    /// Wire field `expectedActiveEtag`.
+    pub expected_active_etag: ConfigEtag,
+    /// Wire field `idempotencyKey`.
+    pub idempotency_key: IdempotencyKey,
+    /// Wire field `mode`.
+    pub mode: ConfigReloadMode,
+}
+
+/// Generated closed object `ConfigReloadResult`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigReloadResult {
+    /// Wire field `candidateEtag`.
+    pub candidate_etag: ConfigEtag,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Wire field `receipt`.
+    pub receipt: Option<MutationReceipt>,
+    /// Wire field `status`.
+    pub status: ConfigStatus,
+    /// Wire field `validation`.
+    pub validation: ConfigValidation,
+}
+
+/// Generated closed object `ConfigRevision`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigRevision {
+    /// Wire field `etag`.
+    pub etag: ConfigEtag,
+    /// Wire field `generation`.
+    pub generation: DecimalU64,
+    /// Wire field `materializationDigest`.
+    pub materialization_digest: SchemaDigest,
+}
+
+/// Generated closed object `ConfigStatus`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigStatus {
+    /// Wire field `active`.
+    pub active: ConfigRevision,
+    /// Wire field `desired`.
+    pub desired: ConfigRevision,
+    /// Wire field `restartRequired`.
+    pub restart_required: bool,
+}
+
+/// Generated closed object `ConfigUpdateParams`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigUpdateParams {
+    /// Wire field `authorization`.
+    pub authorization: String,
+    /// Wire field `candidate`.
+    pub candidate: ConfigDocument,
+    /// Wire field `candidateFingerprint`.
+    pub candidate_fingerprint: SchemaDigest,
+    /// Wire field `expectedActiveEtag`.
+    pub expected_active_etag: ConfigEtag,
+    /// Wire field `idempotencyKey`.
+    pub idempotency_key: IdempotencyKey,
+}
+
+/// Generated closed object `ConfigUpdateResult`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigUpdateResult {
+    /// Wire field `receipt`.
+    pub receipt: MutationReceipt,
+    /// Wire field `status`.
+    pub status: ConfigStatus,
+    /// Wire field `validation`.
+    pub validation: ConfigValidation,
+}
+
+/// Generated closed object `ConfigValidateParams`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigValidateParams {
+    /// Wire field `candidate`.
+    pub candidate: ConfigDocument,
+}
+
+/// Generated closed object `ConfigValidateResult`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigValidateResult {
+    /// Wire field `validation`.
+    pub validation: ConfigValidation,
+}
+
+/// Generated closed object `ConfigValidation`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigValidation {
+    /// Wire field `candidateFingerprint`.
+    pub candidate_fingerprint: SchemaDigest,
+    /// Wire field `changedCategories`.
+    pub changed_categories: Vec<ConfigCategory>,
+    /// Wire field `issues`.
+    pub issues: Vec<ConfigIssue>,
+    /// Wire field `restartRequired`.
+    pub restart_required: bool,
+    /// Wire field `valid`.
+    pub valid: bool,
+}
+
 /// Discriminator `configuration_failed`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ConfigurationFailedDataKind {
@@ -1236,6 +1554,14 @@ pub struct EventsUnsubscribeResult {
     pub subscription_id: SubscriptionId,
 }
 
+/// Generated closed object `ExecutionDomainCompatibility`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutionDomainCompatibility {
+    /// Wire field `executionDomainId`.
+    pub execution_domain_id: String,
+}
+
 /// Validated generated string `FeatureId`.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
@@ -1418,6 +1744,8 @@ pub struct InitializeParams {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InitializeResult {
+    /// Wire field `executionDomain`.
+    pub execution_domain: ExecutionDomainCompatibility,
     /// Wire field `launch`.
     pub launch: LaunchCompatibility,
     /// Wire field `negotiatedFeatures`.
@@ -1436,8 +1764,6 @@ pub struct InitializeResult {
     pub storage: StorageCompatibility,
     /// Wire field `supportedFeatures`.
     pub supported_features: Vec<FeatureId>,
-    /// Wire field `workspace`.
-    pub workspace: WorkspaceCompatibility,
 }
 
 /// Generated closed discriminated union `InputPart`.
@@ -1616,8 +1942,6 @@ pub struct LaunchEnvelope {
     pub schema: LaunchSchemaIdentity,
     /// Wire field `stateDirectory`.
     pub state_directory: String,
-    /// Wire field `workspace`.
-    pub workspace: LaunchWorkspace,
 }
 
 /// Generated closed object `LaunchProfile`.
@@ -1674,16 +1998,6 @@ pub struct LaunchSchemaIdentity {
     pub name: LaunchSchemaIdentityName,
     /// Wire field `version`.
     pub version: u32,
-}
-
-/// Generated closed object `LaunchWorkspace`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct LaunchWorkspace {
-    /// Wire field `identity`.
-    pub identity: String,
-    /// Wire field `root`.
-    pub root: String,
 }
 
 /// Discriminator `method_not_found`.
@@ -2238,9 +2552,8 @@ pub struct RunStartParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Wire field `restoreFromRunId`.
     pub restore_from_run_id: Option<RunId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Wire field `sessionId`.
-    pub session_id: Option<SessionId>,
+    pub session_id: SessionId,
 }
 
 /// Generated closed object `RunStartResult`.
@@ -2438,6 +2751,8 @@ pub struct SessionCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Wire field `title`.
     pub title: Option<String>,
+    /// Wire field `workspaceId`.
+    pub workspace_id: WorkspaceId,
 }
 
 /// Generated closed object `SessionCreateResult`.
@@ -2699,6 +3014,8 @@ pub struct SessionSummary {
     pub title: Option<String>,
     /// Wire field `updatedAt`.
     pub updated_at: Timestamp,
+    /// Wire field `workspaceId`.
+    pub workspace_id: Option<WorkspaceId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Wire field `workspaceLabel`.
     pub workspace_label: Option<String>,
@@ -2931,12 +3248,124 @@ pub struct UnsupportedFeatureData {
     pub retryable: bool,
 }
 
-/// Generated closed object `WorkspaceCompatibility`.
+/// Validated generated string `WorkspaceId`.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct WorkspaceId(String);
+impl WorkspaceId {
+    pub fn new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        validate_string(&value, 1, 128, "WorkspaceId")?;
+        Ok(Self(value))
+    }
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+impl<'de> Deserialize<'de> for WorkspaceId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+impl fmt::Display for WorkspaceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Generated closed object `WorkspaceListParams`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct WorkspaceCompatibility {
-    /// Wire field `executionDomainId`.
-    pub execution_domain_id: String,
-    /// Wire field `workspaceIdentity`.
-    pub workspace_identity: String,
+pub struct WorkspaceListParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Wire field `cursor`.
+    pub cursor: Option<String>,
+    /// Wire field `limit`.
+    pub limit: u32,
+}
+
+/// Generated closed object `WorkspaceListResult`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceListResult {
+    /// Wire field `page`.
+    pub page: PageInfo,
+    /// Wire field `workspaces`.
+    pub workspaces: Vec<WorkspaceSummary>,
+}
+
+/// Generated closed object `WorkspaceRegisterParams`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceRegisterParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Wire field `displayLabel`.
+    pub display_label: Option<String>,
+    /// Wire field `idempotencyKey`.
+    pub idempotency_key: IdempotencyKey,
+    /// Wire field `root`.
+    pub root: String,
+}
+
+/// Generated closed object `WorkspaceRegisterResult`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceRegisterResult {
+    /// Wire field `receipt`.
+    pub receipt: MutationReceipt,
+    /// Wire field `workspace`.
+    pub workspace: WorkspaceSummary,
+}
+
+/// Generated closed object `WorkspaceRemoveParams`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceRemoveParams {
+    /// Wire field `expectedRevision`.
+    pub expected_revision: DecimalU64,
+    /// Wire field `idempotencyKey`.
+    pub idempotency_key: IdempotencyKey,
+    /// Wire field `workspaceId`.
+    pub workspace_id: WorkspaceId,
+}
+
+/// Generated closed object `WorkspaceRemoveResult`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceRemoveResult {
+    /// Wire field `receipt`.
+    pub receipt: MutationReceipt,
+    /// Wire field `workspace`.
+    pub workspace: WorkspaceSummary,
+}
+
+/// Generated string enum `WorkspaceState`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum WorkspaceState {
+    #[serde(rename = "active")]
+    Active,
+    #[serde(rename = "revoked")]
+    Revoked,
+}
+
+/// Generated closed object `WorkspaceSummary`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Wire field `displayLabel`.
+    pub display_label: Option<String>,
+    /// Wire field `provenanceDigest`.
+    pub provenance_digest: SchemaDigest,
+    /// Wire field `revision`.
+    pub revision: DecimalU64,
+    /// Wire field `state`.
+    pub state: WorkspaceState,
+    /// Wire field `workspaceId`.
+    pub workspace_id: WorkspaceId,
 }

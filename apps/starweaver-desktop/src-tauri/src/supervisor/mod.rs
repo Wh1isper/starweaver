@@ -16,6 +16,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use hmac::{Hmac, Mac as _};
 #[cfg(windows)]
 use process_wrap::tokio::JobObject;
 #[cfg(unix)]
@@ -53,6 +55,10 @@ const CRASH_BUDGET_WINDOW: Duration = Duration::from_secs(30);
 #[cfg(all(test, unix))]
 const PROCESS_REAP_TIMEOUT: Duration = Duration::from_secs(5);
 const DESKTOP_STORAGE_GENERATION: u64 = 1;
+const CONFIG_AUTHORIZATION_KEY_FILE: &str = "config-authorization.key";
+const CONFIG_AUTHORIZATION_TTL: Duration = Duration::from_mins(5);
+
+type HmacSha256 = Hmac<Sha256>;
 
 const DESKTOP_METHODS: &[host::Method] = &[
     host::Method::ApprovalDecide,
@@ -60,6 +66,12 @@ const DESKTOP_METHODS: &[host::Method] = &[
     host::Method::ApprovalShow,
     host::Method::CatalogList,
     host::Method::ClarificationResolve,
+    host::Method::ConfigActivate,
+    host::Method::ConfigDiscard,
+    host::Method::ConfigGet,
+    host::Method::ConfigReload,
+    host::Method::ConfigUpdate,
+    host::Method::ConfigValidate,
     host::Method::DeferredComplete,
     host::Method::DeferredFail,
     host::Method::DeferredList,
@@ -84,6 +96,9 @@ const DESKTOP_METHODS: &[host::Method] = &[
     host::Method::SessionGet,
     host::Method::SessionList,
     host::Method::SessionSearch,
+    host::Method::WorkspaceList,
+    host::Method::WorkspaceRegister,
+    host::Method::WorkspaceRemove,
 ];
 
 const DESKTOP_EVENT_CLASSES: &[host::EventClass] = &[
@@ -115,8 +130,6 @@ pub struct LocalLaunchSpec {
     pub configuration_generation: u64,
     /// Expected stable execution-domain identity.
     pub execution_domain_id: String,
-    /// Expected stable workspace identity.
-    pub workspace_identity: String,
 }
 
 /// Public process-state projection. Paths, process IDs, diagnostics, and wire metadata are omitted.
@@ -274,6 +287,26 @@ struct VerifiedLaunch {
     target: String,
 }
 
+#[derive(Clone, Debug)]
+struct ConfigAuthorizationContext {
+    execution_domain: String,
+    state_directory: PathBuf,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigAuthorizationClaims<'a> {
+    version: u32,
+    execution_domain_id: &'a str,
+    operation: &'a str,
+    expected_revision: &'a str,
+    candidate_fingerprint: &'a str,
+    idempotency_key: &'a str,
+    nonce: String,
+    issued_at_ms: i64,
+    expires_at_ms: i64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FileIdentity {
     canonical_path: PathBuf,
@@ -400,6 +433,10 @@ struct DurableOperationRecord {
     operation_id: String,
     execution_domain: String,
     fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    authority_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    privileged_fields: Option<bridge::SupervisorDynamicFields>,
     operation: Option<serde_json::Value>,
     idempotency_key: String,
     acknowledgement_token: String,
@@ -425,6 +462,7 @@ struct Shared {
     durable_operations: Mutex<HashMap<String, DurableOperationRecord>>,
     page_tokens: Mutex<PageTokenLedger>,
     recovery_spec: Mutex<Option<LocalLaunchSpec>>,
+    config_authorization: Mutex<Option<ConfigAuthorizationContext>>,
     recent_crashes: Mutex<VecDeque<std::time::Instant>>,
     recovery_cancelled: AtomicBool,
     storage_root: Mutex<Option<PathBuf>>,
@@ -439,6 +477,7 @@ impl Default for Shared {
             durable_operations: Mutex::new(HashMap::new()),
             page_tokens: Mutex::new(PageTokenLedger::default()),
             recovery_spec: Mutex::new(None),
+            config_authorization: Mutex::new(None),
             recent_crashes: Mutex::new(VecDeque::new()),
             recovery_cancelled: AtomicBool::new(false),
             storage_root: Mutex::new(None),
@@ -511,6 +550,12 @@ impl Shared {
         let generation = state.generation;
         drop(state);
         self.clear_generation_scoped_state()?;
+        *self.config_authorization.lock().map_err(|_| {
+            SupervisorError::new(
+                SupervisorErrorCode::Internal,
+                "configuration authorization state unavailable",
+            )
+        })? = None;
         if let Ok(mut crashes) = self.recent_crashes.lock() {
             crashes.clear();
         }
@@ -547,6 +592,12 @@ impl Shared {
         let generation = state.generation;
         drop(state);
         self.clear_generation_scoped_state()?;
+        *self.config_authorization.lock().map_err(|_| {
+            SupervisorError::new(
+                SupervisorErrorCode::Internal,
+                "configuration authorization state unavailable",
+            )
+        })? = None;
         Ok(generation)
     }
 
@@ -655,6 +706,55 @@ impl Shared {
         };
         drop(state);
         Ok(recover)
+    }
+
+    fn install_config_authorization_context(
+        &self,
+        generation: u64,
+        execution_domain: String,
+        state_directory: PathBuf,
+    ) -> Result<(), SupervisorError> {
+        let state = self.state.lock().map_err(|_| {
+            SupervisorError::new(SupervisorErrorCode::Internal, "host state unavailable")
+        })?;
+        if state.generation != generation || state.state != HostChildState::Handshaking {
+            return Err(SupervisorError::new(
+                SupervisorErrorCode::Internal,
+                "invalid configuration authorization lifecycle",
+            ));
+        }
+        drop(state);
+        *self.config_authorization.lock().map_err(|_| {
+            SupervisorError::new(
+                SupervisorErrorCode::Internal,
+                "configuration authorization state unavailable",
+            )
+        })? = Some(ConfigAuthorizationContext {
+            execution_domain,
+            state_directory,
+        });
+        Ok(())
+    }
+
+    fn config_authorization_context(
+        &self,
+        expected_execution_domain: &str,
+    ) -> Result<ConfigAuthorizationContext, SupervisorError> {
+        let context = self
+            .config_authorization
+            .lock()
+            .map_err(|_| {
+                SupervisorError::new(
+                    SupervisorErrorCode::Internal,
+                    "configuration authorization state unavailable",
+                )
+            })?
+            .clone()
+            .ok_or_else(SupervisorError::not_ready)?;
+        if context.execution_domain != expected_execution_domain {
+            return Err(SupervisorError::not_ready());
+        }
+        Ok(context)
     }
 
     fn set_ready_domain(&self, generation: u64, domain: String) -> Result<(), SupervisorError> {
@@ -781,6 +881,7 @@ impl Shared {
             return NotificationAdmission::Reject;
         };
         match &notification.params {
+            host::HostNotificationParams::ConfigChanged(_) => NotificationAdmission::Deliver,
             host::HostNotificationParams::HostEvent(params) => {
                 let Some(expected) = subscriptions
                     .records
@@ -817,11 +918,92 @@ impl Shared {
         }
     }
 
+    fn operation_idempotency_key(
+        &self,
+        operation_id: &str,
+        execution_domain: &str,
+        fingerprint: &str,
+    ) -> Result<String, SupervisorError> {
+        validate_operation_id(operation_id)?;
+        let operations = self.durable_operations.lock().map_err(|_| {
+            SupervisorError::new(
+                SupervisorErrorCode::Internal,
+                "operation ledger unavailable",
+            )
+        })?;
+        if let Some(existing) = operations.get(operation_id) {
+            let matches = existing.execution_domain == execution_domain
+                && existing.fingerprint == fingerprint;
+            let idempotency_key = existing.idempotency_key.clone();
+            drop(operations);
+            if !matches {
+                return Err(SupervisorError::new(
+                    SupervisorErrorCode::InvalidConfiguration,
+                    "logical operation identity does not match its original operation",
+                ));
+            }
+            return Ok(idempotency_key);
+        }
+        drop(operations);
+        Ok(desktop_idempotency_key(operation_id))
+    }
+
+    fn reusable_operation_fields(
+        &self,
+        operation_id: &str,
+        execution_domain: &str,
+        fingerprint: &str,
+    ) -> Result<Option<bridge::SupervisorDynamicFields>, SupervisorError> {
+        validate_operation_id(operation_id)?;
+        let operations = self.durable_operations.lock().map_err(|_| {
+            SupervisorError::new(
+                SupervisorErrorCode::Internal,
+                "operation ledger unavailable",
+            )
+        })?;
+        let Some(existing) = operations.get(operation_id) else {
+            return Ok(None);
+        };
+        let matches =
+            existing.execution_domain == execution_domain && existing.fingerprint == fingerprint;
+        let privileged_fields = existing.privileged_fields.clone();
+        drop(operations);
+        if !matches {
+            return Err(SupervisorError::new(
+                SupervisorErrorCode::InvalidConfiguration,
+                "logical operation identity does not match its original operation",
+            ));
+        }
+        Ok(privileged_fields)
+    }
+
+    #[cfg(test)]
     fn admit_operation(
         &self,
         operation_id: &str,
         execution_domain: &str,
         fingerprint: &str,
+        operation: &bridge::DesktopHostOperation,
+    ) -> Result<((String, String), Option<DurableOperationRecord>), SupervisorError> {
+        let privileged_fields = bridge::SupervisorDynamicFields::default();
+        let authority_fingerprint = dynamic_authority_fingerprint(&privileged_fields)?;
+        self.admit_operation_with_authority(
+            operation_id,
+            execution_domain,
+            fingerprint,
+            &authority_fingerprint,
+            &privileged_fields,
+            operation,
+        )
+    }
+
+    fn admit_operation_with_authority(
+        &self,
+        operation_id: &str,
+        execution_domain: &str,
+        fingerprint: &str,
+        authority_fingerprint: &str,
+        privileged_fields: &bridge::SupervisorDynamicFields,
         operation: &bridge::DesktopHostOperation,
     ) -> Result<((String, String), Option<DurableOperationRecord>), SupervisorError> {
         validate_operation_id(operation_id)?;
@@ -832,7 +1014,17 @@ impl Shared {
             )
         })?;
         if let Some(existing) = operations.get(operation_id) {
-            if existing.execution_domain != execution_domain || existing.fingerprint != fingerprint
+            let existing_authority = existing.authority_fingerprint.clone().map_or_else(
+                || dynamic_authority_fingerprint(&bridge::SupervisorDynamicFields::default()),
+                Ok,
+            )?;
+            if existing.execution_domain != execution_domain
+                || existing.fingerprint != fingerprint
+                || existing_authority != authority_fingerprint
+                || existing
+                    .privileged_fields
+                    .as_ref()
+                    .is_some_and(|fields| fields != privileged_fields)
             {
                 return Err(SupervisorError::new(
                     SupervisorErrorCode::InvalidConfiguration,
@@ -859,18 +1051,20 @@ impl Shared {
             ));
         }
         let record = DurableOperationRecord {
-            schema_version: 1,
+            schema_version: 3,
             state: DurableOperationState::Pending,
             operation_id: operation_id.to_string(),
             execution_domain: execution_domain.to_string(),
             fingerprint: fingerprint.to_string(),
+            authority_fingerprint: Some(authority_fingerprint.to_string()),
+            privileged_fields: Some(privileged_fields.clone()),
             operation: Some(serde_json::to_value(operation).map_err(|_| {
                 SupervisorError::new(
                     SupervisorErrorCode::Internal,
                     "logical operation could not be persisted",
                 )
             })?),
-            idempotency_key: format!("desktop-{}", uuid::Uuid::new_v4()),
+            idempotency_key: desktop_idempotency_key(operation_id),
             acknowledgement_token: format!("desktop-operation-ack-v1-{}", uuid::Uuid::new_v4()),
             retired_at_unix_ms: None,
         };
@@ -1345,10 +1539,15 @@ impl LocalHostSupervisor {
         }
         let (sender, receiver) = mpsc::channel(64);
         *self.actor.lock().await = Some(sender);
-        if let Err(error) = self
-            .shared
-            .set_ready_domain(generation, verified.envelope.execution_domain_id.clone())
-        {
+        let authorization_context = self.shared.install_config_authorization_context(
+            generation,
+            verified.envelope.execution_domain_id.clone(),
+            PathBuf::from(&verified.envelope.state_directory),
+        );
+        if let Err(error) = authorization_context.and_then(|()| {
+            self.shared
+                .set_ready_domain(generation, verified.envelope.execution_domain_id.clone())
+        }) {
             self.actor.lock().await.take();
             terminate_and_reap(&mut process).await;
             if self.shared.finish_startup_shutdown(generation)? {
@@ -1375,15 +1574,187 @@ impl LocalHostSupervisor {
         Ok(())
     }
 
-    /// Execute one manifest-filtered renderer intent after supervisor-owned field construction.
+    /// Return exact privileged fields already durably admitted for a logical mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host is unavailable or the operation ID is bound to another intent.
+    pub fn reusable_renderer_operation_fields(
+        &self,
+        invocation: &bridge::DesktopHostInvocation,
+    ) -> Result<Option<bridge::SupervisorDynamicFields>, SupervisorError> {
+        if !invocation.operation.requires_idempotency() {
+            return Ok(None);
+        }
+        let (_, execution_domain) = self.shared.ready_domain()?;
+        let fingerprint = operation_fingerprint(&execution_domain, &invocation.operation)?;
+        self.shared.reusable_operation_fields(
+            &invocation.operation_id.0,
+            &execution_domain,
+            &fingerprint,
+        )
+    }
+
+    /// Mint backend-only fields for one natively authorized configuration operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operation is not a supported configuration mutation or the
+    /// host-local authorization key cannot be safely read.
+    #[allow(clippy::too_many_lines)]
+    pub async fn config_authorization_fields(
+        &self,
+        invocation: &bridge::DesktopHostInvocation,
+    ) -> Result<bridge::SupervisorDynamicFields, SupervisorError> {
+        use bridge::{ConfigReloadMode, DesktopHostOperation};
+
+        validate_operation_id(&invocation.operation_id.0)?;
+        let (_, execution_domain) = self.shared.ready_domain()?;
+        let mut fields = bridge::SupervisorDynamicFields::default();
+        let (operation, expected_revision, candidate_fingerprint) = match &invocation.operation {
+            DesktopHostOperation::ConfigUpdate(intent) => {
+                let validation_id = Sha256::digest(invocation.operation_id.0.as_bytes());
+                let validation = self
+                    .execute_renderer_operation(bridge::DesktopHostInvocation {
+                        operation_id: bridge::DesktopOperationId(format!(
+                            "desktop-config-validation-{validation_id:x}"
+                        )),
+                        operation: DesktopHostOperation::ConfigValidate(
+                            bridge::ConfigValidateIntent {
+                                candidate: intent.candidate.clone(),
+                            },
+                        ),
+                    })
+                    .await?;
+                let bridge::DesktopHostResult::ConfigValidate(validation) = validation.result
+                else {
+                    return Err(SupervisorError::transport());
+                };
+                if validation
+                    .validation
+                    .get("valid")
+                    .and_then(serde_json::Value::as_bool)
+                    != Some(true)
+                {
+                    return Err(SupervisorError::invalid_configuration(
+                        "runtime configuration candidate is invalid",
+                    ));
+                }
+                let candidate_fingerprint = validation
+                    .validation
+                    .get("candidateFingerprint")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| value.starts_with("sha256:") && value.len() == 71)
+                    .ok_or_else(SupervisorError::transport)?
+                    .to_string();
+                fields
+                    .insert("candidateFingerprint", &candidate_fingerprint)
+                    .map_err(|_| SupervisorError::transport())?;
+                (
+                    "config.update",
+                    intent.expected_active_etag.0.clone(),
+                    candidate_fingerprint,
+                )
+            }
+            DesktopHostOperation::ConfigReload(intent)
+                if intent.mode == ConfigReloadMode::DryRun =>
+            {
+                fields
+                    .insert("authorization", Option::<String>::None)
+                    .map_err(|_| SupervisorError::transport())?;
+                return Ok(fields);
+            }
+            DesktopHostOperation::ConfigReload(intent) => (
+                "config.reload",
+                intent.expected_active_etag.0.clone(),
+                intent
+                    .candidate_etag
+                    .as_ref()
+                    .ok_or_else(|| {
+                        SupervisorError::invalid_configuration(
+                            "config reload commit requires a validated candidate etag",
+                        )
+                    })?
+                    .0
+                    .clone(),
+            ),
+            DesktopHostOperation::ConfigActivate(intent) => {
+                let activation_digest = Sha256::digest(invocation.operation_id.0.as_bytes());
+                fields
+                    .insert(
+                        "activationId",
+                        format!("desktop-activation-{activation_digest:x}"),
+                    )
+                    .map_err(|_| SupervisorError::transport())?;
+                (
+                    "config.activate",
+                    intent.desired_etag.0.clone(),
+                    intent.desired_etag.0.clone(),
+                )
+            }
+            DesktopHostOperation::ConfigDiscard(intent) => (
+                "config.discard",
+                intent.desired_etag.0.clone(),
+                intent.desired_etag.0.clone(),
+            ),
+            _ => {
+                return Err(SupervisorError::invalid_configuration(
+                    "operation does not support configuration authorization",
+                ));
+            }
+        };
+        let context = self
+            .shared
+            .config_authorization_context(&execution_domain)?;
+        let fingerprint = operation_fingerprint(&execution_domain, &invocation.operation)?;
+        let idempotency_key = self.shared.operation_idempotency_key(
+            &invocation.operation_id.0,
+            &execution_domain,
+            &fingerprint,
+        )?;
+        let authorization = tokio::task::spawn_blocking(move || {
+            mint_config_authorization(
+                &context,
+                operation,
+                &expected_revision,
+                &candidate_fingerprint,
+                &idempotency_key,
+            )
+        })
+        .await
+        .map_err(|_| SupervisorError::transport())??;
+        fields
+            .insert("authorization", authorization)
+            .map_err(|_| SupervisorError::transport())?;
+        Ok(fields)
+    }
+
+    /// Execute an operation that needs only fixed supervisor policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when privileged dynamic fields are required or dispatch fails.
+    pub async fn execute_renderer_operation(
+        &self,
+        invocation: bridge::DesktopHostInvocation,
+    ) -> Result<bridge::DesktopHostOperationDelivery, SupervisorError> {
+        self.execute_renderer_operation_with_fields(
+            invocation,
+            bridge::SupervisorDynamicFields::default(),
+        )
+        .await
+    }
+
+    /// Execute one manifest-filtered renderer intent with privileged native evidence.
     ///
     /// # Errors
     ///
     /// Returns an error when the supervisor is unavailable, request construction fails, or the host rejects the operation.
     #[allow(clippy::too_many_lines)]
-    pub async fn execute_renderer_operation(
+    pub async fn execute_renderer_operation_with_fields(
         &self,
         invocation: bridge::DesktopHostInvocation,
+        dynamic_fields: bridge::SupervisorDynamicFields,
     ) -> Result<bridge::DesktopHostOperationDelivery, SupervisorError> {
         let bridge::DesktopHostInvocation {
             operation_id,
@@ -1404,11 +1775,21 @@ impl LocalHostSupervisor {
         } else {
             None
         };
+        let dynamic_fields = if mutation {
+            self.shared
+                .reusable_operation_fields(&operation_id.0, &execution_domain, &fingerprint)?
+                .unwrap_or(dynamic_fields)
+        } else {
+            dynamic_fields
+        };
+        let authority_fingerprint = dynamic_authority_fingerprint(&dynamic_fields)?;
         let admission = if mutation {
-            Some(self.shared.admit_operation(
+            Some(self.shared.admit_operation_with_authority(
                 &operation_id.0,
                 &execution_domain,
                 &fingerprint,
+                &authority_fingerprint,
+                &dynamic_fields,
                 &operation,
             )?)
         } else {
@@ -1423,6 +1804,7 @@ impl LocalHostSupervisor {
                 &operation,
                 &idempotency_key,
                 wire_cursor.as_deref(),
+                &dynamic_fields,
             )
             .map_err(|_| {
                 SupervisorError::new(
@@ -2141,7 +2523,28 @@ fn load_durable_operations(
             }
             DurableOperationState::Retired => record.operation.is_none(),
         };
-        if record.schema_version != 1
+        let authority_fingerprint_valid = match record.schema_version {
+            1 => record.authority_fingerprint.is_none() && record.privileged_fields.is_none(),
+            2 => {
+                record.privileged_fields.is_none()
+                    && record
+                        .authority_fingerprint
+                        .as_ref()
+                        .is_some_and(|fingerprint| {
+                            fingerprint.starts_with("sha256:") && fingerprint.len() == 71
+                        })
+            }
+            3 => {
+                record
+                    .privileged_fields
+                    .as_ref()
+                    .and_then(|fields| dynamic_authority_fingerprint(fields).ok())
+                    .as_ref()
+                    == record.authority_fingerprint.as_ref()
+            }
+            _ => false,
+        };
+        if !authority_fingerprint_valid
             || entry.file_name() != OsString::from(format!("{}.json", record.operation_id))
             || !record.fingerprint.starts_with("sha256:")
             || record.fingerprint.len() != 71
@@ -2287,6 +2690,138 @@ fn publish_durable_operation(
     Ok(())
 }
 
+fn desktop_idempotency_key(operation_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"starweaver.desktop.operation-idempotency.v1\0");
+    digest.update(operation_id.as_bytes());
+    format!("desktop-{:x}", digest.finalize())
+}
+
+fn mint_config_authorization(
+    context: &ConfigAuthorizationContext,
+    operation: &str,
+    expected_revision: &str,
+    candidate_fingerprint: &str,
+    idempotency_key: &str,
+) -> Result<String, SupervisorError> {
+    let key = read_config_authorization_key(&context.state_directory)?;
+    let issued_at_ms =
+        i64::try_from(current_unix_time_ms()?).map_err(|_| SupervisorError::transport())?;
+    let ttl_ms = i64::try_from(CONFIG_AUTHORIZATION_TTL.as_millis())
+        .map_err(|_| SupervisorError::transport())?;
+    let claims = ConfigAuthorizationClaims {
+        version: 1,
+        execution_domain_id: &context.execution_domain,
+        operation,
+        expected_revision,
+        candidate_fingerprint,
+        idempotency_key,
+        nonce: uuid::Uuid::new_v4().to_string(),
+        issued_at_ms,
+        expires_at_ms: issued_at_ms
+            .checked_add(ttl_ms)
+            .ok_or_else(SupervisorError::transport)?,
+    };
+    let payload = serde_json::to_vec(&claims).map_err(|_| SupervisorError::transport())?;
+    let mut mac = HmacSha256::new_from_slice(&key).map_err(|_| SupervisorError::transport())?;
+    mac.update(&payload);
+    let signature = mac.finalize().into_bytes();
+    Ok(format!(
+        "{}.{}",
+        URL_SAFE_NO_PAD.encode(payload),
+        URL_SAFE_NO_PAD.encode(signature)
+    ))
+}
+
+fn read_config_authorization_key(state_directory: &Path) -> Result<Vec<u8>, SupervisorError> {
+    let path = state_directory.join(CONFIG_AUTHORIZATION_KEY_FILE);
+    #[cfg(unix)]
+    let mut file = {
+        use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_CLOEXEC | nix::libc::O_NOFOLLOW)
+            .open(&path)
+            .map_err(|_| SupervisorError::not_ready())?;
+        let metadata = file.metadata().map_err(|_| SupervisorError::transport())?;
+        if !metadata.file_type().is_file()
+            || metadata.uid() != nix::unistd::geteuid().as_raw()
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err(SupervisorError::new(
+                SupervisorErrorCode::InvalidConfiguration,
+                "configuration authorization key permissions are unsafe",
+            ));
+        }
+        file
+    };
+    #[cfg(not(unix))]
+    let mut file = {
+        let metadata =
+            std::fs::symlink_metadata(&path).map_err(|_| SupervisorError::not_ready())?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(SupervisorError::new(
+                SupervisorErrorCode::InvalidConfiguration,
+                "configuration authorization key is unsafe",
+            ));
+        }
+        File::open(&path).map_err(|_| SupervisorError::not_ready())?
+    };
+    let mut encoded = Vec::new();
+    std::io::Read::by_ref(&mut file)
+        .take(4097)
+        .read_to_end(&mut encoded)
+        .map_err(|_| SupervisorError::transport())?;
+    if encoded.len() > 4096 {
+        return Err(SupervisorError::new(
+            SupervisorErrorCode::InvalidConfiguration,
+            "configuration authorization key is invalid",
+        ));
+    }
+    let encoded = trim_ascii_bytes(&encoded);
+    let key = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| {
+        SupervisorError::new(
+            SupervisorErrorCode::InvalidConfiguration,
+            "configuration authorization key is invalid",
+        )
+    })?;
+    if key.len() != 32 {
+        return Err(SupervisorError::new(
+            SupervisorErrorCode::InvalidConfiguration,
+            "configuration authorization key is invalid",
+        ));
+    }
+    Ok(key)
+}
+
+fn trim_ascii_bytes(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|value| !value.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|value| !value.is_ascii_whitespace())
+        .map_or(start, |index| index + 1);
+    &bytes[start..end]
+}
+
+fn dynamic_authority_fingerprint(
+    fields: &bridge::SupervisorDynamicFields,
+) -> Result<String, SupervisorError> {
+    let canonical = serde_json::to_vec(fields).map_err(|_| {
+        SupervisorError::new(
+            SupervisorErrorCode::Internal,
+            "native operation authority could not be encoded",
+        )
+    })?;
+    let mut digest = Sha256::new();
+    digest.update(b"starweaver.desktop.operation-authority.v1\0");
+    digest.update(canonical);
+    Ok(format!("sha256:{:x}", digest.finalize()))
+}
+
 fn operation_fingerprint(
     execution_domain: &str,
     operation: &bridge::DesktopHostOperation,
@@ -2406,15 +2941,10 @@ fn verify_launch(spec: LocalLaunchSpec) -> Result<VerifiedLaunch, SupervisorErro
         || envelope.schema.version != host::LAUNCH_SCHEMA_VERSION
         || envelope.configuration_generation.get() != spec.configuration_generation
         || envelope.execution_domain_id != spec.execution_domain_id
-        || envelope.workspace.identity != spec.workspace_identity
     {
         return Err(SupervisorError::incompatible());
     }
-    for path in [
-        &envelope.database.path,
-        &envelope.workspace.root,
-        &envelope.state_directory,
-    ] {
+    for path in [&envelope.database.path, &envelope.state_directory] {
         if !Path::new(path).is_absolute() {
             return Err(SupervisorError::new(
                 SupervisorErrorCode::InvalidConfiguration,
@@ -2658,7 +3188,7 @@ async fn spawn_verified_child(
         .arg("--launch-envelope")
         .arg(&staging.envelope_path)
         .arg("stdio")
-        .current_dir(&verified.envelope.workspace.root)
+        .current_dir(staging.directory.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2915,8 +3445,7 @@ fn verify_initialize(
         && result.launch.configuration_generation.get()
             == verified.envelope.configuration_generation.get()
         && result.launch.mode == "workspace_execution"
-        && result.workspace.execution_domain_id == verified.envelope.execution_domain_id
-        && result.workspace.workspace_identity == verified.envelope.workspace.identity
+        && result.execution_domain.execution_domain_id == verified.envelope.execution_domain_id
         && result.storage.current_generation.get() == storage_generation
         && result.storage.maintenance_barrier_generation.get() == 0
         && result.storage.minimum_readable_generation.get() <= storage_generation
@@ -3246,7 +3775,12 @@ async fn recover_local_host(
         let (sender, receiver) = mpsc::channel(64);
         *actor.lock().await = Some(sender);
         if shared
-            .set_ready_domain(generation, execution_domain.clone())
+            .install_config_authorization_context(
+                generation,
+                execution_domain.clone(),
+                PathBuf::from(&verified.envelope.state_directory),
+            )
+            .and_then(|()| shared.set_ready_domain(generation, execution_domain.clone()))
             .is_err()
         {
             actor.lock().await.take();
@@ -3399,8 +3933,13 @@ mod tests {
             }
         }))
         .expect("renderer-safe intent");
-        let supervisor = bridge::build_supervisor_fields(&operation, "desktop-idempotency", None)
-            .expect("supervisor fields");
+        let supervisor = bridge::build_supervisor_fields(
+            &operation,
+            "desktop-idempotency",
+            None,
+            &bridge::SupervisorDynamicFields::default(),
+        )
+        .expect("supervisor fields");
         let complete = bridge::build_complete_host_request(
             operation,
             supervisor,
@@ -3437,7 +3976,7 @@ mod tests {
                 "input": [{"kind": "text", "text": "hello"}],
                 "profile": null,
                 "restoreFromRunId": null,
-                "sessionId": null
+                "sessionId": "session-test"
             }
         });
         assert!(serde_json::from_value::<bridge::DesktopHostOperation>(text).is_ok());
@@ -3459,7 +3998,7 @@ mod tests {
                     }],
                     "profile": null,
                     "restoreFromRunId": null,
-                    "sessionId": null
+                    "sessionId": "session-test"
                 }
             });
             assert!(
@@ -3560,6 +4099,68 @@ mod tests {
     }
 
     #[test]
+    fn privileged_operation_fields_are_private_durable_and_never_renderer_projected() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let etag = format!("sha256:{}", "1".repeat(64));
+        let operation: bridge::DesktopHostOperation = serde_json::from_value(serde_json::json!({
+            "kind": "config.discard",
+            "input": {"desiredEtag": etag}
+        }))
+        .expect("config mutation");
+        let fingerprint = operation_fingerprint("domain", &operation).expect("fingerprint");
+        let operation_id = format!("desktop-op-v1-{}", uuid::Uuid::new_v4());
+        let mut fields = bridge::SupervisorDynamicFields::default();
+        fields
+            .insert("authorization", "private-authorization-token")
+            .expect("authorization field");
+        let authority_fingerprint =
+            dynamic_authority_fingerprint(&fields).expect("authority fingerprint");
+        let shared = Shared::default();
+        shared
+            .configure_storage_root(temp.path().to_path_buf())
+            .expect("configure storage");
+        let (_, record) = shared
+            .admit_operation_with_authority(
+                &operation_id,
+                "domain",
+                &fingerprint,
+                &authority_fingerprint,
+                &fields,
+                &operation,
+            )
+            .expect("admit operation");
+        let record = record.expect("new operation record");
+        persist_durable_operation(temp.path(), &record).expect("persist operation");
+
+        let restarted = Shared::default();
+        restarted
+            .configure_storage_root(temp.path().to_path_buf())
+            .expect("reload storage");
+        assert_eq!(
+            restarted
+                .reusable_operation_fields(&operation_id, "domain", &fingerprint)
+                .expect("reusable fields"),
+            Some(fields)
+        );
+        let pending = restarted.pending_operations().expect("pending projection");
+        let renderer_json = serde_json::to_string(&pending).expect("renderer projection");
+        assert!(!renderer_json.contains("private-authorization-token"));
+        assert!(!renderer_json.contains("authorization"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(
+                operation_records_path(temp.path()).join(format!("{operation_id}.json")),
+            )
+            .expect("record metadata")
+            .permissions()
+            .mode();
+            assert_eq!(mode & 0o077, 0);
+        }
+    }
+
+    #[test]
     fn loader_cleans_unpublished_atomic_operation_files() {
         let temp = tempfile::tempdir().expect("temporary directory");
         load_durable_operations(temp.path()).expect("initialize operation ledger");
@@ -3645,7 +4246,7 @@ mod tests {
                 "input": [],
                 "profile": null,
                 "restoreFromRunId": null,
-                "sessionId": null
+                "sessionId": "session-test"
             }
         }))
         .expect("renderer intent permits canonical validation to reject empty input");
@@ -4183,14 +4784,11 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         let temp = tempfile::tempdir().expect("temporary directory");
-        let workspace = temp.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace directory");
         let envelope_path = temp.path().join("launch.json");
         let envelope = serde_json::json!({
             "schema": {"name": "starweaver.rpc.launch", "version": 1},
             "mode": "workspace_execution",
             "database": {"identity": "database-test", "path": temp.path().join("sessions.sqlite")},
-            "workspace": {"identity": "workspace-test", "root": workspace},
             "stateDirectory": temp.path().join("state"),
             "executionDomainId": "local-test",
             "configurationGeneration": "3",
@@ -4245,9 +4843,8 @@ mod tests {
                 minimum_writable_generation: host::DecimalU64::new(1),
             },
             supported_features: features,
-            workspace: host::WorkspaceCompatibility {
+            execution_domain: host::ExecutionDomainCompatibility {
                 execution_domain_id: "local-test".to_string(),
-                workspace_identity: "workspace-test".to_string(),
             },
         };
         let initialize_frame = serde_json::json!({
@@ -4370,7 +4967,6 @@ mod tests {
                 launch_envelope_digest: sha256_bytes(&envelope_bytes),
                 configuration_generation: 3,
                 execution_domain_id: "local-test".to_string(),
-                workspace_identity: "workspace-test".to_string(),
             })
             .await
             .expect("verified fixture starts");

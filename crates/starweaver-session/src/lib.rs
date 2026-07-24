@@ -96,7 +96,8 @@ pub use publication::{
 pub use records::{
     CheckpointRef, DurableRunStatus, EnvironmentStateRef, ExecutionStatus, QueuedRunStatus,
     RunRecord, RunStatus, RunTerminalError, RunTerminalProjection, RunTerminalProjectionError,
-    SessionRecord, SessionStatus, StreamCursorRef, StreamCursorRefError,
+    RuntimeConfigSnapshotRef, SessionRecord, SessionStatus, StreamCursorRef, StreamCursorRefError,
+    WorkspaceProvenanceRef,
 };
 pub use resume::SessionResumeSnapshot;
 pub use run_control::{

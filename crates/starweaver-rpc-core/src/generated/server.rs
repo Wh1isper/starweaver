@@ -30,6 +30,36 @@ pub trait HostServer: Send + Sync {
         context: &Self::Context,
         params: ClarificationResolveParams,
     ) -> Result<ClarificationResolveResult, ClarificationResolveError>;
+    async fn config_activate(
+        &self,
+        context: &Self::Context,
+        params: ConfigActivateParams,
+    ) -> Result<ConfigActivateResult, ConfigActivateError>;
+    async fn config_discard(
+        &self,
+        context: &Self::Context,
+        params: ConfigDiscardParams,
+    ) -> Result<ConfigDiscardResult, ConfigDiscardError>;
+    async fn config_get(
+        &self,
+        context: &Self::Context,
+        params: ConfigGetParams,
+    ) -> Result<ConfigGetResult, ConfigGetError>;
+    async fn config_reload(
+        &self,
+        context: &Self::Context,
+        params: ConfigReloadParams,
+    ) -> Result<ConfigReloadResult, ConfigReloadError>;
+    async fn config_update(
+        &self,
+        context: &Self::Context,
+        params: ConfigUpdateParams,
+    ) -> Result<ConfigUpdateResult, ConfigUpdateError>;
+    async fn config_validate(
+        &self,
+        context: &Self::Context,
+        params: ConfigValidateParams,
+    ) -> Result<ConfigValidateResult, ConfigValidateError>;
     async fn deferred_complete(
         &self,
         context: &Self::Context,
@@ -185,4 +215,19 @@ pub trait HostServer: Send + Sync {
         context: &Self::Context,
         params: ShutdownParams,
     ) -> Result<ShutdownResult, ShutdownError>;
+    async fn workspace_list(
+        &self,
+        context: &Self::Context,
+        params: WorkspaceListParams,
+    ) -> Result<WorkspaceListResult, WorkspaceListError>;
+    async fn workspace_register(
+        &self,
+        context: &Self::Context,
+        params: WorkspaceRegisterParams,
+    ) -> Result<WorkspaceRegisterResult, WorkspaceRegisterError>;
+    async fn workspace_remove(
+        &self,
+        context: &Self::Context,
+        params: WorkspaceRemoveParams,
+    ) -> Result<WorkspaceRemoveResult, WorkspaceRemoveError>;
 }

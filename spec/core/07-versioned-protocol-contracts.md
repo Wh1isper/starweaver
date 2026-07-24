@@ -59,8 +59,8 @@ Initial durable schema ids:
 | `starweaver.context.resumable_state`      |               1 | bare JSON v0                                                      |
 | `starweaver.runtime.checkpoint`           |               1 | bare JSON v0 plus the existing explicit `CheckpointRef` migration |
 | `starweaver.runtime.stream_record`        |               1 | bare JSON v0                                                      |
-| `starweaver.session.session_record`       |               1 | bare JSON v0                                                      |
-| `starweaver.session.run_record`           |               1 | bare JSON v0                                                      |
+| `starweaver.session.session_record`       |               2 | v1 envelope and bare JSON v0                                      |
+| `starweaver.session.run_record`           |               2 | v1 envelope and bare JSON v0                                      |
 | `starweaver.session.approval_record`      |               1 | bare JSON v0                                                      |
 | `starweaver.session.deferred_tool_record` |               1 | bare JSON v0                                                      |
 | `starweaver.stream.replay_event`          |               1 | bare JSON v0 and legacy display-row migration                     |
@@ -146,6 +146,29 @@ Rules:
 - Implementations must not expose a second date/version string with conflicting semantics.
 
 The supported identities are `starweaver.host` major 1 and `starweaver.envd` major 1. The host identity is defined structurally by the sole IDL-first contract in `../ops/09-rpc-idl-and-client-generation.md`: exact name, major, non-ordered revision, and schema digest must match, while explicit supported/required/negotiated feature sets govern capability admission. Its OpenRPC bundle and generated constants atomically replace handwritten host identity authority; old host frames and fixtures receive no compatibility path. envd remains owned by its typed protocol-core constants.
+
+## Session Workspace and Run-Config Provenance Migrations
+
+The Desktop one-domain-host/multi-workspace and runtime-config reload contracts require durable workspace provenance to be separated from live execution authority and each admitted run to identify its immutable runtime-config snapshot.
+
+`starweaver-session` owns the typed `WorkspaceProvenanceRef`, the fixed-width deterministic execution-domain/canonical-root identity derivation, and `starweaver.session.session_record` version 2 codec with v0/v1 migration fixtures. The durable reference contains a stable execution-domain-local workspace identity plus safe display/provenance evidence; it never contains or confers a current filesystem/environment capability. Current CLI writers and the RPC workspace registry use this same derivation so a same-domain canonical root can pass continuation preflight without treating a historical path as authority.
+
+The live RPC workspace registry separately maps that identity to one currently granted canonical root and authority metadata. Loading a historical session, legacy path, or provenance ID does not recreate a grant. Another CLI/RPC/Desktop product may read and filter the session, but continuation requires that product to explicitly register/regrant a root, prove the same canonical workspace identity or accept typed rebind drift, and pass continuation preflight.
+
+Migration rules:
+
+- current v1/bare records with `workspace: Option<String>` remain readable;
+- a v1 workspace string migrates only to legacy display/provenance evidence with no live authority;
+- new writers emit v2 typed provenance only after their product has independently established the canonical root and execution domain; RPC still requires a separate live registry grant before execution;
+- fork preserves provenance but not process-local authority;
+- search/history use the safe provenance projection;
+- rebind creates explicit new materialization evidence and never rewrites prior run provenance; and
+- v1, v2, SQLite migration, CLI/RPC interoperability, and unknown-newer-version fixtures are required before release; and
+- recognized bare/enveloped records with partial, unknown, empty, or inconsistent workspace/config provenance fail the migration transaction, while only genuinely opaque pre-contract rows remain untouched.
+
+`starweaver.session.run_record` version 2 owns `RuntimeConfigSnapshotRef`, containing runtime-config generation, opaque etag identity, and materialization digest. The reference contains no config document or secret. RPC-owned immutable snapshot retention keeps every referenced declaration reconstructable across host restart; missing/corrupt snapshots fail closed rather than substituting the newest config.
+
+The SQLite `20260724_000018_session_run_provenance_v2` hook rewrites recognized v0/v1 session/run records to v2 envelopes while preserving opaque pre-contract legacy rows. Recognition uses session/run identity and provenance fields as well as envelope markers, so a malformed bare durable record cannot be silently classified as opaque. Typed workspace and config references reject unknown fields and validate non-empty, internally consistent identity evidence before migration publication. Release fixtures cover v1-to-v2 session/run migration and unknown newer versions. Old/new CLI/RPC interoperability and active-run recovery across reload remain gates for the host implementation.
 
 ## Wire Compatibility
 

@@ -2,7 +2,9 @@
 #![allow(missing_docs)]
 
 pub const DESKTOP_HOST_PROTOCOL_DIGEST: &str =
-    "sha256:69d2b33653ad2c5eed6b23afb4e19abd14c431240634f30ac3fe756cd4a907b5";
+    "sha256:2a9e9fad809f55e34f2b701aed6008b2a91148c19f3988a8e79b5c00d404e6dd";
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -40,7 +42,7 @@ pub struct DesktopPage {
 }
 
 /// Backend-owned value for one supervisor-only wire field. Renderer input can never construct this type.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct SupervisorFieldValue(Value);
 impl SupervisorFieldValue {
@@ -51,6 +53,28 @@ impl SupervisorFieldValue {
     /// Returns an error when the value cannot be represented as JSON.
     pub fn from_serializable<T: Serialize>(value: T) -> Result<Self, serde_json::Error> {
         serde_json::to_value(value).map(Self)
+    }
+}
+
+/// Privileged per-operation values that cannot be derived from renderer intent or fixed policy.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct SupervisorDynamicFields(BTreeMap<String, SupervisorFieldValue>);
+impl SupervisorDynamicFields {
+    /// Inserts one backend-owned value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value cannot be represented as JSON.
+    pub fn insert<T: Serialize>(&mut self, field: &str, value: T) -> Result<(), serde_json::Error> {
+        self.0.insert(
+            field.to_string(),
+            SupervisorFieldValue::from_serializable(value)?,
+        );
+        Ok(())
+    }
+    fn required(&self, field: &str) -> Result<SupervisorFieldValue, SupervisorFieldsError> {
+        self.0.get(field).cloned().ok_or(SupervisorFieldsError)
     }
 }
 
@@ -73,6 +97,35 @@ pub struct ClarificationAnswer {
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct ClarificationId(pub String);
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConfigDocument {
+    pub default_profile: String,
+    pub profiles: Vec<LaunchProfile>,
+    pub providers: Vec<ConfigProvider>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct ConfigEtag(pub String);
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConfigProvider {
+    pub base_url: Option<String>,
+    pub enabled: bool,
+    pub endpoint_path: Option<String>,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub enum ConfigReloadMode {
+    #[serde(rename = "dry_run")]
+    DryRun,
+    #[serde(rename = "commit")]
+    Commit,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub enum ContinuationMode {
@@ -97,6 +150,17 @@ pub struct DeferredId(pub String);
 pub enum InputPart {
     #[serde(rename = "text")]
     Text { text: String },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LaunchProfile {
+    pub instructions: Vec<String>,
+    pub model_config: Option<String>,
+    pub model_id: String,
+    pub model_settings: Option<String>,
+    pub name: String,
+    pub toolsets: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -133,6 +197,10 @@ pub struct TextInputPart {
     pub kind: String,
     pub text: String,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct WorkspaceId(pub String);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -263,6 +331,166 @@ pub struct ClarificationResolveCompleteParams {
 pub struct ClarificationResolveResult {
     pub clarification: Value,
     pub receipt: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConfigActivateIntent {
+    pub desired_etag: ConfigEtag,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfigActivateSupervisorFields {
+    pub activation_id: SupervisorFieldValue,
+    pub authorization: SupervisorFieldValue,
+    pub idempotency_key: SupervisorFieldValue,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigActivateCompleteParams {
+    pub activation_id: SupervisorFieldValue,
+    pub authorization: SupervisorFieldValue,
+    pub desired_etag: ConfigEtag,
+    pub idempotency_key: SupervisorFieldValue,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigActivateResult {
+    pub receipt: Value,
+    pub status: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConfigDiscardIntent {
+    pub desired_etag: ConfigEtag,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfigDiscardSupervisorFields {
+    pub authorization: SupervisorFieldValue,
+    pub idempotency_key: SupervisorFieldValue,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigDiscardCompleteParams {
+    pub authorization: SupervisorFieldValue,
+    pub desired_etag: ConfigEtag,
+    pub idempotency_key: SupervisorFieldValue,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigDiscardResult {
+    pub receipt: Value,
+    pub status: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConfigGetIntent {}
+
+#[derive(Clone, Debug)]
+pub struct ConfigGetSupervisorFields {}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigGetCompleteParams {}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigGetResult {
+    pub config: Value,
+    pub status: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConfigReloadIntent {
+    pub candidate_etag: Option<ConfigEtag>,
+    pub expected_active_etag: ConfigEtag,
+    pub mode: ConfigReloadMode,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfigReloadSupervisorFields {
+    pub authorization: SupervisorFieldValue,
+    pub idempotency_key: SupervisorFieldValue,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigReloadCompleteParams {
+    pub authorization: SupervisorFieldValue,
+    pub candidate_etag: Option<ConfigEtag>,
+    pub expected_active_etag: ConfigEtag,
+    pub idempotency_key: SupervisorFieldValue,
+    pub mode: ConfigReloadMode,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigReloadResult {
+    pub candidate_etag: Value,
+    pub receipt: Value,
+    pub status: Value,
+    pub validation: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConfigUpdateIntent {
+    pub candidate: ConfigDocument,
+    pub expected_active_etag: ConfigEtag,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfigUpdateSupervisorFields {
+    pub authorization: SupervisorFieldValue,
+    pub candidate_fingerprint: SupervisorFieldValue,
+    pub idempotency_key: SupervisorFieldValue,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigUpdateCompleteParams {
+    pub authorization: SupervisorFieldValue,
+    pub candidate: ConfigDocument,
+    pub candidate_fingerprint: SupervisorFieldValue,
+    pub expected_active_etag: ConfigEtag,
+    pub idempotency_key: SupervisorFieldValue,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigUpdateResult {
+    pub receipt: Value,
+    pub status: Value,
+    pub validation: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConfigValidateIntent {
+    pub candidate: ConfigDocument,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfigValidateSupervisorFields {}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigValidateCompleteParams {
+    pub candidate: ConfigDocument,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigValidateResult {
+    pub validation: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -580,7 +808,7 @@ pub struct RunStartIntent {
     pub input: Vec<InputPart>,
     pub profile: Option<String>,
     pub restore_from_run_id: Option<RunId>,
-    pub session_id: Option<SessionId>,
+    pub session_id: SessionId,
 }
 
 #[derive(Clone, Debug)]
@@ -598,7 +826,7 @@ pub struct RunStartCompleteParams {
     pub input: Vec<InputPart>,
     pub profile: Option<String>,
     pub restore_from_run_id: Option<RunId>,
-    pub session_id: Option<SessionId>,
+    pub session_id: SessionId,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -665,6 +893,7 @@ pub struct RunSteerResult {
 pub struct SessionCreateIntent {
     pub profile: Option<String>,
     pub title: Option<String>,
+    pub workspace_id: WorkspaceId,
 }
 
 #[derive(Clone, Debug)]
@@ -680,6 +909,7 @@ pub struct SessionCreateCompleteParams {
     pub idempotency_key: SupervisorFieldValue,
     pub profile: Option<String>,
     pub title: Option<String>,
+    pub workspace_id: WorkspaceId,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -831,6 +1061,86 @@ pub struct SessionSearchResult {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WorkspaceListIntent {
+    pub page_token: Option<DesktopPageToken>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkspaceListSupervisorFields {
+    pub cursor: SupervisorFieldValue,
+    pub limit: SupervisorFieldValue,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceListCompleteParams {
+    pub cursor: SupervisorFieldValue,
+    pub limit: SupervisorFieldValue,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceListResult {
+    pub page: DesktopPage,
+    pub workspaces: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WorkspaceRegisterIntent {
+    pub display_label: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkspaceRegisterSupervisorFields {
+    pub idempotency_key: SupervisorFieldValue,
+    pub root: SupervisorFieldValue,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRegisterCompleteParams {
+    pub display_label: Option<String>,
+    pub idempotency_key: SupervisorFieldValue,
+    pub root: SupervisorFieldValue,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRegisterResult {
+    pub receipt: Value,
+    pub workspace: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WorkspaceRemoveIntent {
+    pub expected_revision: DecimalU64,
+    pub workspace_id: WorkspaceId,
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkspaceRemoveSupervisorFields {
+    pub idempotency_key: SupervisorFieldValue,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRemoveCompleteParams {
+    pub expected_revision: DecimalU64,
+    pub idempotency_key: SupervisorFieldValue,
+    pub workspace_id: WorkspaceId,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRemoveResult {
+    pub receipt: Value,
+    pub workspace: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", content = "input", deny_unknown_fields)]
 pub enum DesktopHostOperation {
     #[serde(rename = "approval.decide")]
@@ -843,6 +1153,18 @@ pub enum DesktopHostOperation {
     CatalogList(CatalogListIntent),
     #[serde(rename = "clarification.resolve")]
     ClarificationResolve(ClarificationResolveIntent),
+    #[serde(rename = "config.activate")]
+    ConfigActivate(ConfigActivateIntent),
+    #[serde(rename = "config.discard")]
+    ConfigDiscard(ConfigDiscardIntent),
+    #[serde(rename = "config.get")]
+    ConfigGet(ConfigGetIntent),
+    #[serde(rename = "config.reload")]
+    ConfigReload(ConfigReloadIntent),
+    #[serde(rename = "config.update")]
+    ConfigUpdate(ConfigUpdateIntent),
+    #[serde(rename = "config.validate")]
+    ConfigValidate(ConfigValidateIntent),
     #[serde(rename = "deferred.complete")]
     DeferredComplete(DeferredCompleteIntent),
     #[serde(rename = "deferred.fail")]
@@ -885,6 +1207,12 @@ pub enum DesktopHostOperation {
     SessionList(SessionListIntent),
     #[serde(rename = "session.search")]
     SessionSearch(SessionSearchIntent),
+    #[serde(rename = "workspace.list")]
+    WorkspaceList(WorkspaceListIntent),
+    #[serde(rename = "workspace.register")]
+    WorkspaceRegister(WorkspaceRegisterIntent),
+    #[serde(rename = "workspace.remove")]
+    WorkspaceRemove(WorkspaceRemoveIntent),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -904,6 +1232,12 @@ impl DesktopHostOperation {
             Self::ApprovalShow(_) => None,
             Self::CatalogList(_) => None,
             Self::ClarificationResolve(_) => None,
+            Self::ConfigActivate(_) => None,
+            Self::ConfigDiscard(_) => None,
+            Self::ConfigGet(_) => None,
+            Self::ConfigReload(_) => None,
+            Self::ConfigUpdate(_) => None,
+            Self::ConfigValidate(_) => None,
             Self::DeferredComplete(_) => None,
             Self::DeferredFail(_) => None,
             Self::DeferredList(intent) => intent.page_token.as_ref(),
@@ -925,6 +1259,9 @@ impl DesktopHostOperation {
             Self::SessionGet(_) => None,
             Self::SessionList(intent) => intent.page_token.as_ref(),
             Self::SessionSearch(intent) => intent.page_token.as_ref(),
+            Self::WorkspaceList(intent) => intent.page_token.as_ref(),
+            Self::WorkspaceRegister(_) => None,
+            Self::WorkspaceRemove(_) => None,
         }
     }
 
@@ -937,6 +1274,12 @@ impl DesktopHostOperation {
             Self::ApprovalShow(_) => false,
             Self::CatalogList(_) => false,
             Self::ClarificationResolve(_) => true,
+            Self::ConfigActivate(_) => true,
+            Self::ConfigDiscard(_) => true,
+            Self::ConfigGet(_) => false,
+            Self::ConfigReload(_) => true,
+            Self::ConfigUpdate(_) => true,
+            Self::ConfigValidate(_) => false,
             Self::DeferredComplete(_) => true,
             Self::DeferredFail(_) => true,
             Self::DeferredList(_) => false,
@@ -958,6 +1301,9 @@ impl DesktopHostOperation {
             Self::SessionGet(_) => false,
             Self::SessionList(_) => false,
             Self::SessionSearch(_) => false,
+            Self::WorkspaceList(_) => false,
+            Self::WorkspaceRegister(_) => true,
+            Self::WorkspaceRemove(_) => true,
         }
     }
 }
@@ -969,6 +1315,12 @@ pub enum SupervisorHostFields {
     ApprovalShow(ApprovalShowSupervisorFields),
     CatalogList(CatalogListSupervisorFields),
     ClarificationResolve(ClarificationResolveSupervisorFields),
+    ConfigActivate(ConfigActivateSupervisorFields),
+    ConfigDiscard(ConfigDiscardSupervisorFields),
+    ConfigGet(ConfigGetSupervisorFields),
+    ConfigReload(ConfigReloadSupervisorFields),
+    ConfigUpdate(ConfigUpdateSupervisorFields),
+    ConfigValidate(ConfigValidateSupervisorFields),
     DeferredComplete(DeferredCompleteSupervisorFields),
     DeferredFail(DeferredFailSupervisorFields),
     DeferredList(DeferredListSupervisorFields),
@@ -990,21 +1342,25 @@ pub enum SupervisorHostFields {
     SessionGet(SessionGetSupervisorFields),
     SessionList(SessionListSupervisorFields),
     SessionSearch(SessionSearchSupervisorFields),
+    WorkspaceList(WorkspaceListSupervisorFields),
+    WorkspaceRegister(WorkspaceRegisterSupervisorFields),
+    WorkspaceRemove(WorkspaceRemoveSupervisorFields),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SupervisorFieldsError;
 
-/// Constructs all non-renderer host fields from fixed Desktop supervisor policy.
+/// Constructs all non-renderer host fields from fixed policy and privileged dynamic evidence.
 ///
 /// # Errors
 ///
-/// Returns an error only when a fixed policy value cannot be represented as JSON.
+/// Returns an error when a policy value cannot be represented or required privileged evidence is absent.
 #[allow(clippy::too_many_lines)]
 pub fn build_supervisor_fields(
     operation: &DesktopHostOperation,
     idempotency_key: &str,
     wire_cursor: Option<&str>,
+    dynamic_fields: &SupervisorDynamicFields,
 ) -> Result<SupervisorHostFields, SupervisorFieldsError> {
     match operation {
         DesktopHostOperation::ApprovalDecide(_) => Ok(SupervisorHostFields::ApprovalDecide(
@@ -1033,6 +1389,42 @@ pub fn build_supervisor_fields(
                     .map_err(|_| SupervisorFieldsError)?,
             }),
         ),
+        DesktopHostOperation::ConfigActivate(_) => Ok(SupervisorHostFields::ConfigActivate(
+            ConfigActivateSupervisorFields {
+                activation_id: dynamic_fields.required("activationId")?,
+                authorization: dynamic_fields.required("authorization")?,
+                idempotency_key: SupervisorFieldValue::from_serializable(idempotency_key)
+                    .map_err(|_| SupervisorFieldsError)?,
+            },
+        )),
+        DesktopHostOperation::ConfigDiscard(_) => Ok(SupervisorHostFields::ConfigDiscard(
+            ConfigDiscardSupervisorFields {
+                authorization: dynamic_fields.required("authorization")?,
+                idempotency_key: SupervisorFieldValue::from_serializable(idempotency_key)
+                    .map_err(|_| SupervisorFieldsError)?,
+            },
+        )),
+        DesktopHostOperation::ConfigGet(_) => Ok(SupervisorHostFields::ConfigGet(
+            ConfigGetSupervisorFields {},
+        )),
+        DesktopHostOperation::ConfigReload(_) => Ok(SupervisorHostFields::ConfigReload(
+            ConfigReloadSupervisorFields {
+                authorization: dynamic_fields.required("authorization")?,
+                idempotency_key: SupervisorFieldValue::from_serializable(idempotency_key)
+                    .map_err(|_| SupervisorFieldsError)?,
+            },
+        )),
+        DesktopHostOperation::ConfigUpdate(_) => Ok(SupervisorHostFields::ConfigUpdate(
+            ConfigUpdateSupervisorFields {
+                authorization: dynamic_fields.required("authorization")?,
+                candidate_fingerprint: dynamic_fields.required("candidateFingerprint")?,
+                idempotency_key: SupervisorFieldValue::from_serializable(idempotency_key)
+                    .map_err(|_| SupervisorFieldsError)?,
+            },
+        )),
+        DesktopHostOperation::ConfigValidate(_) => Ok(SupervisorHostFields::ConfigValidate(
+            ConfigValidateSupervisorFields {},
+        )),
         DesktopHostOperation::DeferredComplete(_) => Ok(SupervisorHostFields::DeferredComplete(
             DeferredCompleteSupervisorFields {
                 idempotency_key: SupervisorFieldValue::from_serializable(idempotency_key)
@@ -1162,6 +1554,27 @@ pub fn build_supervisor_fields(
                     .map_err(|_| SupervisorFieldsError)?,
             },
         )),
+        DesktopHostOperation::WorkspaceList(_) => Ok(SupervisorHostFields::WorkspaceList(
+            WorkspaceListSupervisorFields {
+                cursor: SupervisorFieldValue::from_serializable(wire_cursor)
+                    .map_err(|_| SupervisorFieldsError)?,
+                limit: SupervisorFieldValue::from_serializable(100_u32)
+                    .map_err(|_| SupervisorFieldsError)?,
+            },
+        )),
+        DesktopHostOperation::WorkspaceRegister(_) => Ok(SupervisorHostFields::WorkspaceRegister(
+            WorkspaceRegisterSupervisorFields {
+                idempotency_key: SupervisorFieldValue::from_serializable(idempotency_key)
+                    .map_err(|_| SupervisorFieldsError)?,
+                root: dynamic_fields.required("root")?,
+            },
+        )),
+        DesktopHostOperation::WorkspaceRemove(_) => Ok(SupervisorHostFields::WorkspaceRemove(
+            WorkspaceRemoveSupervisorFields {
+                idempotency_key: SupervisorFieldValue::from_serializable(idempotency_key)
+                    .map_err(|_| SupervisorFieldsError)?,
+            },
+        )),
     }
 }
 
@@ -1172,6 +1585,12 @@ pub enum CompleteHostParams {
     ApprovalShow(ApprovalShowCompleteParams),
     CatalogList(CatalogListCompleteParams),
     ClarificationResolve(ClarificationResolveCompleteParams),
+    ConfigActivate(ConfigActivateCompleteParams),
+    ConfigDiscard(ConfigDiscardCompleteParams),
+    ConfigGet(ConfigGetCompleteParams),
+    ConfigReload(ConfigReloadCompleteParams),
+    ConfigUpdate(ConfigUpdateCompleteParams),
+    ConfigValidate(ConfigValidateCompleteParams),
     DeferredComplete(DeferredCompleteCompleteParams),
     DeferredFail(DeferredFailCompleteParams),
     DeferredList(DeferredListCompleteParams),
@@ -1193,6 +1612,9 @@ pub enum CompleteHostParams {
     SessionGet(SessionGetCompleteParams),
     SessionList(SessionListCompleteParams),
     SessionSearch(SessionSearchCompleteParams),
+    WorkspaceList(WorkspaceListCompleteParams),
+    WorkspaceRegister(WorkspaceRegisterCompleteParams),
+    WorkspaceRemove(WorkspaceRemoveCompleteParams),
 }
 
 #[derive(Clone, Debug)]
@@ -1262,6 +1684,53 @@ pub fn build_complete_host_request(
             expected_revision: intent.expected_revision,
             idempotency_key: supervisor.idempotency_key,
             response: intent.response,
+        }),
+        (
+            DesktopHostOperation::ConfigActivate(intent),
+            SupervisorHostFields::ConfigActivate(supervisor),
+        ) => CompleteHostParams::ConfigActivate(ConfigActivateCompleteParams {
+            activation_id: supervisor.activation_id,
+            authorization: supervisor.authorization,
+            desired_etag: intent.desired_etag,
+            idempotency_key: supervisor.idempotency_key,
+        }),
+        (
+            DesktopHostOperation::ConfigDiscard(intent),
+            SupervisorHostFields::ConfigDiscard(supervisor),
+        ) => CompleteHostParams::ConfigDiscard(ConfigDiscardCompleteParams {
+            authorization: supervisor.authorization,
+            desired_etag: intent.desired_etag,
+            idempotency_key: supervisor.idempotency_key,
+        }),
+        (
+            DesktopHostOperation::ConfigGet(_intent),
+            SupervisorHostFields::ConfigGet(_supervisor),
+        ) => CompleteHostParams::ConfigGet(ConfigGetCompleteParams {}),
+        (
+            DesktopHostOperation::ConfigReload(intent),
+            SupervisorHostFields::ConfigReload(supervisor),
+        ) => CompleteHostParams::ConfigReload(ConfigReloadCompleteParams {
+            authorization: supervisor.authorization,
+            candidate_etag: intent.candidate_etag,
+            expected_active_etag: intent.expected_active_etag,
+            idempotency_key: supervisor.idempotency_key,
+            mode: intent.mode,
+        }),
+        (
+            DesktopHostOperation::ConfigUpdate(intent),
+            SupervisorHostFields::ConfigUpdate(supervisor),
+        ) => CompleteHostParams::ConfigUpdate(ConfigUpdateCompleteParams {
+            authorization: supervisor.authorization,
+            candidate: intent.candidate,
+            candidate_fingerprint: supervisor.candidate_fingerprint,
+            expected_active_etag: intent.expected_active_etag,
+            idempotency_key: supervisor.idempotency_key,
+        }),
+        (
+            DesktopHostOperation::ConfigValidate(intent),
+            SupervisorHostFields::ConfigValidate(_supervisor),
+        ) => CompleteHostParams::ConfigValidate(ConfigValidateCompleteParams {
+            candidate: intent.candidate,
         }),
         (
             DesktopHostOperation::DeferredComplete(intent),
@@ -1383,6 +1852,7 @@ pub fn build_complete_host_request(
             idempotency_key: supervisor.idempotency_key,
             profile: intent.profile,
             title: intent.title,
+            workspace_id: intent.workspace_id,
         }),
         (
             DesktopHostOperation::SessionDelete(intent),
@@ -1425,6 +1895,29 @@ pub fn build_complete_host_request(
             query: intent.query,
             status: intent.status,
         }),
+        (
+            DesktopHostOperation::WorkspaceList(_intent),
+            SupervisorHostFields::WorkspaceList(supervisor),
+        ) => CompleteHostParams::WorkspaceList(WorkspaceListCompleteParams {
+            cursor: supervisor.cursor,
+            limit: supervisor.limit,
+        }),
+        (
+            DesktopHostOperation::WorkspaceRegister(intent),
+            SupervisorHostFields::WorkspaceRegister(supervisor),
+        ) => CompleteHostParams::WorkspaceRegister(WorkspaceRegisterCompleteParams {
+            display_label: intent.display_label,
+            idempotency_key: supervisor.idempotency_key,
+            root: supervisor.root,
+        }),
+        (
+            DesktopHostOperation::WorkspaceRemove(intent),
+            SupervisorHostFields::WorkspaceRemove(supervisor),
+        ) => CompleteHostParams::WorkspaceRemove(WorkspaceRemoveCompleteParams {
+            expected_revision: intent.expected_revision,
+            idempotency_key: supervisor.idempotency_key,
+            workspace_id: intent.workspace_id,
+        }),
         _ => return Err(BuildHostRequestError::AuthorityMismatch),
     };
     let (method, params) = match &params {
@@ -1436,6 +1929,18 @@ pub fn build_complete_host_request(
         CompleteHostParams::CatalogList(params) => ("catalog.list", serde_json::to_value(params)),
         CompleteHostParams::ClarificationResolve(params) => {
             ("clarification.resolve", serde_json::to_value(params))
+        }
+        CompleteHostParams::ConfigActivate(params) => {
+            ("config.activate", serde_json::to_value(params))
+        }
+        CompleteHostParams::ConfigDiscard(params) => {
+            ("config.discard", serde_json::to_value(params))
+        }
+        CompleteHostParams::ConfigGet(params) => ("config.get", serde_json::to_value(params)),
+        CompleteHostParams::ConfigReload(params) => ("config.reload", serde_json::to_value(params)),
+        CompleteHostParams::ConfigUpdate(params) => ("config.update", serde_json::to_value(params)),
+        CompleteHostParams::ConfigValidate(params) => {
+            ("config.validate", serde_json::to_value(params))
         }
         CompleteHostParams::DeferredComplete(params) => {
             ("deferred.complete", serde_json::to_value(params))
@@ -1474,6 +1979,15 @@ pub fn build_complete_host_request(
         CompleteHostParams::SessionSearch(params) => {
             ("session.search", serde_json::to_value(params))
         }
+        CompleteHostParams::WorkspaceList(params) => {
+            ("workspace.list", serde_json::to_value(params))
+        }
+        CompleteHostParams::WorkspaceRegister(params) => {
+            ("workspace.register", serde_json::to_value(params))
+        }
+        CompleteHostParams::WorkspaceRemove(params) => {
+            ("workspace.remove", serde_json::to_value(params))
+        }
     };
     let params = params.map_err(|_| BuildHostRequestError::InvalidGeneratedRequest)?;
     let frame = serde_json::to_vec(&serde_json::json!({"jsonrpc":"2.0","id":context.request_id,"method":method,"params":params})).map_err(|_| BuildHostRequestError::InvalidGeneratedRequest)?;
@@ -1493,6 +2007,12 @@ pub enum DesktopHostResult {
     ApprovalShow(ApprovalShowResult),
     CatalogList(CatalogListResult),
     ClarificationResolve(ClarificationResolveResult),
+    ConfigActivate(ConfigActivateResult),
+    ConfigDiscard(ConfigDiscardResult),
+    ConfigGet(ConfigGetResult),
+    ConfigReload(ConfigReloadResult),
+    ConfigUpdate(ConfigUpdateResult),
+    ConfigValidate(ConfigValidateResult),
     DeferredComplete(DeferredCompleteResult),
     DeferredFail(DeferredFailResult),
     DeferredList(DeferredListResult),
@@ -1514,6 +2034,9 @@ pub enum DesktopHostResult {
     SessionGet(SessionGetResult),
     SessionList(SessionListResult),
     SessionSearch(SessionSearchResult),
+    WorkspaceList(WorkspaceListResult),
+    WorkspaceRegister(WorkspaceRegisterResult),
+    WorkspaceRemove(WorkspaceRemoveResult),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1589,6 +2112,74 @@ pub fn project_host_result(
                     receipt: project_field(object, "receipt")?,
                 },
             ))
+        }
+        host::HostResult::ConfigActivate(value) => {
+            let value =
+                serde_json::to_value(value).map_err(|_| ProjectionError::InvalidGeneratedValue)?;
+            let object = value
+                .as_object()
+                .ok_or(ProjectionError::InvalidGeneratedValue)?;
+            Ok(DesktopHostResult::ConfigActivate(ConfigActivateResult {
+                receipt: project_field(object, "receipt")?,
+                status: project_field(object, "status")?,
+            }))
+        }
+        host::HostResult::ConfigDiscard(value) => {
+            let value =
+                serde_json::to_value(value).map_err(|_| ProjectionError::InvalidGeneratedValue)?;
+            let object = value
+                .as_object()
+                .ok_or(ProjectionError::InvalidGeneratedValue)?;
+            Ok(DesktopHostResult::ConfigDiscard(ConfigDiscardResult {
+                receipt: project_field(object, "receipt")?,
+                status: project_field(object, "status")?,
+            }))
+        }
+        host::HostResult::ConfigGet(value) => {
+            let value =
+                serde_json::to_value(value).map_err(|_| ProjectionError::InvalidGeneratedValue)?;
+            let object = value
+                .as_object()
+                .ok_or(ProjectionError::InvalidGeneratedValue)?;
+            Ok(DesktopHostResult::ConfigGet(ConfigGetResult {
+                config: project_field(object, "config")?,
+                status: project_field(object, "status")?,
+            }))
+        }
+        host::HostResult::ConfigReload(value) => {
+            let value =
+                serde_json::to_value(value).map_err(|_| ProjectionError::InvalidGeneratedValue)?;
+            let object = value
+                .as_object()
+                .ok_or(ProjectionError::InvalidGeneratedValue)?;
+            Ok(DesktopHostResult::ConfigReload(ConfigReloadResult {
+                candidate_etag: project_field(object, "candidateEtag")?,
+                receipt: project_field(object, "receipt")?,
+                status: project_field(object, "status")?,
+                validation: project_field(object, "validation")?,
+            }))
+        }
+        host::HostResult::ConfigUpdate(value) => {
+            let value =
+                serde_json::to_value(value).map_err(|_| ProjectionError::InvalidGeneratedValue)?;
+            let object = value
+                .as_object()
+                .ok_or(ProjectionError::InvalidGeneratedValue)?;
+            Ok(DesktopHostResult::ConfigUpdate(ConfigUpdateResult {
+                receipt: project_field(object, "receipt")?,
+                status: project_field(object, "status")?,
+                validation: project_field(object, "validation")?,
+            }))
+        }
+        host::HostResult::ConfigValidate(value) => {
+            let value =
+                serde_json::to_value(value).map_err(|_| ProjectionError::InvalidGeneratedValue)?;
+            let object = value
+                .as_object()
+                .ok_or(ProjectionError::InvalidGeneratedValue)?;
+            Ok(DesktopHostResult::ConfigValidate(ConfigValidateResult {
+                validation: project_field(object, "validation")?,
+            }))
         }
         host::HostResult::DeferredComplete(value) => {
             let value =
@@ -1826,6 +2417,41 @@ pub fn project_host_result(
             Ok(DesktopHostResult::SessionSearch(SessionSearchResult {
                 hits: project_field(object, "hits")?,
                 page: project_page(object, next_page_token)?,
+            }))
+        }
+        host::HostResult::WorkspaceList(value) => {
+            let value =
+                serde_json::to_value(value).map_err(|_| ProjectionError::InvalidGeneratedValue)?;
+            let object = value
+                .as_object()
+                .ok_or(ProjectionError::InvalidGeneratedValue)?;
+            Ok(DesktopHostResult::WorkspaceList(WorkspaceListResult {
+                page: project_page(object, next_page_token)?,
+                workspaces: project_field(object, "workspaces")?,
+            }))
+        }
+        host::HostResult::WorkspaceRegister(value) => {
+            let value =
+                serde_json::to_value(value).map_err(|_| ProjectionError::InvalidGeneratedValue)?;
+            let object = value
+                .as_object()
+                .ok_or(ProjectionError::InvalidGeneratedValue)?;
+            Ok(DesktopHostResult::WorkspaceRegister(
+                WorkspaceRegisterResult {
+                    receipt: project_field(object, "receipt")?,
+                    workspace: project_field(object, "workspace")?,
+                },
+            ))
+        }
+        host::HostResult::WorkspaceRemove(value) => {
+            let value =
+                serde_json::to_value(value).map_err(|_| ProjectionError::InvalidGeneratedValue)?;
+            let object = value
+                .as_object()
+                .ok_or(ProjectionError::InvalidGeneratedValue)?;
+            Ok(DesktopHostResult::WorkspaceRemove(WorkspaceRemoveResult {
+                receipt: project_field(object, "receipt")?,
+                workspace: project_field(object, "workspace")?,
             }))
         }
         _ => Err(ProjectionError::UnsupportedOperation),

@@ -1517,11 +1517,12 @@ impl SessionStore for SqliteSessionStore {
                 {
                     continue;
                 }
-                if filter
-                    .workspace
-                    .as_ref()
-                    .is_some_and(|workspace| session.workspace.as_ref() != Some(workspace))
-                {
+                if filter.workspace.as_ref().is_some_and(|workspace| {
+                    !session
+                        .workspace
+                        .as_ref()
+                        .is_some_and(|provenance| provenance.matches_filter(workspace))
+                }) {
                     continue;
                 }
                 sessions.push(session);
@@ -2283,7 +2284,10 @@ impl SessionStore for SqliteSessionStore {
             Ok(CompactSessionTrace {
                 session_id: session.session_id.clone(),
                 title: session.title.clone(),
-                workspace: session.workspace.clone(),
+                workspace: session
+                    .workspace
+                    .as_ref()
+                    .map(|provenance| provenance.display_value().to_string()),
                 profile: session.profile.clone(),
                 status: session.status,
                 runs: runs.len(),

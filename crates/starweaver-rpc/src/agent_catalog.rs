@@ -1,6 +1,6 @@
 //! RPC-owned agent profile catalog and production model materialization.
 
-use std::{env, path::Path, sync::Arc};
+use std::{env, sync::Arc};
 
 use serde::Serialize;
 use serde_json::json;
@@ -255,6 +255,7 @@ impl RpcAgentCatalog {
         &self,
         name: &str,
         environment_binding_class: impl Into<String>,
+        workspace_binding_digest: &str,
     ) -> RpcHostResult<ResolvedAgentMaterialization> {
         let profile = self.profile(name)?;
         let spec = agent_spec(
@@ -285,7 +286,7 @@ impl RpcAgentCatalog {
                     &self.config.mcp_servers,
                     &mcp_server_names,
                 ),
-                workspace_root_digest(&self.config.workspace_root),
+                workspace_binding_digest.to_string(),
             )
         })
         .map_err(|error| RpcHostError::Invalid(error.to_string()))
@@ -544,14 +545,6 @@ fn rpc_runtime_binding_digest(
     )
 }
 
-fn workspace_root_digest(root: &Path) -> String {
-    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    digest_binding(
-        b"starweaver.rpc.materialization.workspace-root/v1",
-        &json!({"root": canonical.to_string_lossy()}),
-    )
-}
-
 fn digest_binding(domain: &[u8], value: &serde_json::Value) -> String {
     let mut hasher = Sha256::new();
     hasher.update(domain);
@@ -675,13 +668,13 @@ mod tests {
             vec!["alpha", "zeta"]
         );
         let selected = catalog
-            .materialization("default", "local:read_write")
+            .materialization("default", "local:read_write", "sha256:workspace-a")
             .unwrap();
 
         config.profiles.get_mut("default").unwrap().mcp_servers = vec!["alpha".to_string()];
         let subset = RpcAgentCatalog::new(config.clone())
             .unwrap()
-            .materialization("default", "local:read_write")
+            .materialization("default", "local:read_write", "sha256:workspace-a")
             .unwrap();
         assert_ne!(selected.fingerprint, subset.fingerprint);
 
@@ -712,7 +705,6 @@ mod tests {
     #[test]
     fn materialization_binds_provider_endpoint_behavior_and_workspace_without_leaking_them() {
         let first_root = tempfile::tempdir().unwrap();
-        let second_root = tempfile::tempdir().unwrap();
         let mut first = RpcConfig::for_tests(first_root.path());
         first.profiles.insert(
             "production".to_string(),
@@ -732,7 +724,7 @@ mod tests {
         );
         let first_evidence = RpcAgentCatalog::new(first.clone())
             .unwrap()
-            .materialization("production", "local:read_write")
+            .materialization("production", "local:read_write", "sha256:workspace-a")
             .unwrap();
 
         let mut endpoint_changed = first.clone();
@@ -743,7 +735,7 @@ mod tests {
             .endpoint_path = Some("chat/completions".to_string());
         let endpoint_evidence = RpcAgentCatalog::new(endpoint_changed)
             .unwrap()
-            .materialization("production", "local:read_write")
+            .materialization("production", "local:read_write", "sha256:workspace-a")
             .unwrap();
         assert_ne!(
             first_evidence.runtime_binding_digest,
@@ -751,11 +743,9 @@ mod tests {
         );
         assert_ne!(first_evidence.fingerprint, endpoint_evidence.fingerprint);
 
-        let mut workspace_changed = first;
-        workspace_changed.workspace_root = second_root.path().join("workspace");
-        let workspace_evidence = RpcAgentCatalog::new(workspace_changed)
+        let workspace_evidence = RpcAgentCatalog::new(first)
             .unwrap()
-            .materialization("production", "local:read_write")
+            .materialization("production", "local:read_write", "sha256:workspace-b")
             .unwrap();
         assert_ne!(
             first_evidence.workspace_root_digest,

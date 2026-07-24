@@ -3,9 +3,11 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use starweaver_context::ResumableState;
 use starweaver_core::{
     CheckpointId, ConversationId, Metadata, RunId, RunLifecycle, SessionId, TaskId, TraceContext,
+    VersionedRecordError,
 };
 use starweaver_stream::{ReplayCursor, ReplayCursorFamily, ReplayScope};
 
@@ -567,6 +569,201 @@ impl<'de> Deserialize<'de> for StreamCursorRef {
     }
 }
 
+/// Durable workspace provenance that does not confer live filesystem authority.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceProvenanceRef {
+    /// Stable execution-domain-local workspace identity.
+    pub workspace_id: String,
+    /// Safe user-facing label. This may preserve a legacy path as historical evidence only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_label: Option<String>,
+    /// Digest of the canonical provenance declaration used when this reference was recorded.
+    pub provenance_digest: String,
+}
+
+impl WorkspaceProvenanceRef {
+    /// Build a host-approved workspace provenance reference.
+    #[must_use]
+    pub fn new(
+        workspace_id: impl Into<String>,
+        display_label: Option<String>,
+        provenance_digest: impl Into<String>,
+    ) -> Self {
+        Self {
+            workspace_id: workspace_id.into(),
+            display_label,
+            provenance_digest: provenance_digest.into(),
+        }
+    }
+
+    /// Derive stable durable provenance for a canonical root in one execution domain.
+    ///
+    /// This records identity only. It never grants filesystem authority; a host must still match
+    /// it against an independently registered live workspace grant.
+    #[must_use]
+    pub fn for_execution_domain_root(
+        execution_domain_id: &str,
+        canonical_root: &str,
+        display_label: Option<String>,
+    ) -> Self {
+        let identity = workspace_identity_digest(
+            b"starweaver.workspace.id.v1\0",
+            execution_domain_id,
+            canonical_root,
+        );
+        let provenance = workspace_identity_digest(
+            b"starweaver.workspace.provenance.v1\0",
+            execution_domain_id,
+            canonical_root,
+        );
+        Self {
+            workspace_id: format!("workspace_{}", &identity[..32]),
+            display_label,
+            provenance_digest: format!("sha256:{provenance}"),
+        }
+    }
+
+    /// Migrate one legacy workspace string into unbound historical provenance.
+    ///
+    /// The derived `legacy:` identity is deliberately outside the host workspace-id namespace and
+    /// must never be resolved as a live grant. It only keeps migration and filtering deterministic.
+    #[must_use]
+    pub fn from_legacy_display(display: impl Into<String>) -> Self {
+        let display = display.into();
+        let mut digest = Sha256::new();
+        digest.update(b"starweaver.session.workspace_provenance.legacy.v1\0");
+        digest.update(display.as_bytes());
+        let digest = format!("sha256:{:x}", digest.finalize());
+        Self {
+            workspace_id: format!("legacy:{digest}"),
+            display_label: Some(display),
+            provenance_digest: digest,
+        }
+    }
+
+    /// Return whether this reference was synthesized from legacy display-only evidence.
+    #[must_use]
+    pub fn is_legacy_unbound(&self) -> bool {
+        self.workspace_id.starts_with("legacy:")
+    }
+
+    /// Return the safe value used by legacy list/filter projections.
+    #[must_use]
+    pub fn display_value(&self) -> &str {
+        self.display_label.as_deref().unwrap_or(&self.workspace_id)
+    }
+
+    /// Return whether a legacy workspace filter matches the stable id or display projection.
+    #[must_use]
+    pub fn matches_filter(&self, workspace: &str) -> bool {
+        self.workspace_id == workspace || self.display_label.as_deref() == Some(workspace)
+    }
+
+    /// Validate durable provenance identity without conferring live authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when required identity evidence is empty or a legacy identity is
+    /// internally inconsistent.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.workspace_id.trim().is_empty() || self.provenance_digest.trim().is_empty() {
+            return Err("workspace provenance identity is empty");
+        }
+        if self.is_legacy_unbound()
+            && (self.workspace_id != format!("legacy:{}", self.provenance_digest)
+                || self.display_label.as_deref().is_none_or(str::is_empty))
+        {
+            return Err("legacy workspace provenance is inconsistent");
+        }
+        Ok(())
+    }
+}
+
+fn workspace_identity_digest(
+    domain: &[u8],
+    execution_domain_id: &str,
+    canonical_root: &str,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(domain);
+    digest.update(
+        u64::try_from(execution_domain_id.len())
+            .unwrap_or(u64::MAX)
+            .to_be_bytes(),
+    );
+    digest.update(execution_domain_id.as_bytes());
+    digest.update(
+        u64::try_from(canonical_root.len())
+            .unwrap_or(u64::MAX)
+            .to_be_bytes(),
+    );
+    digest.update(canonical_root.as_bytes());
+    format!("{:x}", digest.finalize())
+}
+
+/// Immutable runtime-configuration snapshot identity pinned at run admission.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigSnapshotRef {
+    /// Monotonic runtime-config generation.
+    pub generation: u64,
+    /// Opaque revision etag identifying the retained immutable declaration.
+    pub etag: String,
+    /// Digest of the fully resolved non-secret run materialization.
+    pub materialization_digest: String,
+}
+
+impl RuntimeConfigSnapshotRef {
+    /// Build a runtime-config snapshot reference.
+    #[must_use]
+    pub fn new(
+        generation: u64,
+        etag: impl Into<String>,
+        materialization_digest: impl Into<String>,
+    ) -> Self {
+        Self {
+            generation,
+            etag: etag.into(),
+            materialization_digest: materialization_digest.into(),
+        }
+    }
+
+    /// Validate an immutable runtime-config snapshot identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the generation or required identity evidence is empty.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.generation == 0 {
+            return Err("runtime config generation must be positive");
+        }
+        if self.etag.trim().is_empty() || self.materialization_digest.trim().is_empty() {
+            return Err("runtime config snapshot identity is empty");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+struct SessionRecordV1 {
+    #[serde(default)]
+    workspace: Option<String>,
+    #[serde(flatten)]
+    fields: serde_json::Map<String, Value>,
+}
+
+fn decode_session_record_v1(payload: Value) -> Result<SessionRecord, VersionedRecordError> {
+    let legacy =
+        serde_json::from_value::<SessionRecordV1>(payload).map_err(VersionedRecordError::Json)?;
+    let mut current = serde_json::from_value::<SessionRecord>(Value::Object(legacy.fields))
+        .map_err(VersionedRecordError::Json)?;
+    current.workspace = legacy
+        .workspace
+        .map(WorkspaceProvenanceRef::from_legacy_display);
+    Ok(current)
+}
+
 /// Durable session record.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SessionRecord {
@@ -587,9 +784,9 @@ pub struct SessionRecord {
     /// User-facing title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// Workspace identifier or path.
+    /// Workspace provenance. This evidence never recreates a host-local live grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<String>,
+    pub workspace: Option<WorkspaceProvenanceRef>,
     /// Runtime profile or model profile name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
@@ -643,10 +840,38 @@ const fn initial_run_revision() -> u64 {
 
 impl starweaver_core::VersionedRecord for SessionRecord {
     const SCHEMA: &'static str = "starweaver.session.session_record";
+    const VERSION: u32 = 2;
     const ALLOW_BARE_V0: bool = true;
+
+    fn decode_version(version: u32, payload: Value) -> Result<Self, VersionedRecordError> {
+        match version {
+            1 => decode_session_record_v1(payload),
+            Self::VERSION => serde_json::from_value(payload).map_err(VersionedRecordError::Json),
+            actual => Err(VersionedRecordError::UnsupportedVersion {
+                schema: Self::SCHEMA,
+                supported: Self::VERSION,
+                actual,
+            }),
+        }
+    }
+
+    fn decode_bare_v0(payload: Value) -> Result<Self, VersionedRecordError> {
+        decode_session_record_v1(payload)
+    }
 }
 
 impl SessionRecord {
+    /// Validate workspace provenance carried by this durable session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the optional provenance is malformed.
+    pub fn validate_provenance(&self) -> Result<(), &'static str> {
+        self.workspace
+            .as_ref()
+            .map_or(Ok(()), WorkspaceProvenanceRef::validate)
+    }
+
     /// Build a session record with default state.
     #[must_use]
     pub fn new(session_id: SessionId) -> Self {
@@ -674,6 +899,19 @@ impl SessionRecord {
             metadata: Metadata::default(),
         }
     }
+}
+
+#[derive(Deserialize)]
+struct RunRecordV1 {
+    #[serde(flatten)]
+    fields: serde_json::Map<String, Value>,
+}
+
+fn decode_run_record_v1(payload: Value) -> Result<RunRecord, VersionedRecordError> {
+    let legacy =
+        serde_json::from_value::<RunRecordV1>(payload).map_err(VersionedRecordError::Json)?;
+    serde_json::from_value::<RunRecord>(Value::Object(legacy.fields))
+        .map_err(VersionedRecordError::Json)
 }
 
 /// Durable run record.
@@ -733,6 +971,9 @@ pub struct RunRecord {
     /// Profile resolved for this run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// Immutable runtime-config snapshot pinned when this run was admitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_snapshot: Option<RuntimeConfigSnapshotRef>,
     /// Creation time.
     pub created_at: DateTime<Utc>,
     /// Last update time.
@@ -744,10 +985,38 @@ pub struct RunRecord {
 
 impl starweaver_core::VersionedRecord for RunRecord {
     const SCHEMA: &'static str = "starweaver.session.run_record";
+    const VERSION: u32 = 2;
     const ALLOW_BARE_V0: bool = true;
+
+    fn decode_version(version: u32, payload: Value) -> Result<Self, VersionedRecordError> {
+        match version {
+            1 => decode_run_record_v1(payload),
+            Self::VERSION => serde_json::from_value(payload).map_err(VersionedRecordError::Json),
+            actual => Err(VersionedRecordError::UnsupportedVersion {
+                schema: Self::SCHEMA,
+                supported: Self::VERSION,
+                actual,
+            }),
+        }
+    }
+
+    fn decode_bare_v0(payload: Value) -> Result<Self, VersionedRecordError> {
+        decode_run_record_v1(payload)
+    }
 }
 
 impl RunRecord {
+    /// Validate runtime-config provenance carried by this durable run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the optional snapshot identity is malformed.
+    pub fn validate_provenance(&self) -> Result<(), &'static str> {
+        self.config_snapshot
+            .as_ref()
+            .map_or(Ok(()), RuntimeConfigSnapshotRef::validate)
+    }
+
     /// Return the complete terminal projection when this record is terminal.
     ///
     /// Historical failed records may legitimately return a projection with no diagnostic.
@@ -849,6 +1118,7 @@ impl RunRecord {
             parent_task_id: None,
             trigger_type: None,
             profile: None,
+            config_snapshot: None,
             created_at: now,
             updated_at: now,
             metadata: Metadata::default(),

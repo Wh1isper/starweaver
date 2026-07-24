@@ -20,6 +20,7 @@ pub fn run() -> tauri::Result<()> {
     let app = tauri::Builder::default()
         // The single-instance plugin must remain the first registered plugin.
         .plugin(single_instance::plugin())
+        .plugin(tauri_plugin_dialog::init())
         .manage(DesktopState::default())
         .setup(|app| {
             let root = app.path().app_local_data_dir()?.join("supervisor");

@@ -93,8 +93,8 @@
             "uniqueItems": true,
             "x-starweaver-canonical-order": "utf8-byte-ascending"
           },
-          "workspace": {
-            "$ref": "#/components/schemas/WorkspaceCompatibility"
+          "executionDomain": {
+            "$ref": "#/components/schemas/ExecutionDomainCompatibility"
           }
         },
         "required": [
@@ -106,7 +106,7 @@
           "runtimeStatus",
           "launch",
           "storage",
-          "workspace",
+          "executionDomain",
           "startupReconciliation"
         ],
         "type": "object"
@@ -225,7 +225,7 @@
         ],
         "type": "object"
       },
-      "WorkspaceCompatibility": {
+      "ExecutionDomainCompatibility": {
         "additionalProperties": false,
         "properties": {
           "executionDomainId": {
@@ -233,17 +233,10 @@
             "minLength": 1,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
             "type": "string"
-          },
-          "workspaceIdentity": {
-            "maxLength": 128,
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-            "type": "string"
           }
         },
         "required": [
-          "executionDomainId",
-          "workspaceIdentity"
+          "executionDomainId"
         ],
         "type": "object"
       }

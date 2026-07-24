@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fmt, fs,
+    io::Read as _,
     path::{Path, PathBuf},
 };
 
@@ -16,6 +17,7 @@ use crate::{RpcHttpAuthConfig, RpcHttpScope};
 const DEFAULT_PROFILE_NAME: &str = "default";
 const DEFAULT_MODEL_ID: &str = "openai-responses:gpt-5";
 const MAX_LAUNCH_ENVELOPE_BYTES: u64 = 1024 * 1024;
+const MAX_RPC_CONFIG_BYTES: u64 = 1024 * 1024;
 
 /// Validated immutable evidence for the process bootstrap configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,8 +34,6 @@ pub struct RpcLaunchEvidence {
     pub execution_domain_id: String,
     /// Stable database identity.
     pub database_identity: String,
-    /// Canonical workspace identity.
-    pub workspace_identity: String,
 }
 
 /// One RPC-owned agent profile.
@@ -128,7 +128,7 @@ impl Default for RpcProviderConfig {
 }
 
 /// One private environment catalog entry owned by the RPC product.
-#[derive(Clone, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RpcEnvironmentConfig {
     /// Optional reviewed public display label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -143,7 +143,7 @@ pub struct RpcEnvironmentConfig {
 }
 
 /// Provider-private configured environment source.
-#[derive(Clone, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RpcEnvironmentSourceConfig {
     /// Local sources are reserved for the built-in `local` entry and rejected in file config.
@@ -162,7 +162,7 @@ pub enum RpcEnvironmentSourceConfig {
 }
 
 /// One allowlisted resource resolver entry.
-#[derive(Clone, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RpcEnvironmentResourceConfig {
     /// Reviewed public label stored in durable mount evidence.
     pub label: String,
@@ -182,11 +182,8 @@ pub struct RpcEnvironmentCatalogEntry {
 /// Private source produced after allowlisted catalog resolution.
 #[derive(Clone, Eq, PartialEq)]
 pub enum ResolvedRpcEnvironmentSource {
-    /// Built-in local provider, rooted exactly at configured `workspace_root`.
-    Local {
-        /// Exact configured workspace root.
-        workspace_root: PathBuf,
-    },
+    /// Built-in local provider. The session workspace grant supplies its run-time root.
+    Local,
     /// Configured envd provider details.
     Envd {
         /// Private validated local endpoint reference.
@@ -255,10 +252,7 @@ impl fmt::Debug for RpcEnvironmentResourceConfig {
 impl fmt::Debug for ResolvedRpcEnvironmentSource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Local { workspace_root: _ } => formatter
-                .debug_struct("Local")
-                .field("workspace_root", &"<redacted>")
-                .finish(),
+            Self::Local => formatter.write_str("Local"),
             Self::Envd { .. } => formatter
                 .debug_struct("Envd")
                 .field("endpoint_ref", &"<redacted>")
@@ -370,8 +364,8 @@ pub struct RpcConfig {
     pub database_path: PathBuf,
     /// RPC-owned client state directory.
     pub state_dir: PathBuf,
-    /// Workspace root exposed through the local environment provider.
-    pub workspace_root: PathBuf,
+    /// Standalone-only startup workspace intent. Supervised hosts never carry a launch root.
+    pub initial_workspace_root: Option<PathBuf>,
     /// Default RPC agent profile name.
     pub default_profile: String,
     /// RPC-owned agent profiles.
@@ -392,6 +386,159 @@ pub struct RpcConfig {
     pub http_auth: RpcHttpAuthConfig,
     /// Optional RPC-owned session-search provider configuration.
     pub session_search: RpcSessionSearchConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RpcRuntimeMaterialization {
+    pub(crate) default_profile: String,
+    pub(crate) profiles: BTreeMap<String, RpcProfileConfig>,
+    pub(crate) providers: BTreeMap<String, RpcProviderConfig>,
+    pub(crate) environments: BTreeMap<String, RpcEnvironmentConfig>,
+    pub(crate) subagents: BTreeMap<String, RpcSubagentConfig>,
+    pub(crate) mcp_servers: BTreeMap<String, starweaver_tools::McpServerConfig>,
+    pub(crate) client_capabilities: RpcClientCapabilitiesConfig,
+    #[cfg(test)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    test_responses: BTreeMap<String, String>,
+}
+
+impl RpcRuntimeMaterialization {
+    pub(crate) fn public_document(&self) -> host::ConfigDocument {
+        project_runtime_document(&self.default_profile, &self.profiles, &self.providers)
+    }
+
+    pub(crate) fn apply_public_document(
+        &self,
+        document: &host::ConfigDocument,
+    ) -> RpcHostResult<Self> {
+        let mut profiles = BTreeMap::new();
+        for profile in &document.profiles {
+            let existing = self.profiles.get(&profile.name);
+            let configured = RpcProfileConfig {
+                label: existing.and_then(|value| value.label.clone()),
+                model_id: profile.model_id.clone(),
+                model_settings: profile.model_settings.clone(),
+                model_config: profile.model_config.clone(),
+                instructions: profile.instructions.clone(),
+                toolsets: profile.toolsets.clone(),
+                subagents: existing
+                    .map(|value| value.subagents.clone())
+                    .unwrap_or_default(),
+                mcp_servers: existing
+                    .map(|value| value.mcp_servers.clone())
+                    .unwrap_or_default(),
+                test_response: None,
+            };
+            if profiles.insert(profile.name.clone(), configured).is_some() {
+                return Err(RpcHostError::Invalid(
+                    "runtime config contains duplicate profile names".to_string(),
+                ));
+            }
+        }
+        if !profiles.contains_key(&document.default_profile) {
+            return Err(RpcHostError::Invalid(
+                "runtime config defaultProfile is not declared in profiles".to_string(),
+            ));
+        }
+        let mut providers = BTreeMap::new();
+        for provider in &document.providers {
+            let configured = RpcProviderConfig {
+                enabled: provider.enabled,
+                api_key_env: self
+                    .providers
+                    .get(&provider.name)
+                    .and_then(|value| value.api_key_env.clone()),
+                base_url: provider.base_url.clone(),
+                endpoint_path: provider.endpoint_path.clone(),
+            };
+            if providers
+                .insert(provider.name.clone(), configured)
+                .is_some()
+            {
+                return Err(RpcHostError::Invalid(
+                    "runtime config contains duplicate provider names".to_string(),
+                ));
+            }
+        }
+        let mut candidate = self.clone();
+        candidate
+            .default_profile
+            .clone_from(&document.default_profile);
+        candidate.profiles = profiles;
+        candidate.providers = providers;
+        #[cfg(test)]
+        candidate
+            .test_responses
+            .retain(|name, _| candidate.profiles.contains_key(name));
+        candidate.validate_persistable()?;
+        Ok(candidate)
+    }
+
+    fn validate_persistable(&self) -> RpcHostResult<()> {
+        if !self.profiles.contains_key(&self.default_profile) {
+            return Err(RpcHostError::Invalid(
+                "runtime materialization default profile is unavailable".to_string(),
+            ));
+        }
+        self.client_capabilities.validate()?;
+        for (name, server) in &self.mcp_servers {
+            if !server.env.is_empty() || !server.headers.is_empty() {
+                return Err(RpcHostError::Invalid(format!(
+                    "MCP server {name} uses inline environment or header values; persisted runtime snapshots require credential references"
+                )));
+            }
+            if let Some(url) = server.url.as_deref() {
+                let lower = url.to_ascii_lowercase();
+                let authority = url
+                    .split_once("://")
+                    .map_or(url, |(_, remainder)| remainder)
+                    .split('/')
+                    .next()
+                    .unwrap_or_default();
+                if authority.contains('@')
+                    || ["token=", "api_key=", "apikey=", "authorization="]
+                        .iter()
+                        .any(|marker| lower.contains(marker))
+                {
+                    return Err(RpcHostError::Invalid(format!(
+                        "MCP server {name} endpoint contains inline credential material"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn project_runtime_document(
+    default_profile: &str,
+    profiles: &BTreeMap<String, RpcProfileConfig>,
+    providers: &BTreeMap<String, RpcProviderConfig>,
+) -> host::ConfigDocument {
+    host::ConfigDocument {
+        default_profile: default_profile.to_string(),
+        profiles: profiles
+            .iter()
+            .map(|(name, profile)| host::LaunchProfile {
+                instructions: profile.instructions.clone(),
+                model_config: profile.model_config.clone(),
+                model_id: profile.model_id.clone(),
+                model_settings: profile.model_settings.clone(),
+                name: name.clone(),
+                toolsets: profile.toolsets.clone(),
+            })
+            .collect(),
+        providers: providers
+            .iter()
+            .map(|(name, provider)| host::ConfigProvider {
+                base_url: provider.base_url.clone(),
+                enabled: provider.enabled,
+                endpoint_path: provider.endpoint_path.clone(),
+                name: name.clone(),
+            })
+            .collect(),
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -524,11 +671,11 @@ impl RpcConfig {
         let client_capabilities = file.client_capabilities.unwrap_or_default();
         client_capabilities.validate()?;
         Ok(Self {
-            launch: standalone_launch_evidence(&config_path, &database_path, &workspace_root),
+            launch: standalone_launch_evidence(&config_path, &database_path),
             config_path,
             database_path,
             state_dir,
-            workspace_root,
+            initial_workspace_root: Some(workspace_root),
             default_profile,
             profiles,
             providers,
@@ -572,11 +719,9 @@ impl RpcConfig {
             RpcHostError::Invalid("launch envelope violates its public schema".to_string())
         })?;
         let database_path = PathBuf::from(&envelope.database.path);
-        let workspace_root = PathBuf::from(&envelope.workspace.root);
         let state_dir = PathBuf::from(&envelope.state_directory);
         for (name, authority_path) in [
             ("database.path", &database_path),
-            ("workspace.root", &workspace_root),
             ("stateDirectory", &state_dir),
         ] {
             if !authority_path.is_absolute() {
@@ -648,14 +793,13 @@ impl RpcConfig {
             mode: "workspace_execution".to_string(),
             execution_domain_id: envelope.execution_domain_id,
             database_identity: envelope.database.identity,
-            workspace_identity: envelope.workspace.identity,
         };
         Ok(Self {
             config_path: path.to_path_buf(),
             launch,
             database_path,
             state_dir,
-            workspace_root,
+            initial_workspace_root: None,
             default_profile: envelope.default_profile,
             profiles,
             providers,
@@ -685,12 +829,11 @@ impl RpcConfig {
             launch: standalone_launch_evidence(
                 &root.join("rpc.toml"),
                 &root.join("starweaver.sqlite"),
-                &root.join("workspace"),
             ),
             config_path: root.join("rpc.toml"),
             database_path: root.join("starweaver.sqlite"),
             state_dir: root.join("rpc-state"),
-            workspace_root: root.join("workspace"),
+            initial_workspace_root: Some(root.join("workspace")),
             default_profile: DEFAULT_PROFILE_NAME.to_string(),
             profiles: BTreeMap::from([(DEFAULT_PROFILE_NAME.to_string(), profile)]),
             providers: default_provider_configs(),
@@ -703,6 +846,117 @@ impl RpcConfig {
             http_auth: RpcHttpAuthConfig::default(),
             session_search: RpcSessionSearchConfig::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn workspace_root_for_tests(&self) -> &Path {
+        self.initial_workspace_root
+            .as_deref()
+            .unwrap_or_else(|| panic!("test configuration must declare an initial workspace"))
+    }
+
+    /// Build the complete, normalized, credential-reference-only runtime declaration.
+    pub(crate) fn runtime_materialization(&self) -> RpcHostResult<RpcRuntimeMaterialization> {
+        let materialization = RpcRuntimeMaterialization {
+            default_profile: self.default_profile.clone(),
+            profiles: self.profiles.clone(),
+            providers: self.providers.clone(),
+            environments: self.environments.clone(),
+            subagents: self.subagents.clone(),
+            mcp_servers: self.mcp_servers.clone(),
+            client_capabilities: self.client_capabilities.clone(),
+            #[cfg(test)]
+            test_responses: self
+                .profiles
+                .iter()
+                .filter_map(|(name, profile)| {
+                    profile
+                        .test_response
+                        .as_ref()
+                        .map(|response| (name.clone(), response.clone()))
+                })
+                .collect(),
+        };
+        materialization.validate_persistable()?;
+        Ok(materialization)
+    }
+
+    pub(crate) fn with_runtime_materialization(
+        &self,
+        materialization: &RpcRuntimeMaterialization,
+    ) -> RpcHostResult<Self> {
+        materialization.validate_persistable()?;
+        let mut candidate = self.clone();
+        candidate
+            .default_profile
+            .clone_from(&materialization.default_profile);
+        candidate.profiles.clone_from(&materialization.profiles);
+        candidate.providers.clone_from(&materialization.providers);
+        candidate
+            .environments
+            .clone_from(&materialization.environments);
+        candidate.subagents.clone_from(&materialization.subagents);
+        candidate
+            .mcp_servers
+            .clone_from(&materialization.mcp_servers);
+        candidate
+            .client_capabilities
+            .clone_from(&materialization.client_capabilities);
+        #[cfg(test)]
+        for (name, response) in &materialization.test_responses {
+            if let Some(profile) = candidate.profiles.get_mut(name) {
+                profile.test_response = Some(response.clone());
+            }
+        }
+        Ok(candidate)
+    }
+
+    /// Re-read the fixed standalone sources into one complete runtime declaration.
+    pub(crate) fn runtime_materialization_from_source(
+        &self,
+    ) -> RpcHostResult<RpcRuntimeMaterialization> {
+        if self.launch.mode != "standalone" {
+            return self.runtime_materialization();
+        }
+        let file = read_existing_file_config(&self.config_path)?;
+        let config_dir = self.config_path.parent().unwrap_or_else(|| Path::new("."));
+        let server = file.server.unwrap_or_default();
+        let mut profiles = BTreeMap::from([(
+            DEFAULT_PROFILE_NAME.to_string(),
+            RpcProfileConfig::default(),
+        )]);
+        if let Some(configured) = file.profiles {
+            profiles.extend(configured);
+        }
+        let mut providers = default_provider_configs();
+        if let Some(configured) = file.providers {
+            providers.extend(configured);
+        }
+        let source_root = self.initial_workspace_root.as_deref().unwrap_or(config_dir);
+        let mcp_config_path =
+            resolve_mcp_config_path(source_root, config_dir, None, server.mcp_config_path);
+        let mcp_servers = mcp_config_path
+            .as_deref()
+            .map(load_mcp_servers)
+            .transpose()?
+            .unwrap_or_default();
+        let client_capabilities = file.client_capabilities.unwrap_or_default();
+        client_capabilities.validate()?;
+        let candidate = RpcRuntimeMaterialization {
+            default_profile: server
+                .default_profile
+                .unwrap_or_else(|| DEFAULT_PROFILE_NAME.to_string()),
+            profiles,
+            providers,
+            environments: resolve_environment_catalog(file.environments.unwrap_or_default())?,
+            subagents: file.subagents.unwrap_or_default(),
+            mcp_servers,
+            client_capabilities,
+            #[cfg(test)]
+            test_responses: BTreeMap::new(),
+        };
+        candidate.validate_persistable()?;
+        Ok(candidate)
     }
 
     /// Return safe, deterministically ordered public catalog entries.
@@ -742,9 +996,7 @@ impl RpcConfig {
                             .to_string(),
                     ));
                 }
-                Ok(ResolvedRpcEnvironmentSource::Local {
-                    workspace_root: self.workspace_root.clone(),
-                })
+                Ok(ResolvedRpcEnvironmentSource::Local)
             }
             RpcEnvironmentSourceConfig::Envd {
                 endpoint_ref,
@@ -789,6 +1041,7 @@ impl RpcConfig {
         &self,
         environment_id: &str,
         resource_ref: &str,
+        workspace_root: Option<&Path>,
     ) -> RpcHostResult<ResolvedRpcEnvironmentResource> {
         let configured = self.environments.get(environment_id).ok_or_else(|| {
             RpcHostError::Invalid(format!(
@@ -801,8 +1054,13 @@ impl RpcConfig {
             ))
         })?;
         let source_ref = match &configured.source {
-            RpcEnvironmentSourceConfig::Local => self
-                .workspace_root
+            RpcEnvironmentSourceConfig::Local => workspace_root
+                .ok_or_else(|| {
+                    RpcHostError::Invalid(
+                        "local environment resource requires a live session workspace grant"
+                            .to_string(),
+                    )
+                })?
                 .join(&resource.source_ref)
                 .to_string_lossy()
                 .into_owned(),
@@ -819,27 +1077,23 @@ fn sha256_digest(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-fn standalone_launch_evidence(
-    config_path: &Path,
-    database_path: &Path,
-    workspace_root: &Path,
-) -> RpcLaunchEvidence {
-    let identity_material = format!(
-        "{}\n{}\n{}",
-        config_path.display(),
-        database_path.display(),
-        workspace_root.display()
+fn standalone_launch_evidence(config_path: &Path, database_path: &Path) -> RpcLaunchEvidence {
+    let envelope_digest =
+        sha256_digest(format!("{}\n{}", config_path.display(), database_path.display()).as_bytes());
+    let database_digest = sha256_digest(
+        format!(
+            "starweaver.database.locator.v1\0{}",
+            database_path.display()
+        )
+        .as_bytes(),
     );
-    let digest = sha256_digest(identity_material.as_bytes());
-    let short = digest[7..23].to_string();
     RpcLaunchEvidence {
         schema_version: host::LAUNCH_SCHEMA_VERSION,
-        envelope_digest: digest,
+        envelope_digest,
         configuration_generation: 0,
         mode: "standalone".to_string(),
         execution_domain_id: "standalone-local".to_string(),
-        database_identity: format!("database-{short}"),
-        workspace_identity: format!("workspace-{short}"),
+        database_identity: format!("database-{}", &database_digest[7..39]),
     }
 }
 
@@ -982,16 +1236,93 @@ fn resolve_http_auth(
 }
 
 fn read_file_config(path: &Path) -> RpcHostResult<FileConfig> {
-    match fs::read_to_string(path) {
-        Ok(content) => toml::from_str(&content).map_err(|error| {
-            RpcHostError::Invalid(format!(
-                "failed to parse RPC config {}: {error}",
-                path.display()
-            ))
-        }),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(FileConfig::default()),
-        Err(error) => Err(RpcHostError::Io(error)),
+    read_file_config_with_missing_policy(path, true)
+}
+
+fn read_existing_file_config(path: &Path) -> RpcHostResult<FileConfig> {
+    read_file_config_with_missing_policy(path, false)
+}
+
+fn read_file_config_with_missing_policy(
+    path: &Path,
+    allow_missing: bool,
+) -> RpcHostResult<FileConfig> {
+    let expected = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && allow_missing => {
+            return Ok(FileConfig::default());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if expected.file_type().is_symlink() || !expected.is_file() {
+        return Err(RpcHostError::Invalid(format!(
+            "RPC config must be a regular file and not a symlink: {}",
+            path.display()
+        )));
     }
+    if expected.len() > MAX_RPC_CONFIG_BYTES {
+        return Err(RpcHostError::Invalid(format!(
+            "RPC config exceeds the {MAX_RPC_CONFIG_BYTES}-byte limit: {}",
+            path.display()
+        )));
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
+    let opened = file.metadata()?;
+    if !opened.is_file() {
+        return Err(RpcHostError::Invalid(format!(
+            "RPC config must remain a regular file while opening: {}",
+            path.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if expected.dev() != opened.dev() || expected.ino() != opened.ino() {
+            return Err(RpcHostError::Invalid(format!(
+                "RPC config changed while opening: {}",
+                path.display()
+            )));
+        }
+    }
+    if opened.len() > MAX_RPC_CONFIG_BYTES {
+        return Err(RpcHostError::Invalid(format!(
+            "RPC config exceeds the {MAX_RPC_CONFIG_BYTES}-byte limit: {}",
+            path.display()
+        )));
+    }
+
+    let mut bytes = Vec::new();
+    file.take(MAX_RPC_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_RPC_CONFIG_BYTES {
+        return Err(RpcHostError::Invalid(format!(
+            "RPC config exceeds the {MAX_RPC_CONFIG_BYTES}-byte limit: {}",
+            path.display()
+        )));
+    }
+    let content = String::from_utf8(bytes).map_err(|_| {
+        RpcHostError::Invalid(format!("RPC config is not UTF-8: {}", path.display()))
+    })?;
+    toml::from_str(&content).map_err(|error| {
+        RpcHostError::Invalid(format!(
+            "failed to parse RPC config {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 fn resolve_mcp_config_path(
@@ -1165,9 +1496,47 @@ base_url = "https://models.example.test/v1"
     }
 
     #[test]
+    fn rpc_config_source_is_bounded_and_requires_a_regular_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = read_file_config(&temp.path().join("missing.toml")).unwrap();
+        assert!(missing.server.is_none());
+        assert!(missing.profiles.is_none());
+
+        let oversized = temp.path().join("oversized.toml");
+        fs::write(
+            &oversized,
+            vec![b' '; usize::try_from(MAX_RPC_CONFIG_BYTES + 1).unwrap()],
+        )
+        .unwrap();
+        assert!(matches!(
+            read_file_config(&oversized),
+            Err(RpcHostError::Invalid(message)) if message.contains("byte limit")
+        ));
+        assert!(matches!(
+            read_file_config(temp.path()),
+            Err(RpcHostError::Invalid(message)) if message.contains("regular file")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rpc_config_source_rejects_symbolic_links() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target.toml");
+        let link = temp.path().join("rpc.toml");
+        fs::write(&target, "[server]\ndefault_profile = \"default\"\n").unwrap();
+        symlink(&target, &link).unwrap();
+        assert!(matches!(
+            read_file_config(&link),
+            Err(RpcHostError::Invalid(message)) if message.contains("symlink")
+        ));
+    }
+
+    #[test]
     fn supervised_launch_is_closed_absolute_and_does_not_resolve_private_config() {
         let temp = tempfile::tempdir().unwrap();
-        let workspace = temp.path().join("workspace");
         let database = temp.path().join("sessions.sqlite");
         let state = temp.path().join("state");
         let envelope_path = temp.path().join("launch.json");
@@ -1175,7 +1544,6 @@ base_url = "https://models.example.test/v1"
             "schema": {"name": "starweaver.rpc.launch", "version": 1},
             "mode": "workspace_execution",
             "database": {"identity": "database-local", "path": database},
-            "workspace": {"identity": "workspace-local", "root": workspace},
             "stateDirectory": state,
             "executionDomainId": "local-user",
             "configurationGeneration": "7",
@@ -1198,10 +1566,9 @@ base_url = "https://models.example.test/v1"
 
         let config = RpcConfig::from_launch_envelope(&envelope_path).unwrap();
         assert_eq!(config.database_path, database);
-        assert_eq!(config.workspace_root, workspace);
+        assert_eq!(config.initial_workspace_root, None);
         assert_eq!(config.state_dir, state);
         assert_eq!(config.launch.configuration_generation, 7);
-        assert_eq!(config.launch.workspace_identity, "workspace-local");
         assert_eq!(config.launch.mode, "workspace_execution");
         assert_eq!(config.default_profile, "desktop");
         assert!(config.client_capabilities.clarifying_questions);
@@ -1226,7 +1593,6 @@ base_url = "https://models.example.test/v1"
             "schema": {"name": "starweaver.rpc.launch", "version": 1},
             "mode": "workspace_execution",
             "database": {"identity": "database-local", "path": temp.path().join("db.sqlite")},
-            "workspace": {"identity": "workspace-local", "root": temp.path().join("workspace")},
             "stateDirectory": temp.path().join("state"),
             "executionDomainId": "local-user",
             "configurationGeneration": "1",
@@ -1403,7 +1769,11 @@ source_ref = "private://bucket/path?credential=secret"
         let mut config = RpcConfig::for_tests(root.path());
         config.environments = local_catalog;
         let resolved = config
-            .resolve_environment_resource("local", "reports")
+            .resolve_environment_resource(
+                "local",
+                "reports",
+                Some(config.workspace_root_for_tests()),
+            )
             .unwrap();
         assert_eq!(resolved.label, "Workspace reports");
         assert_eq!(
@@ -1447,14 +1817,16 @@ source_ref = "private://bucket/path?credential=secret"
         let root = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(root.path());
         let error = config
-            .resolve_environment_resource("local", "unconfigured/path")
+            .resolve_environment_resource(
+                "local",
+                "unconfigured/path",
+                Some(config.workspace_root_for_tests()),
+            )
             .unwrap_err();
         assert!(error.to_string().contains("not allowlisted"));
         assert_eq!(
             config.resolve_environment_source("local").unwrap(),
-            ResolvedRpcEnvironmentSource::Local {
-                workspace_root: root.path().join("workspace")
-            }
+            ResolvedRpcEnvironmentSource::Local
         );
     }
 }

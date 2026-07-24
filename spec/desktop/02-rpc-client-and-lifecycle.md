@@ -1,30 +1,30 @@
 # Desktop RPC Client and Lifecycle
 
-Status: accepted architecture baseline; generated local client and supervisor lifecycle implemented; full recovery, updater, OAuth, and SSH additions planned
+Status: accepted architecture baseline; generated local client and supervisor lifecycle implemented; workspace product flows, full recovery, updater, and SSH private-endpoint transport planned
 
-This document defines how the Desktop backend consumes the Starweaver host protocol and names the additions required before a public Desktop release. `../ops/06-json-rpc-host-protocol.md` is handwritten behavioral inventory only. Desktop execution targets the sole IDL-first `starweaver.host` major-1 contract defined by `../ops/09-rpc-idl-and-client-generation.md`; it has no legacy negotiation or fallback client path. The TypeScript application owns typed client behavior, but the privileged Rust supervisor retains physical transport, request identity, routing, recovery, projection, and authority. SSH transport adds probe, provisioning, and supervised-bootstrap states before `Handshaking` as specified in `07-ssh-remote-workspaces.md`; once accepted, the same generated client contract applies.
+This document defines how the Desktop backend consumes the Starweaver host protocol and names the additions required before a public Desktop release. `../ops/06-json-rpc-host-protocol.md` is handwritten behavioral inventory only. Desktop execution targets the sole IDL-first `starweaver.host` major-1 contract defined by `../ops/09-rpc-idl-and-client-generation.md`; it has no legacy negotiation or fallback client path. The TypeScript application owns typed client behavior, but the privileged Rust supervisor retains physical transport, request identity, routing, recovery, projection, and authority. SSH transport adds probe, provisioning, endpoint-bootstrap, and tunnel states before `Handshaking` as specified in `07-ssh-remote-workspaces.md`; once the private endpoint is accepted through SSH, the same generated client contract applies.
 
 ## Connection State Machine
 
-Each workspace child follows an explicit state machine.
+The local domain host and each connected remote-domain host follow an explicit state machine.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Stopped
-    Stopped --> Starting: workspace opened
-    Starting --> Handshaking: child stdio ready
+    Stopped --> Starting: Desktop or remote domain connected
+    Starting --> Handshaking: host transport ready
     Handshaking --> Ready: initialize compatible
     Handshaking --> Incompatible: protocol/runtime rejected
     Ready --> Draining: update, idle retirement, or app quit
-    Ready --> Recovering: child exits or transport fails
+    Ready --> Recovering: host exits or transport fails
     Draining --> Stopped: shutdown barrier completed
     Recovering --> Starting: restart allowed
     Recovering --> Failed: retry budget exhausted
-    Incompatible --> Stopped: child terminated
+    Incompatible --> Stopped: host terminated
     Failed --> Starting: explicit retry
 ```
 
-The supervisor must not send any JSON-RPC method except initialize before a successful handshake. A supervised SSH connection first completes its non-JSON-RPC nonce marker and launch-envelope bootstrap; that preface is not an RPC method and cannot admit runs. The supervisor must reject a host whose protocol name, major, exact revision, schema digest, required feature set, runtime identity, or storage compatibility range differs from the generated Desktop contract.
+The supervisor must not send any JSON-RPC method except initialize before a successful handshake. An SSH connection first completes its non-JSON-RPC nonce marker, launch-envelope, private-endpoint bootstrap, and tunnel setup; that preface is not an RPC method and cannot admit runs. The supervisor must reject a host whose protocol name, major, exact revision, schema digest, required feature set, runtime identity, or storage compatibility range differs from the generated Desktop contract.
 
 ## Initialize Contract
 
@@ -43,7 +43,8 @@ The result exposes:
 - server-supported and negotiated feature sets;
 - effective host capabilities;
 - storage schema current/read/write compatibility range and maintenance-barrier generation;
-- effective workspace identity without exposing unnecessary absolute paths to the renderer;
+- stable execution-domain/database identity and workspace-registry capabilities without projecting private roots;
+- active runtime configuration generation and safe reload capabilities;
 - whether startup reconciliation changed any run state;
 - update/runtime channel diagnostics safe for the client; and
 - optional reconnect identity under explicit expiry and fencing rules.
@@ -55,16 +56,16 @@ Capability negotiation is per connection. The server rejects a wrong family/majo
 The Desktop backend, not the renderer, owns wire requests. The IDL-derived Desktop operation manifest generates separate safe bridge DTOs; the backend must never deserialize renderer input as a complete host params type and must project host results/notifications before they cross the bridge.
 
 - Every effectful operation covered by the host mutation contract uses a stable idempotency key generated before the first send and retained across retry.
-- The required set includes run start/resume, session create/update/delete, approval decisions, deferred/clarification resolution, environment mutations, and OAuth login/refresh/logout state changes.
+- The required set includes workspace register/remove, run start/resume, session create/update/delete, runtime config update/reload/activate/discard, approval decisions, deferred/clarification resolution, and environment mutations. Provider credential management is outside the Desktop host-operation surface.
 - JSON-RPC request IDs are non-empty strings, unique per connection, generated by the backend, and are not used as durable operation identities.
 - Idempotency keys, routing identities, client scopes, execution-domain bindings, and retry metadata are backend-constructed or backend-overridden fields; renderer payloads cannot inject them.
-- Raw host paths, credentials, private diagnostics, and wire fields absent from the safe bridge result/notification schema never cross into TypeScript state. Variant-level manifest filtering restricts `run.start` to text input; public resource URI variants remain unavailable until the backend owns an opaque resource-grant flow.
+- Raw host paths, credentials, private diagnostics, and wire fields absent from the safe bridge result/notification schema never cross into TypeScript state. Variant-level manifest filtering restricts `run.start` to text input; `session.create` accepts only an opaque backend-selected workspace ID; public resource URI variants remain unavailable until the backend owns an opaque resource-grant flow.
 - Each covered mutation returns a durable, secret-free receipt containing the operation kind, request fingerprint, idempotency key identity, state, and target/result reference.
 - Before durable admission, the backend constructs the complete generated request and passes it through the canonical IDL-derived decoder. Invalid renderer intents roll back their provisional in-memory identity, create no durable pending record, consume no uncertainty capacity, and are never sent.
-- Before the first send, the backend durably binds a renderer-generated logical operation ID and its renderer-safe typed operation body to the execution domain, request fingerprint, idempotency key, and an opaque result-acknowledgement token. After response loss or process restart, resubmitting that same logical operation reuses the exact binding and lets the host return its durable receipt/reconciliation result; it is never retried under a new key.
+- Before the first send, the backend durably binds a renderer-generated logical operation ID and its renderer-safe typed operation body to the execution domain, request fingerprint, deterministic idempotency key, opaque result-acknowledgement token, and any exact supervisor-only dynamic fields such as a selected root or candidate-bound authorization grant. The private dynamic fields are stored only in owner-private Rust-side records and never appear in pending-operation renderer projection. After response loss or process restart, resubmitting that same logical operation reuses the exact binding without reopening a picker or confirmation dialog; it is never retried under a new key or newly minted grant.
 - An unresolved generated-client execution failure carries the original typed invocation. A fixed generated discovery command returns all pending typed invocations after restart, but never returns idempotency keys, acknowledgement tokens, execution domains, fingerprints, wire requests, or other supervisor-owned fields.
 - A lost acknowledgement response is represented by a distinct generated error that retains the original typed invocation, known result or conclusive rejection, and opaque acknowledgement token. Its recovery API retries only acknowledgement; every repeated acknowledgement failure returns an equivalent typed recovery handle and never instructs the caller to execute the mutation again.
-- The generated renderer client acknowledges a successful result, or a conclusive non-retryable remote rejection that declares no reconciliation requirement, only after receiving and validating it. The backend atomically replaces the pending body with a compact retired binding and retains a bounded recent conflict/idempotency horizon by count and bytes. Retrying a retained operation ID after acknowledgement response loss or Desktop restart therefore reuses the original idempotency key; identities older than the explicit horizon may be pruned and are treated as new operations. Unacknowledged or reconciliation-required outcomes remain bounded, are never pruned by retired-record compaction, and fail closed rather than being silently evicted.
+- The generated renderer client acknowledges a successful result, or a conclusive non-retryable remote rejection that declares no reconciliation requirement, only after receiving and validating it. The backend atomically replaces the pending body with a compact retired binding and retains a bounded recent conflict/idempotency horizon by count and bytes. Retained private dynamic fields remain owner-private for exact retained-ID replay and disappear only when the tombstone is pruned. Identities older than the explicit horizon may be pruned and are treated as new operations. Unacknowledged or reconciliation-required outcomes remain bounded, are never pruned by retired-record compaction, and fail closed rather than being silently evicted.
 - Every pending or retired binding is written to a private same-directory temporary file and flushed before atomic publication without clobbering a new operation identity. POSIX publication is followed by a directory flush; Windows publication uses a write-through rename so the supervisor never sends the mutation before the final binding name is durable. Retired-record deletion is persisted after replacement and repeated acknowledgement tolerates a partially completed prior prune. Startup removes unpublished temporary files, reapplies bounded retired-record compaction, and fails closed on malformed final records.
 - UI cancellation cancels local interest first; it interrupts a run only after an explicit user intent maps to a control method.
 - The generated contract does not expose unbounded `run.await`; run start returns promptly and the UI follows durable `host.event` delivery plus bounded status queries.
@@ -80,7 +81,7 @@ A Desktop conversation is reconstructed from durable projections plus the genera
 5. call `events.subscribe` with the same view and replay boundary and initialize the expected delivery sequence from its required `nextDeliverySequence: "1"` result;
 6. consume `host.event` notifications only after the subscribe response flush barrier and require the first and every later per-subscription `deliverySequence` to equal the expected value;
 7. persist the last applied opaque delivery cursor in Desktop-local state; inactive historical cursor views may be evicted at the fixed local capacity, while active subscriptions and pending acknowledgements are protected, and an evicted view resumes from origin; and
-8. on a missing, repeated, or unexpected delivery sequence, typed overflow/sequence-exhaustion close, cursor/view mismatch, disconnect, child restart, or renderer restart, repeat from that cursor.
+8. on a missing, repeated, or unexpected delivery sequence, typed overflow/sequence-exhaustion close, cursor/view mismatch, disconnect, host restart, or renderer restart, repeat from that cursor.
 
 Every valid generated `host.event` carries an `EventDelivery` that references a view-independent `EventRecord` committed before emission. Event-required state transitions atomically commit only the durable event or an outbox entry, and recovery materializes exactly one semantic replay record before live delivery; view projection then creates the cursor-bearing delivery. One record may have different cursors in different admitted views while retaining one event identity and payload. The UI still distinguishes durable host commitment from local application/renderer acknowledgement. Cursor family/scope/view mismatch fails closed without target-existence disclosure and triggers bounded replay or full projection reload, never cursor coercion.
 
@@ -100,7 +101,7 @@ Desktop supports these user intents through typed RPC operations:
 - resolve approval, deferred, and clarifying-question records;
 - resume a waiting run through the durable continuation path.
 
-The backend routes control only to the child that owns the active run. A durable `Running` status alone does not prove that a newly started child can steer or interrupt a foreign owner.
+The backend routes control only to the domain host generation that owns the active run. A durable `Running` status alone does not prove that a restarted host can steer or interrupt a foreign owner.
 
 ## Required Continuation Preflight
 
@@ -134,7 +135,7 @@ Clarifying questions require a negotiated client capability. If unsupported, RPC
 Desktop-visible errors are structured into at least:
 
 - user-correctable input/configuration errors;
-- authentication required or expired;
+- model/provider configuration unavailable in the RPC execution domain;
 - incompatible protocol/runtime/storage;
 - workspace unavailable or outside authority;
 - run conflict or foreign owner;
@@ -148,19 +149,19 @@ Raw provider responses, SQL text, credentials, authorization headers, unrestrict
 
 ## Restart and Recovery
 
-When a local child exits or an SSH-carried remote process/channel fails unexpectedly, the supervisor:
+When the local host exits or an SSH-carried remote process/channel fails unexpectedly, the supervisor:
 
-1. marks the child unavailable and stops sending requests;
+1. marks the domain host unavailable and stops sending requests;
 2. records the last acknowledged cursors and uncertain mutations, retaining each uncertain mutation's renderer-safe typed invocation for explicit discovery and retry after restart;
-3. waits for a local child to terminate or reaps the failed local OpenSSH handle/pipes without treating that as proof of remote process death;
+3. waits for the local host to terminate or reaps the failed local OpenSSH handle/pipes without treating that as proof of remote process death;
 4. restarts or reconnects only within a bounded backoff/retry budget;
-5. revalidates SSH route, host key, principal, stable execution-domain binding, and runtime probe when applicable, then performs bootstrap; a replacement becomes execution-capable only after acquiring the domain/workspace host lock, otherwise it reports a foreign live owner and uses catalog/control observation;
+5. revalidates SSH route, host key, principal, stable execution-domain binding, and runtime probe when applicable, then performs bootstrap; a replacement becomes execution-capable only after acquiring the domain/database host lock, otherwise it reports a foreign live owner;
 6. queries receipts/status for uncertain mutations;
 7. replays from acknowledged cursors;
 8. restores pending interactions and active-run status;
 9. reports recovered, waiting, failed, or foreign-owned state to the UI.
 
-A child must not be restarted endlessly when initialization reports an incompatible binary or storage schema. Renderer event-tail recovery has one finite exponential-backoff budget shared by admission errors, generation changes, receiver lag, invalid notifications, and recoverable post-admission `subscription.closed` reasons. A successful tail admission alone does not reset that budget; only replay or live-event progress does. Overflow and sequence exhaustion use bounded replay, while terminal, unsubscribed, and authorization-change closure stops the renderer tail. Terminal close and unsubscribe response frames may cross in either direction; a bounded generation-scoped recently closed ledger must treat the first close as authoritative and a retained duplicate close as idempotent without accepting unknown, stale-generation, post-close event, or non-contiguous delivery frames. Recovery also terminates immediately when the supervisor reaches an unconfigured, draining, stopped, incompatible, or failed state.
+A host must not be restarted endlessly when initialization reports an incompatible binary or storage schema. Renderer event-tail recovery has one finite exponential-backoff budget shared by admission errors, generation changes, receiver lag, invalid notifications, and recoverable post-admission `subscription.closed` reasons. A successful tail admission alone does not reset that budget; only replay or live-event progress does. Overflow and sequence exhaustion use bounded replay, while terminal, unsubscribed, and authorization-change closure stops the renderer tail. Terminal close and unsubscribe response frames may cross in either direction; a bounded generation-scoped recently closed ledger must treat the first close as authoritative and a retained duplicate close as idempotent without accepting unknown, stale-generation, post-close event, or non-contiguous delivery frames. Recovery also terminates immediately when the supervisor reaches an unconfigured, draining, stopped, incompatible, or failed state.
 
 ## Graceful Shutdown
 
@@ -168,9 +169,9 @@ Shutdown is a barrier, not a fire-and-forget notification.
 
 - Stop accepting new UI mutations.
 - Unsubscribe renderer-only tails while retaining finalization visibility.
-- Request coordinated RPC shutdown for each child.
+- Request coordinated shutdown for the local host and each connected remote-domain host.
 - Wait for the configured bounded deadline.
-- Persist final cursors and child outcome.
+- Persist final cursors and host outcomes.
 - Escalate to process termination only after the deadline.
 - Surface any uncertain run outcomes on next launch and let startup reconciliation resolve them.
 
@@ -180,11 +181,12 @@ Update activation follows the same drain barrier and is specified in `06-runtime
 
 The current major-1 protocol implements initialize and launch/storage compatibility, capability negotiation, typed clarification records, scoped mutation receipts, host events, cursor pagination, and structured public errors. Before public Desktop release, it must additionally provide or complete:
 
-- reconnect evidence and remote stable execution-domain metadata beyond the implemented local launch/workspace identity;
-- a bounded supervised-stdio bootstrap that validates remote launch configuration before database open, plus a no-database identity/capability probe;
-- stable execution-domain routing identity separated from mutable host-key/runtime evidence, plus a storage-owned stable database/workspace execution-host lock namespace independent of per-client state directories and a typed foreign-owner outcome;
-- OAuth status/login/refresh/logout methods and safe notifications;
-- OAuth mutation receipts and complete uncertain-outcome recovery across Desktop process restart;
+- a domain-level launch/initialize identity that removes the current single-workspace launch assumption;
+- typed workspace register/list/remove operations and `session.create.workspaceId` binding with safe Desktop projections;
+- typed runtime configuration get/validate/update/reload/activate/discard operations and change notifications from `08-configuration-and-reload.md`;
+- reconnect evidence and remote stable execution-domain metadata beyond the current single-workspace launch identity;
+- a bounded SSH endpoint bootstrap that validates remote launch configuration before database open, binds an owner-private Unix socket or authenticated loopback endpoint, and supports a no-database identity/capability probe;
+- stable execution-domain routing identity separated from mutable host-key/runtime evidence, plus a storage-owned stable database-level execution-host lock namespace independent of per-client state directories and a typed foreign-owner outcome;
 - any additional structured update-required errors needed by the runtime updater;
 - a migration/preflight mode usable by the runtime updater without starting ordinary runs.
 
@@ -197,5 +199,5 @@ These structural additions belong first in the host IDL and its generated `starw
 - Retry tests prove receipt-backed idempotent mutation behavior after response loss for every covered effect class.
 - Replay tests cover disconnect before response, notification gaps, duplicate delivery, cursor-family mismatch, and renderer reload.
 - HITL tests cover two windows, stale decisions, reconnect, unresolved records, and explicit resume.
-- Child crash and SSH disconnect tests prove bounded restart/reconnect, receipt/status recovery, and no duplicate run ownership.
+- Host crash and SSH tunnel disconnect tests prove bounded restart/reconnect, endpoint revalidation, workspace-registry recovery, receipt/status recovery, and no duplicate run ownership.
 - Shutdown tests prove no new admission after drain begins and classify forced termination as uncertain until reconciled.

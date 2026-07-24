@@ -148,6 +148,24 @@ Durable records:
 - `CheckpointRef`
 - `StreamCursorRef`
 
+## Workspace Provenance and Live Authority
+
+`SessionRecord` must durably preserve typed workspace provenance without treating it as a live capability. The planned multi-workspace host contract adds a `WorkspaceProvenanceRef` containing a stable execution-domain-local identity and safe display/provenance fields. The owning v2 codec/migration is specified in `../core/07-versioned-protocol-contracts.md`.
+
+A product host separately owns a live workspace-grant registry:
+
+- session provenance is canonical durable evidence shared by CLI/RPC/Desktop;
+- a grant maps the provenance identity to a currently approved canonical root/environment authority;
+- grants are product/host state and are never inferred from historical path text;
+- list/search/filter operate on safe provenance;
+- create/continue/run admission requires a matching live grant;
+- another product explicitly regrants the root or records rebind/materialization drift; and
+- fork copies provenance but still requires authority in the executing host.
+
+`SessionStore` persists provenance and binding changes atomically with session creation/rebind evidence. It does not store mutable filesystem handles or make a host-local opaque token globally authoritative.
+
+Each admitted `RunRecord` also persists a `RuntimeConfigSnapshotRef` identifying the immutable runtime-config/materialization generation used by that admission. Product hosts retain referenced snapshot declarations outside the session database without secrets; recovery never substitutes another generation. The planned session/run v2 migrations and fixtures are owned by `../core/07-versioned-protocol-contracts.md`.
+
 ## SessionStore Contract
 
 Responsibilities:

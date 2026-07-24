@@ -348,9 +348,6 @@
       "LaunchSchemaIdentity": {
         "$ref": "./schemas/launch.yaml#/components/schemas/LaunchSchemaIdentity"
       },
-      "LaunchWorkspace": {
-        "$ref": "./schemas/launch.yaml#/components/schemas/LaunchWorkspace"
-      },
       "MethodNotFoundData": {
         "$ref": "./schemas/errors.yaml#/components/schemas/MethodNotFoundData"
       },
@@ -573,8 +570,8 @@
       "UnsupportedFeatureData": {
         "$ref": "./schemas/errors.yaml#/components/schemas/UnsupportedFeatureData"
       },
-      "WorkspaceCompatibility": {
-        "$ref": "./schemas/initialize.yaml#/components/schemas/WorkspaceCompatibility"
+      "ExecutionDomainCompatibility": {
+        "$ref": "./schemas/initialize.yaml#/components/schemas/ExecutionDomainCompatibility"
       },
       "JsonObject": {
         "$ref": "./schemas/common.yaml#/components/schemas/JsonObject"
@@ -587,6 +584,102 @@
       },
       "ClarificationAnswer": {
         "$ref": "./schemas/interactions.yaml#/components/schemas/ClarificationAnswer"
+      },
+      "ConfigActivationId": {
+        "$ref": "./schemas/common.yaml#/components/schemas/ConfigActivationId"
+      },
+      "ConfigEtag": {
+        "$ref": "./schemas/common.yaml#/components/schemas/ConfigEtag"
+      },
+      "WorkspaceId": {
+        "$ref": "./schemas/common.yaml#/components/schemas/WorkspaceId"
+      },
+      "WorkspaceListParams": {
+        "$ref": "./schemas/workspaces.yaml#/components/schemas/WorkspaceListParams"
+      },
+      "WorkspaceListResult": {
+        "$ref": "./schemas/workspaces.yaml#/components/schemas/WorkspaceListResult"
+      },
+      "WorkspaceRegisterParams": {
+        "$ref": "./schemas/workspaces.yaml#/components/schemas/WorkspaceRegisterParams"
+      },
+      "WorkspaceRegisterResult": {
+        "$ref": "./schemas/workspaces.yaml#/components/schemas/WorkspaceRegisterResult"
+      },
+      "WorkspaceRemoveParams": {
+        "$ref": "./schemas/workspaces.yaml#/components/schemas/WorkspaceRemoveParams"
+      },
+      "WorkspaceRemoveResult": {
+        "$ref": "./schemas/workspaces.yaml#/components/schemas/WorkspaceRemoveResult"
+      },
+      "WorkspaceState": {
+        "$ref": "./schemas/workspaces.yaml#/components/schemas/WorkspaceState"
+      },
+      "WorkspaceSummary": {
+        "$ref": "./schemas/workspaces.yaml#/components/schemas/WorkspaceSummary"
+      },
+      "ConfigActivateParams": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigActivateParams"
+      },
+      "ConfigActivateResult": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigActivateResult"
+      },
+      "ConfigCategory": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigCategory"
+      },
+      "ConfigChangedNotificationParams": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigChangedNotificationParams"
+      },
+      "ConfigDiscardParams": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigDiscardParams"
+      },
+      "ConfigDiscardResult": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigDiscardResult"
+      },
+      "ConfigDocument": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigDocument"
+      },
+      "ConfigGetResult": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigGetResult"
+      },
+      "ConfigIssue": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigIssue"
+      },
+      "ConfigReloadMode": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigReloadMode"
+      },
+      "ConfigReloadParams": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigReloadParams"
+      },
+      "ConfigReloadResult": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigReloadResult"
+      },
+      "ConfigRevision": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigRevision"
+      },
+      "ConfigStatus": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigStatus"
+      },
+      "ConfigUpdateParams": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigUpdateParams"
+      },
+      "ConfigUpdateResult": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigUpdateResult"
+      },
+      "ConfigValidateParams": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigValidateParams"
+      },
+      "ConfigValidateResult": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigValidateResult"
+      },
+      "ConfigValidation": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigValidation"
+      },
+      "ConfigGetParams": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigGetParams"
+      },
+      "ConfigProvider": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigProvider"
       }
     }
   },
@@ -2873,6 +2966,588 @@
         "stdio",
         "http"
       ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `workspace.register`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/ConfigurationFailed"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        }
+      ],
+      "name": "workspace.register",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/workspaces.yaml#/components/schemas/WorkspaceRegisterParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/workspaces.yaml#/components/schemas/WorkspaceRegisterResult"
+        }
+      },
+      "summary": "Execute workspace.register",
+      "x-starweaver-features": [
+        "workspace.registry"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "WorkspaceRegisterParams",
+      "x-starweaver-result-type": "WorkspaceRegisterResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/desktop/04-workspaces-sessions-and-runs.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `workspace.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        }
+      ],
+      "name": "workspace.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/workspaces.yaml#/components/schemas/WorkspaceListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/workspaces.yaml#/components/schemas/WorkspaceListResult"
+        }
+      },
+      "summary": "Execute workspace.list",
+      "x-starweaver-features": [
+        "workspace.registry"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "WorkspaceListParams",
+      "x-starweaver-result-type": "WorkspaceListResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/desktop/04-workspaces-sessions-and-runs.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `workspace.remove`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/ConfigurationFailed"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        }
+      ],
+      "name": "workspace.remove",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/workspaces.yaml#/components/schemas/WorkspaceRemoveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/workspaces.yaml#/components/schemas/WorkspaceRemoveResult"
+        }
+      },
+      "summary": "Execute workspace.remove",
+      "x-starweaver-features": [
+        "workspace.registry"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "WorkspaceRemoveParams",
+      "x-starweaver-result-type": "WorkspaceRemoveResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/desktop/04-workspaces-sessions-and-runs.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `config.get`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        }
+      ],
+      "name": "config.get",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/config.yaml#/components/schemas/ConfigGetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/config.yaml#/components/schemas/ConfigGetResult"
+        }
+      },
+      "summary": "Execute config.get",
+      "x-starweaver-features": [
+        "config.reload.v1"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "ConfigGetParams",
+      "x-starweaver-result-type": "ConfigGetResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/desktop/08-configuration-and-reload.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `config.validate`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/ConfigurationFailed"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        }
+      ],
+      "name": "config.validate",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/config.yaml#/components/schemas/ConfigValidateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/config.yaml#/components/schemas/ConfigValidateResult"
+        }
+      },
+      "summary": "Execute config.validate",
+      "x-starweaver-features": [
+        "config.reload.v1"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "ConfigValidateParams",
+      "x-starweaver-result-type": "ConfigValidateResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/desktop/08-configuration-and-reload.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `config.update`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/ConfigurationFailed"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        }
+      ],
+      "name": "config.update",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/config.yaml#/components/schemas/ConfigUpdateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/config.yaml#/components/schemas/ConfigUpdateResult"
+        }
+      },
+      "summary": "Execute config.update",
+      "x-starweaver-features": [
+        "config.reload.v1"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "ConfigUpdateParams",
+      "x-starweaver-result-type": "ConfigUpdateResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/desktop/08-configuration-and-reload.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `config.reload`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/ConfigurationFailed"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        }
+      ],
+      "name": "config.reload",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/config.yaml#/components/schemas/ConfigReloadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/config.yaml#/components/schemas/ConfigReloadResult"
+        }
+      },
+      "summary": "Execute config.reload",
+      "x-starweaver-features": [
+        "config.reload.v1"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "ConfigReloadParams",
+      "x-starweaver-result-type": "ConfigReloadResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/desktop/08-configuration-and-reload.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `config.activate`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/ConfigurationFailed"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        }
+      ],
+      "name": "config.activate",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/config.yaml#/components/schemas/ConfigActivateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/config.yaml#/components/schemas/ConfigActivateResult"
+        }
+      },
+      "summary": "Execute config.activate",
+      "x-starweaver-features": [
+        "config.reload.v1"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "ConfigActivateParams",
+      "x-starweaver-result-type": "ConfigActivateResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/desktop/08-configuration-and-reload.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `config.discard`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/NotFound"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/ConfigurationFailed"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "./schemas/errors.yaml#/components/errors/InternalError"
+        }
+      ],
+      "name": "config.discard",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "./schemas/config.yaml#/components/schemas/ConfigDiscardParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "./schemas/config.yaml#/components/schemas/ConfigDiscardResult"
+        }
+      },
+      "summary": "Execute config.discard",
+      "x-starweaver-features": [
+        "config.reload.v1"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "ConfigDiscardParams",
+      "x-starweaver-result-type": "ConfigDiscardResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/desktop/08-configuration-and-reload.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
     }
   ],
   "openrpc": "1.4.0",
@@ -2994,6 +3669,7 @@
   },
   "x-starweaver-features": [
     "clarifications",
+    "config.reload.v1",
     "diagnostics.safe",
     "environment.attachments",
     "environment.mounts",
@@ -3006,7 +3682,8 @@
     "session.fork",
     "session.search",
     "sessions",
-    "steering"
+    "steering",
+    "workspace.registry"
   ],
   "x-starweaver-notifications": [
     {
@@ -3040,12 +3717,28 @@
       "transports": [
         "stdio"
       ]
+    },
+    {
+      "features": [
+        "config.reload.v1"
+      ],
+      "name": "config.changed",
+      "params": {
+        "$ref": "./schemas/config.yaml#/components/schemas/ConfigChangedNotificationParams"
+      },
+      "scopes": [
+        "read"
+      ],
+      "spec": "spec/desktop/08-configuration-and-reload.md",
+      "transports": [
+        "stdio"
+      ]
     }
   ],
   "x-starweaver-protocol": {
     "major": 1,
     "name": "starweaver.host",
-    "revision": "2026-07-21",
+    "revision": "2026-07-24",
     "schemaDigest": "generated"
   }
 }

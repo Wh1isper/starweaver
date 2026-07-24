@@ -368,9 +368,9 @@ fn check_generated_host_surface(desktop_root: &Path, client_path: &Path) -> Resu
         .get("operations")
         .and_then(Value::as_object)
         .ok_or("Desktop host surface operations must be an object")?;
-    if operations.len() != 26 {
+    if operations.len() != 35 {
         return Err(format!(
-            "Desktop generated host surface must expose exactly 26 renderer user intents, found {}",
+            "Desktop generated host surface must expose exactly 35 renderer user intents, found {}",
             operations.len()
         ));
     }

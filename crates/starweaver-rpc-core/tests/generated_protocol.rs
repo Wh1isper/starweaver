@@ -58,7 +58,7 @@ fn generated_client_encodes_requests_with_an_inseparable_correlation() {
 #[test]
 fn generated_client_strictly_correlates_typed_results_and_remote_errors() {
     let response = format!(
-        r#"{{"jsonrpc":"2.0","id":"req_init","result":{{"launch":{{"acceptedMaximumVersion":1,"acceptedMinimumVersion":1,"configurationGeneration":"0","effectiveSchema":{{"name":"starweaver.rpc.launch","version":1}},"envelopeDigest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","mode":"standalone"}},"negotiatedFeatures":[],"protocol":{{"major":{PROTOCOL_MAJOR},"name":"{PROTOCOL_NAME}","revision":"{PROTOCOL_REVISION}","schemaDigest":"{SCHEMA_DIGEST}"}},"runtimeBuild":{{"buildRevision":"source","target":"test-target","version":"0.9.0"}},"runtimeStatus":"ready","serverInfo":{{"name":"starweaver-rpc","version":"0.9.0"}},"startupReconciliation":{{"changedRunState":false,"repairedRuns":"0"}},"storage":{{"currentGeneration":"1","maintenanceBarrierGeneration":"0","maximumReadableGeneration":"1","maximumWritableGeneration":"1","minimumReadableGeneration":"1","minimumWritableGeneration":"1"}},"supportedFeatures":[],"workspace":{{"executionDomainId":"standalone-local","workspaceIdentity":"workspace-test"}}}}}}"#,
+        r#"{{"jsonrpc":"2.0","id":"req_init","result":{{"launch":{{"acceptedMaximumVersion":1,"acceptedMinimumVersion":1,"configurationGeneration":"0","effectiveSchema":{{"name":"starweaver.rpc.launch","version":1}},"envelopeDigest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","mode":"standalone"}},"negotiatedFeatures":[],"protocol":{{"major":{PROTOCOL_MAJOR},"name":"{PROTOCOL_NAME}","revision":"{PROTOCOL_REVISION}","schemaDigest":"{SCHEMA_DIGEST}"}},"runtimeBuild":{{"buildRevision":"source","target":"test-target","version":"0.9.0"}},"runtimeStatus":"ready","serverInfo":{{"name":"starweaver-rpc","version":"0.9.0"}},"startupReconciliation":{{"changedRunState":false,"repairedRuns":"0"}},"storage":{{"currentGeneration":"1","maintenanceBarrierGeneration":"0","maximumReadableGeneration":"1","maximumWritableGeneration":"1","minimumReadableGeneration":"1","minimumWritableGeneration":"1"}},"supportedFeatures":[],"executionDomain":{{"executionDomainId":"standalone-local"}}}}}}"#,
     );
     let Ok(frame) = decode_server_frame(response.as_bytes(), |id| {
         (id.as_str() == "req_init").then_some(Method::Initialize)
@@ -203,7 +203,7 @@ fn decoder_enforces_inline_ranges_lengths_and_unique_arrays() {
 
 #[test]
 fn deferred_tool_schema_is_complete_json_but_remains_object_only() {
-    let valid = br#"{"jsonrpc":"2.0","id":"req_schema","method":"session.create","params":{"deferredTools":[{"description":"Render","inputSchema":{"type":"object","properties":{"title":{"type":"string"}}},"inputSchemaDigest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","instructions":[],"name":"render"}],"idempotencyKey":"create-schema"}}"#;
+    let valid = br#"{"jsonrpc":"2.0","id":"req_schema","method":"session.create","params":{"deferredTools":[{"description":"Render","inputSchema":{"type":"object","properties":{"title":{"type":"string"}}},"inputSchemaDigest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","instructions":[],"name":"render"}],"idempotencyKey":"create-schema","workspaceId":"workspace-schema"}}"#;
     let Ok(request) = decode_request_frame(valid) else {
         panic!("complete object input schema must decode");
     };
@@ -212,7 +212,7 @@ fn deferred_tool_schema_is_complete_json_but_remains_object_only() {
     };
     assert!(params.deferred_tools[0].input_schema.is_object());
 
-    let invalid = br#"{"jsonrpc":"2.0","id":"req_schema","method":"session.create","params":{"deferredTools":[{"description":"Render","inputSchema":[],"inputSchemaDigest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","instructions":[],"name":"render"}],"idempotencyKey":"create-schema"}}"#;
+    let invalid = br#"{"jsonrpc":"2.0","id":"req_schema","method":"session.create","params":{"deferredTools":[{"description":"Render","inputSchema":[],"inputSchemaDigest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","instructions":[],"name":"render"}],"idempotencyKey":"create-schema","workspaceId":"workspace-schema"}}"#;
     assert!(decode_request_frame(invalid).is_err());
 }
 

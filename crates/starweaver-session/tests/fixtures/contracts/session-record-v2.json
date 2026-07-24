@@ -1,0 +1,19 @@
+{
+  "schema": "starweaver.session.session_record",
+  "version": 2,
+  "payload": {
+    "session_id": "session-fixture",
+    "namespace_id": "local",
+    "revision": 1,
+    "deletion_fence": {
+      "state": "stable"
+    },
+    "status": "active",
+    "state": {
+      "agent_id": "main",
+      "started_at": "2026-07-11T00:00:00Z"
+    },
+    "created_at": "2026-07-11T00:00:00Z",
+    "updated_at": "2026-07-11T00:00:00Z"
+  }
+}

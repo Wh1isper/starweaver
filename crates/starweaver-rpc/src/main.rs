@@ -3,7 +3,7 @@
 use std::{path::PathBuf, process::ExitCode};
 
 use clap::Parser;
-use starweaver_rpc::{RpcConfig, RpcTransport, run};
+use starweaver_rpc::{RpcConfig, RpcTransport, run, run_supervised};
 
 fn main() -> ExitCode {
     let cli = StandaloneRpcCli::parse();
@@ -13,10 +13,11 @@ fn main() -> ExitCode {
                 "supervised launch envelopes require the stdio transport".to_string(),
             ))
         }
-        Some(path) => RpcConfig::from_launch_envelope(path),
-        None => RpcConfig::resolve(cli.store),
-    }
-    .and_then(|config| run(&config, cli.transport, &cli.host, cli.port));
+        Some(path) => RpcConfig::from_launch_envelope(path)
+            .and_then(|config| run_supervised(&config, cli.transport, &cli.host, cli.port)),
+        None => RpcConfig::resolve(cli.store)
+            .and_then(|config| run(&config, cli.transport, &cli.host, cli.port)),
+    };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

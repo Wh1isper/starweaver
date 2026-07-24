@@ -10,14 +10,14 @@ This design extends the existing GitHub Release path. For the local managed runt
 
 Desktop tracks these identities separately:
 
-| Identity                   | Meaning                                                                     |
-| -------------------------- | --------------------------------------------------------------------------- |
-| Desktop shell version      | Native application/backend UI release                                       |
-| Runtime version            | Exact `starweaver-rpc` build supervised by Desktop                          |
-| Host protocol identity     | Protocol name, major, non-ordered revision, and feature set used over stdio |
-| Display contract identity  | Display/replay payload compatibility                                        |
-| Storage schema generation  | SQLite durable schema current/read/write range                              |
-| Update manifest generation | Versioned updater metadata schema                                           |
+| Identity                   | Meaning                                                                                                                  |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Desktop shell version      | Native application/backend UI release                                                                                    |
+| Runtime version            | Exact `starweaver-rpc` build supervised by Desktop                                                                       |
+| Host protocol identity     | Protocol name, major, non-ordered revision, and features over the selected local stdio or SSH private-endpoint transport |
+| Display contract identity  | Display/replay payload compatibility                                                                                     |
+| Storage schema generation  | SQLite durable schema current/read/write range                                                                           |
+| Update manifest generation | Versioned updater metadata schema                                                                                        |
 
 A shared workspace release version may still build CLI, RPC, SDK, and Desktop artifacts together. Runtime compatibility is nevertheless checked explicitly so the shell can stage a newer or pinned RPC build safely.
 
@@ -110,9 +110,9 @@ Runtime binaries live in versioned Desktop application-support directories, not 
   update-transaction.json
 ```
 
-`current.json` is a small atomic pointer/record, not a mutable executable. Existing children continue using the binary path from their launch record even after a new version is staged. Pointer, manifest, and transaction writes use a platform-specific durable atomic replace: write a same-directory temporary file, flush file contents, atomically replace the destination, and sync the parent directory where supported. Recovery never trusts a partially written JSON record.
+`current.json` is a small atomic pointer/record, not a mutable executable. Existing domain hosts continue using the binary path from their launch record even after a new version is staged. Pointer, manifest, and transaction writes use a platform-specific durable atomic replace: write a same-directory temporary file, flush file contents, atomically replace the destination, and sync the parent directory where supported. Recovery never trusts a partially written JSON record.
 
-Versioned directories avoid Windows replacement failures and make rollback deterministic. Garbage collection retains the current version, previous rollback candidate, any version used by a live child, and a bounded number of recent verified versions.
+Versioned directories avoid Windows replacement failures and make rollback deterministic. Garbage collection retains the current version, previous rollback candidate, any version used by a live domain host, and a bounded number of recent verified versions.
 
 ## Update State Machine
 
@@ -126,10 +126,10 @@ stateDiagram-v2
     Verifying --> Staged: digest, manifest, signature, smoke pass
     Verifying --> Failed: verification error
     Staged --> WaitingForDrain: activation requested
-    WaitingForDrain --> PreparingStorage: all affected children and foreign admissions quiesced
+    WaitingForDrain --> PreparingStorage: the affected domain host and foreign admissions quiesced
     PreparingStorage --> Activating: backup/preflight/migration pass
     PreparingStorage --> Failed: preflight or migration failure
-    Activating --> Active: pointer committed and child initialized
+    Activating --> Active: pointer committed and domain host initialized
     Activating --> RollingBack: startup/health failure
     RollingBack --> Active: prior compatible version restored
     RollingBack --> Failed: safe rollback unavailable
@@ -178,17 +178,23 @@ The supervisor selects a runtime only when all are true:
 
 Initialize rechecks the binary’s self-reported identities. Detached update manifest, embedded identity manifest, and binary disagreement quarantines the bundle.
 
+## Pending Runtime Config and Binary Activation
+
+Runtime config staging and binary updates are separate transactions. A staged restart-required runtime config is not activated by an ordinary crash or binary update. `config.activate` creates an explicit activation ID; the supervisor includes it with the target runtime-config revision in a higher-generation launch envelope. The new host promotes that revision only after validation and health admission. `config.discard` removes a staged candidate, while failed startup uses the previous active revision and a fenced rollback record.
+
+When a binary update and config activation are intentionally combined, one supervisor transaction names both exact targets and previous versions. Failure rolls both selectors back consistently; it never leaves the new binary with an unintended desired config or the old binary with an incompatible active config. Details are in `08-configuration-and-reload.md`.
+
 ## Activation and Active Runs
 
-Downloading and verification may occur while runs are active. Activation may not replace or terminate an active child implicitly.
+Downloading and verification may occur while runs are active. Activation may not replace or terminate an active domain host implicitly.
 
 - New candidate state becomes `Staged`.
-- If no storage migration is possible and protocol compatibility permits mixed children, new idle workspace children may use the candidate while existing children drain.
-- If a candidate may migrate shared storage, its no-run maintenance process may access the real database only to publish and observe the fenced `draining` barrier. All Desktop-owned children must drain and all eligible owners/effect claims must be gone before the process promotes the barrier to `exclusive`, creates the migration backup, migrates, or performs any other exclusive-phase write.
+- Because Desktop runs one local domain host, a binary candidate is never activated for only some workspaces. Activation drains and replaces the whole local host generation.
+- If a candidate may migrate shared storage, its no-run maintenance process may access the real database only to publish and observe the fenced `draining` barrier. The Desktop-owned domain host must drain and all eligible owners/effect claims must be gone before the process promotes the barrier to `exclusive`, creates the migration backup, migrates, or performs any other exclusive-phase write.
 - An explicit “restart now” action explains which active runs would be interrupted and uses coordinated shutdown; otherwise activation waits.
 - Closing a window is not consent to restart a runtime.
 
-Mixed runtime versions against one database are allowed only when the detached update manifests and N/N-1 tests declare the schema and durable writes mutually compatible.
+Desktop does not run mixed RPC binary versions inside one execution domain. Independent CLI or external RPC processes may temporarily differ only when detached manifests and N/N-1 tests declare their protocol, schema, and durable writes mutually compatible. Runtime configuration hot reload is a separate snapshot operation defined in `08-configuration-and-reload.md` and does not activate a new binary.
 
 ## Shared Storage Migration Transaction
 
@@ -204,7 +210,7 @@ The barrier has two fenced phases:
 Every product path that can apply a pending schema migration, including ordinary CLI/RPC startup, must use these phases; migration is never a hidden side effect under an ordinary writer path. The barrier is derived from the canonical database identity and lives outside Desktop-private state so independent products can honor it without depending on Desktop. Expiry/recovery is fenced so a stale maintenance process cannot resume after a replacement owner.
 
 01. start the candidate maintenance process and atomically publish the `draining` intent/cutoff;
-02. stop new Desktop run admission and ask Desktop-owned children to drain;
+02. stop new Desktop run admission and ask the Desktop-owned domain host to drain;
 03. allow pre-cutoff owners to persist heartbeat/checkpoint/terminal/release evidence;
 04. inspect run admissions, background-subagent/delivery claims, and other durable effect leases, then wait while a live foreign CLI/RPC owner is active;
 05. reject or require shutdown of an older local product version that does not support the maintenance barrier;
@@ -215,11 +221,11 @@ Every product path that can apply a pending schema migration, including ordinary
 10. verify migration status, integrity, and candidate self-reported compatibility;
 11. atomically commit the current runtime pointer while the maintenance process still owns the exclusive barrier;
 12. release the maintenance barrier and stop the maintenance process;
-13. start one ordinary candidate catalog/workspace child and complete initialize/health checks;
-14. reopen remaining workspace children and resume normal admission;
+13. start the ordinary candidate domain host, complete initialize/health checks, and reconcile its workspace registry and desired/active configuration revisions;
+14. resume normal admission for all registered workspaces;
 15. retain the backup until the rollback window expires, then delete it through an explicit retention policy.
 
-Opening an ordinary host and hoping startup migration succeeds is not a sufficient updater API. RPC/storage must provide a bounded maintenance process with structured check/apply outcomes, no ordinary run admission, and a barrier lifetime that spans pointer commit. An ordinary child starts only after that exclusive barrier is released.
+Opening an ordinary host and hoping startup migration succeeds is not a sufficient updater API. RPC/storage must provide a bounded maintenance process with structured check/apply outcomes, no ordinary run admission, and a barrier lifetime that spans pointer commit. The ordinary domain host starts only after that exclusive barrier is released.
 
 Desktop cannot force a CLI process to stop. If foreign admission, a non-participating older process, or a database/maintenance lock prevents safe migration, activation waits and presents actionable status. Checking admission leases without first publishing the fenced drain cutoff is insufficient because a CLI could otherwise admit a new run between the check and exclusive migration. Acquiring exclusivity before existing owners finalize is also prohibited because it would block their heartbeat and terminal evidence.
 
@@ -229,7 +235,7 @@ Rollback depends on storage compatibility.
 
 ### No schema change
 
-The supervisor drains candidate children, points `current.json` to the previous verified runtime, initializes it, and resumes. No database restore is needed.
+The supervisor drains the candidate domain host, points `current.json` to the previous verified runtime, initializes the previous host generation, reconciles config/workspace state, and resumes. No database restore is needed.
 
 ### Backward-compatible schema change
 
@@ -275,9 +281,9 @@ The release process may derive CLI, local Desktop, and remote-managed runtime bu
 
 A managed SSH target has its own runtime channel/pin, versioned user-owned installation, update lock, current/previous pointers, and remote transaction state. It does not reuse the local Desktop runtime pointer.
 
-Desktop probes the remote target without opening its real database, resolves one exact signed candidate for that target, and performs install/update on a separate SSH provisioning channel. The remote component manager emits bounded typed output. Existing execution channels continue using their exact build until drained; installer output never shares the RPC stdout stream.
+Desktop probes the remote target without opening its real database, resolves one exact signed candidate for that target, and performs install/update on a separate SSH provisioning channel. The remote component manager emits bounded typed output. An existing remote domain host continues using its exact build until drained; installer output never shares the RPC transport.
 
-Remote candidates that do not migrate storage may activate for future children after verification. Candidates that can migrate storage require the same drain-to-exclusive maintenance barrier against the remote canonical database, including foreign remote CLI/RPC owner detection, release of every workspace execution-host lock, backup, integrity validation, and rollback classification. A partitioned old host holding its OS lock blocks replacement and exclusive migration even if the local OpenSSH process is gone. Database rename, restore, or atomic replacement updates the stable database UUID-to-file binding in the platform-canonical coordination registry while the maintenance barrier is exclusive; it never changes the workspace lock key. Network loss is a transaction failure/recovery event, never evidence of successful activation.
+A remote binary candidate activates only by draining and replacing that target's one domain host. Candidates that can migrate storage require the same drain-to-exclusive maintenance barrier against the remote canonical database, including foreign remote CLI/RPC owner detection, release of the database-level execution-host lock, backup, integrity validation, and rollback classification. A partitioned old host holding its OS lock blocks replacement and exclusive migration even if the local OpenSSH process is gone. Database rename, restore, or atomic replacement updates the stable database UUID-to-file binding in the platform-canonical coordination registry while the maintenance barrier is exclusive; it never changes the database host-lock key. Network loss is a transaction failure/recovery event, never evidence of successful activation.
 
 The initial automatic bootstrap uses a locally verified signed bootstrap asset sent over SSH, not an unpinned network shell pipeline. `scripts/install.sh` remains a manual/recovery route only after it supports a hardened exact-version `rpc` component.
 
@@ -303,7 +309,7 @@ The update feed advertises only targets that the release workflow actually build
 ## Acceptance Gates
 
 - Check, download, timeout, partial download, digest mismatch, missing digest, malformed archive, wrong target, and wrong manifest all fail safely.
-- Staging never modifies the current runtime or live child executable.
+- Staging never modifies the current runtime or live domain-host executable.
 - Active runs continue during download and are not interrupted by automatic activation.
 - Crash injection at every update state resumes to one valid current runtime.
 - Concurrent updater attempts serialize through one owner-only transaction lock and cannot corrupt staging or pointers.

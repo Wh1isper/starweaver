@@ -176,22 +176,15 @@
             "x-starweaver-nullable": true
           },
           "sessionId": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/SessionId"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "x-starweaver-nullable": true
+            "$ref": "#/components/schemas/SessionId"
           }
         },
         "required": [
           "input",
           "idempotencyKey",
           "continuationMode",
-          "environmentAttachments"
+          "environmentAttachments",
+          "sessionId"
         ],
         "type": "object"
       },

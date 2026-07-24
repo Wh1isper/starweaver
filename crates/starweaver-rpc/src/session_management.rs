@@ -3,8 +3,6 @@
 //! This module calls typed storage/coordinator operations directly. It never serializes a
 //! JSON-RPC request or calls `RpcService::handle_text`.
 
-use std::path::{Path, PathBuf};
-
 use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
@@ -19,12 +17,15 @@ use starweaver_session::{
     AgentSessionQueryErrorCode, AgentSessionScope, AgentSessionView, CreateManagedSession,
     DeleteManagedSession, InterruptManagedRun, ManagedRunTarget, ManagedSessionTarget,
     RunControlReceipt, RunRecord, RunStartReceipt, SessionMutationReceipt, SessionRecord,
-    SessionStore, StartManagedRun, SteerManagedRun, UpdateManagedSession,
+    SessionStore, StartManagedRun, SteerManagedRun, UpdateManagedSession, WorkspaceProvenanceRef,
 };
 use starweaver_storage::SqliteStorage;
 use starweaver_stream::{DisplayVisibility, ReplayCursor, ReplayScope};
 
-use crate::{RpcAgentCatalog, RpcHostError, RpcRunRequest, RpcRuntimeCoordinator};
+use crate::{
+    RpcAgentCatalog, RpcHostError, RpcRunRequest, RpcRuntimeCoordinator,
+    workspace_registry::WorkspaceGrant,
+};
 
 /// In-process adapter over RPC-owned storage and runtime coordination.
 #[derive(Clone)]
@@ -32,7 +33,7 @@ pub struct RpcAgentSessionAdapter {
     storage: SqliteStorage,
     coordinator: RpcRuntimeCoordinator,
     catalog: RpcAgentCatalog,
-    workspace_root: PathBuf,
+    workspace: WorkspaceGrant,
 }
 
 impl RpcAgentSessionAdapter {
@@ -40,13 +41,13 @@ impl RpcAgentSessionAdapter {
         storage: SqliteStorage,
         coordinator: RpcRuntimeCoordinator,
         catalog: RpcAgentCatalog,
-        workspace_root: PathBuf,
+        workspace: WorkspaceGrant,
     ) -> Self {
         Self {
             storage,
             coordinator,
             catalog,
-            workspace_root,
+            workspace,
         }
     }
 }
@@ -330,11 +331,15 @@ impl AgentSessionControl for RpcAgentSessionAdapter {
         if let Some(profile) = command.profile.as_deref() {
             self.catalog.profile(profile).map_err(map_profile_error)?;
         }
-        let workspace = command
+        if command
             .workspace
             .as_deref()
-            .map(|workspace| validate_workspace(&self.workspace_root, workspace))
-            .transpose()?;
+            .is_some_and(|workspace| workspace != self.workspace.workspace_id)
+        {
+            return Err(invalid_control(
+                "managed sessions may only inherit the current registered workspace",
+            ));
+        }
         let fingerprint = command_fingerprint("create_session", &command)
             .map_err(|_| invalid_control("managed session command cannot be fingerprinted"))?;
         let idempotency_key = command.idempotency_key.clone();
@@ -344,7 +349,11 @@ impl AgentSessionControl for RpcAgentSessionAdapter {
         pending.owner_id.clone_from(&scope.owner_id);
         pending.title = command.title.map(|title| truncate(&title, 256));
         pending.profile = command.profile;
-        pending.workspace = workspace;
+        pending.workspace = Some(WorkspaceProvenanceRef::new(
+            self.workspace.workspace_id.clone(),
+            self.workspace.display_label.clone(),
+            self.workspace.provenance_digest.clone(),
+        ));
         let session = self
             .storage
             .session_store()
@@ -622,8 +631,12 @@ fn session_view(
         profile: session.profile.as_deref().map(|text| truncate(text, 128)),
         workspace: session
             .workspace
-            .as_deref()
-            .and_then(|path| std::path::Path::new(path).file_name()?.to_str())
+            .as_ref()
+            .and_then(|workspace| {
+                std::path::Path::new(workspace.display_value())
+                    .file_name()?
+                    .to_str()
+            })
             .map(|text| truncate(text, 128)),
         revision: session.revision,
         head_run_id: session.head_run_id.clone(),
@@ -803,27 +816,6 @@ fn validate_metadata(
     }
 }
 
-fn validate_workspace(root: &Path, workspace: &str) -> Result<String, AgentSessionControlError> {
-    let root = root
-        .canonicalize()
-        .map_err(|_| invalid_control("configured RPC workspace root is unavailable"))?;
-    let requested = Path::new(workspace);
-    let requested = if requested.is_absolute() {
-        requested.to_path_buf()
-    } else {
-        root.join(requested)
-    };
-    let requested = requested
-        .canonicalize()
-        .map_err(|_| invalid_control("requested workspace does not exist"))?;
-    if !requested.starts_with(&root) {
-        return Err(invalid_control(
-            "requested workspace is outside the configured RPC workspace root",
-        ));
-    }
-    Ok(requested.to_string_lossy().into_owned())
-}
-
 pub fn command_fingerprint(
     operation: &str,
     command: &impl Serialize,
@@ -953,10 +945,16 @@ fn truncate(text: &str, limit: usize) -> String {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        path::Path,
+    };
 
     use super::*;
-    use crate::{RpcConfig, environment_manager::EnvironmentAttachmentManager};
+    use crate::{
+        RpcConfig, environment_manager::EnvironmentAttachmentManager,
+        workspace_registry::WorkspaceRegistry,
+    };
 
     fn scope(owner: &str) -> AgentSessionScope {
         AgentSessionScope {
@@ -983,7 +981,7 @@ mod tests {
 
     fn adapter(root: &Path) -> RpcAgentSessionAdapter {
         let config = RpcConfig::for_tests(root);
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
         let coordinator = RpcRuntimeCoordinator::new(
@@ -992,7 +990,21 @@ mod tests {
             storage.clone(),
             EnvironmentAttachmentManager::new(),
         );
-        RpcAgentSessionAdapter::new(storage, coordinator, catalog, config.workspace_root)
+        let registry = WorkspaceRegistry::load_or_create(
+            &config.state_dir,
+            &config.launch.execution_domain_id,
+        )
+        .unwrap();
+        let workspace = registry
+            .register(
+                config.workspace_root_for_tests(),
+                Some("Test workspace".to_string()),
+                "test-bootstrap-workspace",
+                &format!("sha256:{:064x}", 0_u8),
+            )
+            .unwrap()
+            .grant;
+        RpcAgentSessionAdapter::new(storage, coordinator, catalog, workspace)
     }
 
     #[tokio::test]

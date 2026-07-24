@@ -12,7 +12,7 @@ The durable service runtime spec records product-neutral contracts for persistin
 - Serve replay transports with replay-after-cursor and live tail.
 - Persist trace correlation ids for external observability systems.
 - Handle interruption, cancellation, approval, deferred tool calls, and idempotent control receipts.
-- Enforce composite namespace/session/run identity, host-derived resource authority, and fenced active-run admission for service control.
+- Enforce composite namespace/session/run identity, durable workspace provenance separated from host-local live grants, host-derived resource authority, and fenced active-run admission for service control.
 - Restore typed dependencies and environment providers through application configuration.
 - Resume from checkpoints when supported by the runtime state.
 - Provide concrete session store, stream archive, event-log, and transport adapters.
@@ -137,10 +137,17 @@ classDiagram
         AgentId agent_id
         ResumableState context_state
         EnvironmentState environment_state
+        WorkspaceProvenanceRef workspace
         RunId? active_run_id
         RunId? head_success_run_id
         TraceContext trace_context
         SessionStatus status
+    }
+
+    class WorkspaceProvenanceRef {
+        WorkspaceIdentity id
+        String? display_label
+        String provenance_digest
     }
 
     class ExecutionRecord {
@@ -151,8 +158,15 @@ classDiagram
         StreamCursorRef? raw_cursor
         StreamCursorRef? display_cursor
         Usage usage
+        RuntimeConfigSnapshotRef config_snapshot
         TraceContext trace_context
         ExecutionStatus status
+    }
+
+    class RuntimeConfigSnapshotRef {
+        DecimalU64 generation
+        String etag
+        String materialization_digest
     }
 
     class ReplayEvent {
@@ -162,7 +176,9 @@ classDiagram
         bool terminal
     }
 
+    DurableSession --> WorkspaceProvenanceRef
     DurableSession --> ExecutionRecord
+    ExecutionRecord --> RuntimeConfigSnapshotRef
     ExecutionRecord --> ReplayEvent
 ```
 
@@ -171,7 +187,9 @@ classDiagram
 A product host coordinator owns per-run durable execution:
 
 - load session and run state
-- resolve profile, model, tool bundles, host adapters, MCP servers, and workspace binding
+- load durable workspace provenance but treat it as non-authoritative
+- require an explicit current host grant for the provenance identity, or perform typed regrant/rebind preflight
+- resolve profile, model, tool bundles, host adapters, MCP servers, and the granted workspace binding
 - assemble SDK runtime through `AgentSpec`, `AgentApp`, and `AgentSession`
 - attach environment and process providers
 - attach `SessionStoreExecutor` for checkpoint persistence

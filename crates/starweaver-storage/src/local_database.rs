@@ -5,7 +5,9 @@ use std::{env, ffi::OsString, fs, io, path::Path, path::PathBuf};
 use chrono::Utc;
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde_json::Value;
-use starweaver_session::{SessionRecord, SessionStoreError, SessionStoreResult};
+use starweaver_session::{
+    SessionRecord, SessionStoreError, SessionStoreResult, WorkspaceProvenanceRef,
+};
 
 use crate::{
     SqliteStorage, migrate_sqlite_database,
@@ -273,7 +275,7 @@ fn import_attached_database(
 
     for session in &mut sessions {
         if session.workspace.is_none() {
-            session.workspace = Some(workspace.to_string());
+            session.workspace = Some(WorkspaceProvenanceRef::from_legacy_display(workspace));
         }
         session.metadata.insert(
             SESSION_SOURCE_PRODUCT_METADATA_KEY.to_string(),
@@ -335,7 +337,7 @@ fn import_attached_database(
     }
     for session in &mut tracked_sessions {
         if session.workspace.is_none() {
-            session.workspace = Some(workspace.to_string());
+            session.workspace = Some(WorkspaceProvenanceRef::from_legacy_display(workspace));
         }
         session.metadata.insert(
             SESSION_SOURCE_PRODUCT_METADATA_KEY.to_string(),
@@ -669,8 +671,17 @@ mod tests {
             .load_session(&session.session_id)
             .expect("imported session");
         assert_eq!(
-            imported.workspace.as_deref(),
+            imported
+                .workspace
+                .as_ref()
+                .map(WorkspaceProvenanceRef::display_value),
             Some(first.workspace.as_str())
+        );
+        assert!(
+            imported
+                .workspace
+                .as_ref()
+                .is_some_and(WorkspaceProvenanceRef::is_legacy_unbound)
         );
         assert_eq!(
             imported.metadata.get(SESSION_SOURCE_PRODUCT_METADATA_KEY),

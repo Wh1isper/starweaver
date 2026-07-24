@@ -33,6 +33,12 @@ const REQUIRED_DESKTOP_METHODS: &[&str] = &[
     "approval.show",
     "catalog.list",
     "clarification.resolve",
+    "config.activate",
+    "config.discard",
+    "config.get",
+    "config.reload",
+    "config.update",
+    "config.validate",
     "deferred.complete",
     "deferred.fail",
     "deferred.list",
@@ -54,6 +60,9 @@ const REQUIRED_DESKTOP_METHODS: &[&str] = &[
     "session.get",
     "session.list",
     "session.search",
+    "workspace.list",
+    "workspace.register",
+    "workspace.remove",
 ];
 
 const DESKTOP_EVENT_KINDS: &[&str] = &[
@@ -1577,10 +1586,10 @@ fn render_rust(ir: &ProtocolIr, manifest: &SurfaceManifest) -> Result<String, St
         }
     }
     let mut out = generated_rust_header(ir);
-    out.push_str("use serde::{Deserialize, Serialize};\nuse serde_json::Value;\nuse starweaver_rpc_core::generated as host;\n\n");
+    out.push_str("use std::collections::BTreeMap;\n\nuse serde::{Deserialize, Serialize};\nuse serde_json::Value;\nuse starweaver_rpc_core::generated as host;\n\n");
     out.push_str("#[derive(Clone, Debug, Deserialize)]\n#[serde(deny_unknown_fields, rename_all = \"camelCase\")]\npub struct DesktopHostEventScope { pub session_id: SessionId, pub run_id: RunId }\n\n");
     out.push_str("#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]\n#[serde(transparent)]\npub struct DesktopHostEventAcknowledgementToken(pub String);\n\n#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]\n#[serde(transparent)]\npub struct DesktopHostOperationAcknowledgementToken(pub String);\n\n#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]\n#[serde(transparent)]\npub struct DesktopOperationId(pub String);\n\n#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]\n#[serde(transparent)]\npub struct DesktopPageToken(pub String);\n\n#[derive(Clone, Debug, Serialize)]\n#[serde(rename_all = \"camelCase\")]\npub struct DesktopPage { pub has_more: bool, #[serde(skip_serializing_if = \"Option::is_none\")] pub next_page_token: Option<DesktopPageToken> }\n\n");
-    out.push_str("/// Backend-owned value for one supervisor-only wire field. Renderer input can never construct this type.\n#[derive(Clone, Debug, Serialize)]\n#[serde(transparent)]\npub struct SupervisorFieldValue(Value);\nimpl SupervisorFieldValue {\n    /// Converts one trusted backend-owned value into its wire representation.\n    ///\n    /// # Errors\n    ///\n    /// Returns an error when the value cannot be represented as JSON.\n    pub fn from_serializable<T: Serialize>(value: T) -> Result<Self, serde_json::Error> { serde_json::to_value(value).map(Self) }\n}\n\n");
+    out.push_str("/// Backend-owned value for one supervisor-only wire field. Renderer input can never construct this type.\n#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]\n#[serde(transparent)]\npub struct SupervisorFieldValue(Value);\nimpl SupervisorFieldValue {\n    /// Converts one trusted backend-owned value into its wire representation.\n    ///\n    /// # Errors\n    ///\n    /// Returns an error when the value cannot be represented as JSON.\n    pub fn from_serializable<T: Serialize>(value: T) -> Result<Self, serde_json::Error> { serde_json::to_value(value).map(Self) }\n}\n\n/// Privileged per-operation values that cannot be derived from renderer intent or fixed policy.\n#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]\n#[serde(transparent)]\npub struct SupervisorDynamicFields(BTreeMap<String, SupervisorFieldValue>);\nimpl SupervisorDynamicFields {\n    /// Inserts one backend-owned value.\n    ///\n    /// # Errors\n    ///\n    /// Returns an error when the value cannot be represented as JSON.\n    pub fn insert<T: Serialize>(&mut self, field: &str, value: T) -> Result<(), serde_json::Error> { self.0.insert(field.to_string(), SupervisorFieldValue::from_serializable(value)?); Ok(()) }\n    fn required(&self, field: &str) -> Result<SupervisorFieldValue, SupervisorFieldsError> { self.0.get(field).cloned().ok_or(SupervisorFieldsError) }\n}\n\n");
     for name in &reachable {
         out.push_str(&render_rust_named_schema(
             ir,
@@ -1689,7 +1698,7 @@ fn render_rust(ir: &ProtocolIr, manifest: &SurfaceManifest) -> Result<String, St
             pascal(name)
         ));
     }
-    out.push_str("}\n\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub struct SupervisorFieldsError;\n\n/// Constructs all non-renderer host fields from fixed Desktop supervisor policy.\n///\n/// # Errors\n///\n/// Returns an error only when a fixed policy value cannot be represented as JSON.\n#[allow(clippy::too_many_lines)]\npub fn build_supervisor_fields(operation: &DesktopHostOperation, idempotency_key: &str, wire_cursor: Option<&str>) -> Result<SupervisorHostFields, SupervisorFieldsError> { match operation {\n");
+    out.push_str("}\n\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub struct SupervisorFieldsError;\n\n/// Constructs all non-renderer host fields from fixed policy and privileged dynamic evidence.\n///\n/// # Errors\n///\n/// Returns an error when a policy value cannot be represented or required privileged evidence is absent.\n#[allow(clippy::too_many_lines)]\npub fn build_supervisor_fields(operation: &DesktopHostOperation, idempotency_key: &str, wire_cursor: Option<&str>, dynamic_fields: &SupervisorDynamicFields) -> Result<SupervisorHostFields, SupervisorFieldsError> { match operation {\n");
     for (name, surface) in &manifest.operations {
         let base = pascal(name);
         let mut supervisor = surface.input.supervisor_constructed.clone();
@@ -1697,22 +1706,26 @@ fn render_rust(ir: &ProtocolIr, manifest: &SurfaceManifest) -> Result<String, St
         supervisor.sort();
         out.push_str(&format!("    DesktopHostOperation::{base}(_) => Ok(SupervisorHostFields::{base}({base}SupervisorFields {{\n"));
         for field in &supervisor {
-            let value = match field.as_str() {
-                "deferredTools" | "environmentAttachments" => "Vec::<String>::new()",
-                "idempotencyKey" => "idempotency_key",
-                "cursor" => "wire_cursor",
-                "limit" | "runLimit" => "100_u32",
-                "scope" => "Option::<host::AttachmentScope>::None",
-                other => {
-                    return Err(format!(
-                        "Desktop supervisor policy has no fixed constructor for {name}.{other}"
-                    ));
-                }
+            let fixed = match field.as_str() {
+                "deferredTools" | "environmentAttachments" => Some("Vec::<String>::new()"),
+                "idempotencyKey" => Some("idempotency_key"),
+                "cursor" => Some("wire_cursor"),
+                "limit" | "runLimit" => Some("100_u32"),
+                "scope" => Some("Option::<host::AttachmentScope>::None"),
+                _ => None,
             };
-            out.push_str(&format!(
-                "        {}: SupervisorFieldValue::from_serializable({value}).map_err(|_| SupervisorFieldsError)?,\n",
-                rust_field(field)
-            ));
+            if let Some(value) = fixed {
+                out.push_str(&format!(
+                    "        {}: SupervisorFieldValue::from_serializable({value}).map_err(|_| SupervisorFieldsError)?,\n",
+                    rust_field(field)
+                ));
+            } else {
+                out.push_str(&format!(
+                    "        {}: dynamic_fields.required({})?,\n",
+                    rust_field(field),
+                    json_string(field)
+                ));
+            }
         }
         out.push_str("    })),\n");
     }

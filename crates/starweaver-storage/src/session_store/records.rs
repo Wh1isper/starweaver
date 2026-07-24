@@ -13,6 +13,9 @@ pub fn save_session_record(
     connection: &Connection,
     session: &SessionRecord,
 ) -> SessionStoreResult<()> {
+    session
+        .validate_provenance()
+        .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
     connection
         .execute(
             "INSERT INTO session_records (session_id, record, created_at, updated_at)
@@ -45,7 +48,11 @@ pub fn load_session_record(
         .optional()
         .map_err(map_sqlite_session_error)?
         .ok_or_else(|| SessionStoreError::NotFound(session_id.as_str().to_string()))?;
-    deserialize_json_record(&payload)
+    let session = deserialize_json_record::<SessionRecord>(&payload)?;
+    session
+        .validate_provenance()
+        .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
+    Ok(session)
 }
 
 pub fn advance_run_revision(run: &mut RunRecord) -> SessionStoreResult<()> {
@@ -96,6 +103,8 @@ pub fn allocate_or_reuse_run_sequence(
 }
 
 pub fn save_run_record(connection: &Connection, run: &RunRecord) -> SessionStoreResult<()> {
+    run.validate_provenance()
+        .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
     connection
         .execute(
             "INSERT INTO run_records
@@ -133,7 +142,10 @@ pub fn load_run_record(
         .optional()
         .map_err(map_sqlite_session_error)?
         .ok_or_else(|| SessionStoreError::NotFound(format_run_key(session_id, run_id)))?;
-    deserialize_json_record(&payload)
+    let run = deserialize_json_record::<RunRecord>(&payload)?;
+    run.validate_provenance()
+        .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
+    Ok(run)
 }
 
 pub fn list_run_records(
@@ -146,7 +158,12 @@ pub fn list_run_records(
     let rows = statement
         .query_map(params![session_id.as_str()], |row| row.get::<_, String>(0))
         .map_err(map_sqlite_session_error)?;
-    collect_json_record_rows(rows)
+    let runs = collect_json_record_rows::<RunRecord>(rows)?;
+    for run in &runs {
+        run.validate_provenance()
+            .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
+    }
+    Ok(runs)
 }
 
 pub fn apply_run_to_session(session: &mut SessionRecord, run: &RunRecord) {
