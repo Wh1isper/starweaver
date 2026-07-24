@@ -1,11 +1,6 @@
 //! Process-lifetime exclusivity and fencing for one execution domain/database identity.
 
-use std::{
-    collections::HashSet,
-    fs,
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::{fs, io, path::Path, sync::Arc};
 
 use fs2::FileExt as _;
 use serde::{Deserialize, Serialize};
@@ -19,54 +14,24 @@ use crate::{
 
 const OWNER_VERSION: u32 = 1;
 
-static PROCESS_LOCKS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
-
 pub(crate) struct ExecutionDomainOwnerLease {
-    _ownership: ExecutionDomainOwnership,
+    _lock: fs::File,
     generation: u64,
     host_instance_id: String,
-}
-
-/// Field order releases the OS lock before making the path available in this process again.
-struct ExecutionDomainOwnership {
-    _lock: fs::File,
-    _process_lock: ProcessLockReservation,
-}
-
-struct ProcessLockReservation {
-    path: PathBuf,
-}
-
-impl ProcessLockReservation {
-    fn acquire(path: PathBuf) -> RpcHostResult<Self> {
-        let mut held = process_locks()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !held.insert(path.clone()) {
-            return Err(owner_conflict());
-        }
-        drop(held);
-        Ok(Self { path })
-    }
-}
-
-impl Drop for ProcessLockReservation {
-    fn drop(&mut self) {
-        process_locks()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.path);
-    }
-}
-
-fn process_locks() -> &'static Mutex<HashSet<PathBuf>> {
-    PROCESS_LOCKS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 fn owner_conflict() -> RpcHostError {
     RpcHostError::RunConflict(
         "another host owns this execution domain and database identity".to_string(),
     )
+}
+
+fn is_lock_contended(error: &io::Error) -> bool {
+    let contended = fs2::lock_contended_error();
+    match (error.raw_os_error(), contended.raw_os_error()) {
+        (Some(actual), Some(expected)) => actual == expected,
+        _ => error.kind() == contended.kind(),
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -100,18 +65,13 @@ impl ExecutionDomainOwnerLease {
         let lock_path = root.join(format!("execution-{key}.lock"));
         let owner_path = root.join(format!("execution-{key}.owner.json"));
         let lock = open_private_lock(&lock_path)?;
-        let process_lock = ProcessLockReservation::acquire(fs::canonicalize(&lock_path)?)?;
         lock.try_lock_exclusive().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::WouldBlock {
+            if is_lock_contended(&error) {
                 owner_conflict()
             } else {
                 RpcHostError::Io(error)
             }
         })?;
-        let ownership = ExecutionDomainOwnership {
-            _lock: lock,
-            _process_lock: process_lock,
-        };
 
         let generation = match fs::read(&owner_path) {
             Ok(bytes) => {
@@ -146,7 +106,7 @@ impl ExecutionDomainOwnerLease {
             "execution-domain owner state",
         )?;
         Ok(Arc::new(Self {
-            _ownership: ownership,
+            _lock: lock,
             generation,
             host_instance_id,
         }))
@@ -203,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_acquisition_releases_process_and_os_reservations() {
+    fn failed_acquisition_releases_os_lock() {
         let temp = tempfile::tempdir().unwrap();
         let key = lock_key("domain", "database");
         let owner_path = temp.path().join(format!("execution-{key}.owner.json"));
