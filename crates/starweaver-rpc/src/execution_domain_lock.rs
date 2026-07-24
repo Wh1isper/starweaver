@@ -1,6 +1,11 @@
 //! Process-lifetime exclusivity and fencing for one execution domain/database identity.
 
-use std::{fs, path::Path, sync::Arc};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use fs2::FileExt as _;
 use serde::{Deserialize, Serialize};
@@ -14,10 +19,54 @@ use crate::{
 
 const OWNER_VERSION: u32 = 1;
 
+static PROCESS_LOCKS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
 pub(crate) struct ExecutionDomainOwnerLease {
-    _lock: fs::File,
+    _ownership: ExecutionDomainOwnership,
     generation: u64,
     host_instance_id: String,
+}
+
+/// Field order releases the OS lock before making the path available in this process again.
+struct ExecutionDomainOwnership {
+    _lock: fs::File,
+    _process_lock: ProcessLockReservation,
+}
+
+struct ProcessLockReservation {
+    path: PathBuf,
+}
+
+impl ProcessLockReservation {
+    fn acquire(path: PathBuf) -> RpcHostResult<Self> {
+        let mut held = process_locks()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !held.insert(path.clone()) {
+            return Err(owner_conflict());
+        }
+        drop(held);
+        Ok(Self { path })
+    }
+}
+
+impl Drop for ProcessLockReservation {
+    fn drop(&mut self) {
+        process_locks()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.path);
+    }
+}
+
+fn process_locks() -> &'static Mutex<HashSet<PathBuf>> {
+    PROCESS_LOCKS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn owner_conflict() -> RpcHostError {
+    RpcHostError::RunConflict(
+        "another host owns this execution domain and database identity".to_string(),
+    )
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -51,15 +100,18 @@ impl ExecutionDomainOwnerLease {
         let lock_path = root.join(format!("execution-{key}.lock"));
         let owner_path = root.join(format!("execution-{key}.owner.json"));
         let lock = open_private_lock(&lock_path)?;
+        let process_lock = ProcessLockReservation::acquire(fs::canonicalize(&lock_path)?)?;
         lock.try_lock_exclusive().map_err(|error| {
             if error.kind() == std::io::ErrorKind::WouldBlock {
-                RpcHostError::RunConflict(
-                    "another host owns this execution domain and database identity".to_string(),
-                )
+                owner_conflict()
             } else {
                 RpcHostError::Io(error)
             }
         })?;
+        let ownership = ExecutionDomainOwnership {
+            _lock: lock,
+            _process_lock: process_lock,
+        };
 
         let generation = match fs::read(&owner_path) {
             Ok(bytes) => {
@@ -94,7 +146,7 @@ impl ExecutionDomainOwnerLease {
             "execution-domain owner state",
         )?;
         Ok(Arc::new(Self {
-            _lock: lock,
+            _ownership: ownership,
             generation,
             host_instance_id,
         }))
@@ -123,7 +175,12 @@ fn lock_key(execution_domain_id: &str, database_identity: &str) -> String {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use std::process::Command;
+
     use super::*;
+
+    const PROBE_ROOT_ENV: &str = "STARWEAVER_RPC_EXECUTION_LOCK_PROBE_ROOT";
+    const PROBE_EXPECT_ENV: &str = "STARWEAVER_RPC_EXECUTION_LOCK_PROBE_EXPECT";
 
     #[test]
     fn lease_is_process_lifetime_exclusive_and_fenced_across_reopen() {
@@ -135,9 +192,60 @@ mod tests {
             ExecutionDomainOwnerLease::acquire_at(temp.path(), "domain", "database"),
             Err(RpcHostError::RunConflict(_))
         ));
+        run_subprocess_probe(temp.path(), "conflict");
+
         drop(first);
         let second =
             ExecutionDomainOwnerLease::acquire_at(temp.path(), "domain", "database").unwrap();
         assert_eq!(second.generation(), 2);
+        drop(second);
+        run_subprocess_probe(temp.path(), "success");
+    }
+
+    #[test]
+    fn failed_acquisition_releases_process_and_os_reservations() {
+        let temp = tempfile::tempdir().unwrap();
+        let key = lock_key("domain", "database");
+        let owner_path = temp.path().join(format!("execution-{key}.owner.json"));
+        fs::write(&owner_path, b"not-json").unwrap();
+
+        assert!(matches!(
+            ExecutionDomainOwnerLease::acquire_at(temp.path(), "domain", "database"),
+            Err(RpcHostError::Storage(_))
+        ));
+        fs::remove_file(owner_path).unwrap();
+        run_subprocess_probe(temp.path(), "success");
+
+        let lease =
+            ExecutionDomainOwnerLease::acquire_at(temp.path(), "domain", "database").unwrap();
+        assert_eq!(lease.generation(), 2);
+    }
+
+    #[test]
+    fn subprocess_lock_probe() {
+        let Some(root) = std::env::var_os(PROBE_ROOT_ENV) else {
+            return;
+        };
+        let expected = std::env::var(PROBE_EXPECT_ENV).unwrap();
+        let result = ExecutionDomainOwnerLease::acquire_at(Path::new(&root), "domain", "database");
+        match expected.as_str() {
+            "conflict" => assert!(matches!(result, Err(RpcHostError::RunConflict(_)))),
+            "success" => assert!(result.is_ok()),
+            other => panic!("unexpected lock probe expectation: {other}"),
+        }
+    }
+
+    fn run_subprocess_probe(root: &Path, expected: &str) {
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "execution_domain_lock::tests::subprocess_lock_probe",
+                "--nocapture",
+            ])
+            .env(PROBE_ROOT_ENV, root)
+            .env(PROBE_EXPECT_ENV, expected)
+            .status()
+            .unwrap();
+        assert!(status.success());
     }
 }
