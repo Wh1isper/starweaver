@@ -48,7 +48,8 @@ toml.workspace = true
 uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys.workspace = true
+atomicwrites = "0.4.4"
+file-id.workspace = true
 
 [dev-dependencies]
 rusqlite.workspace = true

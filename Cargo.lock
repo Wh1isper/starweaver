@@ -1324,6 +1324,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "file-id"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1fc6a637b6dc58414714eddd9170ff187ecb0933d4c7024d1abbd23a3cc26e9"
+dependencies = [
+ "windows-sys 0.60.2",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4661,9 +4670,11 @@ name = "starweaver-rpc"
 version = "0.10.0"
 dependencies = [
  "async-trait",
+ "atomicwrites",
  "base64 0.22.1",
  "chrono",
  "clap",
+ "file-id",
  "fs2",
  "hmac",
  "libc",
@@ -4689,7 +4700,6 @@ dependencies = [
  "tokio",
  "toml 0.8.23",
  "uuid",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

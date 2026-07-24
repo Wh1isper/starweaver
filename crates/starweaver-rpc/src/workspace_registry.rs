@@ -515,7 +515,7 @@ fn canonical_directory(root: &Path) -> RpcHostResult<(PathBuf, WorkspaceFileIden
             "workspace root must be a non-symlink directory".to_string(),
         ));
     }
-    let identity = workspace_file_identity(&metadata)?;
+    let identity = workspace_file_identity(&canonical, &metadata)?;
     Ok((canonical, identity))
 }
 
@@ -555,7 +555,10 @@ fn validate_live_entry(
 }
 
 #[cfg(unix)]
-fn workspace_file_identity(metadata: &fs::Metadata) -> RpcHostResult<WorkspaceFileIdentity> {
+fn workspace_file_identity(
+    _path: &Path,
+    metadata: &fs::Metadata,
+) -> RpcHostResult<WorkspaceFileIdentity> {
     use std::os::unix::fs::MetadataExt as _;
 
     Ok(WorkspaceFileIdentity {
@@ -566,24 +569,31 @@ fn workspace_file_identity(metadata: &fs::Metadata) -> RpcHostResult<WorkspaceFi
 }
 
 #[cfg(windows)]
-fn workspace_file_identity(metadata: &fs::Metadata) -> RpcHostResult<WorkspaceFileIdentity> {
-    use std::os::windows::fs::MetadataExt as _;
-
-    let volume = metadata.volume_serial_number().ok_or_else(|| {
-        RpcHostError::Invalid("workspace volume identity is unavailable".to_string())
-    })?;
-    let file_index = metadata.file_index().ok_or_else(|| {
-        RpcHostError::Invalid("workspace file identity is unavailable".to_string())
-    })?;
+fn workspace_file_identity(
+    path: &Path,
+    _metadata: &fs::Metadata,
+) -> RpcHostResult<WorkspaceFileIdentity> {
+    let file_id::FileId::LowRes {
+        volume_serial_number,
+        file_index,
+    } = file_id::get_low_res_file_id(path)?
+    else {
+        return Err(RpcHostError::Invalid(
+            "workspace file identity has an unexpected platform representation".to_string(),
+        ));
+    };
     Ok(WorkspaceFileIdentity {
         platform: "windows-volume-file-v1".to_string(),
-        primary: u64::from(volume),
+        primary: u64::from(volume_serial_number),
         secondary: file_index,
     })
 }
 
 #[cfg(not(any(unix, windows)))]
-fn workspace_file_identity(_metadata: &fs::Metadata) -> RpcHostResult<WorkspaceFileIdentity> {
+fn workspace_file_identity(
+    _path: &Path,
+    _metadata: &fs::Metadata,
+) -> RpcHostResult<WorkspaceFileIdentity> {
     Err(RpcHostError::Invalid(
         "workspace file identity is unsupported on this platform".to_string(),
     ))
