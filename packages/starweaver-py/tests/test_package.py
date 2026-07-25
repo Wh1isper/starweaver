@@ -6236,6 +6236,24 @@ def test_python_session_store_stable_run_pages_cross_native_bridge() -> None:
     asyncio.run(run())
 
 
+def test_session_store_recent_run_limit_validation_is_consistent() -> None:
+    async def run() -> None:
+        stores = [
+            starweaver.InMemorySessionStore(),
+            starweaver.SqliteSessionStore.in_memory(),
+        ]
+        for store in stores:
+            assert await store.list_recent_runs("missing-session", 0) == []
+            for invalid_limit in [True, -1, sys.maxsize + 1]:
+                with pytest.raises(
+                    StateError,
+                    match="recent run limit must be a non-negative platform-sized integer",
+                ):
+                    await store.list_recent_runs("missing-session", invalid_limit)
+
+    asyncio.run(run())
+
+
 def test_python_session_store_to_native_adapts_python_backend() -> None:
     async def run() -> None:
         source_store = starweaver.InMemorySessionStore()
