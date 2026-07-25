@@ -342,9 +342,13 @@ const MODEL_PRICING_CATALOG: &[PricingRecord] = &[
         &["o1-pro", "o1-pro-2025-03-19"],
         ModelPricingDetails::new(150_000_000, 600_000_000),
     ),
-    // Anthropic Claude. Cache-write uses the default 5-minute cache creation rate.
+    // Anthropic Claude standard direct API pricing, checked 2026-07-25.
+    // Source: <https://platform.claude.com/docs/en/about-claude/pricing>
+    // Cache-write uses the default 5-minute cache creation rate.
+    // Claude Opus 5 uses standard pricing across its full 1M context window.
     PricingRecord::new(
         &[
+            "claude-opus-5",
             "claude-opus-4.8",
             "claude-opus-4-8",
             "claude-opus-4.7",
