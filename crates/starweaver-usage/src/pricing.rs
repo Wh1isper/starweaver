@@ -452,6 +452,43 @@ mod tests {
     }
 
     #[test]
+    fn claude_opus_5_uses_published_standard_and_cache_rates_across_1m_context() {
+        let Some(profile) = known_model_pricing_profile("anthropic:claude-opus-5") else {
+            panic!("claude-opus-5 pricing profile should exist");
+        };
+
+        assert!(!profile.is_tiered());
+        let details = profile.details_for_input_tokens(1_000_000);
+        assert_eq!(
+            details.standard_pricing(),
+            ModelPricing::new(5_000_000, 25_000_000)
+        );
+        assert_eq!(
+            details.cache_write_micros_per_million_tokens,
+            Some(6_250_000)
+        );
+        assert_eq!(
+            details.cache_read_micros_per_million_tokens,
+            Some(500_000)
+        );
+
+        let usage = Usage {
+            requests: 1,
+            input_tokens: 1_000_000,
+            cache_write_tokens: 200_000,
+            cache_read_tokens: 300_000,
+            output_tokens: 1_000_000,
+            total_tokens: 2_000_000,
+            tool_calls: 0,
+        };
+        assert_eq!(
+            estimate_pricing_for_model("claude-opus-5", &usage)
+                .map(|estimate| estimate.amount_micros_usd),
+            Some(28_900_000)
+        );
+    }
+
+    #[test]
     fn pricing_details_estimate_uses_cache_write_and_read_rates() {
         let usage = Usage {
             requests: 1,
