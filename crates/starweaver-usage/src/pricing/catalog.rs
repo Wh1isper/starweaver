@@ -45,6 +45,13 @@ const fn with_cache(
         .with_cache_read_micros_per_million_tokens(cache_read_micros)
 }
 
+const fn anthropic_pricing(input_micros: u64, output_micros: u64) -> ModelPricingDetails {
+    ModelPricingDetails::new(input_micros, output_micros)
+        .with_cache_write_micros_per_million_tokens(scale_rate(input_micros, 125, 100))
+        .with_cache_write_1h_micros_per_million_tokens(scale_rate(input_micros, 2, 1))
+        .with_cache_read_micros_per_million_tokens(scale_rate(input_micros, 10, 100))
+}
+
 const fn openai_gpt56_pricing(input_micros: u64, output_micros: u64) -> ModelPricingDetails {
     with_cache(
         ModelPricingDetails::new(input_micros, output_micros),
@@ -344,8 +351,9 @@ const MODEL_PRICING_CATALOG: &[PricingRecord] = &[
     ),
     // Anthropic Claude standard direct API pricing, checked 2026-07-25.
     // Source: <https://platform.claude.com/docs/en/about-claude/pricing>
-    // Cache-write uses the default 5-minute cache creation rate.
-    // Claude Opus 5 uses standard pricing across its full 1M context window.
+    // Cache creation is 1.25x input for 5-minute TTL and 2x for 1-hour TTL;
+    // cache reads are 0.1x input. Claude Opus 5 uses standard pricing across
+    // its full 1M context window.
     PricingRecord::new(
         &[
             "claude-opus-5",
@@ -358,11 +366,7 @@ const MODEL_PRICING_CATALOG: &[PricingRecord] = &[
             "claude-opus-4.5",
             "claude-opus-4-5",
         ],
-        with_cache(
-            ModelPricingDetails::new(5_000_000, 25_000_000),
-            6_250_000,
-            500_000,
-        ),
+        anthropic_pricing(5_000_000, 25_000_000),
     ),
     PricingRecord::new(
         &[
@@ -370,19 +374,11 @@ const MODEL_PRICING_CATALOG: &[PricingRecord] = &[
             "claude-opus-4-1",
             "claude-opus-4-1-20250805",
         ],
-        with_cache(
-            ModelPricingDetails::new(15_000_000, 75_000_000),
-            18_750_000,
-            1_500_000,
-        ),
+        anthropic_pricing(15_000_000, 75_000_000),
     ),
     PricingRecord::new(
         &["claude-opus-4", "claude-opus-4-20250514"],
-        with_cache(
-            ModelPricingDetails::new(15_000_000, 75_000_000),
-            18_750_000,
-            1_500_000,
-        ),
+        anthropic_pricing(15_000_000, 75_000_000),
     ),
     PricingRecord::new(
         &[
@@ -404,11 +400,7 @@ const MODEL_PRICING_CATALOG: &[PricingRecord] = &[
             "claude-3-sonnet",
             "claude-3-sonnet-20240229",
         ],
-        with_cache(
-            ModelPricingDetails::new(3_000_000, 15_000_000),
-            3_750_000,
-            300_000,
-        ),
+        anthropic_pricing(3_000_000, 15_000_000),
     ),
     PricingRecord::new(
         &[
@@ -416,11 +408,7 @@ const MODEL_PRICING_CATALOG: &[PricingRecord] = &[
             "claude-haiku-4-5",
             "claude-haiku-4-5-20251001",
         ],
-        with_cache(
-            ModelPricingDetails::new(1_000_000, 5_000_000),
-            1_250_000,
-            100_000,
-        ),
+        anthropic_pricing(1_000_000, 5_000_000),
     ),
     PricingRecord::new(
         &[
@@ -429,27 +417,15 @@ const MODEL_PRICING_CATALOG: &[PricingRecord] = &[
             "claude-3-5-haiku-latest",
             "claude-3-5-haiku-20241022",
         ],
-        with_cache(
-            ModelPricingDetails::new(800_000, 4_000_000),
-            1_000_000,
-            80_000,
-        ),
+        anthropic_pricing(800_000, 4_000_000),
     ),
     PricingRecord::new(
         &["claude-3-opus", "claude-3-opus-20240229"],
-        with_cache(
-            ModelPricingDetails::new(15_000_000, 75_000_000),
-            18_750_000,
-            1_500_000,
-        ),
+        anthropic_pricing(15_000_000, 75_000_000),
     ),
     PricingRecord::new(
         &["claude-3-haiku", "claude-3-haiku-20240307"],
-        with_cache(
-            ModelPricingDetails::new(250_000, 1_250_000),
-            312_500,
-            25_000,
-        ),
+        anthropic_pricing(250_000, 1_250_000),
     ),
     // Google Gemini Developer API. Gemini 3.1 Pro and 2.5 Pro have prompt-length tiers; cache storage is not represented.
     PricingRecord::new(

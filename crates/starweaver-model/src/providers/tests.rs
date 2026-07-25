@@ -307,6 +307,7 @@ fn provider_tool_choice_usage_finish_and_arguments_are_mapped() {
     }}));
     assert_eq!(openai_usage.input_tokens, 10);
     assert_eq!(openai_usage.cache_write_tokens, 3);
+    assert_eq!(openai_usage.cache_write_1h_tokens, 0);
     assert_eq!(openai_usage.cache_read_tokens, 4);
     assert_eq!(openai_usage.output_tokens, 2);
     assert_eq!(openai_usage.total_tokens, 12);
@@ -356,6 +357,10 @@ fn provider_tool_choice_usage_finish_and_arguments_are_mapped() {
             "input_tokens": 7,
             "output_tokens": 8,
             "cache_creation_input_tokens": 9,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 4,
+                "ephemeral_1h_input_tokens": 5
+            },
             "cache_read_input_tokens": 10
         }}),
         "input_tokens",
@@ -363,8 +368,27 @@ fn provider_tool_choice_usage_finish_and_arguments_are_mapped() {
     );
     assert_eq!(anthropic_usage.input_tokens, 26);
     assert_eq!(anthropic_usage.cache_write_tokens, 9);
+    assert_eq!(anthropic_usage.cache_write_1h_tokens, 5);
     assert_eq!(anthropic_usage.cache_read_tokens, 10);
     assert_eq!(anthropic_usage.total_tokens, 34);
+
+    let anthropic_breakdown_only = usage_from_named_including_cache_input(
+        &json!({"usage": {
+            "input_tokens": 7,
+            "output_tokens": 8,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 4,
+                "ephemeral_1h_input_tokens": 5
+            },
+            "cache_read_input_tokens": 10
+        }}),
+        "input_tokens",
+        "output_tokens",
+    );
+    assert_eq!(anthropic_breakdown_only.input_tokens, 26);
+    assert_eq!(anthropic_breakdown_only.cache_write_tokens, 9);
+    assert_eq!(anthropic_breakdown_only.cache_write_1h_tokens, 5);
+    assert_eq!(anthropic_breakdown_only.total_tokens, 34);
 
     assert_eq!(finish_reason_openai("stop"), FinishReason::Stop);
     assert_eq!(finish_reason_openai("completed"), FinishReason::Stop);

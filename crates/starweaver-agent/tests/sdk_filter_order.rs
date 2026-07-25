@@ -999,6 +999,7 @@ async fn compact_capability_auto_triggers_from_context_threshold_and_rewrites_hi
                 requests: 1,
                 input_tokens: 10,
                 cache_write_tokens: 0,
+                cache_write_1h_tokens: 0,
                 cache_read_tokens: 0,
                 output_tokens: 5,
                 total_tokens: 15,

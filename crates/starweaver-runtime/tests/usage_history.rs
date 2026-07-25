@@ -159,6 +159,7 @@ async fn usage_limits_check_accumulated_tokens_after_response() {
             requests: 1,
             input_tokens: 4,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 2,
             total_tokens: 6,
@@ -190,6 +191,7 @@ async fn usage_limits_include_existing_context_usage() {
             requests: 1,
             input_tokens: 1,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 1,
             total_tokens: 2,
@@ -201,6 +203,7 @@ async fn usage_limits_include_existing_context_usage() {
             requests: 1,
             input_tokens: 3,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 2,
             total_tokens: 5,
@@ -233,6 +236,7 @@ async fn usage_limits_include_restored_context_usage() {
             requests: 1,
             input_tokens: 1,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 1,
             total_tokens: 2,
@@ -244,6 +248,7 @@ async fn usage_limits_include_restored_context_usage() {
             requests: 1,
             input_tokens: 3,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 2,
             total_tokens: 5,
@@ -277,6 +282,7 @@ async fn usage_snapshot_includes_existing_context_usage() {
             requests: 1,
             input_tokens: 1,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 1,
             total_tokens: 2,
@@ -288,6 +294,7 @@ async fn usage_snapshot_includes_existing_context_usage() {
             requests: 1,
             input_tokens: 3,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 2,
             total_tokens: 5,
@@ -351,6 +358,7 @@ async fn run_stream_emits_cumulative_usage_snapshot_events() {
                 requests: 1,
                 input_tokens: 3,
                 cache_write_tokens: 2,
+                cache_write_1h_tokens: 1,
                 cache_read_tokens: 1,
                 output_tokens: 4,
                 total_tokens: 7,
@@ -364,6 +372,7 @@ async fn run_stream_emits_cumulative_usage_snapshot_events() {
                 requests: 1,
                 input_tokens: 5,
                 cache_write_tokens: 3,
+                cache_write_1h_tokens: 2,
                 cache_read_tokens: 7,
                 output_tokens: 6,
                 total_tokens: 11,
@@ -412,6 +421,17 @@ async fn run_stream_emits_cumulative_usage_snapshot_events() {
     assert_eq!(snapshots[1].latest_usage.as_ref().unwrap().total_tokens, 11);
     assert_eq!(snapshots[1].total_usage.input_tokens, 8);
     assert_eq!(snapshots[1].total_usage.cache_write_tokens, 5);
+    assert_eq!(snapshots[1].total_usage.cache_write_1h_tokens, 3);
+    assert_eq!(
+        snapshots[1].agent_usages["main"]
+            .usage
+            .cache_write_1h_tokens,
+        3
+    );
+    assert_eq!(
+        snapshots[1].model_usages["test:test"].cache_write_1h_tokens,
+        3
+    );
     assert_eq!(snapshots[1].total_usage.cache_read_tokens, 8);
     assert_eq!(snapshots[1].total_usage.output_tokens, 10);
     assert_eq!(snapshots[1].total_usage.total_tokens, 18);
@@ -445,6 +465,7 @@ async fn tiered_model_pricing_accumulates_per_request_estimates() {
         requests: 1,
         input_tokens: 200_000,
         cache_write_tokens: 0,
+        cache_write_1h_tokens: 0,
         cache_read_tokens: 0,
         output_tokens: 100_000,
         total_tokens: 300_000,
@@ -454,6 +475,7 @@ async fn tiered_model_pricing_accumulates_per_request_estimates() {
         requests: 1,
         input_tokens: 300_000,
         cache_write_tokens: 0,
+        cache_write_1h_tokens: 0,
         cache_read_tokens: 0,
         output_tokens: 100_000,
         total_tokens: 400_000,
@@ -649,6 +671,7 @@ fn cost_budget_estimates_usage_cost_in_micros() {
         requests: 2,
         input_tokens: 10,
         cache_write_tokens: 0,
+        cache_write_1h_tokens: 0,
         cache_read_tokens: 0,
         output_tokens: 20,
         total_tokens: 30,
@@ -672,6 +695,7 @@ async fn usage_limits_check_accumulated_cost_after_response() {
             requests: 1,
             input_tokens: 10,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 20,
             total_tokens: 30,
@@ -710,6 +734,7 @@ async fn usage_cost_budget_includes_existing_context_usage() {
             requests: 1,
             input_tokens: 1,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 1,
             total_tokens: 2,
@@ -721,6 +746,7 @@ async fn usage_cost_budget_includes_existing_context_usage() {
             requests: 1,
             input_tokens: 2,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 2,
             total_tokens: 4,
@@ -760,6 +786,7 @@ async fn capability_bundle_can_contribute_cost_budget() {
             requests: 1,
             input_tokens: 10,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 0,
             total_tokens: 10,

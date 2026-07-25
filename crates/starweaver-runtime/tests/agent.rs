@@ -469,6 +469,7 @@ async fn capability_hooks_mutate_response_before_classification_and_record_lifec
             requests: 1,
             input_tokens: 1,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 1,
             total_tokens: 2,

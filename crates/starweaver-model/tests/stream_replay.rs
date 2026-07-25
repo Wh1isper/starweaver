@@ -61,6 +61,7 @@ fn replays_cross_provider_streaming_delta_and_usage_at_end_fixtures() {
                 requests: 1,
                 input_tokens: 10,
                 cache_write_tokens: 0,
+                cache_write_1h_tokens: 0,
                 cache_read_tokens: 0,
                 output_tokens: 2,
                 total_tokens: 12,

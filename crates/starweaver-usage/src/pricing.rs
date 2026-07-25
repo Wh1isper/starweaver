@@ -212,6 +212,7 @@ mod tests {
         requests: 1,
         input_tokens: 1_000_000,
         cache_write_tokens: 0,
+        cache_write_1h_tokens: 0,
         cache_read_tokens: 0,
         output_tokens: 1_000_000,
         total_tokens: 2_000_000,
@@ -229,6 +230,7 @@ mod tests {
             requests: 2,
             input_tokens: 10,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 20,
             total_tokens: 30,
@@ -368,6 +370,7 @@ mod tests {
             requests: 1,
             input_tokens: 1_000_000,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 250_000,
             output_tokens: 1_000_000,
             total_tokens: 2_000_000,
@@ -392,6 +395,7 @@ mod tests {
             requests: 1,
             input_tokens: 200_000,
             cache_write_tokens: 40_000,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 60_000,
             output_tokens: 200_000,
             total_tokens: 400_000,
@@ -439,6 +443,7 @@ mod tests {
             requests: 1,
             input_tokens: 272_001,
             cache_write_tokens: 50_000,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 100_000,
             output_tokens: 100_000,
             total_tokens: 372_001,
@@ -468,6 +473,10 @@ mod tests {
             Some(6_250_000)
         );
         assert_eq!(
+            details.cache_write_1h_micros_per_million_tokens,
+            Some(10_000_000)
+        );
+        assert_eq!(
             details.cache_read_micros_per_million_tokens,
             Some(500_000)
         );
@@ -476,6 +485,7 @@ mod tests {
             requests: 1,
             input_tokens: 1_000_000,
             cache_write_tokens: 200_000,
+            cache_write_1h_tokens: 100_000,
             cache_read_tokens: 300_000,
             output_tokens: 1_000_000,
             total_tokens: 2_000_000,
@@ -484,8 +494,59 @@ mod tests {
         assert_eq!(
             estimate_pricing_for_model("claude-opus-5", &usage)
                 .map(|estimate| estimate.amount_micros_usd),
-            Some(28_900_000)
+            Some(29_275_000)
         );
+    }
+
+    #[test]
+    fn one_hour_cache_write_rate_falls_back_to_default_cache_write_rate() {
+        let details = ModelPricingDetails::new(1_000_000, 0)
+            .with_cache_write_micros_per_million_tokens(2_000_000);
+        let usage = Usage {
+            requests: 1,
+            input_tokens: 1_000_000,
+            cache_write_tokens: 400_000,
+            cache_write_1h_tokens: 200_000,
+            cache_read_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 1_000_000,
+            tool_calls: 0,
+        };
+
+        assert_eq!(details.estimate_micros(&usage), 1_400_000);
+
+        let tiny_usage = Usage {
+            requests: 1,
+            input_tokens: 2,
+            cache_write_tokens: 2,
+            cache_write_1h_tokens: 1,
+            cache_read_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 2,
+            tool_calls: 0,
+        };
+        let tiny_details = ModelPricingDetails::new(0, 0)
+            .with_cache_write_micros_per_million_tokens(500_000);
+        assert_eq!(tiny_details.estimate_micros(&tiny_usage), 1);
+    }
+
+    #[test]
+    fn one_hour_cache_write_subset_is_bounded_by_effective_aggregate() {
+        let details = ModelPricingDetails::new(1_000_000, 0)
+            .with_cache_write_micros_per_million_tokens(1_250_000)
+            .with_cache_write_1h_micros_per_million_tokens(2_000_000);
+        let usage = Usage {
+            requests: 1,
+            input_tokens: 200_000,
+            cache_write_tokens: 100_000,
+            cache_write_1h_tokens: 200_000,
+            cache_read_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 200_000,
+            tool_calls: 0,
+        };
+
+        assert_eq!(details.estimate_micros(&usage), 400_000);
     }
 
     #[test]
@@ -494,6 +555,7 @@ mod tests {
             requests: 1,
             input_tokens: 1_000_000,
             cache_write_tokens: 200_000,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 300_000,
             output_tokens: 1_000_000,
             total_tokens: 2_000_000,
@@ -513,6 +575,7 @@ mod tests {
             requests: 1,
             input_tokens: 200_001,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 50_000,
             output_tokens: 100_000,
             total_tokens: 300_001,
@@ -536,6 +599,7 @@ mod tests {
             requests: 1,
             input_tokens: 512_001,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 100_000,
             output_tokens: 100_000,
             total_tokens: 612_001,
@@ -555,6 +619,7 @@ mod tests {
             requests: 1,
             input_tokens: 33_000,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 3_000,
             output_tokens: 10_000,
             total_tokens: 43_000,
@@ -583,6 +648,17 @@ mod tests {
         .ok();
 
         assert_eq!(decoded, Some(ModelPricingDetails::new(1, 2)));
+        assert_eq!(
+            decoded.and_then(|details| details.cache_write_1h_micros_per_million_tokens),
+            None
+        );
+
+        let details = ModelPricingDetails::new(1, 2)
+            .with_cache_write_1h_micros_per_million_tokens(3);
+        let round_trip = serde_json::to_value(details)
+            .ok()
+            .and_then(|value| serde_json::from_value::<ModelPricingDetails>(value).ok());
+        assert_eq!(round_trip, Some(details));
     }
 
     #[test]

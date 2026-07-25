@@ -13,6 +13,7 @@ _USAGE_FIELDS = (
     "requests",
     "input_tokens",
     "cache_write_tokens",
+    "cache_write_1h_tokens",
     "cache_read_tokens",
     "output_tokens",
     "total_tokens",
@@ -123,6 +124,10 @@ class Usage:
     @property
     def cache_write_tokens(self) -> int:
         return _int_field(self.raw, "cache_write_tokens")
+
+    @property
+    def cache_write_1h_tokens(self) -> int:
+        return _int_field(self.raw, "cache_write_1h_tokens")
 
     @property
     def cache_read_tokens(self) -> int:
