@@ -525,6 +525,14 @@ mod tests {
         let tiny_details =
             ModelPricingDetails::new(0, 0).with_cache_write_micros_per_million_tokens(500_000);
         assert_eq!(tiny_details.estimate_micros(&tiny_usage), 1);
+
+        let mixed_tiny_usage = Usage {
+            input_tokens: 2,
+            cache_write_tokens: 1,
+            ..Usage::default()
+        };
+        let equal_rate_details = ModelPricingDetails::new(500_000, 0);
+        assert_eq!(equal_rate_details.estimate_micros(&mixed_tiny_usage), 1);
     }
 
     #[test]
@@ -544,6 +552,26 @@ mod tests {
         };
 
         assert_eq!(details.estimate_micros(&usage), 400_000);
+    }
+
+    #[test]
+    fn pricing_bounds_malformed_cache_counters_to_inclusive_input() {
+        let details = ModelPricingDetails::new(1_000_000, 0)
+            .with_cache_write_micros_per_million_tokens(2_000_000)
+            .with_cache_write_1h_micros_per_million_tokens(4_000_000)
+            .with_cache_read_micros_per_million_tokens(3_000_000);
+        let usage = Usage {
+            requests: 1,
+            input_tokens: 1_000_000,
+            cache_write_tokens: 600_000,
+            cache_write_1h_tokens: 200_000,
+            cache_read_tokens: 700_000,
+            output_tokens: 0,
+            total_tokens: 1_000_000,
+            tool_calls: 0,
+        };
+
+        assert_eq!(details.estimate_micros(&usage), 2_800_000);
     }
 
     #[test]

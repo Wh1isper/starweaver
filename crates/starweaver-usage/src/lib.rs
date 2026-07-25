@@ -25,12 +25,16 @@ pub struct Usage {
     /// those subtotals are present. Pricing helpers subtract the cache subtotals
     /// before applying cache-specific rates.
     pub input_tokens: u64,
-    /// Total tokens written to a provider prompt cache across all cache durations.
+    /// Provider-reported total tokens written to a prompt cache across all durations.
+    ///
+    /// Use [`Self::effective_cache_write_tokens`] for derived accounting because
+    /// externally constructed or deserialized usage may contain inconsistent counters.
     #[serde(default)]
     pub cache_write_tokens: u64,
-    /// One-hour cache-write tokens included in [`Self::cache_write_tokens`].
+    /// Provider-reported one-hour cache writes included in [`Self::cache_write_tokens`].
     ///
-    /// Providers without a one-hour cache-write breakdown leave this at zero.
+    /// Providers without a one-hour cache-write breakdown leave this at zero. Use
+    /// [`Self::effective_cache_write_1h_tokens`] for derived accounting.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub cache_write_1h_tokens: u64,
     /// Tokens read from a provider prompt cache.
@@ -46,6 +50,60 @@ pub struct Usage {
 }
 
 impl Usage {
+    /// Return the effective aggregate cache-write tokens for derived accounting.
+    ///
+    /// Provider counters remain raw evidence. This projection repairs a one-hour
+    /// subset larger than the reported aggregate, then caps writes at the inclusive
+    /// input total so malformed counters cannot create additional billed tokens.
+    #[must_use]
+    pub const fn effective_cache_write_tokens(&self) -> u64 {
+        let reported = if self.cache_write_tokens > self.cache_write_1h_tokens {
+            self.cache_write_tokens
+        } else {
+            self.cache_write_1h_tokens
+        };
+        if reported < self.input_tokens {
+            reported
+        } else {
+            self.input_tokens
+        }
+    }
+
+    /// Return effective one-hour cache-write tokens for derived accounting.
+    #[must_use]
+    pub const fn effective_cache_write_1h_tokens(&self) -> u64 {
+        let cache_write_tokens = self.effective_cache_write_tokens();
+        if self.cache_write_1h_tokens < cache_write_tokens {
+            self.cache_write_1h_tokens
+        } else {
+            cache_write_tokens
+        }
+    }
+
+    /// Return effective cache-read tokens for derived accounting.
+    ///
+    /// Cache writes take precedence when malformed write and read subtotals exceed
+    /// inclusive input. Reads are capped at the input remaining after effective writes.
+    #[must_use]
+    pub const fn effective_cache_read_tokens(&self) -> u64 {
+        let remaining_input = self
+            .input_tokens
+            .saturating_sub(self.effective_cache_write_tokens());
+        if self.cache_read_tokens < remaining_input {
+            self.cache_read_tokens
+        } else {
+            remaining_input
+        }
+    }
+
+    /// Return input tokens not assigned to an effective cache-write or read category.
+    #[must_use]
+    pub const fn effective_standard_input_tokens(&self) -> u64 {
+        self.input_tokens
+            .saturating_sub(self.effective_cache_write_tokens())
+            .saturating_sub(self.effective_cache_read_tokens())
+    }
+
     /// Add another usage value into this one.
     pub const fn add_assign(&mut self, other: &Self) {
         self.requests = self.requests.saturating_add(other.requests);
@@ -521,6 +579,78 @@ mod tests {
         assert_eq!(usage.output_tokens, u64::MAX);
         assert_eq!(usage.total_tokens, u64::MAX);
         assert_eq!(usage.tool_calls, u64::MAX);
+    }
+
+    #[test]
+    fn effective_cache_breakdown_bounds_malformed_reported_counters() {
+        let subset_exceeds_aggregate = Usage {
+            input_tokens: 300,
+            cache_write_tokens: 100,
+            cache_write_1h_tokens: 200,
+            cache_read_tokens: 50,
+            ..Usage::default()
+        };
+        assert_eq!(subset_exceeds_aggregate.effective_cache_write_tokens(), 200);
+        assert_eq!(
+            subset_exceeds_aggregate.effective_cache_write_1h_tokens(),
+            200
+        );
+        assert_eq!(subset_exceeds_aggregate.effective_cache_read_tokens(), 50);
+        assert_eq!(
+            subset_exceeds_aggregate.effective_standard_input_tokens(),
+            50
+        );
+
+        let aggregate_exceeds_input = Usage {
+            input_tokens: 100,
+            cache_write_tokens: 200,
+            cache_write_1h_tokens: 50,
+            cache_read_tokens: 10,
+            ..Usage::default()
+        };
+        assert_eq!(aggregate_exceeds_input.effective_cache_write_tokens(), 100);
+        assert_eq!(
+            aggregate_exceeds_input.effective_cache_write_1h_tokens(),
+            50
+        );
+        assert_eq!(aggregate_exceeds_input.effective_cache_read_tokens(), 0);
+        assert_eq!(aggregate_exceeds_input.effective_standard_input_tokens(), 0);
+
+        let writes_and_reads_exceed_input = Usage {
+            input_tokens: 100,
+            cache_write_tokens: 60,
+            cache_write_1h_tokens: 20,
+            cache_read_tokens: 70,
+            ..Usage::default()
+        };
+        assert_eq!(
+            writes_and_reads_exceed_input.effective_cache_write_tokens(),
+            60
+        );
+        assert_eq!(
+            writes_and_reads_exceed_input.effective_cache_write_1h_tokens(),
+            20
+        );
+        assert_eq!(
+            writes_and_reads_exceed_input.effective_cache_read_tokens(),
+            40
+        );
+        assert_eq!(
+            writes_and_reads_exceed_input.effective_standard_input_tokens(),
+            0
+        );
+
+        let near_overflow = Usage {
+            input_tokens: u64::MAX,
+            cache_write_tokens: u64::MAX - 1,
+            cache_write_1h_tokens: u64::MAX,
+            cache_read_tokens: u64::MAX,
+            ..Usage::default()
+        };
+        assert_eq!(near_overflow.effective_cache_write_tokens(), u64::MAX);
+        assert_eq!(near_overflow.effective_cache_write_1h_tokens(), u64::MAX);
+        assert_eq!(near_overflow.effective_cache_read_tokens(), 0);
+        assert_eq!(near_overflow.effective_standard_input_tokens(), 0);
     }
 
     #[test]

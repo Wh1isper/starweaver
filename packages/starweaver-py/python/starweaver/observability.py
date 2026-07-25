@@ -20,6 +20,7 @@ _USAGE_FIELDS = (
     "tool_calls",
 )
 _TRACE_METADATA_KEY = "starweaver.trace_metadata"
+_U64_MAX = 2**64 - 1
 
 
 def _copy_mapping(value: Mapping[str, Any]) -> JsonObject:
@@ -55,6 +56,15 @@ def _int_field(raw: Mapping[str, Any], key: str) -> int:
     if isinstance(value, int | float | str | bytes | bytearray):
         return int(value)
     raise TypeError(f"{key} must be int-compatible")
+
+
+def _effective_u64_field(raw: Mapping[str, Any], key: str) -> int:
+    value = raw.get(key, 0)
+    if isinstance(value, bool):
+        raise TypeError(f"{key} must not be bool")
+    if isinstance(value, float) and not value.is_integer():
+        raise TypeError(f"{key} must be an integer")
+    return min(max(_int_field(raw, key), 0), _U64_MAX)
 
 
 def _optional_usage(value: object) -> Usage | None:
@@ -130,8 +140,40 @@ class Usage:
         return _int_field(self.raw, "cache_write_1h_tokens")
 
     @property
+    def effective_cache_write_tokens(self) -> int:
+        return min(
+            max(
+                _effective_u64_field(self.raw, "cache_write_tokens"),
+                _effective_u64_field(self.raw, "cache_write_1h_tokens"),
+            ),
+            _effective_u64_field(self.raw, "input_tokens"),
+        )
+
+    @property
+    def effective_cache_write_1h_tokens(self) -> int:
+        return min(
+            _effective_u64_field(self.raw, "cache_write_1h_tokens"),
+            self.effective_cache_write_tokens,
+        )
+
+    @property
     def cache_read_tokens(self) -> int:
         return _int_field(self.raw, "cache_read_tokens")
+
+    @property
+    def effective_cache_read_tokens(self) -> int:
+        return min(
+            _effective_u64_field(self.raw, "cache_read_tokens"),
+            _effective_u64_field(self.raw, "input_tokens") - self.effective_cache_write_tokens,
+        )
+
+    @property
+    def effective_standard_input_tokens(self) -> int:
+        return (
+            _effective_u64_field(self.raw, "input_tokens")
+            - self.effective_cache_write_tokens
+            - self.effective_cache_read_tokens
+        )
 
     @property
     def output_tokens(self) -> int:
