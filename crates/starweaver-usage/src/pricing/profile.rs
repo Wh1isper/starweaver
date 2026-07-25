@@ -104,8 +104,7 @@ impl ModelPricingDetails {
         } else {
             cache_write_tokens
         };
-        let default_cache_write_tokens =
-            cache_write_tokens.saturating_sub(cache_write_1h_tokens);
+        let default_cache_write_tokens = cache_write_tokens.saturating_sub(cache_write_1h_tokens);
         let standard_input_tokens = usage
             .input_tokens
             .saturating_sub(cache_write_tokens)
@@ -113,9 +112,8 @@ impl ModelPricingDetails {
         let cache_write_cost = if cache_write_rate == cache_write_1h_rate {
             cost_for_tokens(cache_write_tokens, cache_write_rate)
         } else {
-            cost_for_tokens(default_cache_write_tokens, cache_write_rate).saturating_add(
-                cost_for_tokens(cache_write_1h_tokens, cache_write_1h_rate),
-            )
+            cost_for_tokens(default_cache_write_tokens, cache_write_rate)
+                .saturating_add(cost_for_tokens(cache_write_1h_tokens, cache_write_1h_rate))
         };
 
         cost_for_tokens(standard_input_tokens, self.input_micros_per_million_tokens)

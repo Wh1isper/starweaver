@@ -476,10 +476,7 @@ mod tests {
             details.cache_write_1h_micros_per_million_tokens,
             Some(10_000_000)
         );
-        assert_eq!(
-            details.cache_read_micros_per_million_tokens,
-            Some(500_000)
-        );
+        assert_eq!(details.cache_read_micros_per_million_tokens, Some(500_000));
 
         let usage = Usage {
             requests: 1,
@@ -525,8 +522,8 @@ mod tests {
             total_tokens: 2,
             tool_calls: 0,
         };
-        let tiny_details = ModelPricingDetails::new(0, 0)
-            .with_cache_write_micros_per_million_tokens(500_000);
+        let tiny_details =
+            ModelPricingDetails::new(0, 0).with_cache_write_micros_per_million_tokens(500_000);
         assert_eq!(tiny_details.estimate_micros(&tiny_usage), 1);
     }
 
@@ -653,8 +650,8 @@ mod tests {
             None
         );
 
-        let details = ModelPricingDetails::new(1, 2)
-            .with_cache_write_1h_micros_per_million_tokens(3);
+        let details =
+            ModelPricingDetails::new(1, 2).with_cache_write_1h_micros_per_million_tokens(3);
         let round_trip = serde_json::to_value(details)
             .ok()
             .and_then(|value| serde_json::from_value::<ModelPricingDetails>(value).ok());

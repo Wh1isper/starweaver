@@ -121,8 +121,8 @@ fn usage_cache_write_tokens(usage: &Value) -> u64 {
             &["input_token_details", "cache_write_tokens"],
         ],
     );
-    let duration_total = usage_cache_write_5m_tokens(usage)
-        .saturating_add(usage_cache_write_1h_tokens(usage));
+    let duration_total =
+        usage_cache_write_5m_tokens(usage).saturating_add(usage_cache_write_1h_tokens(usage));
     direct.max(provider_total).max(duration_total)
 }
 
