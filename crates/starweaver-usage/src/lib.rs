@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-fn is_zero_u64(value: &u64) -> bool {
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
