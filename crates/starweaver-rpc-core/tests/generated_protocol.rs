@@ -218,7 +218,7 @@ fn deferred_tool_schema_is_complete_json_but_remains_object_only() {
 
 #[test]
 fn clarification_answers_are_closed_typed_and_revision_fenced() {
-    let valid = br#"{"jsonrpc":"2.0","id":"req_answer","method":"clarification.resolve","params":{"answers":[{"question":"Which database?","selectedOptions":["PostgreSQL"],"freeText":null}],"clarificationId":"clarification_1","expectedRevision":"2","idempotencyKey":"answer-1","response":null}}"#;
+    let valid = br#"{"jsonrpc":"2.0","id":"req_answer","method":"clarification.resolve","params":{"answers":[{"question":"Which database?","selectedOptions":["PostgreSQL"],"freeText":null}],"clarificationId":"clarification_1","expectedRevision":"2","idempotencyKey":"answer-1","response":null,"sessionId":"session_1"}}"#;
     let Ok(request) = decode_request_frame(valid) else {
         panic!("typed clarification answer must decode");
     };
@@ -228,10 +228,95 @@ fn clarification_answers_are_closed_typed_and_revision_fenced() {
     assert_eq!(params.expected_revision.get(), 2);
     assert_eq!(params.answers[0].selected_options, ["PostgreSQL"]);
 
-    let missing_revision = br#"{"jsonrpc":"2.0","id":"req_answer","method":"clarification.resolve","params":{"answers":[],"clarificationId":"clarification_1","idempotencyKey":"answer-1","response":"default"}}"#;
+    let missing_revision = br#"{"jsonrpc":"2.0","id":"req_answer","method":"clarification.resolve","params":{"answers":[],"clarificationId":"clarification_1","idempotencyKey":"answer-1","response":"default","sessionId":"session_1"}}"#;
     assert!(decode_request_frame(missing_revision).is_err());
-    let open_answer = br#"{"jsonrpc":"2.0","id":"req_answer","method":"clarification.resolve","params":{"answers":[{"question":"Which database?","selectedOptions":[],"unexpected":true}],"clarificationId":"clarification_1","expectedRevision":"2","idempotencyKey":"answer-1","response":"default"}}"#;
+    let open_answer = br#"{"jsonrpc":"2.0","id":"req_answer","method":"clarification.resolve","params":{"answers":[{"question":"Which database?","selectedOptions":[],"unexpected":true}],"clarificationId":"clarification_1","expectedRevision":"2","idempotencyKey":"answer-1","response":"default","sessionId":"session_1"}}"#;
     assert!(decode_request_frame(open_answer).is_err());
+}
+
+#[test]
+fn interaction_item_operations_require_explicit_session_binding() {
+    let cases = [
+        (
+            "approval.decide",
+            serde_json::json!({
+                "approvalId": "approval_1",
+                "decision": "approved",
+                "expectedRevision": "1",
+                "idempotencyKey": "approval-decision-1"
+            }),
+        ),
+        (
+            "approval.show",
+            serde_json::json!({"approvalId": "approval_1"}),
+        ),
+        (
+            "clarification.resolve",
+            serde_json::json!({
+                "answers": [],
+                "clarificationId": "clarification_1",
+                "expectedRevision": "1",
+                "idempotencyKey": "clarification-resolution-1"
+            }),
+        ),
+        (
+            "clarification.show",
+            serde_json::json!({"clarificationId": "clarification_1"}),
+        ),
+        (
+            "deferred.complete",
+            serde_json::json!({
+                "deferredId": "deferred_1",
+                "expectedRevision": "1",
+                "idempotencyKey": "deferred-completion-1",
+                "resultText": "done"
+            }),
+        ),
+        (
+            "deferred.fail",
+            serde_json::json!({
+                "deferredId": "deferred_1",
+                "error": "failed",
+                "expectedRevision": "1",
+                "idempotencyKey": "deferred-failure-1"
+            }),
+        ),
+        (
+            "deferred.show",
+            serde_json::json!({"deferredId": "deferred_1"}),
+        ),
+    ];
+
+    for (method, mut params) in cases {
+        let frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": format!("missing-session-{method}"),
+            "method": method,
+            "params": params.clone()
+        });
+        assert!(
+            decode_request_frame(frame.to_string().as_bytes()).is_err(),
+            "{method} must reject a missing sessionId"
+        );
+
+        let serde_json::Value::Object(params) = &mut params else {
+            panic!("interaction params are objects");
+        };
+        params.insert(
+            "sessionId".to_string(),
+            serde_json::Value::String("session_1".to_string()),
+        );
+        let frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": format!("bound-session-{method}"),
+            "method": method,
+            "params": params
+        });
+        assert!(
+            decode_request_frame(frame.to_string().as_bytes()).is_ok(),
+            "{method} must accept an explicit valid sessionId"
+        );
+    }
 }
 
 #[test]

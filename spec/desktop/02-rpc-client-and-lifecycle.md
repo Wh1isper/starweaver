@@ -1,6 +1,6 @@
 # Desktop RPC Client and Lifecycle
 
-Status: accepted architecture baseline; generated local client and supervisor lifecycle implemented; workspace product flows, full recovery, updater, and SSH private-endpoint transport planned
+Status: accepted local-only architecture; generated client, supervisor lifecycle, workspace product flow, durable transcript replay, and restart recovery implemented; updater planned; SSH removed from Desktop scope
 
 This document defines how the Desktop backend consumes the Starweaver host protocol and names the additions required before a public Desktop release. `../ops/06-json-rpc-host-protocol.md` is handwritten behavioral inventory only. Desktop execution targets the sole IDL-first `starweaver.host` major-1 contract defined by `../ops/09-rpc-idl-and-client-generation.md`; it has no legacy negotiation or fallback client path. The TypeScript application owns typed client behavior, but the privileged Rust supervisor retains physical transport, request identity, routing, recovery, projection, and authority. SSH transport adds probe, provisioning, endpoint-bootstrap, and tunnel states before `Handshaking` as specified in `07-ssh-remote-workspaces.md`; once the private endpoint is accepted through SSH, the same generated client contract applies.
 

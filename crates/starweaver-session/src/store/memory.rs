@@ -49,7 +49,7 @@ use crate::{
 };
 
 use self::host_events::enqueue_host_event_publications_locked;
-use super::{SessionFilter, SessionPage, SessionPageQuery, SessionStore};
+use super::{RunPage, RunPageQuery, SessionFilter, SessionPage, SessionPageQuery, SessionStore};
 
 /// In-memory session store for deterministic tests and single-process hosts.
 #[derive(Clone, Debug, Default)]
@@ -61,6 +61,7 @@ pub struct InMemorySessionStore {
 struct StoreInner {
     sessions: BTreeMap<SessionId, SessionRecord>,
     runs: BTreeMap<(SessionId, RunId), RunRecord>,
+    run_sequences: BTreeMap<SessionId, BTreeMap<usize, RunId>>,
     checkpoints: BTreeMap<(SessionId, RunId), Vec<AgentCheckpoint>>,
     streams: BTreeMap<(SessionId, RunId), Vec<AgentStreamRecord>>,
     replay_events: BTreeMap<(ReplayScope, usize), ReplayEvent>,
@@ -112,6 +113,49 @@ fn advance_run_revision(run: &mut RunRecord) -> SessionStoreResult<()> {
         SessionStoreError::Failed(format!("run {} revision overflow", run.run_id.as_str()))
     })?;
     Ok(())
+}
+
+fn prepare_new_run_record(inner: &StoreInner, run: &mut RunRecord) -> SessionStoreResult<()> {
+    if inner
+        .runs
+        .contains_key(&run_key(&run.session_id, &run.run_id))
+    {
+        return Err(SessionStoreError::Conflict(format!(
+            "run {} already exists for session {}",
+            run.run_id.as_str(),
+            run.session_id.as_str()
+        )));
+    }
+    let sequences = inner.run_sequences.get(&run.session_id);
+    if run.sequence_no == 0 {
+        run.sequence_no = sequences
+            .and_then(|sequences| {
+                sequences
+                    .last_key_value()
+                    .map(|(sequence, _run_id)| *sequence)
+            })
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| SessionStoreError::Failed("run sequence overflow".to_string()))?;
+    } else if sequences.is_some_and(|sequences| sequences.contains_key(&run.sequence_no)) {
+        return Err(SessionStoreError::Failed(format!(
+            "run sequence conflict for session {} at sequence {}",
+            run.session_id.as_str(),
+            run.sequence_no
+        )));
+    }
+    Ok(())
+}
+
+fn insert_prepared_run_record(inner: &mut StoreInner, run: &RunRecord) {
+    inner
+        .run_sequences
+        .entry(run.session_id.clone())
+        .or_default()
+        .insert(run.sequence_no, run.run_id.clone());
+    inner
+        .runs
+        .insert(run_key(&run.session_id, &run.run_id), run.clone());
 }
 
 fn validate_approval_transition(
@@ -808,12 +852,6 @@ fn acquire_run_admission_locked(
         (None, None) => None,
         _ => unreachable!("replacement and claim presence checked above"),
     };
-    if let Some(key) = hitl_claim_key.as_ref() {
-        let claim = inner.hitl_resume_claims.get_mut(key).ok_or_else(|| {
-            SessionStoreError::Conflict("validated preflight resume claim disappeared".to_string())
-        })?;
-        claim.state = HitlResumeClaimState::Admitted;
-    }
     let mut run = request.run;
     run.normalize_for_admission();
     run.revision = 1;
@@ -823,15 +861,12 @@ fn acquire_run_admission_locked(
             run.run_id.as_str()
         ))
     })?;
-    if run.sequence_no == 0 {
-        run.sequence_no = inner
-            .runs
-            .values()
-            .filter(|current| current.session_id == run.session_id)
-            .map(|current| current.sequence_no)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
+    prepare_new_run_record(inner, &mut run)?;
+    if let Some(key) = hitl_claim_key.as_ref() {
+        let claim = inner.hitl_resume_claims.get_mut(key).ok_or_else(|| {
+            SessionStoreError::Conflict("validated preflight resume claim disappeared".to_string())
+        })?;
+        claim.state = HitlResumeClaimState::Admitted;
     }
     run.updated_at = now;
     let generation = inner
@@ -853,9 +888,7 @@ fn acquire_run_admission_locked(
         command_fingerprint: request.command_fingerprint.clone(),
         idempotency_key: request.idempotency_key,
     };
-    inner
-        .runs
-        .insert(run_key(&run.session_id, &run.run_id), run.clone());
+    insert_prepared_run_record(inner, &run);
     let session = inner
         .sessions
         .get_mut(&run.session_id)
@@ -3554,6 +3587,22 @@ impl SessionStore for InMemorySessionStore {
 
     async fn list_runs(&self, session_id: &SessionId) -> SessionStoreResult<Vec<RunRecord>> {
         self.list_run_records(session_id)
+    }
+
+    async fn list_recent_runs(
+        &self,
+        session_id: &SessionId,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<RunRecord>> {
+        self.list_recent_run_records(session_id, limit)
+    }
+
+    async fn list_run_page(
+        &self,
+        session_id: &SessionId,
+        query: RunPageQuery,
+    ) -> SessionStoreResult<RunPage> {
+        self.list_run_record_page(session_id, &query)
     }
 
     async fn update_run_status(

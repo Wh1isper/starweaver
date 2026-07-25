@@ -13,7 +13,9 @@ pub enum HostCall {
     ApprovalList(InteractionListParams),
     ApprovalShow(ApprovalShowParams),
     CatalogList(CatalogListParams),
+    ClarificationList(InteractionListParams),
     ClarificationResolve(ClarificationResolveParams),
+    ClarificationShow(ClarificationShowParams),
     ConfigActivate(ConfigActivateParams),
     ConfigDiscard(ConfigDiscardParams),
     ConfigGet(ConfigGetParams),
@@ -40,6 +42,7 @@ pub enum HostCall {
     ModelSelectionGet(ModelSelectionGetParams),
     ProfileGet(ProfileGetParams),
     RunInterrupt(RunInterruptParams),
+    RunList(RunListParams),
     RunResume(RunResumeParams),
     RunStart(RunStartParams),
     RunStatus(RunStatusParams),
@@ -63,7 +66,9 @@ impl HostCall {
             Self::ApprovalList(_) => Method::ApprovalList,
             Self::ApprovalShow(_) => Method::ApprovalShow,
             Self::CatalogList(_) => Method::CatalogList,
+            Self::ClarificationList(_) => Method::ClarificationList,
             Self::ClarificationResolve(_) => Method::ClarificationResolve,
+            Self::ClarificationShow(_) => Method::ClarificationShow,
             Self::ConfigActivate(_) => Method::ConfigActivate,
             Self::ConfigDiscard(_) => Method::ConfigDiscard,
             Self::ConfigGet(_) => Method::ConfigGet,
@@ -90,6 +95,7 @@ impl HostCall {
             Self::ModelSelectionGet(_) => Method::ModelSelectionGet,
             Self::ProfileGet(_) => Method::ProfileGet,
             Self::RunInterrupt(_) => Method::RunInterrupt,
+            Self::RunList(_) => Method::RunList,
             Self::RunResume(_) => Method::RunResume,
             Self::RunStart(_) => Method::RunStart,
             Self::RunStatus(_) => Method::RunStatus,
@@ -208,8 +214,16 @@ pub fn decode_request_frame(bytes: &[u8]) -> Result<HostRequest, DecodeRequestEr
             serde_json::from_value::<CatalogListParams>(params)
                 .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
         ),
+        Method::ClarificationList => HostCall::ClarificationList(
+            serde_json::from_value::<InteractionListParams>(params)
+                .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
+        ),
         Method::ClarificationResolve => HostCall::ClarificationResolve(
             serde_json::from_value::<ClarificationResolveParams>(params)
+                .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
+        ),
+        Method::ClarificationShow => HostCall::ClarificationShow(
+            serde_json::from_value::<ClarificationShowParams>(params)
                 .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
         ),
         Method::ConfigActivate => HostCall::ConfigActivate(
@@ -314,6 +328,10 @@ pub fn decode_request_frame(bytes: &[u8]) -> Result<HostRequest, DecodeRequestEr
         ),
         Method::RunInterrupt => HostCall::RunInterrupt(
             serde_json::from_value::<RunInterruptParams>(params)
+                .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
+        ),
+        Method::RunList => HostCall::RunList(
+            serde_json::from_value::<RunListParams>(params)
                 .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
         ),
         Method::RunResume => HostCall::RunResume(

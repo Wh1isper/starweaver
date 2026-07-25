@@ -25,11 +25,21 @@ pub trait HostServer: Send + Sync {
         context: &Self::Context,
         params: CatalogListParams,
     ) -> Result<CatalogListResult, CatalogListError>;
+    async fn clarification_list(
+        &self,
+        context: &Self::Context,
+        params: InteractionListParams,
+    ) -> Result<ClarificationListResult, ClarificationListError>;
     async fn clarification_resolve(
         &self,
         context: &Self::Context,
         params: ClarificationResolveParams,
     ) -> Result<ClarificationResolveResult, ClarificationResolveError>;
+    async fn clarification_show(
+        &self,
+        context: &Self::Context,
+        params: ClarificationShowParams,
+    ) -> Result<ClarificationShowResult, ClarificationShowError>;
     async fn config_activate(
         &self,
         context: &Self::Context,
@@ -160,6 +170,11 @@ pub trait HostServer: Send + Sync {
         context: &Self::Context,
         params: RunInterruptParams,
     ) -> Result<RunInterruptResult, RunInterruptError>;
+    async fn run_list(
+        &self,
+        context: &Self::Context,
+        params: RunListParams,
+    ) -> Result<RunListResult, RunListError>;
     async fn run_resume(
         &self,
         context: &Self::Context,

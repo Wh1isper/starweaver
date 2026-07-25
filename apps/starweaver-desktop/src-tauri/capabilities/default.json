@@ -6,7 +6,13 @@
   "platforms": ["linux", "macOS", "windows"],
   "permissions": [
     "allow-get-desktop-status",
+    "allow-retry-managed-runtime",
+    "allow-get-desktop-preferences",
+    "allow-update-desktop-preferences",
+    "allow-reload-desktop-preferences",
     "allow-subscribe-desktop-activation",
-    "allow-unsubscribe-desktop-activation"
+    "allow-unsubscribe-desktop-activation",
+    "allow-get-desktop-window-route",
+    "allow-open-conversation-window"
   ]
 }

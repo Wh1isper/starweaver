@@ -1,6 +1,6 @@
 # Interaction, Authorization, and Transport Security
 
-Status: accepted architecture baseline; renderer/stdio/local-child controls implemented; updater, sandbox, and SSH private-endpoint controls planned
+Status: accepted local-only architecture; renderer, stdio child, workspace authority, host-local OAuth, and durable interaction controls implemented; updater and enforceable sandbox controls planned; SSH removed from Desktop scope
 
 Desktop introduces a privileged local UI around filesystem, shell, model, and durable-control capabilities. Its security boundary is the Desktop backend plus the execution-domain RPC host and its typed workspace registry, not the renderer.
 
@@ -64,13 +64,13 @@ An approval decision is separate from permission to execute or resume a run.
 
 HTTP scope rules must preserve least privilege:
 
-- `approval` may inspect and decide approval/deferred records;
+- `approval` is required to discover or inspect approval, clarification, and deferred records and to decide or resolve them;
 - `run` is required to start, resume, steer, interrupt, or otherwise cause execution;
 - `run.resume` requires `run` authority and may additionally require `approval` when the caller also submits the decision;
 - one scope never implicitly grants another unless the protocol explicitly defines a composite credential;
 - stdio inherits authority from the Desktop backend process but applies the same semantic checks in service code where practical.
 
-An approval includes durable identity, expected revision/fence, actor, reason, normalized decision metadata, and idempotency key. The backend shows the effective tool, arguments, workspace/environment, capability grant, and risk summary before submission.
+An approval includes durable identity, expected revision/fence, actor, reason, normalized decision metadata, and idempotency key. Desktop discovers it through the durable paginated host query, loads its bounded complete argument projection only when selected, and disables approval when the projection is incomplete. The selected session/workspace context and requested action remain visible; richer capability-grant and risk presentation is added when those fields become part of the safe host projection.
 
 ## Event Authorization
 
@@ -82,6 +82,8 @@ A versioned event-view profile is admitted only when the caller is authorized fo
 
 Clarifying questions require a typed answer contract. Marking an approval `approved` without persisting normalized answers is invalid. The host summary retains the original one-to-four questions with header, options, and `multiSelect`; `clarification.resolve` submits closed answer items keyed by exact question text with explicit selected-option labels and optional free text, plus an optional whole-request response. Resolution is fenced by `expectedRevision` and a supervisor-owned idempotency key.
 
+The ordinary `approval.decide` path rejects `ask_user_question` records in both the RPC adapter and the atomic storage mutation, so a caller cannot bypass typed answer validation by reusing the clarification ID as an approval ID.
+
 The resolution path must:
 
 1. load the durable question/approval and verify tool identity and pending state;
@@ -92,13 +94,13 @@ The resolution path must:
 6. resume only through normal fenced continuation admission;
 7. expose the sanitized answer to the model/tool result exactly once.
 
-RPC must provide a question-to-answer-to-resume E2E test. Until this path exists, Desktop and RPC must not advertise clarifying-question support.
+The implemented Desktop path discovers approval-backed questions after reconnect, resolves typed answers as a durable fenced mutation, and invokes `run.resume` as a separate durable operation. A crash or lost response between those operations leaves the decision saved and the run waiting; the Inbox detects that durable state and presents an explicit resume action rather than fabricating atomicity. The release gate retains a question-to-answer-to-resume E2E test.
 
 ## Deferred Tools
 
 Deferred resolution follows the same durable discipline:
 
-- list pending records after reconnect;
+- list unresolved records after reconnect with kind and state predicates applied in storage before keyset pagination;
 - validate expected revision/fence;
 - resolve with a stable idempotency key;
 - persist normalized result/error without raw secrets;
@@ -148,18 +150,7 @@ The Desktop backend avoids long blocking calls on the command connection. The ge
 
 ## RPC Runtime Safety Prerequisites
 
-Before Desktop public release, RPC must close these host-side gaps:
-
-- ordinary expired run admissions are reconciled periodically after startup;
-- clarifying answers are typed, validated, and atomically persisted;
-- `run.resume` requires run authority and cannot be invoked by an approval-only credential;
-- subscription registry removal is generation-safe across immediate unsubscribe/resubscribe;
-- synchronous client-state file locks and I/O move off Tokio runtime workers with bounded waiting;
-- live subscription/status errors pass through the same safe public error projection as request errors;
-- local stdio and SSH-private-endpoint frame sizes are bounded before allocation;
-- session/run/interaction list queries are storage-bounded and paginated.
-
-These are implementation prerequisites discovered by the Desktop readiness review, not optional UI polish.
+The local Desktop path now has periodic ordinary-run lease reconciliation, typed atomic clarification answers, run-authority enforcement for `run.resume`, generation-safe subscription removal, blocking client-state I/O isolation, safe public subscription errors, bounded stdio framing, and storage-bounded paginated interaction discovery. These are protocol and host safety requirements rather than optional UI polish, and their focused plus aggregate gates remain release prerequisites.
 
 ## SSH Transport Security
 

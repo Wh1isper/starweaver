@@ -1,6 +1,6 @@
 //! RPC-owned agent profile catalog and production model materialization.
 
-use std::{env, sync::Arc};
+use std::{collections::BTreeMap, env, sync::Arc};
 
 use serde::Serialize;
 use serde_json::json;
@@ -13,10 +13,12 @@ use starweaver_agent::{
     user_input_tools,
 };
 use starweaver_model::{
-    HttpModelConfig, ModelAdapter, ModelProfile, ProtocolFamily, ProtocolModelClient,
-    ReqwestHttpClient, anthropic_http_config, gemini_http_config, get_model_config,
-    openai_chat_http_config, openai_responses_http_config,
+    HttpModelConfig, MaxTokensParameter, ModelAdapter, ModelProfile, ProtocolFamily,
+    ProtocolModelClient, ReqwestHttpClient, anthropic_http_config, build_codex_model_with_profile,
+    codex_model_profile, gemini_http_config, get_model_config, openai_chat_http_config,
+    openai_responses_http_config,
 };
+use starweaver_oauth::{CODEX_BASE_URL, OAuthStore, create_codex_token_source};
 
 use crate::{RpcConfig, RpcHostError, RpcHostResult, RpcProfileConfig, RpcProviderConfig};
 
@@ -332,7 +334,15 @@ impl RpcAgentCatalog {
             }
             if profile.test_response.is_none() && profile.model_id != "local_echo" {
                 let parsed = RpcModelId::parse(&profile.model_id)?;
-                self.provider_config(&parsed)?;
+                let provider = self.provider_config(&parsed)?;
+                if parsed.oauth_provider.is_some()
+                    && (provider.base_url.is_some() || provider.endpoint_path.is_some())
+                {
+                    return Err(RpcHostError::Invalid(format!(
+                        "RPC OAuth provider {} cannot override its credential destination",
+                        parsed.provider_key
+                    )));
+                }
             }
             for toolset in &profile.toolsets {
                 if !available_toolsets.contains(toolset) {
@@ -400,6 +410,38 @@ impl RpcAgentCatalog {
                 "RPC provider {} is disabled for model {}",
                 parsed.provider_key, profile.model_id
             )));
+        }
+        if parsed.oauth_provider.as_deref() == Some("codex") {
+            let mut http_config = HttpModelConfig::new(CODEX_BASE_URL, "responses");
+            http_config.max_tokens_parameter = MaxTokensParameter::Omit;
+            let token_source = create_codex_token_source(Some(OAuthStore::default_store()))
+                .map_err(|error| {
+                    RpcHostError::Invalid(format!(
+                        "failed to build Codex OAuth token source: {error}"
+                    ))
+                })?;
+            let mut model_profile = match profile.model_config.as_deref() {
+                Some(preset) => {
+                    get_model_config(preset)
+                        .map_err(|error| RpcHostError::Invalid(error.to_string()))?
+                        .profile
+                }
+                None => ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+            };
+            let codex_profile = codex_model_profile();
+            model_profile.supports_thinking = codex_profile.supports_thinking;
+            model_profile.thinking_always_enabled = codex_profile.thinking_always_enabled;
+            let model = build_codex_model_with_profile(
+                parsed.model_name,
+                Arc::new(token_source),
+                http_config,
+                BTreeMap::new(),
+                model_profile,
+            )
+            .map_err(|error| {
+                RpcHostError::Invalid(format!("failed to build Codex OAuth model: {error}"))
+            })?;
+            return Ok(Arc::new(model));
         }
         let key_env = provider
             .api_key_env
@@ -553,12 +595,14 @@ fn digest_binding(domain: &[u8], value: &serde_json::Value) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
+#[derive(Debug)]
 struct RpcModelId {
     provider_key: String,
     provider_name: String,
     protocol_name: String,
     model_name: String,
     protocol: ProtocolFamily,
+    oauth_provider: Option<String>,
 }
 
 impl RpcModelId {
@@ -578,6 +622,21 @@ impl RpcModelId {
             .map_or((None, prefix), |(provider, protocol)| {
                 (Some(provider), protocol)
             });
+        if provider_key == Some("oauth") {
+            if protocol_name != "codex" {
+                return Err(RpcHostError::Invalid(format!(
+                    "unsupported RPC OAuth provider in {model_id}: {protocol_name}"
+                )));
+            }
+            return Ok(Self {
+                provider_key: protocol_name.to_string(),
+                provider_name: protocol_name.to_string(),
+                protocol_name: "oauth".to_string(),
+                model_name: model_name.to_string(),
+                protocol: ProtocolFamily::OpenAiResponses,
+                oauth_provider: Some(protocol_name.to_string()),
+            });
+        }
         let (provider_name, protocol) = match protocol_name {
             "openai" | "openai-responses" => ("openai", ProtocolFamily::OpenAiResponses),
             "openai-chat" => ("openai", ProtocolFamily::OpenAiChatCompletions),
@@ -595,6 +654,7 @@ impl RpcModelId {
             protocol_name: protocol_name.to_string(),
             model_name: model_name.to_string(),
             protocol,
+            oauth_provider: None,
         })
     }
 
@@ -615,6 +675,75 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn codex_oauth_model_uses_the_host_local_provider_without_an_api_key() {
+        let parsed = RpcModelId::parse("oauth@codex:gpt-5.6-sol").unwrap();
+        assert_eq!(parsed.provider_key, "codex");
+        assert_eq!(parsed.provider_name, "codex");
+        assert_eq!(parsed.protocol, ProtocolFamily::OpenAiResponses);
+        assert_eq!(parsed.oauth_provider.as_deref(), Some("codex"));
+        assert_eq!(parsed.model_name, "gpt-5.6-sol");
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = RpcConfig::for_tests(temp.path());
+        config.profiles.insert(
+            "codex".to_string(),
+            RpcProfileConfig {
+                model_id: "oauth@codex:gpt-5.6-sol".to_string(),
+                model_config: Some("gpt5_350k".to_string()),
+                test_response: None,
+                ..RpcProfileConfig::default()
+            },
+        );
+        config.providers.insert(
+            "codex".to_string(),
+            RpcProviderConfig {
+                api_key_env: None,
+                ..RpcProviderConfig::default()
+            },
+        );
+        let catalog = RpcAgentCatalog::new(config).unwrap();
+        assert!(catalog.runtime_builder("codex").is_ok());
+    }
+
+    #[test]
+    fn unsupported_oauth_provider_is_rejected() {
+        let error = RpcModelId::parse("oauth@other:model").unwrap_err();
+        assert!(error.to_string().contains("unsupported RPC OAuth provider"));
+        assert!(RpcModelId::parse("oauth@codex:").is_err());
+        assert!(RpcModelId::parse("oauth@codex").is_err());
+    }
+
+    #[test]
+    fn codex_oauth_rejects_credential_destination_overrides() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = RpcConfig::for_tests(temp.path());
+        config.profiles.insert(
+            "codex".to_string(),
+            RpcProfileConfig {
+                model_id: "oauth@codex:gpt-5.6-sol".to_string(),
+                test_response: None,
+                ..RpcProfileConfig::default()
+            },
+        );
+        config.providers.insert(
+            "codex".to_string(),
+            RpcProviderConfig {
+                base_url: Some("https://example.invalid".to_string()),
+                ..RpcProviderConfig::default()
+            },
+        );
+
+        let Err(error) = RpcAgentCatalog::new(config) else {
+            panic!("OAuth credential destination overrides must fail closed");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("cannot override its credential destination")
+        );
+    }
 
     #[test]
     fn production_profile_requires_configured_provider_credentials() {

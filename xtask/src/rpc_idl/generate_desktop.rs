@@ -32,7 +32,9 @@ const REQUIRED_DESKTOP_METHODS: &[&str] = &[
     "approval.list",
     "approval.show",
     "catalog.list",
+    "clarification.list",
     "clarification.resolve",
+    "clarification.show",
     "config.activate",
     "config.discard",
     "config.get",
@@ -50,6 +52,7 @@ const REQUIRED_DESKTOP_METHODS: &[&str] = &[
     "model.selection.get",
     "profile.get",
     "run.interrupt",
+    "run.list",
     "run.resume",
     "run.start",
     "run.status",
@@ -71,6 +74,7 @@ const DESKTOP_EVENT_KINDS: &[&str] = &[
     "deferred_changed",
     "output_available",
     "run_changed",
+    "transcript_changed",
 ];
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1399,6 +1403,7 @@ export class DesktopHostClient {
     handler: (event: SafeHostEvent) => void | Promise<void>,
   ): Promise<{
     readonly token: DesktopHostSubscriptionToken;
+    readonly caughtUp: Promise<void>;
     readonly close: () => Promise<void>;
     readonly done: Promise<void>;
   }> {
@@ -1528,13 +1533,27 @@ export class DesktopHostClient {
       });
     });
 
+    const onComplete = new Channel<unknown>((value) => {
+      if (
+        typeof value !== "string" ||
+        !value.startsWith("desktop-host-subscription-") ||
+        readyToken === undefined ||
+        value !== readyToken
+      ) {
+        failSubscription(new Error("invalid host subscription completion token"));
+        return;
+      }
+      acceptingDeliveries = false;
+      void finalize();
+    });
+
     // The readiness channel makes the cancellation handle available before the command can be
     // blocked on the first replay acknowledgement. Command completion is validated in the
     // background and becomes an observable terminal subscription failure after readiness.
     const subscriptionCommand = Promise.resolve().then(() =>
-      invoke(SUBSCRIBE_HOST_EVENTS_COMMAND, { scope, onReady, onEvent }),
+      invoke(SUBSCRIBE_HOST_EVENTS_COMMAND, { scope, onReady, onEvent, onComplete }),
     );
-    void subscriptionCommand.then(
+    const caughtUp = subscriptionCommand.then(
       (tokenValue: unknown) => {
         if (
           typeof tokenValue !== "string" ||
@@ -1542,14 +1561,23 @@ export class DesktopHostClient {
           readyToken === undefined ||
           tokenValue !== readyToken
         ) {
-          failSubscription(new Error("host subscription readiness token does not match response token"));
+          const error = new Error("host subscription readiness token does not match response token");
+          failSubscription(error);
+          throw error;
         }
       },
-      (error: unknown) => failSubscription(error),
+      (error: unknown) => {
+        failSubscription(error);
+        throw error;
+      },
     );
+    // Setup may reject before the returned handle is observed. Keep that path handled while
+    // preserving the original promise for callers that need a replay catch-up barrier.
+    void caughtUp.catch(() => undefined);
     const token = await tokenReady;
     return {
       token,
+      caughtUp,
       close: async () => {
         const cancellation = requestClose();
         void finalize();
@@ -2168,7 +2196,7 @@ fn render_capability_fragment(
             permission_identifier(&manifest.commands.subscribe),
             permission_identifier(&manifest.commands.unsubscribe),
         ],
-        "windows": ["main"],
+        "windows": ["main", "conversation-*"],
     });
     Ok(format!(
         "{}\n",

@@ -26,6 +26,7 @@
     "dev": "vite",
     "format": "biome format --write .",
     "format:check": "biome format .",
+    "icons": "node scripts/generate-icons.mjs",
     "lint": "biome lint .",
     "preview": "vite preview",
     "tauri": "tauri",

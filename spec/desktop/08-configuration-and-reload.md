@@ -1,6 +1,6 @@
 # Desktop and Runtime Configuration Reload
 
-Status: accepted product direction; host protocol and implementation planned
+Status: typed host config, Desktop safe editing, and backend-owned application preferences implemented; updater-owned activation remains planned
 
 Starweaver Desktop has one long-lived RPC host per execution domain. Configuration must therefore change without starting one process per workspace, while active runs remain bound to the exact materialization under which they were admitted.
 
@@ -331,7 +331,9 @@ Remote config reload survives tunnel loss through mutation receipts and `config.
 
 The host-side prerequisite is implemented: supervised launch and initialize are execution-domain-only; RPC owns a persistent typed workspace registry and session binding; runtime configuration has separate desired/active revisions plus self-contained immutable secret-free materialization snapshots; the six `config.*` methods, notification, receipts, generated Desktop bridge, candidate validation, HMAC authorization, atomic persistence, run snapshot pinning, and SessionRecord/RunRecord v2 provenance migration are present. Blocking filesystem/config operations are dispatched away from RPC Tokio workers, and response-flush activation prevents change notifications from overtaking the corresponding response.
 
-The remaining product work is Desktop application-config UX, updater-owned activation/restart/rollback, managed-policy grant issuance, remote-domain grant bootstrapping over the SSH-private lifecycle, and full cross-version release fixtures. Reload must never be implemented by swapping only `RpcService.config`; every long-lived derived owner consumes the retained immutable snapshot or is explicitly restart-required.
+Desktop now owns a strict version-1 private preference record for `theme`, `density`, and `windowCloseBehavior`. The fixed backend-selected file uses closed enums, canonical decimal revisions, exact mutation replay, same-directory atomic replacement, file and parent-directory flushes where supported, and last-known-good reload behavior. Renderer commands expose no path, unrestricted document, credential, or canonical session evidence. `keep_running` hides a closed window while preserving the one supervised host; the fixed single-instance activation route restores it. `quit` follows the coordinated application shutdown barrier.
+
+The Settings drawer also materializes catalog/profile readiness without claiming provider credential or network readiness, changes the execution-domain default only for new runs, edits only the closed safe runtime-config projection, validates before update, and binds update/reload mutations to their exact recoverable invocation. Restart-required candidates remain staged or discardable: updater-owned activation/restart/rollback is D10 work. Broader Desktop-local preference fields, managed-policy grant issuance, and full cross-version release fixtures also remain. SSH is outside the Desktop roadmap. Runtime reload must never be implemented by swapping only `RpcService.config`; every long-lived derived owner consumes the retained immutable snapshot or is explicitly restart-required.
 
 ## Acceptance Gates
 

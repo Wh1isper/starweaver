@@ -54,6 +54,7 @@ pub enum EventClass {
     OutputAvailable,
     RunChanged,
     SessionChanged,
+    TranscriptChanged,
 }
 pub const EVENT_CLASSES: &[EventClassMetadata] = &[
     EventClassMetadata {
@@ -112,6 +113,13 @@ pub const EVENT_CLASSES: &[EventClassMetadata] = &[
         feature: Some("sessions"),
         scopes: &["read"],
     },
+    EventClassMetadata {
+        event_class: EventClass::TranscriptChanged,
+        name: "transcript_changed",
+        schema_type: "TranscriptChangedEvent",
+        feature: Some("runs"),
+        scopes: &["run"],
+    },
 ];
 impl EventClass {
     #[must_use]
@@ -125,6 +133,7 @@ impl EventClass {
             "output_available" => Some(Self::OutputAvailable),
             "run_changed" => Some(Self::RunChanged),
             "session_changed" => Some(Self::SessionChanged),
+            "transcript_changed" => Some(Self::TranscriptChanged),
             _ => None,
         }
     }
@@ -150,7 +159,9 @@ pub enum Method {
     ApprovalList,
     ApprovalShow,
     CatalogList,
+    ClarificationList,
     ClarificationResolve,
+    ClarificationShow,
     ConfigActivate,
     ConfigDiscard,
     ConfigGet,
@@ -177,6 +188,7 @@ pub enum Method {
     ModelSelectionGet,
     ProfileGet,
     RunInterrupt,
+    RunList,
     RunResume,
     RunStart,
     RunStatus,
@@ -206,7 +218,7 @@ pub const METHODS: &[MethodMetadata] = &[
         name: "approval.list",
         features: &["hitl"],
         transports: &[Transport::Stdio, Transport::Http],
-        scopes: &["read"],
+        scopes: &["approval"],
         idempotency: Idempotency::None,
     },
     MethodMetadata {
@@ -214,7 +226,7 @@ pub const METHODS: &[MethodMetadata] = &[
         name: "approval.show",
         features: &["hitl"],
         transports: &[Transport::Stdio, Transport::Http],
-        scopes: &["read"],
+        scopes: &["approval"],
         idempotency: Idempotency::None,
     },
     MethodMetadata {
@@ -226,12 +238,28 @@ pub const METHODS: &[MethodMetadata] = &[
         idempotency: Idempotency::None,
     },
     MethodMetadata {
+        method: Method::ClarificationList,
+        name: "clarification.list",
+        features: &["clarifications", "hitl"],
+        transports: &[Transport::Stdio, Transport::Http],
+        scopes: &["approval"],
+        idempotency: Idempotency::None,
+    },
+    MethodMetadata {
         method: Method::ClarificationResolve,
         name: "clarification.resolve",
         features: &["clarifications", "hitl"],
         transports: &[Transport::Stdio, Transport::Http],
         scopes: &["approval"],
         idempotency: Idempotency::Idempotent,
+    },
+    MethodMetadata {
+        method: Method::ClarificationShow,
+        name: "clarification.show",
+        features: &["clarifications", "hitl"],
+        transports: &[Transport::Stdio, Transport::Http],
+        scopes: &["approval"],
+        idempotency: Idempotency::None,
     },
     MethodMetadata {
         method: Method::ConfigActivate,
@@ -302,7 +330,7 @@ pub const METHODS: &[MethodMetadata] = &[
         name: "deferred.list",
         features: &["hitl"],
         transports: &[Transport::Stdio, Transport::Http],
-        scopes: &["read"],
+        scopes: &["approval"],
         idempotency: Idempotency::None,
     },
     MethodMetadata {
@@ -310,7 +338,7 @@ pub const METHODS: &[MethodMetadata] = &[
         name: "deferred.show",
         features: &["hitl"],
         transports: &[Transport::Stdio, Transport::Http],
-        scopes: &["read"],
+        scopes: &["approval"],
         idempotency: Idempotency::None,
     },
     MethodMetadata {
@@ -442,6 +470,14 @@ pub const METHODS: &[MethodMetadata] = &[
         idempotency: Idempotency::Idempotent,
     },
     MethodMetadata {
+        method: Method::RunList,
+        name: "run.list",
+        features: &["runs"],
+        transports: &[Transport::Stdio, Transport::Http],
+        scopes: &["read"],
+        idempotency: Idempotency::None,
+    },
+    MethodMetadata {
         method: Method::RunResume,
         name: "run.resume",
         features: &["hitl", "runs"],
@@ -562,7 +598,9 @@ impl Method {
             "approval.list" => Some(Self::ApprovalList),
             "approval.show" => Some(Self::ApprovalShow),
             "catalog.list" => Some(Self::CatalogList),
+            "clarification.list" => Some(Self::ClarificationList),
             "clarification.resolve" => Some(Self::ClarificationResolve),
+            "clarification.show" => Some(Self::ClarificationShow),
             "config.activate" => Some(Self::ConfigActivate),
             "config.discard" => Some(Self::ConfigDiscard),
             "config.get" => Some(Self::ConfigGet),
@@ -589,6 +627,7 @@ impl Method {
             "model.selection.get" => Some(Self::ModelSelectionGet),
             "profile.get" => Some(Self::ProfileGet),
             "run.interrupt" => Some(Self::RunInterrupt),
+            "run.list" => Some(Self::RunList),
             "run.resume" => Some(Self::RunResume),
             "run.start" => Some(Self::RunStart),
             "run.status" => Some(Self::RunStatus),
@@ -681,6 +720,7 @@ pub const EVENT_PROFILES: &[EventProfileMetadata] = &[
         event_classes: &[
             EventClass::RunChanged,
             EventClass::OutputAvailable,
+            EventClass::TranscriptChanged,
             EventClass::ApprovalChanged,
             EventClass::DeferredChanged,
             EventClass::ClarificationChanged,
@@ -692,6 +732,7 @@ pub const EVENT_PROFILES: &[EventProfileMetadata] = &[
         event_classes: &[
             EventClass::RunChanged,
             EventClass::OutputAvailable,
+            EventClass::TranscriptChanged,
             EventClass::ApprovalChanged,
             EventClass::DeferredChanged,
             EventClass::ClarificationChanged,

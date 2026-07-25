@@ -112,6 +112,65 @@ pub struct SessionPage {
     pub has_more: bool,
 }
 
+/// Stable key identifying one run's position in immutable session sequence ordering.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RunPageKey {
+    /// Exclusive session-local sequence boundary.
+    pub sequence_no: usize,
+}
+
+impl RunPageKey {
+    /// Build a key from one returned run.
+    #[must_use]
+    pub const fn from_run(run: &RunRecord) -> Self {
+        Self {
+            sequence_no: run.sequence_no,
+        }
+    }
+}
+
+/// Bounded keyset query over runs ordered by immutable session sequence descending.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RunPageQuery {
+    before: Option<RunPageKey>,
+    limit: usize,
+}
+
+impl RunPageQuery {
+    /// Build a validated run-page query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless `limit` is between 1 and [`MAX_STABLE_PAGE_SIZE`].
+    pub fn new(before: Option<RunPageKey>, limit: usize) -> SessionStoreResult<Self> {
+        validate_page_limit(limit)?;
+        Ok(Self { before, limit })
+    }
+
+    /// Return the exclusive sequence boundary.
+    #[must_use]
+    pub const fn before(&self) -> Option<&RunPageKey> {
+        self.before.as_ref()
+    }
+
+    /// Return the validated page size.
+    #[must_use]
+    pub const fn limit(&self) -> usize {
+        self.limit
+    }
+}
+
+/// One stable page of durable runs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RunPage {
+    /// Runs in immutable session sequence descending order.
+    pub runs: Vec<RunRecord>,
+    /// Last returned key, or the requested start key when the page is empty.
+    pub next_key: Option<RunPageKey>,
+    /// Whether another older run exists after `next_key`.
+    pub has_more: bool,
+}
+
 /// Stable key identifying one HITL record's position in updated-time ordering.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InteractionPageKey {
@@ -121,6 +180,18 @@ pub struct InteractionPageKey {
     pub interaction_id: String,
 }
 
+/// Durable interaction state class applied before keyset pagination.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum InteractionStateFilter {
+    /// Include unresolved and terminal records.
+    #[default]
+    All,
+    /// Include only records that still require an external decision or result.
+    Unresolved,
+    /// Include only records whose external interaction has finished.
+    Resolved,
+}
+
 /// Bounded keyset query over approval or deferred-tool records.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InteractionPageQuery {
@@ -128,6 +199,7 @@ pub struct InteractionPageQuery {
     run_id: Option<RunId>,
     after: Option<InteractionPageKey>,
     limit: usize,
+    state: InteractionStateFilter,
 }
 
 impl InteractionPageQuery {
@@ -148,7 +220,15 @@ impl InteractionPageQuery {
             run_id,
             after,
             limit,
+            state: InteractionStateFilter::All,
         })
+    }
+
+    /// Apply a durable interaction-state filter before pagination.
+    #[must_use]
+    pub const fn with_state(mut self, state: InteractionStateFilter) -> Self {
+        self.state = state;
+        self
     }
 
     /// Return the optional owning-session filter.
@@ -173,6 +253,12 @@ impl InteractionPageQuery {
     #[must_use]
     pub const fn limit(&self) -> usize {
         self.limit
+    }
+
+    /// Return the durable state class applied before pagination.
+    #[must_use]
+    pub const fn state(&self) -> InteractionStateFilter {
+        self.state
     }
 }
 
@@ -849,6 +935,23 @@ pub trait SessionStore: Send + Sync {
 
     /// List runs for a session.
     async fn list_runs(&self, session_id: &SessionId) -> SessionStoreResult<Vec<RunRecord>>;
+
+    /// List at most `limit` most recent runs in ascending session sequence order.
+    ///
+    /// Implementations must apply the limit before loading durable run payloads. A zero limit
+    /// returns no runs without reading run rows.
+    async fn list_recent_runs(
+        &self,
+        session_id: &SessionId,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<RunRecord>>;
+
+    /// List one stable newest-first page of runs for a session.
+    async fn list_run_page(
+        &self,
+        session_id: &SessionId,
+        query: RunPageQuery,
+    ) -> SessionStoreResult<RunPage>;
 
     /// Update run status and optional output preview through the legacy low-level path.
     ///

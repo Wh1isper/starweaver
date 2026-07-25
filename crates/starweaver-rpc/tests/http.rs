@@ -330,6 +330,24 @@ fn http_rejects_missing_credentials_browser_blind_writes_and_insufficient_scopes
     assert!(read_only_run.starts_with("HTTP/1.1 403 Forbidden"));
 
     for (method, params) in [
+        ("approval.list", json!({"limit": 1})),
+        (
+            "approval.show",
+            json!({"approvalId": "approval_missing", "sessionId": "session_missing"}),
+        ),
+        ("clarification.list", json!({"limit": 1})),
+        (
+            "clarification.show",
+            json!({
+                "clarificationId": "clarification_missing",
+                "sessionId": "session_missing"
+            }),
+        ),
+        ("deferred.list", json!({"limit": 1})),
+        (
+            "deferred.show",
+            json!({"deferredId": "deferred_missing", "sessionId": "session_missing"}),
+        ),
         (
             "environment.health",
             json!({"attachmentId": "attachment_missing"}),
@@ -339,6 +357,7 @@ fn http_rejects_missing_credentials_browser_blind_writes_and_insufficient_scopes
             json!({
                 "approvalId": "approval_missing",
                 "decision": "approved",
+                "sessionId": "session_missing",
                 "expectedRevision": "1",
                 "idempotencyKey": "denied-approval-decision"
             }),

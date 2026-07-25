@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-desktop-window-route"
+description = "Enables the get_desktop_window_route command without any pre-configured scope."
+commands.allow = ["get_desktop_window_route"]
+
+[[permission]]
+identifier = "deny-get-desktop-window-route"
+description = "Denies the get_desktop_window_route command without any pre-configured scope."
+commands.deny = ["get_desktop_window_route"]

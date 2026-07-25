@@ -3,9 +3,10 @@ use rusqlite::{params, types::ValueRef};
 use starweaver_context::{AgentCheckpoint, AgentRunState, ResumableState};
 use starweaver_core::{AgentExecutionNode, AgentId, CheckpointId, ConversationId, RunId};
 use starweaver_session::{
-    AcquireRunAdmission, ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord,
-    DurableHostEventClass, DurableHostEventQuery, DurableHostEventScope, ExecutionStatus,
-    HitlResumeClaim, InMemorySessionStore, InteractionPageQuery, LOCAL_SESSION_NAMESPACE,
+    ASK_USER_QUESTION_ACTION, AcquireRunAdmission, ApprovalDecision, ApprovalRecord,
+    ApprovalStatus, DeferredToolRecord, DurableHostEventClass, DurableHostEventQuery,
+    DurableHostEventScope, ExecutionStatus, HitlResumeClaim, InMemorySessionStore,
+    InteractionPageQuery, InteractionStateFilter, LOCAL_SESSION_NAMESPACE,
     PendingHostEventPublication, RelatedRunUpdate, RunRecord, RunStatus, RunTerminalError,
     SessionRecord, SessionStore, SessionStoreError, StreamCursorRef, StreamPublicationTarget,
     StreamPublicationTargets,
@@ -67,10 +68,17 @@ fn hitl_pages_are_bounded_stable_and_filter_before_limit() {
                 run.session_id.clone(),
                 run.run_id.clone(),
                 format!("action-{label}"),
-                "shell",
+                if matches!(*label, "d" | "b") {
+                    ASK_USER_QUESTION_ACTION
+                } else {
+                    "shell"
+                },
             );
             approval.created_at = tied_at;
             approval.updated_at = tied_at;
+            if matches!(*label, "e" | "b") {
+                approval.status = ApprovalStatus::Approved;
+            }
             approvals.push(approval);
 
             let mut record = DeferredToolRecord::new(
@@ -82,6 +90,9 @@ fn hitl_pages_are_bounded_stable_and_filter_before_limit() {
             );
             record.created_at = tied_at;
             record.updated_at = tied_at;
+            if *label != "a" {
+                record.status = ExecutionStatus::Completed;
+            }
             deferred.push(record);
         }
     }
@@ -195,6 +206,50 @@ fn hitl_pages_are_bounded_stable_and_filter_before_limit() {
         ["deferred-page-d", "deferred-page-b"]
     );
     assert!(!run_filtered.has_more);
+
+    let unresolved_approvals = storage
+        .list_standard_approval_page(
+            InteractionPageQuery::new(None, None, None, 2)
+                .expect("unresolved approval query")
+                .with_state(InteractionStateFilter::Unresolved),
+        )
+        .expect("unresolved approvals");
+    assert_eq!(
+        unresolved_approvals
+            .records
+            .iter()
+            .map(|record| record.approval_id.as_str())
+            .collect::<Vec<_>>(),
+        ["approval-page-c", "approval-page-a"],
+        "kind and state filters must run before the page limit"
+    );
+    assert!(!unresolved_approvals.has_more);
+
+    let unresolved_clarifications = storage
+        .list_clarification_page(
+            InteractionPageQuery::new(None, None, None, 1)
+                .expect("unresolved clarification query")
+                .with_state(InteractionStateFilter::Unresolved),
+        )
+        .expect("unresolved clarifications");
+    assert_eq!(
+        unresolved_clarifications.records[0].approval_id,
+        "approval-page-d"
+    );
+    assert!(!unresolved_clarifications.has_more);
+
+    let unresolved_deferred = storage
+        .list_deferred_tool_page(
+            InteractionPageQuery::new(None, None, None, 1)
+                .expect("unresolved deferred query")
+                .with_state(InteractionStateFilter::Unresolved),
+        )
+        .expect("unresolved deferred");
+    assert_eq!(
+        unresolved_deferred.records[0].deferred_id,
+        "deferred-page-a"
+    );
+    assert!(!unresolved_deferred.has_more);
 }
 
 #[tokio::test]
@@ -310,6 +365,53 @@ fn begin_run_assigns_unique_sequences_and_rejects_conflicting_retries() {
             .to_string()
             .contains("requires queued status")
     );
+}
+
+#[tokio::test]
+async fn sqlite_recent_runs_reads_only_latest_bounded_rows() {
+    let storage = SqliteStorage::in_memory().expect("storage");
+    let session = storage.create_session(None, None).expect("create session");
+    for suffix in 1..=5 {
+        storage
+            .begin_run(RunRecord::new(
+                session.session_id.clone(),
+                RunId::from_string(format!("bounded-run-{suffix}")),
+                ConversationId::new(),
+            ))
+            .expect("begin run");
+    }
+
+    storage
+        .lock()
+        .expect("connection")
+        .execute(
+            "UPDATE run_records SET record = '{' WHERE session_id = ?1 AND sequence_no = 1",
+            params![session.session_id.as_str()],
+        )
+        .expect("corrupt oldest row");
+
+    let store = storage.session_store();
+    assert!(
+        store
+            .list_recent_runs(&session.session_id, 0)
+            .await
+            .expect("zero limit returns no runs")
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .list_recent_runs(&session.session_id, 2)
+            .await
+            .expect("bounded latest runs")
+            .into_iter()
+            .map(|run| run.sequence_no)
+            .collect::<Vec<_>>(),
+        vec![4, 5]
+    );
+    store
+        .list_runs(&session.session_id)
+        .await
+        .expect_err("full history still reads the corrupted row");
 }
 
 #[test]

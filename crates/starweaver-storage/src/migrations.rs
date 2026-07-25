@@ -1312,7 +1312,7 @@ mod tests {
             .expect("legacy full checkpoint");
 
         let applied = apply_sqlite_migrations(&mut connection).expect("migrate legacy database");
-        assert_eq!(applied.len(), 18);
+        assert_eq!(applied.len(), 19);
         assert_eq!(
             scalar_string(&connection, "SELECT record FROM session_records"),
             r#"{"kind":"legacy-session"}"#
@@ -1581,6 +1581,7 @@ mod tests {
                 "20260721_000016_environment_aggregate",
                 "20260721_000017_durable_run_control_effects",
                 "20260724_000018_session_run_provenance_v2",
+                "20260725_000019_transcript_host_events",
             ]
         );
         let migrated_checkpoint = from_versioned_json::<AgentCheckpoint>(&scalar_string(
@@ -1760,6 +1761,7 @@ mod tests {
                 "20260721_000016_environment_aggregate",
                 "20260721_000017_durable_run_control_effects",
                 "20260724_000018_session_run_provenance_v2",
+                "20260725_000019_transcript_host_events",
             ]
         );
         let moved = from_versioned_json::<ReplaySnapshot>(&scalar_string(
@@ -2006,6 +2008,164 @@ mod tests {
                 )
             ),
             0
+        );
+    }
+
+    #[test]
+    fn transcript_host_event_migration_preserves_non_empty_log_and_outbox() {
+        fn materialized_rows(connection: &Connection) -> Vec<(i64, String, String, String)> {
+            let mut statement = connection
+                .prepare(
+                    "SELECT position, publication_key, event_class, record
+                     FROM host_event_records ORDER BY position",
+                )
+                .expect("prepare materialized host-event query");
+            statement
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .expect("query materialized host events")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("read materialized host events")
+        }
+
+        fn pending_rows(connection: &Connection) -> Vec<(i64, String, String, String)> {
+            let mut statement = connection
+                .prepare(
+                    "SELECT enqueue_sequence, publication_key, event_class, record
+                     FROM host_event_publication_outbox ORDER BY enqueue_sequence",
+                )
+                .expect("prepare pending host-event query");
+            statement
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .expect("query pending host events")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("read pending host events")
+        }
+
+        let mut connection = Connection::open_in_memory().expect("open database");
+        let migration_index = SQLITE_MIGRATIONS
+            .iter()
+            .position(|migration| migration.id == "20260725_000019_transcript_host_events")
+            .expect("transcript host-event migration");
+        assert_eq!(migration_index + 1, SQLITE_MIGRATIONS.len());
+        for (index, migration) in SQLITE_MIGRATIONS.iter().take(migration_index).enumerate() {
+            connection
+                .execute_batch(migration.sql)
+                .unwrap_or_else(|error| {
+                    panic!("apply pre-transcript migration {}: {error}", migration.id)
+                });
+            mark_migration_applied(&connection, index);
+        }
+
+        connection
+            .execute_batch(
+                r#"
+                UPDATE host_event_log_state SET last_position = 9 WHERE singleton = 1;
+                INSERT INTO host_event_records
+                    (position, publication_key, event_id, scope_kind, session_id, run_id,
+                     event_class, record, occurred_at)
+                VALUES
+                    (9, 'materialized-9', 'event-materialized-9', 'global', NULL, NULL,
+                     'diagnostic', '{"row":9}', '2026-07-25T00:00:09Z'),
+                    (2, 'materialized-2', 'event-materialized-2', 'session', 'session-1', NULL,
+                     'session_changed', '{"row":2}', '2026-07-25T00:00:02Z'),
+                    (5, 'materialized-5', 'event-materialized-5', 'run', 'session-1', 'run-1',
+                     'output_available', '{"row":5}', '2026-07-25T00:00:05Z');
+
+                UPDATE host_event_outbox_state SET last_sequence = 8 WHERE singleton = 1;
+                INSERT INTO host_event_publication_outbox
+                    (publication_key, enqueue_sequence, event_id, scope_kind, session_id, run_id,
+                     event_class, record, occurred_at, created_at)
+                VALUES
+                    ('pending-8', 8, 'event-pending-8', 'run', 'session-1', 'run-1',
+                     'run_changed', '{"row":8}', '2026-07-25T00:00:08Z', '2026-07-25T00:01:08Z'),
+                    ('pending-3', 3, 'event-pending-3', 'session', 'session-1', NULL,
+                     'approval_changed', '{"row":3}', '2026-07-25T00:00:03Z', '2026-07-25T00:01:03Z');
+                "#,
+            )
+            .expect("seed non-empty pre-transcript host-event tables");
+
+        let materialized_before = materialized_rows(&connection);
+        let pending_before = pending_rows(&connection);
+        assert_eq!(materialized_before.len(), 3);
+        assert_eq!(
+            materialized_before
+                .iter()
+                .map(|(position, key, _, _)| (*position, key.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (2, "materialized-2"),
+                (5, "materialized-5"),
+                (9, "materialized-9")
+            ]
+        );
+        assert_eq!(pending_before.len(), 2);
+        assert_eq!(
+            pending_before
+                .iter()
+                .map(|(sequence, key, _, _)| (*sequence, key.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(3, "pending-3"), (8, "pending-8")]
+        );
+
+        let applied = apply_sqlite_migrations(&mut connection).expect("apply transcript migration");
+        assert_eq!(applied, vec!["20260725_000019_transcript_host_events"]);
+        assert_eq!(materialized_rows(&connection), materialized_before);
+        assert_eq!(pending_rows(&connection), pending_before);
+        assert_eq!(
+            scalar_i64(
+                &connection,
+                "SELECT last_position FROM host_event_log_state WHERE singleton = 1"
+            ),
+            9
+        );
+        assert_eq!(
+            scalar_i64(
+                &connection,
+                "SELECT last_sequence FROM host_event_outbox_state WHERE singleton = 1"
+            ),
+            8
+        );
+
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO host_event_records
+                    (position, publication_key, event_id, scope_kind, session_id, run_id,
+                     event_class, record, occurred_at)
+                VALUES
+                    (10, 'transcript-materialized', 'event-transcript-materialized',
+                     'run', 'session-1', 'run-1', 'transcript_changed',
+                     '{"class":"transcript_changed"}', '2026-07-25T00:00:10Z');
+                INSERT INTO host_event_publication_outbox
+                    (publication_key, enqueue_sequence, event_id, scope_kind, session_id, run_id,
+                     event_class, record, occurred_at, created_at)
+                VALUES
+                    ('transcript-pending', 9, 'event-transcript-pending',
+                     'run', 'session-1', 'run-1', 'transcript_changed',
+                     '{"class":"transcript_changed"}', '2026-07-25T00:00:11Z',
+                     '2026-07-25T00:01:11Z');
+                "#,
+            )
+            .expect("insert transcript host events after migration");
+        assert_eq!(
+            scalar_i64(
+                &connection,
+                "SELECT COUNT(*) FROM host_event_records
+                 WHERE event_class = 'transcript_changed' AND position = 10"
+            ),
+            1
+        );
+        assert_eq!(
+            scalar_i64(
+                &connection,
+                "SELECT COUNT(*) FROM host_event_publication_outbox
+                 WHERE event_class = 'transcript_changed' AND enqueue_sequence = 9"
+            ),
+            1
         );
     }
 

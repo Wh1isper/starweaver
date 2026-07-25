@@ -57,6 +57,11 @@ impl SqliteStorage {
             command.run_id.as_str(),
             &command.approval_id,
         )?;
+        if approval.action_name == ASK_USER_QUESTION_ACTION {
+            return Err(SessionStoreError::Failed(
+                "clarification records require typed clarification resolution".to_string(),
+            ));
+        }
         require_revision(
             "approval",
             &command.approval_id,

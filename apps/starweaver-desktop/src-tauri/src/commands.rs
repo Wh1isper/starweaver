@@ -1,14 +1,27 @@
-use serde::Serialize;
-use tauri::{AppHandle, Manager as _, State, ipc::Channel};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use serde::{Deserialize, Serialize};
+use tauri::{
+    AppHandle, Manager as _, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder, ipc::Channel,
+};
 use tauri_plugin_dialog::{DialogExt as _, MessageDialogButtons};
 
 use crate::{
-    app_state::{DesktopActivation, DesktopState, EventViewKey},
+    app_state::{DesktopActivation, DesktopState, DesktopWindowRoute, EventViewKey},
     generated::host::{
         DesktopHostEventAcknowledgementToken, DesktopHostEventDelivery, DesktopHostInvocation,
-        DesktopHostOperationAcknowledgementToken, DesktopHostOperationDelivery,
+        DesktopHostOperation, DesktopHostOperationAcknowledgementToken,
+        DesktopHostOperationDelivery, DesktopHostResult, SessionId,
     },
+    managed_runtime,
     platform::PlatformInfo,
+    preferences::{
+        DesktopPreferencesError, DesktopPreferencesSnapshot, DesktopPreferencesStore,
+        DesktopPreferencesUpdate,
+    },
     supervisor::{
         BackendHostEvent, HostChildState, HostSupervisorStatus, LocalHostSupervisor, RunEventTail,
         SupervisorError, SupervisorErrorCode, backend_event_from_notification,
@@ -24,6 +37,16 @@ pub struct DesktopStatus {
     launch_generation: u64,
     single_instance: bool,
     runtime: HostSupervisorStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime_issue: Option<SupervisorError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopConversationWindow {
+    label: String,
+    reused: bool,
+    session_id: String,
 }
 
 fn build_desktop_status(app_version: &str, state: &DesktopState) -> DesktopStatus {
@@ -35,6 +58,7 @@ fn build_desktop_status(app_version: &str, state: &DesktopState) -> DesktopStatu
         launch_generation: state.launch_generation(),
         single_instance: true,
         runtime: state.supervisor().status(),
+        runtime_issue: state.runtime_issue(),
     }
 }
 
@@ -42,6 +66,42 @@ fn build_desktop_status(app_version: &str, state: &DesktopState) -> DesktopStatu
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_desktop_status(app: AppHandle, state: State<'_, DesktopState>) -> DesktopStatus {
     build_desktop_status(&app.package_info().version.to_string(), state.inner())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub async fn retry_managed_runtime(
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<(), SupervisorError> {
+    state
+        .prepare_and_start_managed_runtime(move || managed_runtime::prepare(&app))
+        .await
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn get_desktop_preferences(
+    preferences: State<'_, DesktopPreferencesStore>,
+) -> Result<DesktopPreferencesSnapshot, DesktopPreferencesError> {
+    preferences.snapshot()
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn update_desktop_preferences(
+    preferences: State<'_, DesktopPreferencesStore>,
+    update: DesktopPreferencesUpdate,
+) -> Result<DesktopPreferencesSnapshot, DesktopPreferencesError> {
+    preferences.update(update)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn reload_desktop_preferences(
+    preferences: State<'_, DesktopPreferencesStore>,
+) -> Result<DesktopPreferencesSnapshot, DesktopPreferencesError> {
+    preferences.reload()
 }
 
 #[tauri::command]
@@ -57,6 +117,69 @@ pub fn subscribe_desktop_activation(
 #[allow(clippy::needless_pass_by_value)]
 pub fn unsubscribe_desktop_activation(state: State<'_, DesktopState>, subscription_token: u64) {
     state.unsubscribe_from_activations(subscription_token);
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn get_desktop_window_route(
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+) -> Result<DesktopWindowRoute, SupervisorError> {
+    state
+        .window_route(window.label())
+        .ok_or_else(|| SupervisorError::invalid_configuration("Desktop window route is invalid"))
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn open_conversation_window(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+) -> Result<DesktopConversationWindow, SupervisorError> {
+    if window.label() != "main" {
+        return Err(SupervisorError::invalid_configuration(
+            "only the primary Desktop window can open another conversation window",
+        ));
+    }
+    let _window_gate = state.lock_conversation_windows()?;
+    let (label, reused) = state.reserve_conversation_window(&session_id.0)?;
+    if reused {
+        let existing = app.get_webview_window(&label).ok_or_else(|| {
+            state.release_window(&label);
+            SupervisorError::not_ready()
+        })?;
+        existing.show().map_err(|_| SupervisorError::transport())?;
+        existing
+            .unminimize()
+            .map_err(|_| SupervisorError::transport())?;
+        existing
+            .set_focus()
+            .map_err(|_| SupervisorError::transport())?;
+    } else if WebviewWindowBuilder::new(&app, label.clone(), WebviewUrl::App("index.html".into()))
+        .title("Starweaver Conversation")
+        .inner_size(960.0, 720.0)
+        .min_inner_size(680.0, 520.0)
+        .build()
+        .is_err()
+    {
+        state.release_window(&label);
+        return Err(SupervisorError::transport());
+    }
+    Ok(DesktopConversationWindow {
+        label,
+        reused,
+        session_id: session_id.0,
+    })
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DesktopWorkspaceIntent {
+    OpenExisting,
+    CreateEmpty { name: String },
+    Managed,
 }
 
 async fn confirm_native_presence(
@@ -83,36 +206,175 @@ async fn confirm_native_presence(
     }
 }
 
+fn validate_workspace_name(name: &str) -> Result<(), SupervisorError> {
+    let character_count = name.chars().count();
+    let normalized = name.trim();
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let windows_reserved = matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    );
+    if normalized != name
+        || character_count == 0
+        || character_count > 80
+        || matches!(name, "." | "..")
+        || name.ends_with('.')
+        || name.contains(['/', '\\', ':'])
+        || name.chars().any(char::is_control)
+        || windows_reserved
+    {
+        return Err(SupervisorError::invalid_configuration(
+            "workspace name must be a portable folder name between 1 and 80 characters",
+        ));
+    }
+    Ok(())
+}
+
+fn create_private_workspace(parent: &Path, name: &str) -> Result<PathBuf, SupervisorError> {
+    validate_workspace_name(name)?;
+    let parent = fs::canonicalize(parent).map_err(|_| {
+        SupervisorError::invalid_configuration("workspace parent is not an accessible local folder")
+    })?;
+    if !parent.is_dir() {
+        return Err(SupervisorError::invalid_configuration(
+            "workspace parent is not an accessible local folder",
+        ));
+    }
+    let root = parent.join(name);
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    builder.create(&root).map_err(|_| {
+        SupervisorError::invalid_configuration(
+            "an empty workspace could not be created with that name",
+        )
+    })?;
+    fs::canonicalize(root).map_err(|_| {
+        SupervisorError::invalid_configuration("the new workspace could not be verified")
+    })
+}
+
+fn exact_workspace_path(path: &Path) -> Result<&str, SupervisorError> {
+    path.to_str().ok_or_else(|| {
+        SupervisorError::invalid_configuration(
+            "workspace path cannot be represented exactly by the local host protocol",
+        )
+    })
+}
+
+async fn materialize_workspace_root(
+    app: &AppHandle,
+    intent: DesktopWorkspaceIntent,
+) -> Result<PathBuf, SupervisorError> {
+    let app = app.clone();
+    tokio::task::spawn_blocking(move || match intent {
+        DesktopWorkspaceIntent::OpenExisting => {
+            let selected = app
+                .dialog()
+                .file()
+                .set_title("Open Starweaver workspace")
+                .blocking_pick_folder()
+                .ok_or_else(|| {
+                    SupervisorError::invalid_configuration("native folder selection was cancelled")
+                })?;
+            let root = selected.into_path().map_err(|_| {
+                SupervisorError::invalid_configuration("selected workspace is not a local folder")
+            })?;
+            fs::canonicalize(root).map_err(|_| {
+                SupervisorError::invalid_configuration(
+                    "selected workspace is not an accessible local folder",
+                )
+            })
+        }
+        DesktopWorkspaceIntent::CreateEmpty { name } => {
+            validate_workspace_name(&name)?;
+            let selected = app
+                .dialog()
+                .file()
+                .set_title("Choose where to create the workspace")
+                .blocking_pick_folder()
+                .ok_or_else(|| {
+                    SupervisorError::invalid_configuration("native folder selection was cancelled")
+                })?;
+            let parent = selected.into_path().map_err(|_| {
+                SupervisorError::invalid_configuration("workspace parent is not a local folder")
+            })?;
+            create_private_workspace(&parent, &name)
+        }
+        DesktopWorkspaceIntent::Managed => {
+            let parent = app
+                .path()
+                .app_local_data_dir()
+                .map_err(|_| {
+                    SupervisorError::invalid_configuration(
+                        "Desktop managed workspace storage is unavailable",
+                    )
+                })?
+                .join("workspaces");
+            fs::create_dir_all(&parent).map_err(|_| {
+                SupervisorError::invalid_configuration(
+                    "Desktop managed workspace storage is unavailable",
+                )
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).map_err(|_| {
+                    SupervisorError::invalid_configuration(
+                        "Desktop managed workspace storage is not private",
+                    )
+                })?;
+            }
+            create_private_workspace(&parent, &format!("workspace-{}", uuid::Uuid::new_v4()))
+        }
+    })
+    .await
+    .map_err(|_| SupervisorError::transport())?
+}
+
 async fn native_operation_fields(
     app: &AppHandle,
     supervisor: &LocalHostSupervisor,
     invocation: &DesktopHostInvocation,
+    workspace_intent: Option<DesktopWorkspaceIntent>,
 ) -> Result<crate::generated::host::SupervisorDynamicFields, SupervisorError> {
     use crate::generated::host::{ConfigReloadMode, DesktopHostOperation};
 
     let mut fields = crate::generated::host::SupervisorDynamicFields::default();
     match &invocation.operation {
         DesktopHostOperation::WorkspaceRegister(_) => {
-            let app = app.clone();
-            let selected = tokio::task::spawn_blocking(move || {
-                app.dialog()
-                    .file()
-                    .set_title("Open Starweaver workspace")
-                    .blocking_pick_folder()
-            })
-            .await
-            .map_err(|_| SupervisorError::transport())?
-            .ok_or_else(|| {
-                SupervisorError::invalid_configuration("native folder selection was cancelled")
-            })?;
-            let root = selected.into_path().map_err(|_| {
-                SupervisorError::invalid_configuration("selected workspace is not a local folder")
-            })?;
-            let root = root.to_str().ok_or_else(|| {
-                SupervisorError::invalid_configuration("selected workspace path is not UTF-8")
-            })?;
+            let intent = workspace_intent.unwrap_or(DesktopWorkspaceIntent::OpenExisting);
+            let root = materialize_workspace_root(app, intent).await?;
             fields
-                .insert("root", root)
+                .insert("root", exact_workspace_path(&root)?)
                 .map_err(|_| SupervisorError::transport())?;
         }
         DesktopHostOperation::ConfigUpdate(_) => {
@@ -161,35 +423,154 @@ async fn native_operation_fields(
             .await?;
             return supervisor.config_authorization_fields(invocation).await;
         }
-        _ => {}
+        _ => {
+            if workspace_intent.is_some() {
+                return Err(SupervisorError::invalid_configuration(
+                    "workspace intent requires workspace registration",
+                ));
+            }
+        }
     }
     Ok(fields)
+}
+
+fn operation_targets_session_directly(operation: &DesktopHostOperation, session_id: &str) -> bool {
+    let targets_session = |candidate: &SessionId| candidate.0 == session_id;
+    match operation {
+        DesktopHostOperation::ApprovalDecide(intent) => targets_session(&intent.session_id),
+        DesktopHostOperation::ApprovalShow(intent) => targets_session(&intent.session_id),
+        DesktopHostOperation::ClarificationResolve(intent) => targets_session(&intent.session_id),
+        DesktopHostOperation::ClarificationShow(intent) => targets_session(&intent.session_id),
+        DesktopHostOperation::DeferredComplete(intent) => targets_session(&intent.session_id),
+        DesktopHostOperation::DeferredFail(intent) => targets_session(&intent.session_id),
+        DesktopHostOperation::DeferredShow(intent) => targets_session(&intent.session_id),
+        DesktopHostOperation::RunInterrupt(intent) => targets_session(&intent.session_id),
+        DesktopHostOperation::RunList(intent) => targets_session(&intent.session_id),
+        DesktopHostOperation::RunResume(intent) => targets_session(&intent.session_id),
+        DesktopHostOperation::RunStart(intent) => targets_session(&intent.session_id),
+        DesktopHostOperation::RunStatus(intent) => targets_session(&intent.session_id),
+        DesktopHostOperation::RunSteer(intent) => targets_session(&intent.session_id),
+        DesktopHostOperation::SessionGet(intent) => targets_session(&intent.session_id),
+        _ => false,
+    }
+}
+
+fn require_window_operation_authority(
+    state: &DesktopState,
+    window_label: &str,
+    operation: &DesktopHostOperation,
+) -> Result<(), SupervisorError> {
+    let Some(route) = state.window_route(window_label) else {
+        return Err(SupervisorError::invalid_configuration(
+            "Desktop window route is invalid",
+        ));
+    };
+    let DesktopWindowRoute::Conversation { session_id } = route else {
+        return Ok(());
+    };
+    let targets_session = |candidate: &SessionId| candidate.0 == session_id;
+    let allowed = operation_targets_session_directly(operation, &session_id)
+        || match operation {
+            DesktopHostOperation::ApprovalList(intent) => {
+                intent.session_id.as_ref().is_some_and(targets_session)
+            }
+            DesktopHostOperation::ClarificationList(intent) => {
+                intent.session_id.as_ref().is_some_and(targets_session)
+            }
+            DesktopHostOperation::DeferredList(intent) => {
+                intent.session_id.as_ref().is_some_and(targets_session)
+            }
+            DesktopHostOperation::WorkspaceList(_) => true,
+            _ => false,
+        };
+    if allowed {
+        Ok(())
+    } else {
+        Err(SupervisorError::invalid_configuration(
+            "this operation is not available from a conversation window",
+        ))
+    }
+}
+
+fn restrict_workspace_result_to_route(
+    delivery: &mut DesktopHostOperationDelivery,
+    workspace_id: Option<&str>,
+) -> Result<(), SupervisorError> {
+    let DesktopHostResult::WorkspaceList(result) = &mut delivery.result else {
+        return Ok(());
+    };
+    let workspaces = result
+        .workspaces
+        .as_array_mut()
+        .ok_or_else(SupervisorError::transport)?;
+    workspaces.retain(|workspace| {
+        workspace_id.is_some_and(|expected| {
+            workspace
+                .get("workspaceId")
+                .and_then(serde_json::Value::as_str)
+                == Some(expected)
+                && workspace.get("state").and_then(serde_json::Value::as_str) == Some("active")
+        })
+    });
+    Ok(())
 }
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub async fn execute_host_operation(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, DesktopState>,
     invocation: DesktopHostInvocation,
+    workspace_intent: Option<DesktopWorkspaceIntent>,
 ) -> Result<DesktopHostOperationDelivery, SupervisorError> {
+    require_window_operation_authority(state.inner(), window.label(), &invocation.operation)?;
+    let route = state
+        .window_route(window.label())
+        .ok_or_else(|| SupervisorError::invalid_configuration("Desktop window route is invalid"))?;
     let supervisor = state.supervisor();
+    let routed_workspace_id = if matches!(
+        &invocation.operation,
+        DesktopHostOperation::WorkspaceList(_)
+    ) && let DesktopWindowRoute::Conversation { session_id } = &route
+    {
+        supervisor.session_workspace_id(session_id).await?
+    } else {
+        None
+    };
     let fields = if let Some(fields) = supervisor.reusable_renderer_operation_fields(&invocation)? {
         fields
     } else {
-        native_operation_fields(&app, supervisor, &invocation).await?
+        native_operation_fields(&app, supervisor, &invocation, workspace_intent).await?
     };
-    supervisor
+    let mut delivery = supervisor
         .execute_renderer_operation_with_fields(invocation, fields)
-        .await
+        .await?;
+    if matches!(route, DesktopWindowRoute::Conversation { .. }) {
+        restrict_workspace_result_to_route(&mut delivery, routed_workspace_id.as_deref())?;
+    }
+    Ok(delivery)
 }
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn list_pending_host_operations(
+    window: WebviewWindow,
     state: State<'_, DesktopState>,
 ) -> Result<Vec<DesktopHostInvocation>, SupervisorError> {
-    state.supervisor().pending_renderer_operations()
+    let pending = state.supervisor().pending_renderer_operations()?;
+    let route = state
+        .window_route(window.label())
+        .ok_or_else(|| SupervisorError::invalid_configuration("Desktop window route is invalid"))?;
+    match route {
+        DesktopWindowRoute::Main => Ok(pending),
+        DesktopWindowRoute::Conversation { session_id } => Ok(pending
+            .into_iter()
+            .filter(|invocation| {
+                operation_targets_session_directly(&invocation.operation, &session_id)
+            })
+            .collect()),
+    }
 }
 
 #[tauri::command]
@@ -365,17 +746,37 @@ const fn event_tail_generation_action(
 #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 pub async fn subscribe_host_events(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, DesktopState>,
     scope: crate::generated::host::DesktopHostEventScope,
     on_ready: Channel<String>,
     on_event: Channel<DesktopHostEventDelivery>,
+    on_complete: Channel<String>,
 ) -> Result<String, SupervisorError> {
     if state.supervisor().status().state != HostChildState::Ready {
         return Err(SupervisorError::not_ready());
     }
+    let route = state
+        .window_route(window.label())
+        .ok_or_else(|| SupervisorError::invalid_configuration("Desktop window route is invalid"))?;
+    if let DesktopWindowRoute::Conversation { session_id } = route
+        && scope.session_id.0 != session_id
+    {
+        return Err(SupervisorError::invalid_configuration(
+            "a conversation window can subscribe only to its routed session",
+        ));
+    }
     let execution_domain = state.supervisor().event_origin()?;
-    let key = DesktopState::event_view_key(execution_domain, &scope);
+    let key = DesktopState::event_view_key(execution_domain, window.label().to_string(), &scope);
     let (token, mut cancelled, completion) = state.replace_host_subscription(key.clone()).await?;
+    // A renderer owns an in-memory transcript projection, so every fresh renderer subscription
+    // rebuilds that projection from durable origin. The cursor written by this new subscription
+    // remains available to its internal tail recovery across host restarts.
+    if let Err(error) = state.reset_event_cursor(&key).await {
+        let _ = completion.send(true);
+        state.complete_host_subscription(&token);
+        return Err(error);
+    }
     // Publish the backend-issued cancellation handle before replay can deliver an event. The
     // renderer can therefore cancel a setup-time delivery even while this command is waiting for
     // its acknowledgement and before the command response itself has been flushed.
@@ -582,25 +983,31 @@ pub async fn subscribe_host_events(
         }
         let _ = completion.send(true);
         state.complete_host_subscription(&task_token);
+        let _ = on_complete.send(task_token.clone());
     });
     Ok(token)
 }
 
 #[tauri::command]
 pub async fn acknowledge_host_event(
+    window: WebviewWindow,
     state: State<'_, DesktopState>,
     acknowledgement_token: DesktopHostEventAcknowledgementToken,
 ) -> Result<(), SupervisorError> {
-    state.acknowledge_event(&acknowledgement_token.0).await
+    state
+        .acknowledge_event(window.label(), &acknowledgement_token.0)
+        .await
 }
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub async fn unsubscribe_host_events(
+    window: WebviewWindow,
     state: State<'_, DesktopState>,
     subscription_token: String,
 ) -> Result<(), SupervisorError> {
-    let Some(mut completed) = state.begin_host_unsubscribe(&subscription_token) else {
+    let Some(mut completed) = state.begin_host_unsubscribe(window.label(), &subscription_token)?
+    else {
         return Ok(());
     };
     if !*completed.borrow() {
@@ -613,6 +1020,7 @@ pub async fn unsubscribe_host_events(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -627,6 +1035,209 @@ mod tests {
         assert_eq!(status.runtime.state, HostChildState::Unconfigured);
         assert_eq!(status.runtime.generation, 0);
         assert!(!status.runtime.diagnostics_available);
+    }
+
+    #[test]
+    fn conversation_window_operations_are_route_scoped() {
+        let state = DesktopState::default();
+        let (label, _) = state
+            .reserve_conversation_window("session-one")
+            .expect("conversation route");
+        let matching_run: DesktopHostOperation = serde_json::from_value(serde_json::json!({
+            "kind": "run.status",
+            "input": {"sessionId": "session-one", "runId": "run-one"}
+        }))
+        .expect("matching run operation");
+        let other_run: DesktopHostOperation = serde_json::from_value(serde_json::json!({
+            "kind": "run.status",
+            "input": {"sessionId": "session-other", "runId": "run-one"}
+        }))
+        .expect("other run operation");
+        let matching_run_list: DesktopHostOperation = serde_json::from_value(serde_json::json!({
+            "kind": "run.list",
+            "input": {"pageToken": null, "sessionId": "session-one"}
+        }))
+        .expect("matching run list operation");
+        let other_run_list: DesktopHostOperation = serde_json::from_value(serde_json::json!({
+            "kind": "run.list",
+            "input": {"pageToken": null, "sessionId": "session-other"}
+        }))
+        .expect("other run list operation");
+        let config: DesktopHostOperation = serde_json::from_value(serde_json::json!({
+            "kind": "config.get",
+            "input": {}
+        }))
+        .expect("config operation");
+
+        require_window_operation_authority(&state, &label, &matching_run)
+            .expect("matching run authority");
+        require_window_operation_authority(&state, &label, &matching_run_list)
+            .expect("matching run list authority");
+        assert!(require_window_operation_authority(&state, &label, &other_run).is_err());
+        assert!(require_window_operation_authority(&state, &label, &other_run_list).is_err());
+        assert!(require_window_operation_authority(&state, &label, &config).is_err());
+        require_window_operation_authority(&state, "main", &config)
+            .expect("main window config authority");
+    }
+
+    #[test]
+    fn interaction_operations_are_direct_session_recovery_targets() {
+        let matching = "session-one";
+        let operations = [
+            serde_json::json!({
+                "kind": "approval.decide",
+                "input": {
+                    "approvalId": "approval-one",
+                    "decision": "approved",
+                    "expectedRevision": "1",
+                    "sessionId": matching
+                }
+            }),
+            serde_json::json!({
+                "kind": "approval.show",
+                "input": {"approvalId": "approval-one", "sessionId": matching}
+            }),
+            serde_json::json!({
+                "kind": "clarification.resolve",
+                "input": {
+                    "answers": [],
+                    "clarificationId": "clarification-one",
+                    "expectedRevision": "1",
+                    "sessionId": matching
+                }
+            }),
+            serde_json::json!({
+                "kind": "clarification.show",
+                "input": {"clarificationId": "clarification-one", "sessionId": matching}
+            }),
+            serde_json::json!({
+                "kind": "deferred.complete",
+                "input": {
+                    "deferredId": "deferred-one",
+                    "expectedRevision": "1",
+                    "resultText": "done",
+                    "sessionId": matching
+                }
+            }),
+            serde_json::json!({
+                "kind": "deferred.fail",
+                "input": {
+                    "deferredId": "deferred-one",
+                    "error": "failed",
+                    "expectedRevision": "1",
+                    "sessionId": matching
+                }
+            }),
+            serde_json::json!({
+                "kind": "deferred.show",
+                "input": {"deferredId": "deferred-one", "sessionId": matching}
+            }),
+        ];
+
+        for value in operations {
+            let operation: DesktopHostOperation =
+                serde_json::from_value(value.clone()).expect("matching interaction operation");
+            assert!(operation_targets_session_directly(&operation, matching));
+            assert!(!operation_targets_session_directly(
+                &operation,
+                "session-other"
+            ));
+        }
+    }
+
+    #[test]
+    fn conversation_workspace_projection_keeps_only_the_routed_workspace() {
+        let mut delivery = DesktopHostOperationDelivery {
+            acknowledgement_token: None,
+            result: DesktopHostResult::WorkspaceList(crate::generated::host::WorkspaceListResult {
+                page: crate::generated::host::DesktopPage {
+                    has_more: false,
+                    next_page_token: None,
+                },
+                workspaces: serde_json::json!([
+                    {"workspaceId": "workspace-routed", "displayLabel": "Routed", "state": "active"},
+                    {"workspaceId": "workspace-other", "displayLabel": "Other", "state": "active"}
+                ]),
+            }),
+        };
+
+        restrict_workspace_result_to_route(&mut delivery, Some("workspace-routed"))
+            .expect("workspace projection");
+        let DesktopHostResult::WorkspaceList(result) = delivery.result else {
+            panic!("workspace list result");
+        };
+        assert_eq!(
+            result.workspaces,
+            serde_json::json!([
+                {"workspaceId": "workspace-routed", "displayLabel": "Routed", "state": "active"}
+            ])
+        );
+
+        let mut revoked = DesktopHostOperationDelivery {
+            acknowledgement_token: None,
+            result: DesktopHostResult::WorkspaceList(crate::generated::host::WorkspaceListResult {
+                page: crate::generated::host::DesktopPage {
+                    has_more: false,
+                    next_page_token: None,
+                },
+                workspaces: serde_json::json!([
+                    {"workspaceId": "workspace-routed", "displayLabel": "Routed", "state": "revoked"}
+                ]),
+            }),
+        };
+        restrict_workspace_result_to_route(&mut revoked, Some("workspace-routed"))
+            .expect("revoked workspace projection");
+        let DesktopHostResult::WorkspaceList(result) = revoked.result else {
+            panic!("workspace list result");
+        };
+        assert_eq!(result.workspaces, serde_json::json!([]));
+    }
+
+    #[test]
+    fn workspace_names_are_portable_and_bounded() {
+        for valid in ["Project", "project-alpha", "研究"] {
+            validate_workspace_name(valid).expect("portable workspace name");
+        }
+        for invalid in [
+            "",
+            ".",
+            "..",
+            " project",
+            "project ",
+            "project/child",
+            "project\\child",
+            "project:name",
+            "NUL",
+            "com1.txt",
+            "project.",
+        ] {
+            assert!(
+                validate_workspace_name(invalid).is_err(),
+                "{invalid:?} must be rejected"
+            );
+        }
+        assert!(validate_workspace_name(&"x".repeat(81)).is_err());
+    }
+
+    #[test]
+    fn empty_workspace_creation_is_private_and_never_reuses_an_existing_name() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let root = create_private_workspace(temp.path(), "Project").expect("new workspace");
+
+        assert!(root.is_dir());
+        assert!(create_private_workspace(temp.path(), "Project").is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(root)
+                    .expect("workspace metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
     }
 
     #[test]

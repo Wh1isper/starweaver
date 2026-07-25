@@ -32,7 +32,7 @@
           "const": 1
         },
         "digest": {
-          "const": "sha256:2a9e9fad809f55e34f2b701aed6008b2a91148c19f3988a8e79b5c00d404e6dd",
+          "const": "sha256:92ebe8f13baf1e3aced0f0edcae3b2a9a23e2e5b64718e615bb0c6812b01c2bf",
           "description": "Exact reviewed ProtocolIr digest; protocol changes require an explicit renderer-surface review."
         }
       }

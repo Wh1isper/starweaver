@@ -29,14 +29,17 @@ use starweaver_session::{
     ENVIRONMENT_ATTACH_OPERATION, EnvironmentAttachmentPageKey, EnvironmentAttachmentQuery,
     EnvironmentHostEventContext, EnvironmentMountQuery, EnvironmentMutationContext,
     ExecutionStatus, InputPart, InteractionMutationContext, InteractionPageKey,
-    InteractionPageQuery, MountEnvironmentResource, PendingHostEventPublication,
-    ResolveClarification, ResolveDeferredTool, RunRecord, SessionDeletionFence, SessionPageKey,
-    SessionPageQuery, SessionRecord, SessionSearchError, SessionSearchFilter,
-    SessionSearchGranularity, SessionSearchProvider, SessionSearchQuery, SessionSearchQueryMode,
-    SessionSearchScope, SessionSearchSort, SessionStatus, SessionStore, SessionStoreResult,
-    UnmountEnvironmentResource, WorkspaceProvenanceRef,
+    InteractionPageQuery, InteractionStateFilter, MountEnvironmentResource,
+    PendingHostEventPublication, ResolveClarification, ResolveDeferredTool, RunPageKey,
+    RunPageQuery, RunRecord, SessionDeletionFence, SessionPageKey, SessionPageQuery, SessionRecord,
+    SessionSearchError, SessionSearchFilter, SessionSearchGranularity, SessionSearchProvider,
+    SessionSearchQuery, SessionSearchQueryMode, SessionSearchScope, SessionSearchSort,
+    SessionStatus, SessionStore, SessionStoreResult, UnmountEnvironmentResource,
+    WorkspaceProvenanceRef,
 };
-use starweaver_storage::{LocalSessionSearchLimits, LocalSessionSearchProvider, SqliteStorage};
+use starweaver_storage::{
+    LocalSessionSearchLimits, LocalSessionSearchProvider, SqliteStorage, sqlite_migration_status,
+};
 use tokio::{
     runtime::{Builder as RuntimeBuilder, Handle, Runtime},
     sync::{mpsc, oneshot, watch},
@@ -232,6 +235,12 @@ struct SessionCursorPosition {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RunCursorPosition {
+    sequence_no: usize,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InteractionCursorPosition {
     updated_at: String,
     interaction_id: String,
@@ -249,6 +258,37 @@ struct EnvironmentCursorPosition {
 struct InteractionCursorView<'a> {
     session_id: Option<&'a str>,
     run_id: Option<&'a str>,
+    state: &'a str,
+}
+
+fn require_interaction_session(
+    actual: &SessionId,
+    requested: &host::SessionId,
+) -> Result<(), host::HostError> {
+    if actual.as_str() == requested.as_str() {
+        Ok(())
+    } else {
+        Err(not_found_error("interaction was not found"))
+    }
+}
+
+fn interaction_state_filter(
+    value: Option<&str>,
+) -> Result<InteractionStateFilter, host::HostError> {
+    match value.unwrap_or("all") {
+        "all" => Ok(InteractionStateFilter::All),
+        "unresolved" => Ok(InteractionStateFilter::Unresolved),
+        "resolved" => Ok(InteractionStateFilter::Resolved),
+        _ => Err(invalid_params_error("invalid interaction state filter")),
+    }
+}
+
+const fn interaction_state_name(state: InteractionStateFilter) -> &'static str {
+    match state {
+        InteractionStateFilter::All => "all",
+        InteractionStateFilter::Unresolved => "unresolved",
+        InteractionStateFilter::Resolved => "resolved",
+    }
 }
 
 struct HostEventTail {
@@ -1490,6 +1530,72 @@ impl RpcConnection {
         })
     }
 
+    async fn run_list_generated(
+        &self,
+        params: host::RunListParams,
+    ) -> Result<host::RunListResult, host::HostError> {
+        let session_id = SessionId::from_string(params.session_id.as_str());
+        let view = params.session_id.as_str();
+        let before = params
+            .cursor
+            .as_deref()
+            .map(|cursor| {
+                self.service
+                    .cursor_codec
+                    .decode_page::<RunCursorPosition, _>(
+                        "run.list",
+                        cursor,
+                        &self.state.authority_identity,
+                        &view,
+                    )
+            })
+            .transpose()
+            .map_err(cursor_invalid_error)?
+            .map(|position| RunPageKey {
+                sequence_no: position.sequence_no,
+            });
+        let query = RunPageQuery::new(before, params.limit as usize)
+            .map_err(|_| invalid_params_error("invalid run page limit"))?;
+        let store = self.service.storage.session_store();
+        store
+            .load_session(&session_id)
+            .await
+            .map_err(session_store_to_generated_error)?;
+        let page = store
+            .list_run_page(&session_id, query)
+            .await
+            .map_err(session_store_to_generated_error)?;
+        let next_cursor = if page.has_more {
+            page.next_key
+                .as_ref()
+                .map(|key| {
+                    self.service.cursor_codec.encode_page(
+                        "run.list",
+                        &RunCursorPosition {
+                            sequence_no: key.sequence_no,
+                        },
+                        &self.state.authority_identity,
+                        &view,
+                    )
+                })
+                .transpose()
+                .map_err(|_| internal_error("failed to encode run page cursor", true))?
+        } else {
+            None
+        };
+        Ok(host::RunListResult {
+            page: host::PageInfo {
+                has_more: page.has_more,
+                next_cursor,
+            },
+            runs: page
+                .runs
+                .iter()
+                .map(run_summary)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
     async fn session_get_generated(
         &self,
         params: host::SessionGetParams,
@@ -1500,14 +1606,10 @@ impl RpcConnection {
             .load_session(&session_id)
             .await
             .map_err(session_store_to_generated_error)?;
-        let mut runs = store
-            .list_runs(&session_id)
+        let runs = store
+            .list_recent_runs(&session_id, params.run_limit as usize)
             .await
             .map_err(session_store_to_generated_error)?;
-        let limit = params.run_limit as usize;
-        if runs.len() > limit {
-            runs = runs.split_off(runs.len() - limit);
-        }
         Ok(host::SessionGetResult {
             runs: runs
                 .iter()
@@ -2496,17 +2598,18 @@ impl RpcConnection {
         &self,
         params: host::RunStatusParams,
     ) -> Result<host::RunStatusResult, host::HostError> {
+        let session_id = SessionId::from_string(params.session_id.as_str());
+        let run_id = RunId::from_string(params.run_id.as_str());
         let run = self
             .service
             .storage
             .session_store()
-            .load_run(
-                &SessionId::from_string(params.session_id.as_str()),
-                &RunId::from_string(params.run_id.as_str()),
-            )
+            .load_run(&session_id, &run_id)
             .await
             .map_err(session_store_to_generated_error)?;
+        let target = RpcRuntimeCoordinator::target(&session_id, &run_id);
         Ok(host::RunStatusResult {
+            controllable_by_current_host: self.service.coordinator.is_controllable(&target),
             run: run_summary(&run)?,
         })
     }
@@ -2528,6 +2631,12 @@ impl RpcConnection {
         })
         .await
         .map_err(rpc_error_to_host_error)?;
+        require_interaction_session(&current.session_id, &params.session_id)?;
+        if current.action_name == starweaver_session::ASK_USER_QUESTION_ACTION {
+            return Err(invalid_params_error(
+                "clarification records must be resolved with clarification.resolve",
+            ));
+        }
         let occurred_at = chrono::Utc::now();
         let mut projected = current.clone();
         projected.revision = projected.revision.saturating_add(1);
@@ -2588,6 +2697,7 @@ impl RpcConnection {
         })
         .await
         .map_err(rpc_error_to_host_error)?;
+        require_interaction_session(&current.session_id, &params.session_id)?;
         let answers = params
             .answers
             .iter()
@@ -2658,6 +2768,7 @@ impl RpcConnection {
     ) -> Result<host::DeferredCompleteResult, host::HostError> {
         self.resolve_deferred_generated(
             params.deferred_id.as_str(),
+            &params.session_id,
             params.expected_revision.get(),
             &params.idempotency_key,
             "deferred.complete",
@@ -2682,6 +2793,7 @@ impl RpcConnection {
     ) -> Result<host::DeferredFailResult, host::HostError> {
         self.resolve_deferred_generated(
             params.deferred_id.as_str(),
+            &params.session_id,
             params.expected_revision.get(),
             &params.idempotency_key,
             "deferred.fail",
@@ -2703,6 +2815,7 @@ impl RpcConnection {
     async fn resolve_deferred_generated(
         &self,
         deferred_id: &str,
+        requested_session_id: &host::SessionId,
         expected_revision: u64,
         idempotency_key: &host::IdempotencyKey,
         operation: &str,
@@ -2716,6 +2829,7 @@ impl RpcConnection {
         })
         .await
         .map_err(rpc_error_to_host_error)?;
+        require_interaction_session(&current.session_id, requested_session_id)?;
         let occurred_at = chrono::Utc::now();
         let mut projected = current.clone();
         projected.revision = projected.revision.saturating_add(1);
@@ -2754,9 +2868,11 @@ impl RpcConnection {
         &self,
         params: host::InteractionListParams,
     ) -> Result<host::ApprovalListResult, host::HostError> {
+        let state = interaction_state_filter(params.state.as_deref())?;
         let view = InteractionCursorView {
             session_id: params.session_id.as_ref().map(host::SessionId::as_str),
             run_id: params.run_id.as_ref().map(host::RunId::as_str),
+            state: interaction_state_name(state),
         };
         let after = self.interaction_cursor("approval.list", params.cursor.as_deref(), &view)?;
         let query = InteractionPageQuery::new(
@@ -2771,9 +2887,10 @@ impl RpcConnection {
             after,
             params.limit as usize,
         )
-        .map_err(|_| invalid_params_error("invalid approval page limit"))?;
+        .map_err(|_| invalid_params_error("invalid approval page limit"))?
+        .with_state(state);
         let page = run_storage(self.service.storage.clone(), move |storage| {
-            storage.list_approval_page(query)
+            storage.list_standard_approval_page(query)
         })
         .await
         .map_err(rpc_error_to_host_error)?;
@@ -2795,14 +2912,88 @@ impl RpcConnection {
         &self,
         params: host::ApprovalShowParams,
     ) -> Result<host::ApprovalShowResult, host::HostError> {
+        let requested_session_id = params.session_id;
         let id = params.approval_id.into_string();
         let approval = run_storage(self.service.storage.clone(), move |storage| {
             storage.load_approval(&id)
         })
         .await
         .map_err(rpc_error_to_host_error)?;
+        require_interaction_session(&approval.session_id, &requested_session_id)?;
+        if approval.action_name == starweaver_session::ASK_USER_QUESTION_ACTION {
+            return Err(invalid_params_error(
+                "clarification records must be opened with clarification.show",
+            ));
+        }
         Ok(host::ApprovalShowResult {
-            approval: approval_summary(&approval)?,
+            approval: approval_detail(&approval)?,
+        })
+    }
+
+    async fn clarification_list_generated(
+        &self,
+        params: host::InteractionListParams,
+    ) -> Result<host::ClarificationListResult, host::HostError> {
+        let state = interaction_state_filter(params.state.as_deref())?;
+        let view = InteractionCursorView {
+            session_id: params.session_id.as_ref().map(host::SessionId::as_str),
+            run_id: params.run_id.as_ref().map(host::RunId::as_str),
+            state: interaction_state_name(state),
+        };
+        let after =
+            self.interaction_cursor("clarification.list", params.cursor.as_deref(), &view)?;
+        let query = InteractionPageQuery::new(
+            params
+                .session_id
+                .as_ref()
+                .map(|id| SessionId::from_string(id.as_str())),
+            params
+                .run_id
+                .as_ref()
+                .map(|id| RunId::from_string(id.as_str())),
+            after,
+            params.limit as usize,
+        )
+        .map_err(|_| invalid_params_error("invalid clarification page limit"))?
+        .with_state(state);
+        let page = run_storage(self.service.storage.clone(), move |storage| {
+            storage.list_clarification_page(query)
+        })
+        .await
+        .map_err(rpc_error_to_host_error)?;
+        let next_cursor = self.next_interaction_cursor("clarification.list", &view, &page)?;
+        Ok(host::ClarificationListResult {
+            clarifications: page
+                .records
+                .iter()
+                .map(clarification_summary_from_approval)
+                .collect::<Result<Vec<_>, _>>()?,
+            page: host::PageInfo {
+                has_more: page.has_more,
+                next_cursor,
+            },
+        })
+    }
+
+    async fn clarification_show_generated(
+        &self,
+        params: host::ClarificationShowParams,
+    ) -> Result<host::ClarificationShowResult, host::HostError> {
+        let requested_session_id = params.session_id;
+        let id = params.clarification_id.into_string();
+        let approval = run_storage(self.service.storage.clone(), move |storage| {
+            storage.load_approval(&id)
+        })
+        .await
+        .map_err(rpc_error_to_host_error)?;
+        require_interaction_session(&approval.session_id, &requested_session_id)?;
+        if approval.action_name != starweaver_session::ASK_USER_QUESTION_ACTION {
+            return Err(invalid_params_error(
+                "approval record is not a clarification request",
+            ));
+        }
+        Ok(host::ClarificationShowResult {
+            clarification: clarification_summary_from_approval(&approval)?,
         })
     }
 
@@ -2810,9 +3001,11 @@ impl RpcConnection {
         &self,
         params: host::InteractionListParams,
     ) -> Result<host::DeferredListResult, host::HostError> {
+        let state = interaction_state_filter(params.state.as_deref())?;
         let view = InteractionCursorView {
             session_id: params.session_id.as_ref().map(host::SessionId::as_str),
             run_id: params.run_id.as_ref().map(host::RunId::as_str),
+            state: interaction_state_name(state),
         };
         let after = self.interaction_cursor("deferred.list", params.cursor.as_deref(), &view)?;
         let query = InteractionPageQuery::new(
@@ -2827,7 +3020,8 @@ impl RpcConnection {
             after,
             params.limit as usize,
         )
-        .map_err(|_| invalid_params_error("invalid deferred page limit"))?;
+        .map_err(|_| invalid_params_error("invalid deferred page limit"))?
+        .with_state(state);
         let page = run_storage(self.service.storage.clone(), move |storage| {
             storage.list_deferred_tool_page(query)
         })
@@ -2851,14 +3045,16 @@ impl RpcConnection {
         &self,
         params: host::DeferredShowParams,
     ) -> Result<host::DeferredShowResult, host::HostError> {
+        let requested_session_id = params.session_id;
         let id = params.deferred_id.into_string();
         let deferred = run_storage(self.service.storage.clone(), move |storage| {
             storage.load_deferred_tool(&id)
         })
         .await
         .map_err(rpc_error_to_host_error)?;
+        require_interaction_session(&deferred.session_id, &requested_session_id)?;
         Ok(host::DeferredShowResult {
-            deferred: deferred_summary(&deferred)?,
+            deferred: deferred_detail(&deferred)?,
         })
     }
 
@@ -3039,7 +3235,12 @@ impl RpcConnection {
                     && (self.service.session_search.is_some()
                         || metadata.method != host::Method::SessionSearch)
                     && (self.service.config.client_capabilities.clarifying_questions
-                        || metadata.method != host::Method::ClarificationResolve)
+                        || !matches!(
+                            metadata.method,
+                            host::Method::ClarificationList
+                                | host::Method::ClarificationResolve
+                                | host::Method::ClarificationShow
+                        ))
             })
             .flat_map(|metadata| metadata.features.iter().copied())
             .map(str::to_string)
@@ -3494,12 +3695,32 @@ impl host::HostServer for RpcConnection {
             .map_err(Into::into)
     }
 
+    async fn clarification_list(
+        &self,
+        _context: &Self::Context,
+        params: host::InteractionListParams,
+    ) -> Result<host::ClarificationListResult, host::ClarificationListError> {
+        self.clarification_list_generated(params)
+            .await
+            .map_err(Into::into)
+    }
+
     async fn clarification_resolve(
         &self,
         _context: &Self::Context,
         params: host::ClarificationResolveParams,
     ) -> Result<host::ClarificationResolveResult, host::ClarificationResolveError> {
         self.clarification_resolve_generated(params)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn clarification_show(
+        &self,
+        _context: &Self::Context,
+        params: host::ClarificationShowParams,
+    ) -> Result<host::ClarificationShowResult, host::ClarificationShowError> {
+        self.clarification_show_generated(params)
             .await
             .map_err(Into::into)
     }
@@ -3756,6 +3977,14 @@ impl host::HostServer for RpcConnection {
         self.run_interrupt_generated(params)
             .await
             .map_err(Into::into)
+    }
+
+    async fn run_list(
+        &self,
+        _context: &Self::Context,
+        params: host::RunListParams,
+    ) -> Result<host::RunListResult, host::RunListError> {
+        self.run_list_generated(params).await.map_err(Into::into)
     }
 
     async fn run_resume(
@@ -4335,6 +4564,25 @@ fn clarification_changed_publication(
     .map_err(session_store_to_generated_error)
 }
 
+fn clarification_summary_from_approval(
+    approval: &ApprovalRecord,
+) -> Result<host::ClarificationSummary, host::HostError> {
+    let questions = starweaver_session::parse_clarification_questions(&approval.request)
+        .map_err(session_store_to_generated_error)?;
+    let status = match approval.status {
+        ApprovalStatus::Pending => host::ClarificationStatus::Pending,
+        ApprovalStatus::Expired | ApprovalStatus::Cancelled => host::ClarificationStatus::Expired,
+        ApprovalStatus::Approved | ApprovalStatus::Denied => host::ClarificationStatus::Resolved,
+    };
+    clarification_summary(
+        approval,
+        &questions,
+        status,
+        approval.revision,
+        approval.updated_at,
+    )
+}
+
 fn clarification_summary(
     approval: &ApprovalRecord,
     questions: &[starweaver_session::ClarificationQuestion],
@@ -4605,6 +4853,19 @@ fn session_summary(session: &SessionRecord) -> Result<host::SessionSummary, host
     })
 }
 
+fn run_input_preview(run: &RunRecord) -> Option<String> {
+    let input = run
+        .input
+        .iter()
+        .filter_map(|part| match part {
+            InputPart::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!input.is_empty()).then(|| input.chars().take(4096).collect())
+}
+
 fn run_summary(run: &RunRecord) -> Result<host::RunSummary, host::HostError> {
     let status = match run.status.as_str() {
         "queued" => host::RunStatus::Queued,
@@ -4619,6 +4880,7 @@ fn run_summary(run: &RunRecord) -> Result<host::RunSummary, host::HostError> {
     Ok(host::RunSummary {
         created_at: generated_timestamp(run.created_at)?,
         diagnostic_ref: run.terminal_error.as_ref().map(|error| error.code.clone()),
+        input_preview: run_input_preview(run),
         output_preview: run.output_preview.clone(),
         revision: host::DecimalU64::new(run.revision),
         run_id: host::RunId::new(run.run_id.as_str())
@@ -4653,6 +4915,39 @@ fn approval_summary(approval: &ApprovalRecord) -> Result<host::ApprovalSummary, 
         title: approval.action_name.clone(),
         updated_at: generated_timestamp(approval.updated_at)?,
     })
+}
+
+fn approval_detail(approval: &ApprovalRecord) -> Result<host::ApprovalDetail, host::HostError> {
+    let arguments = approval
+        .reviewed_arguments
+        .as_ref()
+        .unwrap_or(&approval.request);
+    let (arguments_json, arguments_complete) = bounded_interaction_json(arguments)?;
+    Ok(host::ApprovalDetail {
+        arguments_complete,
+        arguments_json,
+        summary: approval_summary(approval)?,
+    })
+}
+
+fn deferred_detail(deferred: &DeferredToolRecord) -> Result<host::DeferredDetail, host::HostError> {
+    let (request_json, request_complete) = bounded_interaction_json(&deferred.request)?;
+    Ok(host::DeferredDetail {
+        request_complete,
+        request_json,
+        summary: deferred_summary(deferred)?,
+    })
+}
+
+fn bounded_interaction_json(value: &Value) -> Result<(String, bool), host::HostError> {
+    const MAX_DETAIL_CHARS: usize = 32_768;
+    let encoded = serde_json::to_string_pretty(value)
+        .map_err(|_| internal_error("failed to project interaction request", true))?;
+    if encoded.chars().count() <= MAX_DETAIL_CHARS {
+        Ok((encoded, true))
+    } else {
+        Ok((String::new(), false))
+    }
 }
 
 fn deferred_summary(
@@ -4863,6 +5158,7 @@ fn durable_event_classes(profile: host::EventProfile) -> Vec<DurableHostEventCla
             host::EventClass::SessionChanged => DurableHostEventClass::SessionChanged,
             host::EventClass::RunChanged => DurableHostEventClass::RunChanged,
             host::EventClass::OutputAvailable => DurableHostEventClass::OutputAvailable,
+            host::EventClass::TranscriptChanged => DurableHostEventClass::TranscriptChanged,
             host::EventClass::ApprovalChanged => DurableHostEventClass::ApprovalChanged,
             host::EventClass::DeferredChanged => DurableHostEventClass::DeferredChanged,
             host::EventClass::ClarificationChanged => DurableHostEventClass::ClarificationChanged,
@@ -4987,6 +5283,19 @@ fn rpc_error_to_host_error(error: RpcError) -> host::HostError {
     .unwrap_or_else(|_| internal_error("internal error", true))
 }
 
+fn require_current_supervised_database(config: &RpcConfig) -> Result<(), RpcHostError> {
+    if config.initial_workspace_root.is_some() || !config.database_path.try_exists()? {
+        return Ok(());
+    }
+    let status = sqlite_migration_status(&config.database_path)?;
+    if status.current {
+        return Ok(());
+    }
+    Err(RpcHostError::Invalid(
+        "supervised database requires coordinated maintenance before startup".to_string(),
+    ))
+}
+
 impl RpcService {
     /// Construct a service for stdio/live transports.
     ///
@@ -5007,6 +5316,7 @@ impl RpcService {
     }
 
     fn new(config: RpcConfig, notifications: RpcNotificationMode) -> Result<Self, RpcHostError> {
+        require_current_supervised_database(&config)?;
         let execution_domain_owner = ExecutionDomainOwnerLease::acquire(
             &config.launch.execution_domain_id,
             &config.launch.database_identity,
@@ -5325,6 +5635,272 @@ mod generated_service_tests {
         serde_json::from_value(value).unwrap()
     }
 
+    #[test]
+    fn run_summary_reconstructs_a_bounded_text_only_input_preview() {
+        let mut run = RunRecord::new(
+            SessionId::new(),
+            RunId::new(),
+            starweaver_core::ConversationId::new(),
+        );
+        run.input = vec![
+            InputPart::text("first prompt"),
+            InputPart::text(format!("second {}", "界".repeat(5_000))),
+        ];
+
+        let summary = run_summary(&run).unwrap();
+        let preview = summary.input_preview.unwrap();
+
+        assert!(preview.starts_with("first prompt\nsecond "));
+        assert_eq!(preview.chars().count(), 4_096);
+        assert!(preview.is_char_boundary(preview.len()));
+    }
+
+    #[test]
+    fn interaction_details_are_reviewable_and_fail_closed_when_oversized() {
+        let mut approval = ApprovalRecord::new(
+            "approval-review",
+            SessionId::new(),
+            RunId::new(),
+            "call-review",
+            "write_file",
+        );
+        approval.reviewed_arguments = Some(json!({"path": "src/lib.rs", "content": "safe"}));
+        let detail = approval_detail(&approval).unwrap();
+        assert!(detail.arguments_complete);
+        assert!(detail.arguments_json.contains("src/lib.rs"));
+        assert_eq!(detail.summary.title, "write_file");
+
+        approval.reviewed_arguments = Some(json!({"content": "x".repeat(40_000)}));
+        let oversized = approval_detail(&approval).unwrap();
+        assert!(!oversized.arguments_complete);
+        assert!(oversized.arguments_json.is_empty());
+    }
+
+    #[test]
+    fn clarification_projection_uses_durable_questions_without_answers() {
+        let mut approval = ApprovalRecord::new(
+            "clarification-review",
+            SessionId::new(),
+            RunId::new(),
+            "call-question",
+            starweaver_session::ASK_USER_QUESTION_ACTION,
+        );
+        approval.request = json!({
+            "questions": [{
+                "header": "Scope",
+                "multi_select": false,
+                "options": [
+                    {"description": "Keep it focused", "label": "Minimal"},
+                    {"description": "Include cleanup", "label": "Broader"}
+                ],
+                "question": "How broad should the change be?"
+            }]
+        });
+
+        let summary = clarification_summary_from_approval(&approval).unwrap();
+        assert_eq!(summary.status, host::ClarificationStatus::Pending);
+        assert_eq!(summary.questions.len(), 1);
+        assert_eq!(summary.questions[0].header, "Scope");
+    }
+
+    #[test]
+    fn interaction_show_and_mutation_families_reject_cross_session_access() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = RpcService::replay_only(RpcConfig::for_tests(temp.path())).unwrap();
+        let connection = service.new_connection(
+            None,
+            "interaction-session-authority",
+            host::Transport::Stdio,
+            all_connection_scopes(),
+        );
+        let runtime = service.runtime.runtime.as_ref().unwrap();
+
+        execute_on_runtime(runtime, async move {
+            let actual_session_id = SessionId::from_string("interaction-session-owner");
+            let other_session_id = SessionId::from_string("interaction-session-other");
+            let run_id = RunId::from_string("interaction-session-run");
+            let store = service.storage.session_store();
+            store
+                .save_session(SessionRecord::new(actual_session_id.clone()))
+                .await
+                .unwrap();
+            store
+                .save_session(SessionRecord::new(other_session_id.clone()))
+                .await
+                .unwrap();
+            let mut run = RunRecord::new(
+                actual_session_id.clone(),
+                run_id.clone(),
+                starweaver_core::ConversationId::new(),
+            );
+            run.sequence_no = 1;
+            store.append_run(run).await.unwrap();
+
+            store
+                .append_approval(ApprovalRecord::new(
+                    "cross-session-approval",
+                    actual_session_id.clone(),
+                    run_id.clone(),
+                    "approval-call",
+                    "shell",
+                ))
+                .await
+                .unwrap();
+            let mut clarification = ApprovalRecord::new(
+                "cross-session-clarification",
+                actual_session_id.clone(),
+                run_id.clone(),
+                "clarification-call",
+                starweaver_session::ASK_USER_QUESTION_ACTION,
+            );
+            clarification.request = json!({
+                "questions": [{
+                    "header": "Scope",
+                    "multi_select": false,
+                    "options": [
+                        {"description": "Keep it focused", "label": "Minimal"},
+                        {"description": "Include cleanup", "label": "Broader"}
+                    ],
+                    "question": "How broad should the change be?"
+                }]
+            });
+            store.append_approval(clarification).await.unwrap();
+            let mut deferred = DeferredToolRecord::new(
+                "cross-session-deferred",
+                actual_session_id.clone(),
+                run_id,
+                "deferred-call",
+                "remote_tool",
+            );
+            deferred.status = ExecutionStatus::Waiting;
+            store.append_deferred_tool(deferred).await.unwrap();
+
+            let requested = other_session_id.as_str();
+            let errors = vec![
+                connection
+                    .approval_show_generated(typed(json!({
+                        "approvalId": "cross-session-approval",
+                        "sessionId": requested,
+                    })))
+                    .await
+                    .unwrap_err(),
+                connection
+                    .clarification_show_generated(typed(json!({
+                        "clarificationId": "cross-session-clarification",
+                        "sessionId": requested,
+                    })))
+                    .await
+                    .unwrap_err(),
+                connection
+                    .deferred_show_generated(typed(json!({
+                        "deferredId": "cross-session-deferred",
+                        "sessionId": requested,
+                    })))
+                    .await
+                    .unwrap_err(),
+                connection
+                    .approval_decide_generated(typed(json!({
+                        "approvalId": "cross-session-approval",
+                        "decision": "approved",
+                        "expectedRevision": "1",
+                        "idempotencyKey": "cross-session-approval-decision",
+                        "sessionId": requested,
+                    })))
+                    .await
+                    .unwrap_err(),
+                connection
+                    .clarification_resolve_generated(typed(json!({
+                        "answers": [{
+                            "question": "How broad should the change be?",
+                            "selectedOptions": ["Minimal"]
+                        }],
+                        "clarificationId": "cross-session-clarification",
+                        "expectedRevision": "1",
+                        "idempotencyKey": "cross-session-clarification-resolution",
+                        "sessionId": requested,
+                    })))
+                    .await
+                    .unwrap_err(),
+                connection
+                    .deferred_complete_generated(typed(json!({
+                        "deferredId": "cross-session-deferred",
+                        "expectedRevision": "1",
+                        "idempotencyKey": "cross-session-deferred-completion",
+                        "resultText": "must not persist",
+                        "sessionId": requested,
+                    })))
+                    .await
+                    .unwrap_err(),
+                connection
+                    .deferred_fail_generated(typed(json!({
+                        "deferredId": "cross-session-deferred",
+                        "error": "must not persist",
+                        "expectedRevision": "1",
+                        "idempotencyKey": "cross-session-deferred-failure",
+                        "sessionId": requested,
+                    })))
+                    .await
+                    .unwrap_err(),
+            ];
+            for error in errors {
+                assert_eq!(error.code, host::ERROR_CODE_NOT_FOUND);
+                assert_eq!(error.message, "resource not found");
+            }
+
+            let approval = service
+                .storage
+                .load_approval("cross-session-approval")
+                .unwrap();
+            assert_eq!(approval.revision, 1);
+            assert_eq!(approval.status, ApprovalStatus::Pending);
+            assert!(approval.decision.is_none());
+            let clarification = service
+                .storage
+                .load_approval("cross-session-clarification")
+                .unwrap();
+            assert_eq!(clarification.revision, 1);
+            assert_eq!(clarification.status, ApprovalStatus::Pending);
+            let deferred = service
+                .storage
+                .load_deferred_tool("cross-session-deferred")
+                .unwrap();
+            assert_eq!(deferred.revision, 1);
+            assert_eq!(deferred.status, ExecutionStatus::Waiting);
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn supervised_startup_refuses_to_migrate_an_existing_database() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = RpcConfig::for_tests(temp.path());
+        config.initial_workspace_root = None;
+        fs::write(&config.database_path, []).unwrap();
+
+        let error = require_current_supervised_database(&config).unwrap_err();
+        assert!(matches!(error, RpcHostError::Invalid(_)));
+    }
+
+    #[test]
+    fn supervised_startup_accepts_a_current_or_not_yet_created_database() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = RpcConfig::for_tests(temp.path());
+        config.initial_workspace_root = None;
+
+        require_current_supervised_database(&config).unwrap();
+        starweaver_storage::migrate_sqlite_database(&config.database_path).unwrap();
+        require_current_supervised_database(&config).unwrap();
+    }
+
+    #[test]
+    fn standalone_startup_retains_its_explicit_migration_behavior() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        fs::write(&config.database_path, []).unwrap();
+
+        require_current_supervised_database(&config).unwrap();
+    }
+
     fn config_authorization_grant(
         service: &RpcService,
         operation: &str,
@@ -5373,6 +5949,73 @@ mod generated_service_tests {
             .unwrap()
             .grant
             .workspace_id
+    }
+
+    #[test]
+    fn run_status_projects_only_current_process_control_ownership() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = RpcService::replay_only(RpcConfig::for_tests(temp.path())).unwrap();
+        let connection = service.new_connection(
+            None,
+            "desktop-run-status-authority",
+            host::Transport::Stdio,
+            all_connection_scopes(),
+        );
+        let runtime = service.runtime.runtime.as_ref().unwrap();
+        execute_on_runtime(runtime, async move {
+            let (session_id, run_id, handle, release) = service
+                .coordinator
+                .install_active_run_control_fixture()
+                .await
+                .unwrap();
+            let locally_owned = connection
+                .run_status_generated(typed(json!({
+                    "runId": run_id.as_str(),
+                    "sessionId": session_id.as_str(),
+                })))
+                .await
+                .unwrap();
+            assert!(locally_owned.controllable_by_current_host);
+
+            let foreign_session = service
+                .storage
+                .create_session(Some("default".to_string()), None)
+                .unwrap();
+            let foreign_run = RunRecord::new(
+                foreign_session.session_id.clone(),
+                RunId::new(),
+                starweaver_core::ConversationId::new(),
+            );
+            let foreign_admission = service
+                .storage
+                .session_store()
+                .acquire_run_admission(starweaver_session::AcquireRunAdmission {
+                    run: foreign_run,
+                    namespace_id: starweaver_session::LOCAL_SESSION_NAMESPACE.to_string(),
+                    host_instance_id: "foreign-host".to_string(),
+                    admission_id: "foreign-run-status-admission".to_string(),
+                    lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+                    idempotency_key: "foreign-run-status".to_string(),
+                    command_fingerprint: "foreign-run-status-v1".to_string(),
+                    replaces_waiting_run_id: None,
+                    hitl_resume_claim_id: None,
+                })
+                .await
+                .unwrap();
+            let foreign = connection
+                .run_status_generated(typed(json!({
+                    "runId": foreign_admission.lease.target.run_id.as_str(),
+                    "sessionId": foreign_admission.lease.target.session_id.as_str(),
+                })))
+                .await
+                .unwrap();
+            assert_eq!(foreign.run.status, host::RunStatus::Queued);
+            assert!(!foreign.controllable_by_current_host);
+
+            release.notify_one();
+            let _ = handle.complete().await;
+        })
+        .unwrap();
     }
 
     #[test]

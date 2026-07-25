@@ -62,8 +62,9 @@ pub use host_events::{
     DurableHostEventClass, DurableHostEventPage, DurableHostEventQuery, DurableHostEventRecord,
     DurableHostEventScope, EventPublicationKey, MAX_HOST_EVENT_PAGE_SIZE, MAX_HOST_EVENT_POSITION,
     OutputAvailableProjection, PendingHostEventPublication, RunChangedProjection,
-    RunChangedSummary, append_authoritative_run_publications, output_available_publication,
-    run_changed_publication,
+    RunChangedSummary, TranscriptChangedProjection, TranscriptUpdateProjection,
+    append_authoritative_run_publications, output_available_publication, run_changed_publication,
+    transcript_changed_publication,
 };
 pub use input::{BinaryRef, FileRef, InputConversionError, InputPart};
 pub use interaction::{
@@ -73,7 +74,7 @@ pub use interaction::{
     ClarificationOption, ClarificationQuestion, ClarificationResolution,
     DEFERRED_COMPLETE_OPERATION, DEFERRED_FAIL_OPERATION, DecideApproval, DeferredMutationOutcome,
     DeferredMutationResult, InteractionMutationContext, ResolveClarification, ResolveDeferredTool,
-    validate_clarification_answers,
+    parse_clarification_questions, validate_clarification_answers,
 };
 pub use management::{
     AcquireRunAdmission, AgentDisplayPage, AgentReplayQuery, AgentRunListQuery, AgentRunPage,
@@ -119,8 +120,8 @@ pub use search::{
 pub use starweaver_core::SessionId;
 pub use store::{
     InMemorySessionStore, InteractionPage, InteractionPageKey, InteractionPageQuery,
-    MAX_STABLE_PAGE_SIZE, SessionFilter, SessionPage, SessionPageKey, SessionPageQuery,
-    SessionStore, SessionStoreExecutor,
+    InteractionStateFilter, MAX_STABLE_PAGE_SIZE, RunPage, RunPageKey, RunPageQuery, SessionFilter,
+    SessionPage, SessionPageKey, SessionPageQuery, SessionStore, SessionStoreExecutor,
 };
 pub use trace::{CompactRunTrace, CompactSessionTrace};
 

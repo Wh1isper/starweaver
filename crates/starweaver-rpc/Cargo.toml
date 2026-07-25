@@ -35,6 +35,7 @@ starweaver-environment.workspace = true
 starweaver-envd-client.workspace = true
 starweaver-envd-core.workspace = true
 starweaver-model.workspace = true
+starweaver-oauth.workspace = true
 starweaver-rpc-core.workspace = true
 starweaver-runtime.workspace = true
 starweaver-session.workspace = true

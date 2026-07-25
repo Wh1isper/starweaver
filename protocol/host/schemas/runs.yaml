@@ -58,6 +58,59 @@
         ],
         "type": "object"
       },
+      "RunListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "oneOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "sessionId",
+          "cursor",
+          "limit"
+        ],
+        "type": "object"
+      },
+      "RunListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
+            "$ref": "#/components/schemas/PageInfo"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            },
+            "maxItems": 100,
+            "minItems": 0,
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs",
+          "page"
+        ],
+        "type": "object"
+      },
       "RunResumeParams": {
         "additionalProperties": false,
         "properties": {
@@ -235,12 +288,16 @@
       "RunStatusResult": {
         "additionalProperties": false,
         "properties": {
+          "controllableByCurrentHost": {
+            "type": "boolean"
+          },
           "run": {
             "$ref": "#/components/schemas/RunSummary"
           }
         },
         "required": [
-          "run"
+          "run",
+          "controllableByCurrentHost"
         ],
         "type": "object"
       },
@@ -296,6 +353,19 @@
             "oneOf": [
               {
                 "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "inputPreview": {
+            "oneOf": [
+              {
+                "maxLength": 4096,
                 "minLength": 0,
                 "type": "string"
               },

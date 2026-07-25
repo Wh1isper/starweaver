@@ -12,11 +12,11 @@ use starweaver_session::{
     DurableHostEventRecord, DurableHostEventScope, DurableRunControlIntent,
     DurableRunControlStatus, EnvironmentStateRef, HitlResumeAbortOutcome, HitlResumeClaim,
     HitlResumeClaimState, ManagedRunTarget, PendingHostEventPublication, PendingStreamPublication,
-    RunAdmissionLease, RunAdmissionReceipt, RunEvidenceCommit, RunRecord, RunStatus,
-    RunTerminalError, RunTerminalProjection, SessionContinuationFence, SessionFilter, SessionPage,
-    SessionPageKey, SessionPageQuery, SessionRecord, SessionResumeSnapshot, SessionStatus,
-    SessionStore, SessionStoreError, SessionStoreResult, StreamCursorRef, StreamPublicationTarget,
-    UpdateManagedSession,
+    RunAdmissionLease, RunAdmissionReceipt, RunEvidenceCommit, RunPage, RunPageQuery, RunRecord,
+    RunStatus, RunTerminalError, RunTerminalProjection, SessionContinuationFence, SessionFilter,
+    SessionPage, SessionPageKey, SessionPageQuery, SessionRecord, SessionResumeSnapshot,
+    SessionStatus, SessionStore, SessionStoreError, SessionStoreResult, StreamCursorRef,
+    StreamPublicationTarget, UpdateManagedSession,
 };
 use starweaver_stream::{
     AgentStreamRecord, InMemoryReplayEventLog, ReplayCursor, ReplayEvent, ReplayScope,
@@ -32,11 +32,12 @@ use crate::{
 
 use super::{
     SqliteSessionStore,
+    host_events::enqueue_host_event_publications_in_transaction,
     management::ensure_run_admission_in_transaction,
     records::{
         advance_run_revision, allocate_or_reuse_run_sequence, apply_run_to_session,
-        list_run_records, load_run_record, load_session_record, save_run_record,
-        save_session_record,
+        list_recent_run_records, list_run_record_page, list_run_records, load_run_record,
+        load_session_record, save_run_record, save_session_record,
     },
     trace_helpers::{
         count_deferred_tools, count_pending_approvals, latest_stream_sequence, load_checkpoint_ids,
@@ -217,10 +218,33 @@ impl SqliteSessionStore {
         transaction.commit().map_err(map_sqlite_session_error)
     }
 
+    /// Atomically append replay records and their public host-event projections under one run
+    /// admission fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lease is stale, an exact retry conflicts, or either durable
+    /// projection cannot be inserted. The entire batch remains unchanged on failure.
+    pub async fn append_replay_events_with_host_publications_fenced(
+        &self,
+        lease: &RunAdmissionLease,
+        events: Vec<ReplayEvent>,
+        publications: Vec<PendingHostEventPublication>,
+    ) -> SessionStoreResult<()> {
+        let store = self.clone();
+        let lease = lease.clone();
+        crate::blocking::run(move || {
+            store.append_replay_events_fenced_sync(&lease, events, publications)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
     fn append_replay_events_fenced_sync(
         &self,
         lease: &RunAdmissionLease,
         events: Vec<ReplayEvent>,
+        publications: Vec<PendingHostEventPublication>,
     ) -> SessionStoreResult<()> {
         let expected_scope = ReplayScope::run(lease.target.run_id.as_str());
         let encoded = events
@@ -259,6 +283,7 @@ impl SqliteSessionStore {
                 &created_at,
             )?;
         }
+        enqueue_host_event_publications_in_transaction(&transaction, &publications)?;
         transaction.commit().map_err(map_sqlite_session_error)
     }
 }
@@ -306,9 +331,11 @@ impl SessionStore for SqliteSessionStore {
     ) -> SessionStoreResult<()> {
         let store = self.clone();
         let lease = lease.clone();
-        crate::blocking::run(move || store.append_replay_events_fenced_sync(&lease, events))
-            .await
-            .map_err(SessionStoreError::Failed)?
+        crate::blocking::run(move || {
+            store.append_replay_events_fenced_sync(&lease, events, Vec::new())
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
     }
 
     async fn commit_checkpoint(
@@ -1705,6 +1732,38 @@ impl SessionStore for SqliteSessionStore {
             let session_id = &session_id;
             let connection = store.lock()?;
             list_run_records(&connection, session_id)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn list_recent_runs(
+        &self,
+        session_id: &SessionId,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<RunRecord>> {
+        let store = self.clone();
+        let session_id = session_id.clone();
+        crate::blocking::run(move || {
+            let session_id = &session_id;
+            let connection = store.lock()?;
+            list_recent_run_records(&connection, session_id, limit)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn list_run_page(
+        &self,
+        session_id: &SessionId,
+        query: RunPageQuery,
+    ) -> SessionStoreResult<RunPage> {
+        let store = self.clone();
+        let session_id = session_id.clone();
+        crate::blocking::run(move || {
+            let session_id = &session_id;
+            let connection = store.lock()?;
+            list_run_record_page(&connection, session_id, &query)
         })
         .await
         .map_err(SessionStoreError::Failed)?

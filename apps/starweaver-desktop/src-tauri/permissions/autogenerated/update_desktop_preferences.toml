@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-update-desktop-preferences"
+description = "Enables the update_desktop_preferences command without any pre-configured scope."
+commands.allow = ["update_desktop_preferences"]
+
+[[permission]]
+identifier = "deny-update-desktop-preferences"
+description = "Denies the update_desktop_preferences command without any pre-configured scope."
+commands.deny = ["update_desktop_preferences"]

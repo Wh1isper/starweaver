@@ -2,7 +2,7 @@
 #![allow(missing_docs)]
 
 pub const DESKTOP_HOST_PROTOCOL_DIGEST: &str =
-    "sha256:2a9e9fad809f55e34f2b701aed6008b2a91148c19f3988a8e79b5c00d404e6dd";
+    "sha256:92ebe8f13baf1e3aced0f0edcae3b2a9a23e2e5b64718e615bb0c6812b01c2bf";
 
 use std::collections::BTreeMap;
 
@@ -209,6 +209,7 @@ pub struct ApprovalDecideIntent {
     pub decision: String,
     pub expected_revision: DecimalU64,
     pub reason: Option<String>,
+    pub session_id: SessionId,
 }
 
 #[derive(Clone, Debug)]
@@ -224,6 +225,7 @@ pub struct ApprovalDecideCompleteParams {
     pub expected_revision: DecimalU64,
     pub idempotency_key: SupervisorFieldValue,
     pub reason: Option<String>,
+    pub session_id: SessionId,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -238,6 +240,7 @@ pub struct ApprovalDecideResult {
 pub struct ApprovalListIntent {
     pub run_id: Option<RunId>,
     pub session_id: Option<SessionId>,
+    pub state: Option<String>,
     pub page_token: Option<DesktopPageToken>,
 }
 
@@ -254,6 +257,7 @@ pub struct ApprovalListCompleteParams {
     pub limit: SupervisorFieldValue,
     pub run_id: Option<RunId>,
     pub session_id: Option<SessionId>,
+    pub state: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -267,6 +271,7 @@ pub struct ApprovalListResult {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ApprovalShowIntent {
     pub approval_id: ApprovalId,
+    pub session_id: SessionId,
 }
 
 #[derive(Clone, Debug)]
@@ -276,6 +281,7 @@ pub struct ApprovalShowSupervisorFields {}
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalShowCompleteParams {
     pub approval_id: ApprovalId,
+    pub session_id: SessionId,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -304,11 +310,44 @@ pub struct CatalogListResult {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ClarificationListIntent {
+    pub run_id: Option<RunId>,
+    pub session_id: Option<SessionId>,
+    pub state: Option<String>,
+    pub page_token: Option<DesktopPageToken>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClarificationListSupervisorFields {
+    pub cursor: SupervisorFieldValue,
+    pub limit: SupervisorFieldValue,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClarificationListCompleteParams {
+    pub cursor: SupervisorFieldValue,
+    pub limit: SupervisorFieldValue,
+    pub run_id: Option<RunId>,
+    pub session_id: Option<SessionId>,
+    pub state: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClarificationListResult {
+    pub clarifications: Value,
+    pub page: DesktopPage,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ClarificationResolveIntent {
     pub answers: Vec<ClarificationAnswer>,
     pub clarification_id: ClarificationId,
     pub expected_revision: DecimalU64,
     pub response: Option<String>,
+    pub session_id: SessionId,
 }
 
 #[derive(Clone, Debug)]
@@ -324,6 +363,7 @@ pub struct ClarificationResolveCompleteParams {
     pub expected_revision: DecimalU64,
     pub idempotency_key: SupervisorFieldValue,
     pub response: Option<String>,
+    pub session_id: SessionId,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -331,6 +371,29 @@ pub struct ClarificationResolveCompleteParams {
 pub struct ClarificationResolveResult {
     pub clarification: Value,
     pub receipt: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ClarificationShowIntent {
+    pub clarification_id: ClarificationId,
+    pub session_id: SessionId,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClarificationShowSupervisorFields {}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClarificationShowCompleteParams {
+    pub clarification_id: ClarificationId,
+    pub session_id: SessionId,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClarificationShowResult {
+    pub clarification: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -499,6 +562,7 @@ pub struct DeferredCompleteIntent {
     pub deferred_id: DeferredId,
     pub expected_revision: DecimalU64,
     pub result_text: String,
+    pub session_id: SessionId,
 }
 
 #[derive(Clone, Debug)]
@@ -513,6 +577,7 @@ pub struct DeferredCompleteCompleteParams {
     pub expected_revision: DecimalU64,
     pub idempotency_key: SupervisorFieldValue,
     pub result_text: String,
+    pub session_id: SessionId,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -528,6 +593,7 @@ pub struct DeferredFailIntent {
     pub deferred_id: DeferredId,
     pub error: String,
     pub expected_revision: DecimalU64,
+    pub session_id: SessionId,
 }
 
 #[derive(Clone, Debug)]
@@ -542,6 +608,7 @@ pub struct DeferredFailCompleteParams {
     pub error: String,
     pub expected_revision: DecimalU64,
     pub idempotency_key: SupervisorFieldValue,
+    pub session_id: SessionId,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -556,6 +623,7 @@ pub struct DeferredFailResult {
 pub struct DeferredListIntent {
     pub run_id: Option<RunId>,
     pub session_id: Option<SessionId>,
+    pub state: Option<String>,
     pub page_token: Option<DesktopPageToken>,
 }
 
@@ -572,6 +640,7 @@ pub struct DeferredListCompleteParams {
     pub limit: SupervisorFieldValue,
     pub run_id: Option<RunId>,
     pub session_id: Option<SessionId>,
+    pub state: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -585,6 +654,7 @@ pub struct DeferredListResult {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DeferredShowIntent {
     pub deferred_id: DeferredId,
+    pub session_id: SessionId,
 }
 
 #[derive(Clone, Debug)]
@@ -594,6 +664,7 @@ pub struct DeferredShowSupervisorFields {}
 #[serde(rename_all = "camelCase")]
 pub struct DeferredShowCompleteParams {
     pub deferred_id: DeferredId,
+    pub session_id: SessionId,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -769,6 +840,34 @@ pub struct RunInterruptResult {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RunListIntent {
+    pub session_id: SessionId,
+    pub page_token: Option<DesktopPageToken>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RunListSupervisorFields {
+    pub cursor: SupervisorFieldValue,
+    pub limit: SupervisorFieldValue,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunListCompleteParams {
+    pub cursor: SupervisorFieldValue,
+    pub limit: SupervisorFieldValue,
+    pub session_id: SessionId,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunListResult {
+    pub page: DesktopPage,
+    pub runs: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RunResumeIntent {
     pub continuation_mode: ContinuationMode,
     pub profile: Option<String>,
@@ -856,6 +955,7 @@ pub struct RunStatusCompleteParams {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunStatusResult {
+    pub controllable_by_current_host: Value,
     pub run: Value,
 }
 
@@ -1151,8 +1251,12 @@ pub enum DesktopHostOperation {
     ApprovalShow(ApprovalShowIntent),
     #[serde(rename = "catalog.list")]
     CatalogList(CatalogListIntent),
+    #[serde(rename = "clarification.list")]
+    ClarificationList(ClarificationListIntent),
     #[serde(rename = "clarification.resolve")]
     ClarificationResolve(ClarificationResolveIntent),
+    #[serde(rename = "clarification.show")]
+    ClarificationShow(ClarificationShowIntent),
     #[serde(rename = "config.activate")]
     ConfigActivate(ConfigActivateIntent),
     #[serde(rename = "config.discard")]
@@ -1187,6 +1291,8 @@ pub enum DesktopHostOperation {
     ProfileGet(ProfileGetIntent),
     #[serde(rename = "run.interrupt")]
     RunInterrupt(RunInterruptIntent),
+    #[serde(rename = "run.list")]
+    RunList(RunListIntent),
     #[serde(rename = "run.resume")]
     RunResume(RunResumeIntent),
     #[serde(rename = "run.start")]
@@ -1231,7 +1337,9 @@ impl DesktopHostOperation {
             Self::ApprovalList(intent) => intent.page_token.as_ref(),
             Self::ApprovalShow(_) => None,
             Self::CatalogList(_) => None,
+            Self::ClarificationList(intent) => intent.page_token.as_ref(),
             Self::ClarificationResolve(_) => None,
+            Self::ClarificationShow(_) => None,
             Self::ConfigActivate(_) => None,
             Self::ConfigDiscard(_) => None,
             Self::ConfigGet(_) => None,
@@ -1249,6 +1357,7 @@ impl DesktopHostOperation {
             Self::ModelSelectionGet(_) => None,
             Self::ProfileGet(_) => None,
             Self::RunInterrupt(_) => None,
+            Self::RunList(intent) => intent.page_token.as_ref(),
             Self::RunResume(_) => None,
             Self::RunStart(_) => None,
             Self::RunStatus(_) => None,
@@ -1273,7 +1382,9 @@ impl DesktopHostOperation {
             Self::ApprovalList(_) => false,
             Self::ApprovalShow(_) => false,
             Self::CatalogList(_) => false,
+            Self::ClarificationList(_) => false,
             Self::ClarificationResolve(_) => true,
+            Self::ClarificationShow(_) => false,
             Self::ConfigActivate(_) => true,
             Self::ConfigDiscard(_) => true,
             Self::ConfigGet(_) => false,
@@ -1291,6 +1402,7 @@ impl DesktopHostOperation {
             Self::ModelSelectionGet(_) => false,
             Self::ProfileGet(_) => false,
             Self::RunInterrupt(_) => true,
+            Self::RunList(_) => false,
             Self::RunResume(_) => true,
             Self::RunStart(_) => true,
             Self::RunStatus(_) => false,
@@ -1314,7 +1426,9 @@ pub enum SupervisorHostFields {
     ApprovalList(ApprovalListSupervisorFields),
     ApprovalShow(ApprovalShowSupervisorFields),
     CatalogList(CatalogListSupervisorFields),
+    ClarificationList(ClarificationListSupervisorFields),
     ClarificationResolve(ClarificationResolveSupervisorFields),
+    ClarificationShow(ClarificationShowSupervisorFields),
     ConfigActivate(ConfigActivateSupervisorFields),
     ConfigDiscard(ConfigDiscardSupervisorFields),
     ConfigGet(ConfigGetSupervisorFields),
@@ -1332,6 +1446,7 @@ pub enum SupervisorHostFields {
     ModelSelectionGet(ModelSelectionGetSupervisorFields),
     ProfileGet(ProfileGetSupervisorFields),
     RunInterrupt(RunInterruptSupervisorFields),
+    RunList(RunListSupervisorFields),
     RunResume(RunResumeSupervisorFields),
     RunStart(RunStartSupervisorFields),
     RunStatus(RunStatusSupervisorFields),
@@ -1383,12 +1498,23 @@ pub fn build_supervisor_fields(
         DesktopHostOperation::CatalogList(_) => Ok(SupervisorHostFields::CatalogList(
             CatalogListSupervisorFields {},
         )),
+        DesktopHostOperation::ClarificationList(_) => Ok(SupervisorHostFields::ClarificationList(
+            ClarificationListSupervisorFields {
+                cursor: SupervisorFieldValue::from_serializable(wire_cursor)
+                    .map_err(|_| SupervisorFieldsError)?,
+                limit: SupervisorFieldValue::from_serializable(100_u32)
+                    .map_err(|_| SupervisorFieldsError)?,
+            },
+        )),
         DesktopHostOperation::ClarificationResolve(_) => Ok(
             SupervisorHostFields::ClarificationResolve(ClarificationResolveSupervisorFields {
                 idempotency_key: SupervisorFieldValue::from_serializable(idempotency_key)
                     .map_err(|_| SupervisorFieldsError)?,
             }),
         ),
+        DesktopHostOperation::ClarificationShow(_) => Ok(SupervisorHostFields::ClarificationShow(
+            ClarificationShowSupervisorFields {},
+        )),
         DesktopHostOperation::ConfigActivate(_) => Ok(SupervisorHostFields::ConfigActivate(
             ConfigActivateSupervisorFields {
                 activation_id: dynamic_fields.required("activationId")?,
@@ -1483,6 +1609,14 @@ pub fn build_supervisor_fields(
                     .map_err(|_| SupervisorFieldsError)?,
             },
         )),
+        DesktopHostOperation::RunList(_) => {
+            Ok(SupervisorHostFields::RunList(RunListSupervisorFields {
+                cursor: SupervisorFieldValue::from_serializable(wire_cursor)
+                    .map_err(|_| SupervisorFieldsError)?,
+                limit: SupervisorFieldValue::from_serializable(100_u32)
+                    .map_err(|_| SupervisorFieldsError)?,
+            }))
+        }
         DesktopHostOperation::RunResume(_) => {
             Ok(SupervisorHostFields::RunResume(RunResumeSupervisorFields {
                 environment_attachments: SupervisorFieldValue::from_serializable(
@@ -1584,7 +1718,9 @@ pub enum CompleteHostParams {
     ApprovalList(ApprovalListCompleteParams),
     ApprovalShow(ApprovalShowCompleteParams),
     CatalogList(CatalogListCompleteParams),
+    ClarificationList(ClarificationListCompleteParams),
     ClarificationResolve(ClarificationResolveCompleteParams),
+    ClarificationShow(ClarificationShowCompleteParams),
     ConfigActivate(ConfigActivateCompleteParams),
     ConfigDiscard(ConfigDiscardCompleteParams),
     ConfigGet(ConfigGetCompleteParams),
@@ -1602,6 +1738,7 @@ pub enum CompleteHostParams {
     ModelSelectionGet(ModelSelectionGetCompleteParams),
     ProfileGet(ProfileGetCompleteParams),
     RunInterrupt(RunInterruptCompleteParams),
+    RunList(RunListCompleteParams),
     RunResume(RunResumeCompleteParams),
     RunStart(RunStartCompleteParams),
     RunStatus(RunStatusCompleteParams),
@@ -1655,6 +1792,7 @@ pub fn build_complete_host_request(
             expected_revision: intent.expected_revision,
             idempotency_key: supervisor.idempotency_key,
             reason: intent.reason,
+            session_id: intent.session_id,
         }),
         (
             DesktopHostOperation::ApprovalList(intent),
@@ -1664,17 +1802,29 @@ pub fn build_complete_host_request(
             limit: supervisor.limit,
             run_id: intent.run_id,
             session_id: intent.session_id,
+            state: intent.state,
         }),
         (
             DesktopHostOperation::ApprovalShow(intent),
             SupervisorHostFields::ApprovalShow(_supervisor),
         ) => CompleteHostParams::ApprovalShow(ApprovalShowCompleteParams {
             approval_id: intent.approval_id,
+            session_id: intent.session_id,
         }),
         (
             DesktopHostOperation::CatalogList(_intent),
             SupervisorHostFields::CatalogList(_supervisor),
         ) => CompleteHostParams::CatalogList(CatalogListCompleteParams {}),
+        (
+            DesktopHostOperation::ClarificationList(intent),
+            SupervisorHostFields::ClarificationList(supervisor),
+        ) => CompleteHostParams::ClarificationList(ClarificationListCompleteParams {
+            cursor: supervisor.cursor,
+            limit: supervisor.limit,
+            run_id: intent.run_id,
+            session_id: intent.session_id,
+            state: intent.state,
+        }),
         (
             DesktopHostOperation::ClarificationResolve(intent),
             SupervisorHostFields::ClarificationResolve(supervisor),
@@ -1684,6 +1834,14 @@ pub fn build_complete_host_request(
             expected_revision: intent.expected_revision,
             idempotency_key: supervisor.idempotency_key,
             response: intent.response,
+            session_id: intent.session_id,
+        }),
+        (
+            DesktopHostOperation::ClarificationShow(intent),
+            SupervisorHostFields::ClarificationShow(_supervisor),
+        ) => CompleteHostParams::ClarificationShow(ClarificationShowCompleteParams {
+            clarification_id: intent.clarification_id,
+            session_id: intent.session_id,
         }),
         (
             DesktopHostOperation::ConfigActivate(intent),
@@ -1740,6 +1898,7 @@ pub fn build_complete_host_request(
             expected_revision: intent.expected_revision,
             idempotency_key: supervisor.idempotency_key,
             result_text: intent.result_text,
+            session_id: intent.session_id,
         }),
         (
             DesktopHostOperation::DeferredFail(intent),
@@ -1749,6 +1908,7 @@ pub fn build_complete_host_request(
             error: intent.error,
             expected_revision: intent.expected_revision,
             idempotency_key: supervisor.idempotency_key,
+            session_id: intent.session_id,
         }),
         (
             DesktopHostOperation::DeferredList(intent),
@@ -1758,12 +1918,14 @@ pub fn build_complete_host_request(
             limit: supervisor.limit,
             run_id: intent.run_id,
             session_id: intent.session_id,
+            state: intent.state,
         }),
         (
             DesktopHostOperation::DeferredShow(intent),
             SupervisorHostFields::DeferredShow(_supervisor),
         ) => CompleteHostParams::DeferredShow(DeferredShowCompleteParams {
             deferred_id: intent.deferred_id,
+            session_id: intent.session_id,
         }),
         (
             DesktopHostOperation::EnvironmentDetach(intent),
@@ -1809,6 +1971,13 @@ pub fn build_complete_host_request(
             run_id: intent.run_id,
             session_id: intent.session_id,
         }),
+        (DesktopHostOperation::RunList(intent), SupervisorHostFields::RunList(supervisor)) => {
+            CompleteHostParams::RunList(RunListCompleteParams {
+                cursor: supervisor.cursor,
+                limit: supervisor.limit,
+                session_id: intent.session_id,
+            })
+        }
         (DesktopHostOperation::RunResume(intent), SupervisorHostFields::RunResume(supervisor)) => {
             CompleteHostParams::RunResume(RunResumeCompleteParams {
                 continuation_mode: intent.continuation_mode,
@@ -1927,8 +2096,14 @@ pub fn build_complete_host_request(
         CompleteHostParams::ApprovalList(params) => ("approval.list", serde_json::to_value(params)),
         CompleteHostParams::ApprovalShow(params) => ("approval.show", serde_json::to_value(params)),
         CompleteHostParams::CatalogList(params) => ("catalog.list", serde_json::to_value(params)),
+        CompleteHostParams::ClarificationList(params) => {
+            ("clarification.list", serde_json::to_value(params))
+        }
         CompleteHostParams::ClarificationResolve(params) => {
             ("clarification.resolve", serde_json::to_value(params))
+        }
+        CompleteHostParams::ClarificationShow(params) => {
+            ("clarification.show", serde_json::to_value(params))
         }
         CompleteHostParams::ConfigActivate(params) => {
             ("config.activate", serde_json::to_value(params))
@@ -1963,6 +2138,7 @@ pub fn build_complete_host_request(
         }
         CompleteHostParams::ProfileGet(params) => ("profile.get", serde_json::to_value(params)),
         CompleteHostParams::RunInterrupt(params) => ("run.interrupt", serde_json::to_value(params)),
+        CompleteHostParams::RunList(params) => ("run.list", serde_json::to_value(params)),
         CompleteHostParams::RunResume(params) => ("run.resume", serde_json::to_value(params)),
         CompleteHostParams::RunStart(params) => ("run.start", serde_json::to_value(params)),
         CompleteHostParams::RunStatus(params) => ("run.status", serde_json::to_value(params)),
@@ -2006,7 +2182,9 @@ pub enum DesktopHostResult {
     ApprovalList(ApprovalListResult),
     ApprovalShow(ApprovalShowResult),
     CatalogList(CatalogListResult),
+    ClarificationList(ClarificationListResult),
     ClarificationResolve(ClarificationResolveResult),
+    ClarificationShow(ClarificationShowResult),
     ConfigActivate(ConfigActivateResult),
     ConfigDiscard(ConfigDiscardResult),
     ConfigGet(ConfigGetResult),
@@ -2024,6 +2202,7 @@ pub enum DesktopHostResult {
     ModelSelectionGet(ModelSelectionGetResult),
     ProfileGet(ProfileGetResult),
     RunInterrupt(RunInterruptResult),
+    RunList(RunListResult),
     RunResume(RunResumeResult),
     RunStart(RunStartResult),
     RunStatus(RunStatusResult),
@@ -2100,6 +2279,19 @@ pub fn project_host_result(
                 selection: project_field(object, "selection")?,
             }))
         }
+        host::HostResult::ClarificationList(value) => {
+            let value =
+                serde_json::to_value(value).map_err(|_| ProjectionError::InvalidGeneratedValue)?;
+            let object = value
+                .as_object()
+                .ok_or(ProjectionError::InvalidGeneratedValue)?;
+            Ok(DesktopHostResult::ClarificationList(
+                ClarificationListResult {
+                    clarifications: project_field(object, "clarifications")?,
+                    page: project_page(object, next_page_token)?,
+                },
+            ))
+        }
         host::HostResult::ClarificationResolve(value) => {
             let value =
                 serde_json::to_value(value).map_err(|_| ProjectionError::InvalidGeneratedValue)?;
@@ -2110,6 +2302,18 @@ pub fn project_host_result(
                 ClarificationResolveResult {
                     clarification: project_field(object, "clarification")?,
                     receipt: project_field(object, "receipt")?,
+                },
+            ))
+        }
+        host::HostResult::ClarificationShow(value) => {
+            let value =
+                serde_json::to_value(value).map_err(|_| ProjectionError::InvalidGeneratedValue)?;
+            let object = value
+                .as_object()
+                .ok_or(ProjectionError::InvalidGeneratedValue)?;
+            Ok(DesktopHostResult::ClarificationShow(
+                ClarificationShowResult {
+                    clarification: project_field(object, "clarification")?,
                 },
             ))
         }
@@ -2307,6 +2511,17 @@ pub fn project_host_result(
                 run: project_field(object, "run")?,
             }))
         }
+        host::HostResult::RunList(value) => {
+            let value =
+                serde_json::to_value(value).map_err(|_| ProjectionError::InvalidGeneratedValue)?;
+            let object = value
+                .as_object()
+                .ok_or(ProjectionError::InvalidGeneratedValue)?;
+            Ok(DesktopHostResult::RunList(RunListResult {
+                page: project_page(object, next_page_token)?,
+                runs: project_field(object, "runs")?,
+            }))
+        }
         host::HostResult::RunResume(value) => {
             let value =
                 serde_json::to_value(value).map_err(|_| ProjectionError::InvalidGeneratedValue)?;
@@ -2337,6 +2552,7 @@ pub fn project_host_result(
                 .as_object()
                 .ok_or(ProjectionError::InvalidGeneratedValue)?;
             Ok(DesktopHostResult::RunStatus(RunStatusResult {
+                controllable_by_current_host: project_field(object, "controllableByCurrentHost")?,
                 run: project_field(object, "run")?,
             }))
         }
@@ -2557,6 +2773,7 @@ pub fn project_host_notification(
             | host::HostEvent::DeferredChangedEvent(_)
             | host::HostEvent::OutputAvailableEvent(_)
             | host::HostEvent::RunChangedEvent(_)
+            | host::HostEvent::TranscriptChangedEvent(_)
     ) {
         return Err(ProjectionError::UnauthorizedEventClass);
     }

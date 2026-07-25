@@ -11,8 +11,8 @@ use starweaver_core::{RunId, SessionId};
 use starweaver_session::{
     ApprovalDecision, ApprovalRecord, ApprovalStatus, CheckpointRef, DeferredToolRecord,
     ExecutionStatus, HitlResumeClaim, HitlResumeClaimState, InteractionPage, InteractionPageKey,
-    InteractionPageQuery, PendingStreamPublication, RunAdmissionLease, RunEvidenceCommit,
-    RunRecord, RunStatus, SessionRecord, SessionStoreError, SessionStoreResult,
+    InteractionPageQuery, InteractionStateFilter, PendingStreamPublication, RunAdmissionLease,
+    RunEvidenceCommit, RunRecord, RunStatus, SessionRecord, SessionStoreError, SessionStoreResult,
     WorkspaceProvenanceRef, append_authoritative_run_publications,
 };
 use starweaver_stream::{AgentStreamRecord, DisplayMessage, ReplayEvent, ReplayScope};
@@ -996,7 +996,27 @@ impl SqliteStorage {
         &self,
         query: InteractionPageQuery,
     ) -> SessionStoreResult<InteractionPage<ApprovalRecord>> {
-        self.list_hitl_record_page("approval_records", "approval_id", query)
+        self.list_hitl_record_page("approval_records", "approval_id", query, None)
+    }
+
+    /// Return one storage-bounded stable keyset page of non-clarification approvals.
+    ///
+    /// The record kind and requested state class are applied in SQLite before the page limit.
+    pub fn list_standard_approval_page(
+        &self,
+        query: InteractionPageQuery,
+    ) -> SessionStoreResult<InteractionPage<ApprovalRecord>> {
+        self.list_hitl_record_page("approval_records", "approval_id", query, Some(false))
+    }
+
+    /// Return one storage-bounded stable keyset page of clarification approval records.
+    ///
+    /// The record kind and requested state class are applied in SQLite before the page limit.
+    pub fn list_clarification_page(
+        &self,
+        query: InteractionPageQuery,
+    ) -> SessionStoreResult<InteractionPage<ApprovalRecord>> {
+        self.list_hitl_record_page("approval_records", "approval_id", query, Some(true))
     }
 
     /// Load an approval by globally unique id, rejecting ambiguous legacy data.
@@ -1039,6 +1059,11 @@ impl SqliteStorage {
             "approval_id",
             approval_id,
         )?;
+        if approval.action_name == starweaver_session::ASK_USER_QUESTION_ACTION {
+            return Err(SessionStoreError::Failed(
+                "clarification records require typed clarification resolution".to_string(),
+            ));
+        }
         if approval.status != ApprovalStatus::Pending {
             let same = approval.status == status
                 && approval.decision.as_ref().is_some_and(|decision| {
@@ -1103,7 +1128,7 @@ impl SqliteStorage {
         &self,
         query: InteractionPageQuery,
     ) -> SessionStoreResult<InteractionPage<DeferredToolRecord>> {
-        self.list_hitl_record_page("deferred_tool_records", "deferred_id", query)
+        self.list_hitl_record_page("deferred_tool_records", "deferred_id", query, None)
     }
 
     /// Load a deferred tool by globally unique id, rejecting ambiguous legacy data.
@@ -1321,6 +1346,7 @@ impl SqliteStorage {
         table: &str,
         id_column: &str,
         query: InteractionPageQuery,
+        clarification: Option<bool>,
     ) -> SessionStoreResult<InteractionPage<T>>
     where
         T: serde::de::DeserializeOwned + starweaver_core::VersionedRecord,
@@ -1338,6 +1364,40 @@ impl SqliteStorage {
         if let Some(run_id) = query.run_id() {
             clauses.push("run_id = ?");
             bindings.push(SqlValue::Text(run_id.as_str().to_string()));
+        }
+        if let Some(clarification) = clarification {
+            clauses.push(if clarification {
+                "json_extract(record, '$.payload.action_name') = ?"
+            } else {
+                "json_extract(record, '$.payload.action_name') <> ?"
+            });
+            bindings.push(SqlValue::Text(
+                starweaver_session::ASK_USER_QUESTION_ACTION.to_string(),
+            ));
+        }
+        match (table, query.state()) {
+            (_, InteractionStateFilter::All) => {}
+            ("approval_records", InteractionStateFilter::Unresolved) => {
+                clauses.push("json_extract(record, '$.payload.status') = 'pending'");
+            }
+            ("approval_records", InteractionStateFilter::Resolved) => {
+                clauses.push("json_extract(record, '$.payload.status') <> 'pending'");
+            }
+            ("deferred_tool_records", InteractionStateFilter::Unresolved) => {
+                clauses.push(
+                    "json_extract(record, '$.payload.status') IN ('pending', 'running', 'waiting')",
+                );
+            }
+            ("deferred_tool_records", InteractionStateFilter::Resolved) => {
+                clauses.push(
+                    "json_extract(record, '$.payload.status') NOT IN ('pending', 'running', 'waiting')",
+                );
+            }
+            _ => {
+                return Err(SessionStoreError::Failed(
+                    "interaction state filter is unsupported for this record family".to_string(),
+                ));
+            }
         }
         if let Some(after) = query.after() {
             clauses.push("(updated_at < ? OR (updated_at = ? AND __ID__ < ?))");

@@ -612,15 +612,12 @@ async fn session_store_executor_persists_runtime_checkpoints() {
     );
 }
 
-#[tokio::test]
-async fn managed_admission_is_single_active_fenced_and_idempotent() {
-    let store = InMemorySessionStore::new();
-    let session_id = SessionId::from_string("managed-session");
-    store
-        .save_session(SessionRecord::new(session_id.clone()))
-        .await
-        .unwrap();
-    let request = |run_id: &str, key: &str| AcquireRunAdmission {
+fn memory_admission_request(
+    session_id: &SessionId,
+    run_id: &str,
+    key: &str,
+) -> AcquireRunAdmission {
+    AcquireRunAdmission {
         run: RunRecord::new(
             session_id.clone(),
             RunId::from_string(run_id),
@@ -634,19 +631,31 @@ async fn managed_admission_is_single_active_fenced_and_idempotent() {
         command_fingerprint: format!("fingerprint-{run_id}"),
         replaces_waiting_run_id: None,
         hitl_resume_claim_id: None,
-    };
+    }
+}
+
+#[tokio::test]
+async fn managed_admission_is_single_active_fenced_and_idempotent() {
+    let store = InMemorySessionStore::new();
+    let session_id = SessionId::from_string("managed-session");
+    store
+        .save_session(SessionRecord::new(session_id.clone()))
+        .await
+        .unwrap();
     let first = store
-        .acquire_run_admission(request("run-a", "key-a"))
+        .acquire_run_admission(memory_admission_request(&session_id, "run-a", "key-a"))
         .await
         .unwrap();
     assert_eq!(first.lease.fencing_generation, 1);
     let replay = store
-        .acquire_run_admission(request("run-a", "key-a"))
+        .acquire_run_admission(memory_admission_request(&session_id, "run-a", "key-a"))
         .await
         .unwrap();
     assert!(replay.idempotent_replay);
     assert!(matches!(
-        store.acquire_run_admission(request("run-b", "key-b")).await,
+        store
+            .acquire_run_admission(memory_admission_request(&session_id, "run-b", "key-b"))
+            .await,
         Err(SessionStoreError::RunConflict(_))
     ));
     let control = DurableControlReceipt {
@@ -686,10 +695,69 @@ async fn managed_admission_is_single_active_fenced_and_idempotent() {
         .unwrap();
     store.release_run_admission(&first.lease).await.unwrap();
     let second = store
-        .acquire_run_admission(request("run-b", "key-b"))
+        .acquire_run_admission(memory_admission_request(&session_id, "run-b", "key-b"))
         .await
         .unwrap();
     assert_eq!(second.lease.fencing_generation, 2);
+}
+
+#[tokio::test]
+async fn managed_admission_indexes_runs_and_rejects_sequence_reuse() {
+    let store = InMemorySessionStore::new();
+    let session_id = SessionId::from_string("managed-index-session");
+    store
+        .save_session(SessionRecord::new(session_id.clone()))
+        .await
+        .unwrap();
+    let first = store
+        .acquire_run_admission(memory_admission_request(&session_id, "run-a", "key-a"))
+        .await
+        .unwrap();
+    assert_eq!(first.run.sequence_no, 1);
+    assert_eq!(store.list_runs(&session_id).await.unwrap().len(), 1);
+    assert_eq!(
+        store.list_recent_runs(&session_id, 1).await.unwrap()[0].run_id,
+        first.run.run_id
+    );
+    let page = store
+        .list_run_page(&session_id, RunPageQuery::new(None, 1).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(page.runs[0].run_id, first.run.run_id);
+    assert!(!page.has_more);
+
+    store
+        .update_run_status(&session_id, &first.run.run_id, RunStatus::Completed, None)
+        .await
+        .unwrap();
+    store.release_run_admission(&first.lease).await.unwrap();
+    let second = store
+        .acquire_run_admission(memory_admission_request(&session_id, "run-b", "key-b"))
+        .await
+        .unwrap();
+    assert_eq!(second.run.sequence_no, 2);
+    assert_eq!(
+        store
+            .list_runs(&session_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|run| run.sequence_no)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+
+    store
+        .update_run_status(&session_id, &second.run.run_id, RunStatus::Completed, None)
+        .await
+        .unwrap();
+    store.release_run_admission(&second.lease).await.unwrap();
+    let mut conflicting = memory_admission_request(&session_id, "run-c", "key-c");
+    conflicting.run.sequence_no = 2;
+    assert!(matches!(
+        store.acquire_run_admission(conflicting).await,
+        Err(SessionStoreError::Failed(message)) if message.contains("run sequence conflict")
+    ));
 }
 
 #[tokio::test]
@@ -822,4 +890,91 @@ async fn in_memory_run_control_admission_is_atomic_idempotent_and_fenced() {
             .await,
         Err(SessionStoreError::StaleFence(_))
     ));
+}
+
+#[tokio::test]
+async fn in_memory_recent_runs_returns_latest_bounded_window_in_sequence_order() {
+    let store = InMemorySessionStore::new();
+    let session_id = SessionId::from_string("recent-runs-session");
+    store
+        .save_session(SessionRecord::new(session_id.clone()))
+        .await
+        .expect("save session");
+
+    for sequence_no in 1..=5 {
+        let mut run = RunRecord::new(
+            session_id.clone(),
+            RunId::from_string(format!("recent-run-{sequence_no}")),
+            ConversationId::new(),
+        );
+        run.sequence_no = sequence_no;
+        store.append_run(run).await.expect("append run");
+    }
+
+    assert!(
+        store
+            .list_recent_runs(&session_id, 0)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .list_recent_runs(&session_id, 2)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|run| run.sequence_no)
+            .collect::<Vec<_>>(),
+        vec![4, 5]
+    );
+    assert_eq!(
+        store.list_recent_runs(&session_id, 10).await.unwrap().len(),
+        5
+    );
+
+    let first_page = store
+        .list_run_page(&session_id, RunPageQuery::new(None, 2).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        first_page
+            .runs
+            .iter()
+            .map(|run| run.sequence_no)
+            .collect::<Vec<_>>(),
+        vec![5, 4]
+    );
+    assert!(first_page.has_more);
+
+    let appended_run_id = RunId::from_string("recent-run-6");
+    let appended = RunRecord::new(
+        session_id.clone(),
+        appended_run_id.clone(),
+        ConversationId::new(),
+    );
+    store.append_run(appended).await.unwrap();
+    assert_eq!(
+        store
+            .load_run(&session_id, &appended_run_id)
+            .await
+            .unwrap()
+            .sequence_no,
+        6
+    );
+    let second_page = store
+        .list_run_page(
+            &session_id,
+            RunPageQuery::new(first_page.next_key, 2).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        second_page
+            .runs
+            .iter()
+            .map(|run| run.sequence_no)
+            .collect::<Vec<_>>(),
+        vec![3, 2]
+    );
 }

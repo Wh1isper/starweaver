@@ -22,6 +22,7 @@ use starweaver_agent::{
     environment_binding_class,
 };
 use starweaver_core::{ConversationId, RunId, SessionId, SubagentAttemptId};
+use starweaver_model::ModelResponseStreamEvent;
 use starweaver_runtime::{AgentInput, AgentStreamRecord};
 use starweaver_session::{
     AcquireBackgroundSubagentContinuation, AcquireRunAdmission, AdmitRunControl,
@@ -32,13 +33,14 @@ use starweaver_session::{
     LOCAL_SESSION_NAMESPACE, ManagedRunTarget, PreparedContinuation, RunAdmissionLease,
     RunAdmissionReceipt, RunRecord, RunStatus, RunTerminalError, RunTerminalProjection,
     SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError,
-    deterministic_run_control_operation_id, deterministic_run_control_receipt_id,
+    TranscriptUpdateProjection, deterministic_run_control_operation_id,
+    deterministic_run_control_receipt_id, transcript_changed_publication,
 };
 use starweaver_storage::{DurableReplaySource, SqliteStorage};
 use starweaver_stream::{
-    DefaultDisplayMessageProjector, DisplayMessageProjector, DisplayProjectionContext,
-    ReplayCursor, ReplayEvent, ReplayEventKind, ReplayEventLog, ReplayScope, StreamArchive,
-    StreamTerminalMarker,
+    AgentStreamEvent, DefaultDisplayMessageProjector, DisplayMessageKind, DisplayMessageProjector,
+    DisplayProjectionContext, DisplayVisibility, ReplayCursor, ReplayEvent, ReplayEventKind,
+    ReplayEventLog, ReplayScope, StreamArchive, StreamTerminalMarker,
 };
 use tokio::{
     sync::{Mutex as AsyncMutex, watch},
@@ -77,6 +79,7 @@ const BACKGROUND_COMPLETION_TASK_LIMIT: usize = 256;
 const BACKGROUND_RECORD_SCAN_LIMIT: usize = 1_024;
 const BACKGROUND_RETENTION_CLEANUP_LIMIT: usize = 256;
 const BACKGROUND_CONTINUATION_LEASE_TTL: Duration = Duration::from_secs(30);
+const MAX_TRANSCRIPT_DELTA_CHARS: usize = 16_384;
 
 /// Maintains a newly admitted run while RPC is still resolving state, injecting HITL results, and
 /// registering the worker. The worker takes over with its own heartbeat after registration.
@@ -216,6 +219,23 @@ pub struct RpcStartedRun {
     pub idempotent_replay: bool,
 }
 
+#[derive(Clone, Default)]
+struct TranscriptProjectionState {
+    streamed_response_steps: BTreeSet<usize>,
+    open_message_ids: BTreeSet<String>,
+    next_sequence: u64,
+}
+
+impl TranscriptProjectionState {
+    fn advance_sequence(&mut self) -> Result<u64, String> {
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or_else(|| "transcript sequence exhausted".to_string())?;
+        Ok(self.next_sequence)
+    }
+}
+
 #[derive(Clone)]
 struct ActiveRun {
     status_tx: watch::Sender<RpcRunStatus>,
@@ -226,6 +246,7 @@ struct ActiveRun {
     next_display_sequence: usize,
     next_event_sequence: usize,
     terminal_replay_sequence: Arc<AtomicUsize>,
+    transcript: TranscriptProjectionState,
     replay_error: Option<String>,
 }
 
@@ -1438,6 +1459,7 @@ impl RpcRuntimeCoordinator {
             next_display_sequence: 0,
             next_event_sequence: 0,
             terminal_replay_sequence,
+            transcript: TranscriptProjectionState::default(),
             replay_error: None,
         };
         self.active
@@ -2964,7 +2986,7 @@ impl RpcRuntimeCoordinator {
             .is_ok_and(|registry| registry.contains_key(target))
     }
 
-    fn target(session_id: &SessionId, run_id: &RunId) -> ManagedRunTarget {
+    pub(crate) fn target(session_id: &SessionId, run_id: &RunId) -> ManagedRunTarget {
         ManagedRunTarget::new(LOCAL_SESSION_NAMESPACE, session_id.clone(), run_id.clone())
     }
 
@@ -3042,6 +3064,7 @@ impl RpcRuntimeCoordinator {
                 next_display_sequence: 0,
                 next_event_sequence: 0,
                 terminal_replay_sequence: Arc::new(AtomicUsize::new(0)),
+                transcript: TranscriptProjectionState::default(),
                 replay_error: None,
             },
         );
@@ -3134,8 +3157,24 @@ async fn publish_record(
             message,
         ));
     }
+    let publications = {
+        let Ok(mut registry) = active.lock() else {
+            return;
+        };
+        let Some(active_run) = registry.get_mut(target) else {
+            return;
+        };
+        match transcript_publications(target, record, &events, &mut active_run.transcript) {
+            Ok(publications) => publications,
+            Err(error) => {
+                active_run.replay_error = Some(error.clone());
+                let _ = active_run.control.interrupt(Some(error));
+                return;
+            }
+        }
+    };
     if let Err(error) = store
-        .append_replay_events_fenced(&lease, events.clone())
+        .append_replay_events_with_host_publications_fenced(&lease, events.clone(), publications)
         .await
     {
         if let Ok(mut registry) = active.lock()
@@ -3162,6 +3201,152 @@ async fn publish_record(
             push_cached_event(active_run, event);
         }
     }
+}
+
+fn transcript_publications(
+    target: &ManagedRunTarget,
+    record: &AgentStreamRecord,
+    events: &[ReplayEvent],
+    state: &mut TranscriptProjectionState,
+) -> Result<Vec<starweaver_session::PendingHostEventPublication>, String> {
+    let (response_step, incremental) = match &record.event {
+        AgentStreamEvent::ModelStream {
+            step,
+            event:
+                ModelResponseStreamEvent::PartStart(_)
+                | ModelResponseStreamEvent::PartDelta(_)
+                | ModelResponseStreamEvent::PartEnd(_),
+        } => (step.saturating_add(1), true),
+        AgentStreamEvent::ModelResponse { step, .. } => (*step, false),
+        _ => return Ok(Vec::new()),
+    };
+    if !incremental && state.streamed_response_steps.contains(&response_step) {
+        return Ok(Vec::new());
+    }
+
+    let mut updates = Vec::new();
+    for event in events {
+        let ReplayEventKind::DisplayMessage(message) = &event.event else {
+            continue;
+        };
+        if message.visibility != DisplayVisibility::Public {
+            continue;
+        }
+        let Some(part_index) = message.payload.get("part_index").and_then(Value::as_u64) else {
+            continue;
+        };
+        let message_id = format!(
+            "assistant:{}:turn-{response_step}:part-{part_index}",
+            target.run_id.as_str()
+        );
+        let is_text = message.payload.get("part_kind").and_then(Value::as_str) == Some("text");
+        match message.kind {
+            DisplayMessageKind::AssistantTextStart if is_text => {
+                if state.open_message_ids.insert(message_id.clone()) {
+                    updates.push((
+                        message.timestamp,
+                        TranscriptUpdateProjection::MessageStarted {
+                            message_id,
+                            role: "assistant".to_string(),
+                        },
+                    ));
+                }
+            }
+            DisplayMessageKind::AssistantTextDelta if is_text => {
+                let Some(delta) = message.payload.get("delta").and_then(Value::as_str) else {
+                    continue;
+                };
+                if delta.is_empty() {
+                    continue;
+                }
+                if state.open_message_ids.insert(message_id.clone()) {
+                    updates.push((
+                        message.timestamp,
+                        TranscriptUpdateProjection::MessageStarted {
+                            message_id: message_id.clone(),
+                            role: "assistant".to_string(),
+                        },
+                    ));
+                }
+                for chunk in unicode_chunks(delta, MAX_TRANSCRIPT_DELTA_CHARS) {
+                    updates.push((
+                        message.timestamp,
+                        TranscriptUpdateProjection::TextAppended {
+                            message_id: message_id.clone(),
+                            delta: chunk.to_string(),
+                        },
+                    ));
+                }
+            }
+            DisplayMessageKind::AssistantTextEnd
+                if is_text || state.open_message_ids.contains(&message_id) =>
+            {
+                if state.open_message_ids.insert(message_id.clone()) {
+                    updates.push((
+                        message.timestamp,
+                        TranscriptUpdateProjection::MessageStarted {
+                            message_id: message_id.clone(),
+                            role: "assistant".to_string(),
+                        },
+                    ));
+                }
+                state.open_message_ids.remove(&message_id);
+                updates.push((
+                    message.timestamp,
+                    TranscriptUpdateProjection::MessageFinished { message_id },
+                ));
+            }
+            _ => {}
+        }
+    }
+    if updates.is_empty() {
+        return Ok(Vec::new());
+    }
+    if incremental {
+        state.streamed_response_steps.insert(response_step);
+    }
+
+    let transition_identity = format!(
+        "rpc-transcript:{}:{}:{}",
+        target.session_id.as_str(),
+        target.run_id.as_str(),
+        record.sequence
+    );
+    updates
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, (occurred_at, update))| {
+            transcript_changed_publication(
+                &transition_identity,
+                u32::try_from(ordinal).map_err(|error| error.to_string())?,
+                target.session_id.clone(),
+                target.run_id.clone(),
+                state.advance_sequence()?,
+                update,
+                occurred_at,
+            )
+            .map_err(|error| error.to_string())
+        })
+        .collect()
+}
+
+fn unicode_chunks(value: &str, max_chars: usize) -> Vec<&str> {
+    debug_assert!(max_chars > 0);
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    let mut count = 0;
+    for (index, _) in value.char_indices() {
+        if count == max_chars {
+            chunks.push(&value[start..index]);
+            start = index;
+            count = 0;
+        }
+        count += 1;
+    }
+    if start < value.len() {
+        chunks.push(&value[start..]);
+    }
+    chunks
 }
 
 fn push_cached_event(run: &mut ActiveRun, event: ReplayEvent) {
@@ -3384,14 +3569,203 @@ mod tests {
         ToolResult,
     };
     use starweaver_model::{
-        ModelResponse, ModelResponsePart, ProviderPartInfo, ToolCallPart, tool_call_response,
+        ModelResponse, ModelResponsePart, PartDelta, PartEnd, ProviderPartInfo, ToolCallPart,
+        tool_call_response,
     };
     use starweaver_session::{ApprovalStatus, DurableBackgroundSubagentDeliveryRelease};
-    use starweaver_stream::AgentStreamEvent;
 
     // File-backed SQLite has a long latency tail under parallel Windows CI load; production
     // run-await limits remain owned by the RPC service policy.
     const TEST_RUN_COMPLETION_TIMEOUT: Duration = Duration::from_secs(30);
+
+    #[test]
+    fn transcript_projection_exposes_only_public_text_and_suppresses_the_final_duplicate() {
+        let session_id = SessionId::from_string("session-transcript");
+        let run_id = RunId::from_string("run-transcript");
+        let target =
+            ManagedRunTarget::new(LOCAL_SESSION_NAMESPACE, session_id.clone(), run_id.clone());
+        let record = AgentStreamRecord::new(
+            7,
+            AgentStreamEvent::ModelStream {
+                step: 0,
+                event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "hello")),
+            },
+        );
+        let message = starweaver_stream::DisplayMessage::new(
+            4,
+            session_id,
+            run_id.clone(),
+            DisplayMessageKind::AssistantTextDelta,
+        )
+        .with_payload(json!({
+            "message_id": "provider-private-id",
+            "part_index": 0,
+            "part_kind": "text",
+            "delta": "hello",
+        }));
+        let events = vec![ReplayEvent::display_at(
+            ReplayScope::run(run_id.as_str()),
+            4,
+            message,
+        )];
+        let mut state = TranscriptProjectionState::default();
+
+        let publications = transcript_publications(&target, &record, &events, &mut state).unwrap();
+
+        assert_eq!(publications.len(), 2);
+        assert_eq!(
+            publications[0].event_class,
+            starweaver_session::DurableHostEventClass::TranscriptChanged
+        );
+        assert_eq!(publications[0].projection["transcriptSequence"], "1");
+        assert_eq!(
+            publications[0].projection["update"],
+            json!({
+                "kind": "message_started",
+                "messageId": "assistant:run-transcript:turn-1:part-0",
+                "role": "assistant",
+            })
+        );
+        assert_eq!(
+            publications[1].projection["update"],
+            json!({
+                "kind": "text_appended",
+                "messageId": "assistant:run-transcript:turn-1:part-0",
+                "delta": "hello",
+            })
+        );
+        assert!(
+            !publications[1]
+                .projection
+                .to_string()
+                .contains("provider-private-id")
+        );
+
+        let final_record = AgentStreamRecord::new(
+            8,
+            AgentStreamEvent::ModelResponse {
+                step: 1,
+                response: ModelResponse::text("hello"),
+            },
+        );
+        assert!(
+            transcript_publications(&target, &final_record, &events, &mut state)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn transcript_projection_chunks_unicode_and_balances_unknown_part_end() {
+        let session_id = SessionId::from_string("session-transcript-lifecycle");
+        let run_id = RunId::from_string("run-transcript-lifecycle");
+        let target =
+            ManagedRunTarget::new(LOCAL_SESSION_NAMESPACE, session_id.clone(), run_id.clone());
+        let text = "界".repeat(MAX_TRANSCRIPT_DELTA_CHARS + 1);
+        let delta_record = AgentStreamRecord::new(
+            1,
+            AgentStreamEvent::ModelStream {
+                step: 0,
+                event: ModelResponseStreamEvent::PartDelta(PartDelta::text(3, text.clone())),
+            },
+        );
+        let delta_message = starweaver_stream::DisplayMessage::new(
+            1,
+            session_id.clone(),
+            run_id.clone(),
+            DisplayMessageKind::AssistantTextDelta,
+        )
+        .with_payload(json!({
+            "part_index": 3,
+            "part_kind": "text",
+            "delta": text,
+        }));
+        let mut state = TranscriptProjectionState::default();
+        let publications = transcript_publications(
+            &target,
+            &delta_record,
+            &[ReplayEvent::display_at(
+                ReplayScope::run(run_id.as_str()),
+                1,
+                delta_message,
+            )],
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(publications.len(), 3);
+        let first_delta = publications[1].projection["update"]["delta"]
+            .as_str()
+            .unwrap();
+        let second_delta = publications[2].projection["update"]["delta"]
+            .as_str()
+            .unwrap();
+        assert_eq!(first_delta.chars().count(), MAX_TRANSCRIPT_DELTA_CHARS);
+        assert_eq!(second_delta, "界");
+
+        let end_record = AgentStreamRecord::new(
+            2,
+            AgentStreamEvent::ModelStream {
+                step: 0,
+                event: ModelResponseStreamEvent::PartEnd(PartEnd {
+                    index: 3,
+                    part_kind: None,
+                }),
+            },
+        );
+        let end_message = starweaver_stream::DisplayMessage::new(
+            2,
+            session_id,
+            run_id.clone(),
+            DisplayMessageKind::AssistantTextEnd,
+        )
+        .with_payload(json!({ "part_index": 3, "part_kind": null }));
+        let finished = transcript_publications(
+            &target,
+            &end_record,
+            &[ReplayEvent::display_at(
+                ReplayScope::run(run_id.as_str()),
+                2,
+                end_message,
+            )],
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].projection["transcriptSequence"], "4");
+        assert_eq!(finished[0].projection["update"]["kind"], "message_finished");
+
+        let unrelated_end = AgentStreamRecord::new(
+            3,
+            AgentStreamEvent::ModelStream {
+                step: 0,
+                event: ModelResponseStreamEvent::PartEnd(PartEnd {
+                    index: 4,
+                    part_kind: None,
+                }),
+            },
+        );
+        let unrelated_message = starweaver_stream::DisplayMessage::new(
+            3,
+            SessionId::from_string("session-transcript-lifecycle"),
+            run_id.clone(),
+            DisplayMessageKind::AssistantTextEnd,
+        )
+        .with_payload(json!({ "part_index": 4, "part_kind": null }));
+        assert!(
+            transcript_publications(
+                &target,
+                &unrelated_end,
+                &[ReplayEvent::display_at(
+                    ReplayScope::run(run_id.as_str()),
+                    3,
+                    unrelated_message,
+                )],
+                &mut state,
+            )
+            .unwrap()
+            .is_empty()
+        );
+    }
 
     async fn await_run_worker_finalized(
         coordinator: &RpcRuntimeCoordinator,
@@ -3507,6 +3881,7 @@ mod tests {
                 next_display_sequence: 0,
                 next_event_sequence: 0,
                 terminal_replay_sequence: Arc::new(AtomicUsize::new(0)),
+                transcript: TranscriptProjectionState::default(),
                 replay_error: None,
             },
         );
@@ -4563,6 +4938,39 @@ mod tests {
         assert_eq!(status.status, "completed", "{status:?}");
         assert_eq!(status.output_preview.as_deref(), Some("ok"));
         await_run_worker_finalized(&coordinator, &started.session_id, &started.run_id).await;
+        let store = coordinator.storage.session_store();
+        store
+            .materialize_host_event_publications(100)
+            .await
+            .unwrap();
+        let transcript = store
+            .replay_host_events(
+                starweaver_session::DurableHostEventQuery::new(
+                    starweaver_session::DurableHostEventScope::run(
+                        started.session_id.clone(),
+                        started.run_id.clone(),
+                    ),
+                    [starweaver_session::DurableHostEventClass::TranscriptChanged],
+                    None,
+                    100,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let Some(transcript_record) = transcript.records.iter().find(|record| {
+            record.projection["update"]["kind"] == "text_appended"
+                && record.projection["update"]["delta"] == "ok"
+        }) else {
+            panic!("completed run must expose its public assistant text through durable replay");
+        };
+        assert!(matches!(
+            serde_json::from_value::<starweaver_rpc_core::generated::HostEvent>(
+                transcript_record.projection.clone()
+            )
+            .unwrap(),
+            starweaver_rpc_core::generated::HostEvent::TranscriptChangedEvent(_)
+        ));
         assert!(!coordinator.is_controllable(&ManagedRunTarget::new(
             LOCAL_SESSION_NAMESPACE,
             started.session_id,

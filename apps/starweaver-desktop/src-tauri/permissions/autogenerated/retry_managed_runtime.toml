@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-retry-managed-runtime"
+description = "Enables the retry_managed_runtime command without any pre-configured scope."
+commands.allow = ["retry_managed_runtime"]
+
+[[permission]]
+identifier = "deny-retry-managed-runtime"
+description = "Denies the retry_managed_runtime command without any pre-configured scope."
+commands.deny = ["retry_managed_runtime"]

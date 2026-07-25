@@ -15,6 +15,7 @@
     "clarificationId": "clarification_example",
     "expectedRevision": "3",
     "idempotencyKey": "clarification-resolve-example",
-    "response": null
+    "response": null,
+    "sessionId": "session_example"
   }
 }

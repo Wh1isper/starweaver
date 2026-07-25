@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reload-desktop-preferences"
+description = "Enables the reload_desktop_preferences command without any pre-configured scope."
+commands.allow = ["reload_desktop_preferences"]
+
+[[permission]]
+identifier = "deny-reload-desktop-preferences"
+description = "Denies the reload_desktop_preferences command without any pre-configured scope."
+commands.deny = ["reload_desktop_preferences"]

@@ -7,10 +7,11 @@ use rusqlite::Connection;
 use serde_json::json;
 use starweaver_core::{ConversationId, Metadata, RunId, SessionId};
 use starweaver_session::{
-    ApprovalDecision, ApprovalRecord, ApprovalStatus, ClarificationAnswer, DecideApproval,
-    DeferredMutationOutcome, DeferredToolRecord, DurableHostEventClass, DurableHostEventScope,
-    ExecutionStatus, InteractionMutationContext, PendingHostEventPublication, ResolveClarification,
-    ResolveDeferredTool, RunRecord, SessionRecord, SessionStore, SessionStoreError,
+    ASK_USER_QUESTION_ACTION, ApprovalDecision, ApprovalRecord, ApprovalStatus,
+    ClarificationAnswer, DecideApproval, DeferredMutationOutcome, DeferredToolRecord,
+    DurableHostEventClass, DurableHostEventScope, ExecutionStatus, InteractionMutationContext,
+    PendingHostEventPublication, ResolveClarification, ResolveDeferredTool, RunRecord,
+    SessionRecord, SessionStore, SessionStoreError,
 };
 use starweaver_storage::SqliteStorage;
 
@@ -146,6 +147,42 @@ async fn approval_state_receipt_event_and_exact_replay_are_atomic() {
         )
         .expect("receipt count");
     assert_eq!(receipt_count, 1);
+}
+
+#[tokio::test]
+async fn clarification_cannot_bypass_typed_resolution_through_approval_decision() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let database_path = tempdir.path().join("clarification-bypass.sqlite3");
+    let (storage, session_id, run_id) = setup_storage(&database_path).await;
+    let store = storage.session_store();
+    store
+        .append_approval(ApprovalRecord::new(
+            "clarification-bypass",
+            session_id.clone(),
+            run_id.clone(),
+            "action-question",
+            ASK_USER_QUESTION_ACTION,
+        ))
+        .await
+        .expect("append clarification");
+
+    let error = storage
+        .decide_approval_atomic(DecideApproval {
+            context: context("clarification-bypass", "sha256:bypass", 1, timestamp(1)),
+            session_id: session_id.clone(),
+            run_id: run_id.clone(),
+            approval_id: "clarification-bypass".to_string(),
+            decision: decision(timestamp(1), ApprovalStatus::Approved),
+        })
+        .expect_err("reject untyped clarification approval");
+    assert!(error.to_string().contains("typed clarification resolution"));
+
+    let retained = store
+        .load_approvals(&session_id, &run_id)
+        .await
+        .expect("load clarification");
+    assert_eq!(retained[0].status, ApprovalStatus::Pending);
+    assert!(retained[0].decision.is_none());
 }
 
 #[tokio::test]

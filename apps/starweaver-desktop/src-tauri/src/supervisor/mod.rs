@@ -1989,6 +1989,32 @@ impl LocalHostSupervisor {
         self.shared.ready_domain().map(|(_, domain)| domain)
     }
 
+    pub(crate) async fn session_workspace_id(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<String>, SupervisorError> {
+        let (generation, execution_domain) = self.shared.ready_domain()?;
+        let request = host::HostRequest {
+            id: host::RequestId::new(self.next_request_id(generation))
+                .map_err(|_| SupervisorError::transport())?,
+            call: host::HostCall::SessionGet(host::SessionGetParams {
+                run_limit: 1,
+                session_id: host::SessionId::new(session_id)
+                    .map_err(|_| SupervisorError::invalid_configuration("session ID is invalid"))?,
+            }),
+        };
+        let result = self
+            .execute_fenced(request, generation, &execution_domain)
+            .await?;
+        match result {
+            host::HostResult::SessionGet(result) => Ok(result
+                .session
+                .workspace_id
+                .map(|workspace_id| workspace_id.as_str().to_string())),
+            _ => Err(SupervisorError::transport()),
+        }
+    }
+
     pub(crate) async fn replay_run_event_page(
         &self,
         scope: &bridge::DesktopHostEventScope,
@@ -2855,10 +2881,13 @@ fn operation_fingerprint(
 fn pagination_continuation(result: &host::HostResult) -> Result<Option<String>, SupervisorError> {
     match result {
         host::HostResult::ApprovalList(value) => pagination_from_value(value),
+        host::HostResult::ClarificationList(value) => pagination_from_value(value),
         host::HostResult::DeferredList(value) => pagination_from_value(value),
         host::HostResult::EnvironmentList(value) => pagination_from_value(value),
+        host::HostResult::RunList(value) => pagination_from_value(value),
         host::HostResult::SessionList(value) => pagination_from_value(value),
         host::HostResult::SessionSearch(value) => pagination_from_value(value),
+        host::HostResult::WorkspaceList(value) => pagination_from_value(value),
         _ => Ok(None),
     }
 }
@@ -3855,6 +3884,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn paginated_results_expose_host_continuations_for_desktop_tokenization() {
+        let clarification = host::HostResult::ClarificationList(host::ClarificationListResult {
+            clarifications: Vec::new(),
+            page: host::PageInfo {
+                has_more: true,
+                next_cursor: Some("clarification-cursor".to_string()),
+            },
+        });
+        let run = host::HostResult::RunList(host::RunListResult {
+            page: host::PageInfo {
+                has_more: true,
+                next_cursor: Some("run-cursor".to_string()),
+            },
+            runs: Vec::new(),
+        });
+        let workspace = host::HostResult::WorkspaceList(host::WorkspaceListResult {
+            page: host::PageInfo {
+                has_more: true,
+                next_cursor: Some("workspace-cursor".to_string()),
+            },
+            workspaces: Vec::new(),
+        });
+
+        assert_eq!(
+            pagination_continuation(&clarification).expect("clarification continuation"),
+            Some("clarification-cursor".to_string())
+        );
+        assert_eq!(
+            pagination_continuation(&run).expect("run continuation"),
+            Some("run-cursor".to_string())
+        );
+        assert_eq!(
+            pagination_continuation(&workspace).expect("workspace continuation"),
+            Some("workspace-cursor".to_string())
+        );
+    }
+
+    #[test]
     fn state_machine_rejects_skips_and_stale_generations() {
         let shared = Shared::default();
         let generation = shared.begin_start().expect("start generation");
@@ -4505,24 +4572,51 @@ mod tests {
     }
 
     #[test]
-    fn projected_pagination_replaces_the_host_cursor_with_a_desktop_token() {
-        let result = host::HostResult::SessionList(host::SessionListResult {
+    fn run_pagination_replaces_the_host_cursor_with_a_usable_desktop_token() {
+        let result = host::HostResult::RunList(host::RunListResult {
             page: host::PageInfo {
                 has_more: true,
                 next_cursor: Some("host-private-cursor".to_string()),
             },
-            sessions: Vec::new(),
+            runs: Vec::new(),
         });
-        let projected = bridge::project_host_result(
-            result,
-            Some(bridge::DesktopPageToken("desktop-page-safe".to_string())),
-        )
-        .expect("safe pagination projection");
+        let continuation = pagination_continuation(&result)
+            .expect("run continuation")
+            .expect("host cursor");
+        let first: bridge::DesktopHostOperation = serde_json::from_value(serde_json::json!({
+            "kind": "run.list",
+            "input": {"pageToken": null, "sessionId": "session-one"}
+        }))
+        .expect("first run page intent");
+        let fingerprint = operation_fingerprint("local-test", &first).expect("fingerprint");
+        let shared = Shared::default();
+        let token = shared
+            .issue_page_token(7, "local-test", &fingerprint, continuation)
+            .expect("Desktop page token");
+        let projected = bridge::project_host_result(result, Some(token.clone()))
+            .expect("safe run pagination projection");
         let encoded = serde_json::to_string(&projected).expect("serialize projection");
-        assert!(encoded.contains("desktop-page-safe"));
+        assert!(encoded.contains(&token.0));
         assert!(encoded.contains("nextPageToken"));
         assert!(!encoded.contains("host-private-cursor"));
         assert!(!encoded.contains("nextCursor"));
+
+        let next: bridge::DesktopHostOperation = serde_json::from_value(serde_json::json!({
+            "kind": "run.list",
+            "input": {"pageToken": token.0, "sessionId": "session-one"}
+        }))
+        .expect("next run page intent");
+        assert_eq!(
+            operation_fingerprint("local-test", &next).expect("next fingerprint"),
+            fingerprint
+        );
+        assert_eq!(
+            shared
+                .resolve_page_cursor(next.page_token(), 7, "local-test", &fingerprint)
+                .expect("resolved run cursor")
+                .as_deref(),
+            Some("host-private-cursor")
+        );
     }
 
     #[test]

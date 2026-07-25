@@ -14,10 +14,10 @@ use starweaver_session::{
     DurableHostEventRecord, DurableHostEventScope, DurableRunControlIntent,
     DurableRunControlStatus, EnvironmentStateRef, HitlResumeAbortOutcome, HitlResumeClaim,
     ManagedRunTarget, PendingHostEventPublication, PendingStreamPublication, RunAdmissionLease,
-    RunAdmissionReceipt, RunEvidenceCommit, RunRecord, RunStatus, RunTerminalProjection,
-    SessionContinuationFence, SessionFilter, SessionPage, SessionPageQuery, SessionRecord,
-    SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreResult, StreamCursorRef,
-    StreamPublicationTarget, UpdateManagedSession,
+    RunAdmissionReceipt, RunEvidenceCommit, RunPage, RunPageQuery, RunRecord, RunStatus,
+    RunTerminalProjection, SessionContinuationFence, SessionFilter, SessionPage, SessionPageQuery,
+    SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreResult,
+    StreamCursorRef, StreamPublicationTarget, UpdateManagedSession,
 };
 use starweaver_storage::SqliteSessionStore;
 use starweaver_stream::ReplayEvent;
@@ -310,6 +310,22 @@ impl SessionStore for LocalSessionStore {
 
     async fn list_runs(&self, session_id: &SessionId) -> SessionStoreResult<Vec<RunRecord>> {
         self.store.list_runs(session_id).await
+    }
+
+    async fn list_recent_runs(
+        &self,
+        session_id: &SessionId,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<RunRecord>> {
+        self.store.list_recent_runs(session_id, limit).await
+    }
+
+    async fn list_run_page(
+        &self,
+        session_id: &SessionId,
+        query: RunPageQuery,
+    ) -> SessionStoreResult<RunPage> {
+        self.store.list_run_page(session_id, query).await
     }
 
     async fn update_run_status(

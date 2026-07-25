@@ -29,6 +29,8 @@ pub enum DurableHostEventClass {
     RunChanged,
     /// Durable run output became available.
     OutputAvailable,
+    /// A safe incremental assistant transcript changed.
+    TranscriptChanged,
     /// An approval projection changed.
     ApprovalChanged,
     /// A deferred-tool projection changed.
@@ -43,10 +45,11 @@ pub enum DurableHostEventClass {
 
 impl DurableHostEventClass {
     /// Every durable host-event class in canonical order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::SessionChanged,
         Self::RunChanged,
         Self::OutputAvailable,
+        Self::TranscriptChanged,
         Self::ApprovalChanged,
         Self::DeferredChanged,
         Self::ClarificationChanged,
@@ -61,6 +64,7 @@ impl DurableHostEventClass {
             Self::SessionChanged => "session_changed",
             Self::RunChanged => "run_changed",
             Self::OutputAvailable => "output_available",
+            Self::TranscriptChanged => "transcript_changed",
             Self::ApprovalChanged => "approval_changed",
             Self::DeferredChanged => "deferred_changed",
             Self::ClarificationChanged => "clarification_changed",
@@ -351,6 +355,106 @@ pub struct OutputAvailableProjection {
     pub run_id: RunId,
     /// Durable session identity.
     pub session_id: SessionId,
+}
+
+/// Closed safe assistant-transcript update carried by a durable host event.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum TranscriptUpdateProjection {
+    /// One assistant message started.
+    MessageStarted {
+        /// Stable run-local message identity.
+        message_id: String,
+        /// Closed role projection. This is always `assistant`.
+        role: String,
+    },
+    /// Public assistant text was appended.
+    TextAppended {
+        /// Stable run-local message identity.
+        message_id: String,
+        /// Safe public text delta.
+        delta: String,
+    },
+    /// One assistant message finished.
+    MessageFinished {
+        /// Stable run-local message identity.
+        message_id: String,
+    },
+}
+
+/// Product-neutral durable `transcript_changed` event projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptChangedProjection {
+    /// Stable event discriminator.
+    pub kind: String,
+    /// Durable run identity.
+    pub run_id: RunId,
+    /// Durable session identity.
+    pub session_id: SessionId,
+    /// Decimal-string sequence in the canonical run transcript.
+    pub transcript_sequence: String,
+    /// Closed transcript update.
+    pub update: TranscriptUpdateProjection,
+}
+
+/// Build one safe incremental transcript publication.
+///
+/// # Errors
+///
+/// Returns an error when the message identity or public text exceeds the host contract bounds, or
+/// when projection serialization/publication validation fails.
+pub fn transcript_changed_publication(
+    transition_identity: &str,
+    ordinal: u32,
+    session_id: SessionId,
+    run_id: RunId,
+    transcript_sequence: u64,
+    update: TranscriptUpdateProjection,
+    occurred_at: DateTime<Utc>,
+) -> SessionStoreResult<PendingHostEventPublication> {
+    let (message_id, delta) = match &update {
+        TranscriptUpdateProjection::MessageStarted { message_id, role } => {
+            if role != "assistant" {
+                return Err(SessionStoreError::Failed(
+                    "transcript role must be assistant".to_string(),
+                ));
+            }
+            (message_id, None)
+        }
+        TranscriptUpdateProjection::TextAppended { message_id, delta } => (message_id, Some(delta)),
+        TranscriptUpdateProjection::MessageFinished { message_id } => (message_id, None),
+    };
+    if message_id.is_empty() || message_id.chars().count() > 256 {
+        return Err(SessionStoreError::Failed(
+            "transcript message identity is outside host contract bounds".to_string(),
+        ));
+    }
+    if delta.is_some_and(|delta| delta.is_empty() || delta.chars().count() > 16_384) {
+        return Err(SessionStoreError::Failed(
+            "transcript text delta is outside host contract bounds".to_string(),
+        ));
+    }
+    let projection = serde_json::to_value(TranscriptChangedProjection {
+        kind: "transcript_changed".to_string(),
+        run_id: run_id.clone(),
+        session_id: session_id.clone(),
+        transcript_sequence: transcript_sequence.to_string(),
+        update,
+    })
+    .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
+    PendingHostEventPublication::new(
+        transition_identity,
+        ordinal,
+        DurableHostEventScope::run(session_id, run_id),
+        DurableHostEventClass::TranscriptChanged,
+        projection,
+        occurred_at,
+    )
 }
 
 /// Build a durable `run_changed` publication from authoritative storage-domain state.

@@ -6,6 +6,7 @@ use std::{
 };
 
 use serde_json::{Map, Value};
+use sha2::{Digest as _, Sha256};
 use starweaver_oauth::OAuthAccount;
 
 use crate::{
@@ -21,6 +22,7 @@ pub(super) const CODEX_OPENAI_BETA_HEADER: &str = "OpenAI-Beta";
 const CODEX_RESPONSES_WEBSOCKET_BETA: &str = "responses_websockets=2026-02-06";
 const CODEX_WS_STREAM_REQUEST_START_MS_CLIENT_METADATA_KEY: &str =
     "x-codex-ws-stream-request-start-ms";
+const CODEX_ROUTING_ID_LIMIT: usize = 64;
 
 /// Reserved headers that user-provided OAuth extra headers may not override.
 pub const RESERVED_OAUTH_EXTRA_HEADERS: &[&str] = &[
@@ -70,15 +72,29 @@ pub fn build_session_headers(
 ) -> BTreeMap<String, String> {
     let mut headers = BTreeMap::new();
     if let Some(session_id) = session_id.filter(|value| !value.is_empty()) {
-        headers.insert("session_id".to_string(), session_id.to_string());
-        headers.insert("session-id".to_string(), session_id.to_string());
+        let session_id = canonical_codex_routing_id(session_id);
+        headers.insert("session_id".to_string(), session_id.clone());
+        headers.insert("session-id".to_string(), session_id);
     }
     if let Some(thread_id) = thread_id.filter(|value| !value.is_empty()) {
-        headers.insert("thread_id".to_string(), thread_id.to_string());
-        headers.insert("thread-id".to_string(), thread_id.to_string());
-        headers.insert("x-client-request-id".to_string(), thread_id.to_string());
+        let thread_id = canonical_codex_routing_id(thread_id);
+        headers.insert("thread_id".to_string(), thread_id.clone());
+        headers.insert("thread-id".to_string(), thread_id.clone());
+        headers.insert("x-client-request-id".to_string(), thread_id);
     }
     headers
+}
+
+fn canonical_codex_routing_id(value: &str) -> String {
+    if value.len() <= CODEX_ROUTING_ID_LIMIT
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
+    {
+        return value.to_string();
+    }
+    let digest = format!("{:x}", Sha256::digest(value.as_bytes()));
+    format!("sw_{}", &digest[..CODEX_ROUTING_ID_LIMIT - "sw_".len()])
 }
 
 pub(super) fn validate_safe_extra_headers(
@@ -214,5 +230,36 @@ fn codex_instructions_value_is_falsy(value: &Value) -> bool {
         Value::String(value) => value.is_empty(),
         Value::Array(value) => value.is_empty(),
         Value::Object(value) => value.is_empty(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_routing_headers_preserve_short_ids_and_bound_long_affinity() {
+        let short = build_session_headers(Some("session-short"), Some("thread-short"));
+        assert_eq!(short["session_id"], "session-short");
+        assert_eq!(short["session-id"], "session-short");
+        assert_eq!(short["thread_id"], "thread-short");
+        assert_eq!(short["thread-id"], "thread-short");
+        assert_eq!(short["x-client-request-id"], "thread-short");
+
+        let first = format!("session_{}", "0".repeat(64));
+        let second = format!("session_{}1", "0".repeat(63));
+        let first_headers = build_session_headers(Some(&first), None);
+        let second_headers = build_session_headers(Some(&second), None);
+        assert_eq!(first_headers["session_id"].len(), CODEX_ROUTING_ID_LIMIT);
+        assert!(first_headers["session_id"].starts_with("sw_"));
+        assert_eq!(first_headers["session_id"], first_headers["session-id"]);
+        assert_ne!(first_headers["session_id"], second_headers["session_id"]);
+
+        for unsafe_id in ["会话", "bad\r\nheader"] {
+            let canonical = build_session_headers(Some(unsafe_id), None);
+            assert!(canonical["session_id"].is_ascii());
+            assert!(canonical["session_id"].starts_with("sw_"));
+            assert_eq!(canonical["session_id"].len(), CODEX_ROUTING_ID_LIMIT);
+        }
     }
 }

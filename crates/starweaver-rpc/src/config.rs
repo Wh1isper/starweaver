@@ -42,7 +42,8 @@ pub struct RpcProfileConfig {
     /// Optional human-readable profile label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// Logical production model id using `protocol:model` or `provider@protocol:model` syntax.
+    /// Logical production model id using `protocol:model`, `provider@protocol:model`, or
+    /// `oauth@provider:model` syntax.
     pub model_id: String,
     /// Optional built-in model settings preset.
     #[serde(default, skip_serializing_if = "Option::is_none")]

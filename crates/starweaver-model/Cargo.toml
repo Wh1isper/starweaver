@@ -24,6 +24,7 @@ futures-util.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 starweaver-core.workspace = true
 starweaver-usage.workspace = true
 starweaver-oauth.workspace = true

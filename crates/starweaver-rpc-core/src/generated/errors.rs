@@ -513,6 +513,112 @@ impl From<HostError> for CatalogListError {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClarificationListError {
+    NotInitialized {
+        message: String,
+        data: NotInitializedData,
+    },
+    UnsupportedFeature {
+        message: String,
+        data: UnsupportedFeatureData,
+    },
+    NotFound {
+        message: String,
+        data: NotFoundData,
+    },
+    StorageUnavailable {
+        message: String,
+        data: StorageUnavailableData,
+    },
+    AuthorizationDenied {
+        message: String,
+        data: AuthorizationDeniedData,
+    },
+    InternalError {
+        message: String,
+        data: InternalErrorData,
+    },
+    SessionSearchUnavailable {
+        message: String,
+        data: SessionSearchUnavailableData,
+    },
+}
+impl From<ClarificationListError> for HostError {
+    fn from(error: ClarificationListError) -> Self {
+        match error {
+            ClarificationListError::NotInitialized { message, data } => Self {
+                code: -32001,
+                message,
+                data: HostErrorData::NotInitialized(data),
+            },
+            ClarificationListError::UnsupportedFeature { message, data } => Self {
+                code: -32002,
+                message,
+                data: HostErrorData::UnsupportedFeature(data),
+            },
+            ClarificationListError::NotFound { message, data } => Self {
+                code: -32010,
+                message,
+                data: HostErrorData::NotFound(data),
+            },
+            ClarificationListError::StorageUnavailable { message, data } => Self {
+                code: -32015,
+                message,
+                data: HostErrorData::StorageUnavailable(data),
+            },
+            ClarificationListError::AuthorizationDenied { message, data } => Self {
+                code: -32017,
+                message,
+                data: HostErrorData::AuthorizationDenied(data),
+            },
+            ClarificationListError::InternalError { message, data } => Self {
+                code: -32000,
+                message,
+                data: HostErrorData::InternalError(data),
+            },
+            ClarificationListError::SessionSearchUnavailable { message, data } => Self {
+                code: -32032,
+                message,
+                data: HostErrorData::SessionSearchUnavailable(data),
+            },
+        }
+    }
+}
+impl From<HostError> for ClarificationListError {
+    fn from(error: HostError) -> Self {
+        match (error.message, error.data) {
+            (message, HostErrorData::NotInitialized(data)) => {
+                Self::NotInitialized { message, data }
+            }
+            (message, HostErrorData::UnsupportedFeature(data)) => {
+                Self::UnsupportedFeature { message, data }
+            }
+            (message, HostErrorData::NotFound(data)) => Self::NotFound { message, data },
+            (message, HostErrorData::StorageUnavailable(data)) => {
+                Self::StorageUnavailable { message, data }
+            }
+            (message, HostErrorData::AuthorizationDenied(data)) => {
+                Self::AuthorizationDenied { message, data }
+            }
+            (message, HostErrorData::InternalError(data)) => Self::InternalError { message, data },
+            (message, HostErrorData::SessionSearchUnavailable(data)) => {
+                Self::SessionSearchUnavailable { message, data }
+            }
+            (_, _) => Self::InternalError {
+                message: "internal error".to_string(),
+                data: InternalErrorData {
+                    kind: InternalErrorDataKind::Value,
+                    retryable: false,
+                    reconciliation_required: true,
+                    diagnostic_ref: None,
+                    resource_kind: None,
+                },
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClarificationResolveError {
     NotInitialized {
         message: String,
@@ -634,6 +740,112 @@ impl From<HostError> for ClarificationResolveError {
             }
             (message, HostErrorData::RunConflict(data)) => Self::RunConflict { message, data },
             (message, HostErrorData::StaleFence(data)) => Self::StaleFence { message, data },
+            (_, _) => Self::InternalError {
+                message: "internal error".to_string(),
+                data: InternalErrorData {
+                    kind: InternalErrorDataKind::Value,
+                    retryable: false,
+                    reconciliation_required: true,
+                    diagnostic_ref: None,
+                    resource_kind: None,
+                },
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClarificationShowError {
+    NotInitialized {
+        message: String,
+        data: NotInitializedData,
+    },
+    UnsupportedFeature {
+        message: String,
+        data: UnsupportedFeatureData,
+    },
+    NotFound {
+        message: String,
+        data: NotFoundData,
+    },
+    StorageUnavailable {
+        message: String,
+        data: StorageUnavailableData,
+    },
+    AuthorizationDenied {
+        message: String,
+        data: AuthorizationDeniedData,
+    },
+    InternalError {
+        message: String,
+        data: InternalErrorData,
+    },
+    SessionSearchUnavailable {
+        message: String,
+        data: SessionSearchUnavailableData,
+    },
+}
+impl From<ClarificationShowError> for HostError {
+    fn from(error: ClarificationShowError) -> Self {
+        match error {
+            ClarificationShowError::NotInitialized { message, data } => Self {
+                code: -32001,
+                message,
+                data: HostErrorData::NotInitialized(data),
+            },
+            ClarificationShowError::UnsupportedFeature { message, data } => Self {
+                code: -32002,
+                message,
+                data: HostErrorData::UnsupportedFeature(data),
+            },
+            ClarificationShowError::NotFound { message, data } => Self {
+                code: -32010,
+                message,
+                data: HostErrorData::NotFound(data),
+            },
+            ClarificationShowError::StorageUnavailable { message, data } => Self {
+                code: -32015,
+                message,
+                data: HostErrorData::StorageUnavailable(data),
+            },
+            ClarificationShowError::AuthorizationDenied { message, data } => Self {
+                code: -32017,
+                message,
+                data: HostErrorData::AuthorizationDenied(data),
+            },
+            ClarificationShowError::InternalError { message, data } => Self {
+                code: -32000,
+                message,
+                data: HostErrorData::InternalError(data),
+            },
+            ClarificationShowError::SessionSearchUnavailable { message, data } => Self {
+                code: -32032,
+                message,
+                data: HostErrorData::SessionSearchUnavailable(data),
+            },
+        }
+    }
+}
+impl From<HostError> for ClarificationShowError {
+    fn from(error: HostError) -> Self {
+        match (error.message, error.data) {
+            (message, HostErrorData::NotInitialized(data)) => {
+                Self::NotInitialized { message, data }
+            }
+            (message, HostErrorData::UnsupportedFeature(data)) => {
+                Self::UnsupportedFeature { message, data }
+            }
+            (message, HostErrorData::NotFound(data)) => Self::NotFound { message, data },
+            (message, HostErrorData::StorageUnavailable(data)) => {
+                Self::StorageUnavailable { message, data }
+            }
+            (message, HostErrorData::AuthorizationDenied(data)) => {
+                Self::AuthorizationDenied { message, data }
+            }
+            (message, HostErrorData::InternalError(data)) => Self::InternalError { message, data },
+            (message, HostErrorData::SessionSearchUnavailable(data)) => {
+                Self::SessionSearchUnavailable { message, data }
+            }
             (_, _) => Self::InternalError {
                 message: "internal error".to_string(),
                 data: InternalErrorData {
@@ -3788,6 +4000,110 @@ impl From<HostError> for RunInterruptError {
             }
             (message, HostErrorData::RunConflict(data)) => Self::RunConflict { message, data },
             (message, HostErrorData::StaleFence(data)) => Self::StaleFence { message, data },
+            (_, _) => Self::InternalError {
+                message: "internal error".to_string(),
+                data: InternalErrorData {
+                    kind: InternalErrorDataKind::Value,
+                    retryable: false,
+                    reconciliation_required: true,
+                    diagnostic_ref: None,
+                    resource_kind: None,
+                },
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RunListError {
+    NotInitialized {
+        message: String,
+        data: NotInitializedData,
+    },
+    UnsupportedFeature {
+        message: String,
+        data: UnsupportedFeatureData,
+    },
+    NotFound {
+        message: String,
+        data: NotFoundData,
+    },
+    StorageUnavailable {
+        message: String,
+        data: StorageUnavailableData,
+    },
+    AuthorizationDenied {
+        message: String,
+        data: AuthorizationDeniedData,
+    },
+    InternalError {
+        message: String,
+        data: InternalErrorData,
+    },
+    CursorInvalid {
+        message: String,
+        data: CursorInvalidData,
+    },
+}
+impl From<RunListError> for HostError {
+    fn from(error: RunListError) -> Self {
+        match error {
+            RunListError::NotInitialized { message, data } => Self {
+                code: -32001,
+                message,
+                data: HostErrorData::NotInitialized(data),
+            },
+            RunListError::UnsupportedFeature { message, data } => Self {
+                code: -32002,
+                message,
+                data: HostErrorData::UnsupportedFeature(data),
+            },
+            RunListError::NotFound { message, data } => Self {
+                code: -32010,
+                message,
+                data: HostErrorData::NotFound(data),
+            },
+            RunListError::StorageUnavailable { message, data } => Self {
+                code: -32015,
+                message,
+                data: HostErrorData::StorageUnavailable(data),
+            },
+            RunListError::AuthorizationDenied { message, data } => Self {
+                code: -32017,
+                message,
+                data: HostErrorData::AuthorizationDenied(data),
+            },
+            RunListError::InternalError { message, data } => Self {
+                code: -32000,
+                message,
+                data: HostErrorData::InternalError(data),
+            },
+            RunListError::CursorInvalid { message, data } => Self {
+                code: -32016,
+                message,
+                data: HostErrorData::CursorInvalid(data),
+            },
+        }
+    }
+}
+impl From<HostError> for RunListError {
+    fn from(error: HostError) -> Self {
+        match (error.message, error.data) {
+            (message, HostErrorData::NotInitialized(data)) => {
+                Self::NotInitialized { message, data }
+            }
+            (message, HostErrorData::UnsupportedFeature(data)) => {
+                Self::UnsupportedFeature { message, data }
+            }
+            (message, HostErrorData::NotFound(data)) => Self::NotFound { message, data },
+            (message, HostErrorData::StorageUnavailable(data)) => {
+                Self::StorageUnavailable { message, data }
+            }
+            (message, HostErrorData::AuthorizationDenied(data)) => {
+                Self::AuthorizationDenied { message, data }
+            }
+            (message, HostErrorData::InternalError(data)) => Self::InternalError { message, data },
+            (message, HostErrorData::CursorInvalid(data)) => Self::CursorInvalid { message, data },
             (_, _) => Self::InternalError {
                 message: "internal error".to_string(),
                 data: InternalErrorData {

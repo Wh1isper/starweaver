@@ -100,6 +100,8 @@ pub struct ApprovalDecideParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Wire field `reason`.
     pub reason: Option<String>,
+    /// Wire field `sessionId`.
+    pub session_id: SessionId,
 }
 
 /// Generated closed object `ApprovalDecideResult`.
@@ -110,6 +112,18 @@ pub struct ApprovalDecideResult {
     pub approval: ApprovalSummary,
     /// Wire field `receipt`.
     pub receipt: MutationReceipt,
+}
+
+/// Generated closed object `ApprovalDetail`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApprovalDetail {
+    /// Wire field `argumentsComplete`.
+    pub arguments_complete: bool,
+    /// Wire field `argumentsJson`.
+    pub arguments_json: String,
+    /// Wire field `summary`.
+    pub summary: ApprovalSummary,
 }
 
 /// Validated generated string `ApprovalId`.
@@ -158,6 +172,8 @@ pub struct ApprovalListResult {
 pub struct ApprovalShowParams {
     /// Wire field `approvalId`.
     pub approval_id: ApprovalId,
+    /// Wire field `sessionId`.
+    pub session_id: SessionId,
 }
 
 /// Generated closed object `ApprovalShowResult`.
@@ -165,7 +181,7 @@ pub struct ApprovalShowParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApprovalShowResult {
     /// Wire field `approval`.
-    pub approval: ApprovalSummary,
+    pub approval: ApprovalDetail,
 }
 
 /// Generated string enum `ApprovalStatus`.
@@ -345,6 +361,16 @@ impl fmt::Display for ClarificationId {
     }
 }
 
+/// Generated closed object `ClarificationListResult`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClarificationListResult {
+    /// Wire field `clarifications`.
+    pub clarifications: Vec<ClarificationSummary>,
+    /// Wire field `page`.
+    pub page: PageInfo,
+}
+
 /// Generated closed object `ClarificationQuestion`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -387,6 +413,8 @@ pub struct ClarificationResolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Wire field `response`.
     pub response: Option<String>,
+    /// Wire field `sessionId`.
+    pub session_id: SessionId,
 }
 
 /// Generated closed object `ClarificationResolveResult`.
@@ -397,6 +425,24 @@ pub struct ClarificationResolveResult {
     pub clarification: ClarificationSummary,
     /// Wire field `receipt`.
     pub receipt: MutationReceipt,
+}
+
+/// Generated closed object `ClarificationShowParams`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClarificationShowParams {
+    /// Wire field `clarificationId`.
+    pub clarification_id: ClarificationId,
+    /// Wire field `sessionId`.
+    pub session_id: SessionId,
+}
+
+/// Generated closed object `ClarificationShowResult`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClarificationShowResult {
+    /// Wire field `clarification`.
+    pub clarification: ClarificationSummary,
 }
 
 /// Generated string enum `ClarificationStatus`.
@@ -931,6 +977,8 @@ pub struct DeferredCompleteParams {
     pub idempotency_key: IdempotencyKey,
     /// Wire field `resultText`.
     pub result_text: String,
+    /// Wire field `sessionId`.
+    pub session_id: SessionId,
 }
 
 /// Generated closed object `DeferredCompleteResult`.
@@ -941,6 +989,18 @@ pub struct DeferredCompleteResult {
     pub deferred: DeferredSummary,
     /// Wire field `receipt`.
     pub receipt: MutationReceipt,
+}
+
+/// Generated closed object `DeferredDetail`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeferredDetail {
+    /// Wire field `requestComplete`.
+    pub request_complete: bool,
+    /// Wire field `requestJson`.
+    pub request_json: String,
+    /// Wire field `summary`.
+    pub summary: DeferredSummary,
 }
 
 /// Generated closed object `DeferredFailParams`.
@@ -955,6 +1015,8 @@ pub struct DeferredFailParams {
     pub expected_revision: DecimalU64,
     /// Wire field `idempotencyKey`.
     pub idempotency_key: IdempotencyKey,
+    /// Wire field `sessionId`.
+    pub session_id: SessionId,
 }
 
 /// Generated closed object `DeferredFailResult`.
@@ -1013,6 +1075,8 @@ pub struct DeferredListResult {
 pub struct DeferredShowParams {
     /// Wire field `deferredId`.
     pub deferred_id: DeferredId,
+    /// Wire field `sessionId`.
+    pub session_id: SessionId,
 }
 
 /// Generated closed object `DeferredShowResult`.
@@ -1020,7 +1084,7 @@ pub struct DeferredShowParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeferredShowResult {
     /// Wire field `deferred`.
-    pub deferred: DeferredSummary,
+    pub deferred: DeferredDetail,
 }
 
 /// Generated string enum `DeferredStatus`.
@@ -1617,6 +1681,8 @@ pub enum HostEvent {
     RunChangedEvent(RunChangedEvent),
     /// `OutputAvailableEvent`.
     OutputAvailableEvent(OutputAvailableEvent),
+    /// `TranscriptChangedEvent`.
+    TranscriptChangedEvent(TranscriptChangedEvent),
     /// `ApprovalChangedEvent`.
     ApprovalChangedEvent(ApprovalChangedEvent),
     /// `DeferredChangedEvent`.
@@ -1791,6 +1857,9 @@ pub struct InteractionListParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Wire field `sessionId`.
     pub session_id: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Wire field `state`.
+    pub state: Option<String>,
 }
 
 /// Discriminator `internal_error`.
@@ -2484,6 +2553,28 @@ pub struct RunInterruptResult {
     pub run: RunSummary,
 }
 
+/// Generated closed object `RunListParams`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunListParams {
+    /// Wire field `cursor`.
+    pub cursor: Option<String>,
+    /// Wire field `limit`.
+    pub limit: u32,
+    /// Wire field `sessionId`.
+    pub session_id: SessionId,
+}
+
+/// Generated closed object `RunListResult`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunListResult {
+    /// Wire field `page`.
+    pub page: PageInfo,
+    /// Wire field `runs`.
+    pub runs: Vec<RunSummary>,
+}
+
 /// Discriminator `run`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum RunResourceScopeKind {
@@ -2599,6 +2690,8 @@ pub struct RunStatusParams {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunStatusResult {
+    /// Wire field `controllableByCurrentHost`.
+    pub controllable_by_current_host: bool,
     /// Wire field `run`.
     pub run: RunSummary,
 }
@@ -2636,6 +2729,9 @@ pub struct RunSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Wire field `diagnosticRef`.
     pub diagnostic_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Wire field `inputPreview`.
+    pub input_preview: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Wire field `outputPreview`.
     pub output_preview: Option<String>,
@@ -3221,6 +3317,103 @@ impl fmt::Display for Timestamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
+}
+
+/// Discriminator `transcript_changed`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum TranscriptChangedEventKind {
+    #[serde(rename = "transcript_changed")]
+    Value,
+}
+
+/// Generated closed object `TranscriptChangedEvent`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TranscriptChangedEvent {
+    /// Wire field `kind`.
+    pub kind: TranscriptChangedEventKind,
+    /// Wire field `runId`.
+    pub run_id: RunId,
+    /// Wire field `sessionId`.
+    pub session_id: SessionId,
+    /// Wire field `transcriptSequence`.
+    pub transcript_sequence: DecimalU64,
+    /// Wire field `update`.
+    pub update: TranscriptUpdate,
+}
+
+/// Discriminator `message_finished`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum TranscriptMessageFinishedKind {
+    #[serde(rename = "message_finished")]
+    Value,
+}
+
+/// Generated closed object `TranscriptMessageFinished`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TranscriptMessageFinished {
+    /// Wire field `kind`.
+    pub kind: TranscriptMessageFinishedKind,
+    /// Wire field `messageId`.
+    pub message_id: String,
+}
+
+/// Discriminator `message_started`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum TranscriptMessageStartedKind {
+    #[serde(rename = "message_started")]
+    Value,
+}
+
+/// Discriminator `assistant`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum TranscriptMessageStartedRole {
+    #[serde(rename = "assistant")]
+    Value,
+}
+
+/// Generated closed object `TranscriptMessageStarted`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TranscriptMessageStarted {
+    /// Wire field `kind`.
+    pub kind: TranscriptMessageStartedKind,
+    /// Wire field `messageId`.
+    pub message_id: String,
+    /// Wire field `role`.
+    pub role: TranscriptMessageStartedRole,
+}
+
+/// Discriminator `text_appended`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum TranscriptTextAppendedKind {
+    #[serde(rename = "text_appended")]
+    Value,
+}
+
+/// Generated closed object `TranscriptTextAppended`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TranscriptTextAppended {
+    /// Wire field `delta`.
+    pub delta: String,
+    /// Wire field `kind`.
+    pub kind: TranscriptTextAppendedKind,
+    /// Wire field `messageId`.
+    pub message_id: String,
+}
+
+/// Generated closed discriminated union `TranscriptUpdate`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum TranscriptUpdate {
+    /// `TranscriptMessageStarted`.
+    TranscriptMessageStarted(TranscriptMessageStarted),
+    /// `TranscriptTextAppended`.
+    TranscriptTextAppended(TranscriptTextAppended),
+    /// `TranscriptMessageFinished`.
+    TranscriptMessageFinished(TranscriptMessageFinished),
 }
 
 /// Discriminator `unsupported_feature`.

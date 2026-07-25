@@ -1,8 +1,15 @@
 # SSH Remote Workspaces
 
-Status: accepted design direction; protocol and installer work planned
+Status: superseded design history; removed from the Starweaver Desktop roadmap
 
-This document extends Starweaver Desktop from local child-process execution to remote execution through SSH. The remote machine is a separate execution domain: `starweaver-rpc`, durable storage, model/provider resolution and credentials, filesystem access, and shell processes all run as the authenticated remote user.
+Starweaver Desktop is local-only. This document is retained as historical analysis and is not a
+normative Desktop requirement, delivery phase, or implementation plan. A future remote-access
+helper may reuse public Starweaver boundaries, but it must be specified and shipped as an independent
+integration rather than adding SSH authority to the Desktop renderer or privileged backend.
+
+The remainder records the superseded proposal that extended Desktop from local child-process
+execution to remote execution through SSH. It must not override the local-only baseline in
+`README.md`.
 
 SSH is a process transport for the standalone RPC host. It is not an `EnvironmentProvider`, a filesystem proxy, an SFTP-backed toolset, or a way to make a local RPC process execute selected tools remotely.
 
