@@ -422,16 +422,8 @@ async fn run_stream_emits_cumulative_usage_snapshot_events() {
     assert_eq!(snapshots[1].total_usage.input_tokens, 8);
     assert_eq!(snapshots[1].total_usage.cache_write_tokens, 5);
     assert_eq!(snapshots[1].total_usage.cache_write_1h_tokens, 3);
-    assert_eq!(
-        snapshots[1].agent_usages["main"]
-            .usage
-            .cache_write_1h_tokens,
-        3
-    );
-    assert_eq!(
-        snapshots[1].model_usages["test:test"].cache_write_1h_tokens,
-        3
-    );
+    assert_eq!(snapshots[1].agent_usages["main"].usage.cache_write_1h_tokens, 3);
+    assert_eq!(snapshots[1].model_usages["test:test"].cache_write_1h_tokens, 3);
     assert_eq!(snapshots[1].total_usage.cache_read_tokens, 8);
     assert_eq!(snapshots[1].total_usage.output_tokens, 10);
     assert_eq!(snapshots[1].total_usage.total_tokens, 18);
