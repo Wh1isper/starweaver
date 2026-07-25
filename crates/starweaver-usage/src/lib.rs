@@ -57,16 +57,27 @@ impl Usage {
     /// input total so malformed counters cannot create additional billed tokens.
     #[must_use]
     pub const fn effective_cache_write_tokens(&self) -> u64 {
-        self.cache_write_tokens
-            .max(self.cache_write_1h_tokens)
-            .min(self.input_tokens)
+        let reported = if self.cache_write_tokens > self.cache_write_1h_tokens {
+            self.cache_write_tokens
+        } else {
+            self.cache_write_1h_tokens
+        };
+        if reported < self.input_tokens {
+            reported
+        } else {
+            self.input_tokens
+        }
     }
 
     /// Return effective one-hour cache-write tokens for derived accounting.
     #[must_use]
     pub const fn effective_cache_write_1h_tokens(&self) -> u64 {
-        self.cache_write_1h_tokens
-            .min(self.effective_cache_write_tokens())
+        let cache_write_tokens = self.effective_cache_write_tokens();
+        if self.cache_write_1h_tokens < cache_write_tokens {
+            self.cache_write_1h_tokens
+        } else {
+            cache_write_tokens
+        }
     }
 
     /// Return effective cache-read tokens for derived accounting.
@@ -75,10 +86,14 @@ impl Usage {
     /// inclusive input. Reads are capped at the input remaining after effective writes.
     #[must_use]
     pub const fn effective_cache_read_tokens(&self) -> u64 {
-        self.cache_read_tokens.min(
-            self.input_tokens
-                .saturating_sub(self.effective_cache_write_tokens()),
-        )
+        let remaining_input = self
+            .input_tokens
+            .saturating_sub(self.effective_cache_write_tokens());
+        if self.cache_read_tokens < remaining_input {
+            self.cache_read_tokens
+        } else {
+            remaining_input
+        }
     }
 
     /// Return input tokens not assigned to an effective cache-write or read category.
