@@ -163,3 +163,30 @@ fn parse_response_preserves_anthropic_redacted_thinking() {
                 && provider.provider_name.as_deref() == Some("anthropic")
     ));
 }
+
+#[test]
+fn parse_response_normalizes_anthropic_cache_write_durations() {
+    let response = AnthropicMessagesAdapter::parse_response(&json!({
+        "id": "msg_cache",
+        "model": "claude-test",
+        "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": "done"}],
+        "usage": {
+            "input_tokens": 7,
+            "output_tokens": 8,
+            "cache_creation_input_tokens": 8,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 4,
+                "ephemeral_1h_input_tokens": 5
+            },
+            "cache_read_input_tokens": 10
+        }
+    }))
+    .unwrap();
+
+    assert_eq!(response.usage.input_tokens, 26);
+    assert_eq!(response.usage.cache_write_tokens, 9);
+    assert_eq!(response.usage.cache_write_1h_tokens, 5);
+    assert_eq!(response.usage.cache_read_tokens, 10);
+    assert_eq!(response.usage.total_tokens, 34);
+}

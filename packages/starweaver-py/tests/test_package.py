@@ -507,6 +507,7 @@ def test_observability_helpers_wrap_usage_snapshots_and_trace_metadata() -> None
             "requests": 1,
             "input_tokens": 2,
             "cache_write_tokens": 3,
+            "cache_write_1h_tokens": 1,
             "cache_read_tokens": 4,
             "output_tokens": 5,
             "total_tokens": 6,
@@ -555,7 +556,10 @@ def test_observability_helpers_wrap_usage_snapshots_and_trace_metadata() -> None
     assert snapshot.run_id == "run-1"
     latest_usage = snapshot.latest_usage
     assert latest_usage is not None
+    assert latest_usage.cache_write_tokens == 3
+    assert latest_usage.cache_write_1h_tokens == 1
     assert latest_usage.tool_calls == 7
+    assert snapshot.total_usage.cache_write_1h_tokens == 0
     assert snapshot.total_usage.total_tokens == 14
     estimate_pricing = snapshot.estimate_pricing
     assert estimate_pricing is not None

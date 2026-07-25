@@ -5,6 +5,11 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
 #[cfg(feature = "pricing")]
 pub mod pricing;
 
@@ -20,9 +25,14 @@ pub struct Usage {
     /// those subtotals are present. Pricing helpers subtract the cache subtotals
     /// before applying cache-specific rates.
     pub input_tokens: u64,
-    /// Tokens written to a provider prompt cache.
+    /// Total tokens written to a provider prompt cache across all cache durations.
     #[serde(default)]
     pub cache_write_tokens: u64,
+    /// One-hour cache-write tokens included in [`Self::cache_write_tokens`].
+    ///
+    /// Providers without a one-hour cache-write breakdown leave this at zero.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub cache_write_1h_tokens: u64,
     /// Tokens read from a provider prompt cache.
     #[serde(default)]
     pub cache_read_tokens: u64,
@@ -43,6 +53,9 @@ impl Usage {
         self.cache_write_tokens = self
             .cache_write_tokens
             .saturating_add(other.cache_write_tokens);
+        self.cache_write_1h_tokens = self
+            .cache_write_1h_tokens
+            .saturating_add(other.cache_write_1h_tokens);
         self.cache_read_tokens = self
             .cache_read_tokens
             .saturating_add(other.cache_read_tokens);
@@ -57,6 +70,7 @@ impl Usage {
         self.requests == 0
             && self.input_tokens == 0
             && self.cache_write_tokens == 0
+            && self.cache_write_1h_tokens == 0
             && self.cache_read_tokens == 0
             && self.output_tokens == 0
             && self.total_tokens == 0
@@ -448,6 +462,7 @@ mod tests {
             requests: 1,
             input_tokens: 2,
             cache_write_tokens: 7,
+            cache_write_1h_tokens: 3,
             cache_read_tokens: 11,
             output_tokens: 3,
             total_tokens: 5,
@@ -457,6 +472,7 @@ mod tests {
             requests: 2,
             input_tokens: 4,
             cache_write_tokens: 13,
+            cache_write_1h_tokens: 5,
             cache_read_tokens: 17,
             output_tokens: 6,
             total_tokens: 10,
@@ -465,6 +481,7 @@ mod tests {
         assert_eq!(usage.requests, 3);
         assert_eq!(usage.input_tokens, 6);
         assert_eq!(usage.cache_write_tokens, 20);
+        assert_eq!(usage.cache_write_1h_tokens, 8);
         assert_eq!(usage.cache_read_tokens, 28);
         assert_eq!(usage.output_tokens, 9);
         assert_eq!(usage.total_tokens, 15);
@@ -480,6 +497,7 @@ mod tests {
             requests: u64::MAX,
             input_tokens: u64::MAX,
             cache_write_tokens: u64::MAX,
+            cache_write_1h_tokens: u64::MAX,
             cache_read_tokens: u64::MAX,
             output_tokens: u64::MAX,
             total_tokens: u64::MAX,
@@ -489,6 +507,7 @@ mod tests {
             requests: 1,
             input_tokens: 1,
             cache_write_tokens: 1,
+            cache_write_1h_tokens: 1,
             cache_read_tokens: 1,
             output_tokens: 1,
             total_tokens: 1,
@@ -497,10 +516,47 @@ mod tests {
         assert_eq!(usage.requests, u64::MAX);
         assert_eq!(usage.input_tokens, u64::MAX);
         assert_eq!(usage.cache_write_tokens, u64::MAX);
+        assert_eq!(usage.cache_write_1h_tokens, u64::MAX);
         assert_eq!(usage.cache_read_tokens, u64::MAX);
         assert_eq!(usage.output_tokens, u64::MAX);
         assert_eq!(usage.total_tokens, u64::MAX);
         assert_eq!(usage.tool_calls, u64::MAX);
+    }
+
+    #[test]
+    fn usage_one_hour_cache_write_tokens_are_backward_compatible_in_json() {
+        let legacy = serde_json::json!({
+            "requests": 1,
+            "input_tokens": 2,
+            "cache_write_tokens": 3,
+            "cache_read_tokens": 4,
+            "output_tokens": 5,
+            "total_tokens": 11,
+            "tool_calls": 0
+        });
+        let usage = match serde_json::from_value::<Usage>(legacy) {
+            Ok(usage) => usage,
+            Err(err) => panic!("legacy usage should deserialize: {err}"),
+        };
+        assert_eq!(usage.cache_write_1h_tokens, 0);
+
+        let serialized = match serde_json::to_value(&usage) {
+            Ok(value) => value,
+            Err(err) => panic!("usage should serialize: {err}"),
+        };
+        assert!(serialized.get("cache_write_1h_tokens").is_none());
+
+        let one_hour = Usage {
+            cache_write_tokens: 3,
+            cache_write_1h_tokens: 2,
+            ..Usage::default()
+        };
+        assert_eq!(
+            serde_json::to_value(one_hour)
+                .ok()
+                .and_then(|value| value["cache_write_1h_tokens"].as_u64()),
+            Some(2)
+        );
     }
 
     #[test]

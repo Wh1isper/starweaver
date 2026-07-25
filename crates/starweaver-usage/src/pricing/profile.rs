@@ -18,6 +18,11 @@ pub struct ModelPricingDetails {
     /// When absent, cache-write tokens are charged at the standard input-token rate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_micros_per_million_tokens: Option<u64>,
+    /// One-hour cache-write cost in micro USD units per million tokens, when published.
+    ///
+    /// When absent, one-hour cache-write tokens use the default cache-write rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_micros_per_million_tokens: Option<u64>,
     /// Cache-read or cached-input cost in micro USD units per million tokens, when published.
     ///
     /// When absent, cache-read tokens are charged at the standard input-token rate.
@@ -33,6 +38,7 @@ impl ModelPricingDetails {
             input_micros_per_million_tokens: input_micros,
             output_micros_per_million_tokens: output_micros,
             cache_write_micros_per_million_tokens: None,
+            cache_write_1h_micros_per_million_tokens: None,
             cache_read_micros_per_million_tokens: None,
         }
     }
@@ -50,6 +56,13 @@ impl ModelPricingDetails {
     #[must_use]
     pub const fn with_cache_write_micros_per_million_tokens(mut self, micros: u64) -> Self {
         self.cache_write_micros_per_million_tokens = Some(micros);
+        self
+    }
+
+    /// Set one-hour cache-write cost in micro USD units per million tokens.
+    #[must_use]
+    pub const fn with_cache_write_1h_micros_per_million_tokens(mut self, micros: u64) -> Self {
+        self.cache_write_1h_micros_per_million_tokens = Some(micros);
         self
     }
 
@@ -73,17 +86,38 @@ impl ModelPricingDetails {
             Some(rate) => rate,
             None => self.input_micros_per_million_tokens,
         };
+        let cache_write_1h_rate = match self.cache_write_1h_micros_per_million_tokens {
+            Some(rate) => rate,
+            None => cache_write_rate,
+        };
         let cache_read_rate = match self.cache_read_micros_per_million_tokens {
             Some(rate) => rate,
             None => self.input_micros_per_million_tokens,
         };
+        let cache_write_tokens = if usage.cache_write_tokens > usage.cache_write_1h_tokens {
+            usage.cache_write_tokens
+        } else {
+            usage.cache_write_1h_tokens
+        };
+        let cache_write_1h_tokens = if usage.cache_write_1h_tokens < cache_write_tokens {
+            usage.cache_write_1h_tokens
+        } else {
+            cache_write_tokens
+        };
+        let default_cache_write_tokens = cache_write_tokens.saturating_sub(cache_write_1h_tokens);
         let standard_input_tokens = usage
             .input_tokens
-            .saturating_sub(usage.cache_write_tokens)
+            .saturating_sub(cache_write_tokens)
             .saturating_sub(usage.cache_read_tokens);
+        let cache_write_cost = if cache_write_rate == cache_write_1h_rate {
+            cost_for_tokens(cache_write_tokens, cache_write_rate)
+        } else {
+            cost_for_tokens(default_cache_write_tokens, cache_write_rate)
+                .saturating_add(cost_for_tokens(cache_write_1h_tokens, cache_write_1h_rate))
+        };
 
         cost_for_tokens(standard_input_tokens, self.input_micros_per_million_tokens)
-            .saturating_add(cost_for_tokens(usage.cache_write_tokens, cache_write_rate))
+            .saturating_add(cache_write_cost)
             .saturating_add(cost_for_tokens(usage.cache_read_tokens, cache_read_rate))
             .saturating_add(cost_for_tokens(
                 usage.output_tokens,

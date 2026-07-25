@@ -9,6 +9,7 @@ pub fn usage_from_openai(value: &Value) -> starweaver_usage::Usage {
         .and_then(Value::as_u64)
         .unwrap_or_default();
     let cache_write_tokens = usage.map_or(0, usage_cache_write_tokens);
+    let cache_write_1h_tokens = usage.map_or(0, usage_cache_write_1h_tokens);
     let cache_read_tokens = usage.map_or(0, usage_cache_read_tokens);
     let output_tokens = usage
         .and_then(|u| {
@@ -22,6 +23,7 @@ pub fn usage_from_openai(value: &Value) -> starweaver_usage::Usage {
         requests: 1,
         input_tokens,
         cache_write_tokens,
+        cache_write_1h_tokens,
         cache_read_tokens,
         output_tokens,
         total_tokens: usage
@@ -68,6 +70,7 @@ fn usage_from_named_with_options(
         .and_then(Value::as_u64)
         .unwrap_or_default();
     let cache_write_tokens = usage.map_or(0, usage_cache_write_tokens);
+    let cache_write_1h_tokens = usage.map_or(0, usage_cache_write_1h_tokens);
     let cache_read_tokens = usage.map_or(0, usage_cache_read_tokens);
     let input_tokens = if add_cache_to_input {
         input_base
@@ -91,6 +94,7 @@ fn usage_from_named_with_options(
         requests: 1,
         input_tokens,
         cache_write_tokens,
+        cache_write_1h_tokens,
         cache_read_tokens,
         output_tokens,
         total_tokens,
@@ -109,17 +113,46 @@ fn usage_cache_write_tokens(usage: &Value) -> u64 {
             "cache_write_input_tokens",
         ],
     );
-    if direct > 0 {
-        return direct;
-    }
-    usage_nested_u64(
+    let provider_total = usage_nested_u64(
         usage,
         &[
             &["prompt_tokens_details", "cache_write_tokens"],
             &["input_tokens_details", "cache_write_tokens"],
             &["input_token_details", "cache_write_tokens"],
         ],
+    );
+    let duration_total =
+        usage_cache_write_5m_tokens(usage).saturating_add(usage_cache_write_1h_tokens(usage));
+    direct.max(provider_total).max(duration_total)
+}
+
+fn usage_cache_write_5m_tokens(usage: &Value) -> u64 {
+    usage_nested_u64(
+        usage,
+        &[
+            &["cache_creation", "ephemeral_5m_input_tokens"],
+            &["cacheCreation", "ephemeral5mInputTokens"],
+        ],
     )
+}
+
+fn usage_cache_write_1h_tokens(usage: &Value) -> u64 {
+    let direct = usage_u64(
+        usage,
+        &[
+            "cache_write_1h_tokens",
+            "cache_write_1h_input_tokens",
+            "cacheWrite1hTokens",
+            "cacheWrite1hInputTokens",
+        ],
+    );
+    direct.max(usage_nested_u64(
+        usage,
+        &[
+            &["cache_creation", "ephemeral_1h_input_tokens"],
+            &["cacheCreation", "ephemeral1hInputTokens"],
+        ],
+    ))
 }
 
 fn usage_cache_read_tokens(usage: &Value) -> u64 {

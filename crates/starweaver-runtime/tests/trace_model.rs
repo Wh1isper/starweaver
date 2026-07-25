@@ -23,6 +23,7 @@ async fn model_trace_events_capture_canonical_request_stream_and_response() {
             requests: 1,
             input_tokens: 3,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             cache_read_tokens: 0,
             output_tokens: 2,
             total_tokens: 5,

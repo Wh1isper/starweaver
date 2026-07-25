@@ -142,6 +142,7 @@ async fn otel_gen_ai_export_maps_agent_model_tool_and_usage_fields() {
         requests: 1,
         input_tokens: 10,
         cache_write_tokens: 2,
+        cache_write_1h_tokens: 0,
         cache_read_tokens: 3,
         output_tokens: 4,
         total_tokens: 17,

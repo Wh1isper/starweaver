@@ -476,6 +476,10 @@ impl BackgroundSubagentContextDelta {
                     .usage
                     .cache_write_tokens
                     .saturating_sub(base_usage.cache_write_tokens),
+                cache_write_1h_tokens: source
+                    .usage
+                    .cache_write_1h_tokens
+                    .saturating_sub(base_usage.cache_write_1h_tokens),
                 cache_read_tokens: source
                     .usage
                     .cache_read_tokens
