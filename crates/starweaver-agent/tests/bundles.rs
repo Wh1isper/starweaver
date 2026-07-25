@@ -1198,8 +1198,8 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
         "big output",
         ShellOutput {
             status: 0,
-            stdout: "o".repeat(25_000),
-            stderr: "e".repeat(25_000),
+            stdout: format!("{}输出结尾", "甲".repeat(24_996)),
+            stderr: format!("{}ERR_END_10", "e".repeat(24_990)),
             metadata: Metadata::default(),
         },
     );
@@ -1332,7 +1332,15 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
     let stderr_path = shell.content["stderr_file_path"].as_str().unwrap();
     assert!(stdout_path.starts_with(".starweaver/scratch/stdout-"));
     assert!(stderr_path.starts_with(".starweaver/scratch/stderr-"));
-    assert_eq!(provider.read_text(stdout_path).await.unwrap().len(), 25_000);
+    assert_eq!(
+        provider
+            .read_text(stdout_path)
+            .await
+            .unwrap()
+            .chars()
+            .count(),
+        25_000
+    );
     assert_eq!(provider.read_text(stderr_path).await.unwrap().len(), 25_000);
     assert!(
         shell.content["stdout"]
@@ -1346,12 +1354,32 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
             .unwrap()
             .contains("truncated")
     );
+    assert!(shell.content["stdout"].as_str().unwrap().starts_with('甲'));
+    assert!(
+        shell.content["stdout"]
+            .as_str()
+            .unwrap()
+            .ends_with("输出结尾")
+    );
+    assert!(shell.content["stderr"].as_str().unwrap().starts_with('e'));
+    assert!(
+        shell.content["stderr"]
+            .as_str()
+            .unwrap()
+            .ends_with("ERR_END_10")
+    );
     let shell_result_path = shell.content["output_file_path"].as_str().unwrap();
     assert!(shell_result_path.starts_with(".starweaver/scratch/shell-exec-"));
     let full_shell_result = provider.read_text(shell_result_path).await.unwrap();
     assert!(full_shell_result.contains(stdout_path));
     assert!(full_shell_result.contains(stderr_path));
-    assert!(serde_json::to_string(&shell.content).unwrap().len() <= 20_000);
+    assert!(
+        serde_json::to_string(&shell.content)
+            .unwrap()
+            .chars()
+            .count()
+            <= 20_000
+    );
 }
 
 #[tokio::test]

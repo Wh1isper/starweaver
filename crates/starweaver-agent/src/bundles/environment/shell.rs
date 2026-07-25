@@ -25,7 +25,8 @@ use crate::bundles::helpers::{
 };
 use crate::bundles::output::{
     DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT, append_guidance, dump_tool_output,
-    fit_text_fields_to_limit, output_too_large_message, tool_output_size, write_scratch_output,
+    fit_text_fields_to_limit_preserving_ends, output_too_large_message, tool_output_size,
+    write_scratch_output,
 };
 
 /// `AgentContext` dependency for process-capable shell providers.
@@ -656,16 +657,16 @@ async fn guard_shell_result(
         serde_json::Value::String(append_guidance(hint.as_deref(), &guidance)),
     );
 
-    let suffix = if output_path.is_some() {
-        "\n...(truncated; full shell result saved in `output_file_path`)"
+    let infix = if output_path.is_some() {
+        "\n...(middle truncated; full shell result saved in `output_file_path`)...\n"
     } else {
-        "\n...(truncated; failed to save full shell result)"
+        "\n...(middle truncated; failed to save full shell result)...\n"
     };
-    let fitted = fit_text_fields_to_limit(
+    let fitted = fit_text_fields_to_limit_preserving_ends(
         serde_json::Value::Object(preview.clone()),
         &["stdout", "stderr"],
         limit,
-        suffix,
+        infix,
     );
     if tool_output_size(&fitted) <= limit {
         return fitted;
@@ -721,7 +722,7 @@ async fn truncate_shell_output(
     content: &str,
     truncate_limit: usize,
 ) -> TruncatedOutput {
-    if content.len() <= truncate_limit {
+    if !shell_output_exceeds_limit(content, truncate_limit) {
         return TruncatedOutput {
             content: content.to_string(),
             file_path: None,
@@ -732,11 +733,12 @@ async fn truncate_shell_output(
         .write_scratch_file(&filename, content.as_bytes())
         .await
         .map_or_else(
-            |_| truncate_shell_output_without_file(content, truncate_limit),
+            |_| truncate_shell_output_without_file_known_large(content, truncate_limit),
             |path| TruncatedOutput {
-                content: format!(
-                    "{}\n...(truncated, full output at `{stream_name}_file_path`)",
-                    content.chars().take(truncate_limit).collect::<String>()
+                content: shell_output_preview(
+                    content,
+                    truncate_limit,
+                    &format!("...(middle truncated; full output at `{stream_name}_file_path`)..."),
                 ),
                 file_path: Some(path),
             },
@@ -744,19 +746,46 @@ async fn truncate_shell_output(
 }
 
 fn truncate_shell_output_without_file(content: &str, truncate_limit: usize) -> TruncatedOutput {
-    if content.len() <= truncate_limit {
+    if !shell_output_exceeds_limit(content, truncate_limit) {
         return TruncatedOutput {
             content: content.to_string(),
             file_path: None,
         };
     }
+    truncate_shell_output_without_file_known_large(content, truncate_limit)
+}
+
+fn truncate_shell_output_without_file_known_large(
+    content: &str,
+    truncate_limit: usize,
+) -> TruncatedOutput {
     TruncatedOutput {
-        content: format!(
-            "{}\n...(truncated)",
-            content.chars().take(truncate_limit).collect::<String>()
+        content: shell_output_preview(
+            content,
+            truncate_limit,
+            "...(middle truncated; full output unavailable)...",
         ),
         file_path: None,
     }
+}
+
+fn shell_output_exceeds_limit(content: &str, truncate_limit: usize) -> bool {
+    content.chars().nth(truncate_limit).is_some()
+}
+
+fn shell_output_preview(content: &str, truncate_limit: usize, marker: &str) -> String {
+    let head_len = truncate_limit.saturating_add(1) / 2;
+    let tail_len = truncate_limit / 2;
+    let head = content.chars().take(head_len).collect::<String>();
+    let tail = content
+        .chars()
+        .rev()
+        .take(tail_len)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    format!("{head}\n{marker}\n{tail}")
 }
 
 #[cfg(test)]
@@ -825,6 +854,34 @@ mod tests {
         .await
         .expect("orphaned process cleanup should not time out");
         assert_eq!(status, ShellProcessStatus::Killed);
+    }
+
+    #[test]
+    fn shell_output_preview_preserves_head_and_tail() {
+        let output = truncate_shell_output_without_file("HEAD1234middle5678TAIL", 8);
+
+        assert!(output.content.starts_with("HEAD\n"));
+        assert!(output.content.contains("middle truncated"));
+        assert!(output.content.ends_with("\nTAIL"));
+        assert!(!output.content.contains("middle5678"));
+    }
+
+    #[test]
+    fn shell_output_truncation_counts_utf8_characters() {
+        let short = truncate_shell_output_without_file("甲乙", 2);
+        assert_eq!(short.content, "甲乙");
+
+        let long = truncate_shell_output_without_file("甲乙丙丁戊己庚辛", 4);
+        assert!(long.content.starts_with("甲乙\n"));
+        assert!(long.content.ends_with("\n庚辛"));
+    }
+
+    #[test]
+    fn shell_output_limit_check_stops_at_the_first_excess_character() {
+        assert!(!shell_output_exceeds_limit("甲乙", 2));
+        assert!(shell_output_exceeds_limit("甲乙丙", 2));
+        assert!(shell_output_exceeds_limit("x", 0));
+        assert!(!shell_output_exceeds_limit("", 0));
     }
 
     #[test]
