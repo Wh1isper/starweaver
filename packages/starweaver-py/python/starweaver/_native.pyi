@@ -646,6 +646,17 @@ class PythonSessionStore:
     def append_run(self, record: object) -> Awaitable[None]: ...
     def load_run(self, session_id: str, run_id: str) -> Awaitable[dict[str, object]]: ...
     def list_runs(self, session_id: str) -> Awaitable[list[dict[str, object]]]: ...
+    def list_recent_runs(
+        self,
+        session_id: str,
+        limit: int,
+    ) -> Awaitable[list[dict[str, object]]]: ...
+    def list_run_page(
+        self,
+        session_id: str,
+        limit: int,
+        before_sequence: int | None = None,
+    ) -> Awaitable[dict[str, object]]: ...
     def update_run_status(
         self,
         session_id: str,
@@ -752,6 +763,17 @@ class SqliteSessionStore:
     def append_run_allocated(self, record: object) -> Awaitable[dict[str, object]]: ...
     def load_run(self, session_id: str, run_id: str) -> Awaitable[dict[str, object]]: ...
     def list_runs(self, session_id: str) -> Awaitable[list[dict[str, object]]]: ...
+    def list_recent_runs(
+        self,
+        session_id: str,
+        limit: int,
+    ) -> Awaitable[list[dict[str, object]]]: ...
+    def list_run_page(
+        self,
+        session_id: str,
+        limit: int,
+        before_sequence: int | None = None,
+    ) -> Awaitable[dict[str, object]]: ...
     def update_run_status(
         self,
         session_id: str,

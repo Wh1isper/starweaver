@@ -11,10 +11,10 @@ use starweaver_core::{RunId, SessionId};
 use starweaver_runtime::{AgentCheckpoint, AgentStreamRecord};
 use starweaver_session::{
     ApprovalRecord, CompactRunTrace, CompactSessionTrace, DeferredToolRecord, EnvironmentStateRef,
-    HitlResumeClaim, PendingStreamPublication, RunEvidenceCommit, RunRecord, RunStatus,
-    SessionFilter, SessionPage, SessionPageKey, SessionPageQuery, SessionRecord,
-    SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError, SessionStoreResult,
-    StreamCursorRef, StreamPublicationTarget,
+    HitlResumeClaim, PendingStreamPublication, RunEvidenceCommit, RunPage, RunPageKey,
+    RunPageQuery, RunRecord, RunStatus, SessionFilter, SessionPage, SessionPageKey,
+    SessionPageQuery, SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore,
+    SessionStoreError, SessionStoreResult, StreamCursorRef, StreamPublicationTarget,
 };
 use starweaver_storage::{
     SqliteMigrationStatus, SqliteReplayEventLog, SqliteSessionStore, SqliteStreamArchive,
@@ -76,6 +76,20 @@ struct PythonSessionPage {
 struct PythonSessionPageKey {
     updated_at: String,
     session_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct PythonRunPage {
+    runs: Vec<RunRecord>,
+    next_key: Option<PythonRunPageKey>,
+    has_more: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct PythonRunPageKey {
+    sequence_no: usize,
 }
 
 unsafe impl Send for PythonSessionStore {}
@@ -370,6 +384,49 @@ impl PyPythonSessionStore {
                     .map_err(store_error_to_future)
             },
             |py, records| serialize_to_py(py, &records),
+        )
+    }
+
+    fn list_recent_runs(
+        &self,
+        py: Python<'_>,
+        session_id: String,
+        limit: usize,
+    ) -> PyResult<Py<PyAny>> {
+        let session_id = SessionId::from_string(session_id);
+        let store = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                store
+                    .list_recent_runs(&session_id, limit)
+                    .await
+                    .map_err(store_error_to_future)
+            },
+            |py, records| serialize_to_py(py, &records),
+        )
+    }
+
+    #[pyo3(signature = (session_id, limit, before_sequence=None))]
+    fn list_run_page(
+        &self,
+        py: Python<'_>,
+        session_id: String,
+        limit: usize,
+        before_sequence: Option<usize>,
+    ) -> PyResult<Py<PyAny>> {
+        let session_id = SessionId::from_string(session_id);
+        let query = run_page_query(before_sequence, limit)?;
+        let store = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                store
+                    .list_run_page(&session_id, query)
+                    .await
+                    .map_err(store_error_to_future)
+            },
+            |py, page| serialize_to_py(py, &run_page_json(page)),
         )
     }
 
@@ -877,6 +934,45 @@ impl SessionStore for PythonSessionStore {
             store.call_method1(py, "list_runs", (session_id,))
         })
         .await
+    }
+
+    async fn list_recent_runs(
+        &self,
+        session_id: &SessionId,
+        limit: usize,
+    ) -> SessionStoreResult<Vec<RunRecord>> {
+        let session_id = session_id.as_str().to_string();
+        self.call_json("list_recent_runs", move |py, store| {
+            store.call_method1(py, "list_recent_runs", (session_id, limit))
+        })
+        .await
+    }
+
+    async fn list_run_page(
+        &self,
+        session_id: &SessionId,
+        query: RunPageQuery,
+    ) -> SessionStoreResult<RunPage> {
+        let session_id = session_id.as_str().to_string();
+        let query = json!({
+            "before": query.before().map(|key| json!({
+                "sequenceNo": key.sequence_no,
+            })),
+            "limit": query.limit(),
+        });
+        let page: PythonRunPage = self
+            .call_json("list_run_page", move |py, store| {
+                let query = serialize_to_py(py, &query)?;
+                store.call_method1(py, "list_run_page", (session_id, query))
+            })
+            .await?;
+        Ok(RunPage {
+            runs: page.runs,
+            next_key: page.next_key.map(|key| RunPageKey {
+                sequence_no: key.sequence_no,
+            }),
+            has_more: page.has_more,
+        })
     }
 
     async fn update_run_status(
@@ -1430,6 +1526,49 @@ impl PySqliteSessionStore {
                     .map_err(store_error_to_future)
             },
             |py, records| serialize_to_py(py, &records),
+        )
+    }
+
+    fn list_recent_runs(
+        &self,
+        py: Python<'_>,
+        session_id: String,
+        limit: usize,
+    ) -> PyResult<Py<PyAny>> {
+        let session_id = SessionId::from_string(session_id);
+        let store = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                store
+                    .list_recent_runs(&session_id, limit)
+                    .await
+                    .map_err(store_error_to_future)
+            },
+            |py, records| serialize_to_py(py, &records),
+        )
+    }
+
+    #[pyo3(signature = (session_id, limit, before_sequence=None))]
+    fn list_run_page(
+        &self,
+        py: Python<'_>,
+        session_id: String,
+        limit: usize,
+        before_sequence: Option<usize>,
+    ) -> PyResult<Py<PyAny>> {
+        let session_id = SessionId::from_string(session_id);
+        let query = run_page_query(before_sequence, limit)?;
+        let store = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                store
+                    .list_run_page(&session_id, query)
+                    .await
+                    .map_err(store_error_to_future)
+            },
+            |py, page| serialize_to_py(py, &run_page_json(page)),
         )
     }
 
@@ -2139,6 +2278,24 @@ where
         Some(value) if !value.is_none() => parse_record(py, value, label).map(Some),
         Some(_) | None => Ok(None),
     }
+}
+
+fn run_page_query(before_sequence: Option<usize>, limit: usize) -> PyResult<RunPageQuery> {
+    RunPageQuery::new(
+        before_sequence.map(|sequence_no| RunPageKey { sequence_no }),
+        limit,
+    )
+    .map_err(to_py_value_error)
+}
+
+fn run_page_json(page: RunPage) -> Value {
+    json!({
+        "runs": page.runs,
+        "nextKey": page.next_key.map(|key| json!({
+            "sequenceNo": key.sequence_no,
+        })),
+        "hasMore": page.has_more,
+    })
 }
 
 fn store_error_to_future(error: SessionStoreError) -> PyFutureError {

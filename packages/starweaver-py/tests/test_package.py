@@ -6167,6 +6167,75 @@ def test_python_session_store_stable_keyset_page() -> None:
     asyncio.run(run())
 
 
+def test_python_session_store_stable_run_pages_cross_native_bridge() -> None:
+    async def run() -> None:
+        agent = create_agent(model=StarweaverTestModel.text("done"))
+        session = agent.session()
+        result = await session.run("done")
+        session_record = starweaver.SessionRecord.from_state(session.export_full_state())
+
+        store = starweaver.InMemorySessionStore()
+        await store.save_session(session_record)
+        template = starweaver.RunRecord.from_result(
+            session_record.session_id,
+            result,
+        ).to_dict()
+        for run_id in ["run-a", "run-b", "run-c"]:
+            record = copy.deepcopy(template)
+            record["run_id"] = run_id
+            record["sequence_no"] = 0
+            await store.append_run(record)
+
+        native = store.to_native()
+        recent = await native.list_recent_runs(session_record.session_id, 2)
+        assert [(record["run_id"], record["sequence_no"]) for record in recent] == [
+            ("run-b", 2),
+            ("run-c", 3),
+        ]
+
+        first = cast(
+            dict[str, Any],
+            await native.list_run_page(session_record.session_id, 2),
+        )
+        first_runs = cast(list[dict[str, Any]], first["runs"])
+        assert [(record["run_id"], record["sequence_no"]) for record in first_runs] == [
+            ("run-c", 3),
+            ("run-b", 2),
+        ]
+        assert first["nextKey"] == {"sequenceNo": 2}
+        assert first["hasMore"] is True
+        first_next_key = cast(dict[str, int], first["nextKey"])
+
+        second = cast(
+            dict[str, Any],
+            await native.list_run_page(
+                session_record.session_id,
+                2,
+                first_next_key["sequenceNo"],
+            ),
+        )
+        second_runs = cast(list[dict[str, Any]], second["runs"])
+        assert [(record["run_id"], record["sequence_no"]) for record in second_runs] == [
+            ("run-a", 1),
+        ]
+        assert second["nextKey"] == {"sequenceNo": 1}
+        assert second["hasMore"] is False
+        second_next_key = cast(dict[str, int], second["nextKey"])
+
+        empty = await native.list_run_page(
+            session_record.session_id,
+            2,
+            second_next_key["sequenceNo"],
+        )
+        assert empty == {
+            "runs": [],
+            "nextKey": second_next_key,
+            "hasMore": False,
+        }
+
+    asyncio.run(run())
+
+
 def test_python_session_store_to_native_adapts_python_backend() -> None:
     async def run() -> None:
         source_store = starweaver.InMemorySessionStore()
@@ -7128,6 +7197,20 @@ def test_sqlite_session_store_wraps_native_storage(tmp_path: Path) -> None:
         loaded = await store.load_session(session_record.session_id)
         assert loaded.state["message_history"]
         assert (await store.list_runs(session_record.session_id))[0].run_id == run_record.run_id
+        recent_runs = await store.list_recent_runs(session_record.session_id, 1)
+        assert [(record.run_id, record.to_dict()["sequence_no"]) for record in recent_runs] == [
+            (run_record.run_id, 1)
+        ]
+        run_page = await store.list_run_page(
+            session_record.session_id,
+            {"before": None, "limit": 1},
+        )
+        page_runs = cast(list[dict[str, Any]], run_page["runs"])
+        assert [(record["run_id"], record["sequence_no"]) for record in page_runs] == [
+            (run_record.run_id, 1)
+        ]
+        assert run_page["nextKey"] == {"sequenceNo": 1}
+        assert run_page["hasMore"] is False
 
         replay = await store.replay_stream_records(session_record.session_id, run_record.run_id)
         assert replay

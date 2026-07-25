@@ -151,6 +151,21 @@ def _session_page_boundary(query: Mapping[str, Any]) -> tuple[datetime, str] | N
     return _session_page_timestamp(after.get("updatedAt"), "boundary updatedAt"), session_id
 
 
+def _run_sequence(value: object, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise StateError(f"run page {field} must be a positive integer")
+    return value
+
+
+def _run_page_boundary(query: Mapping[str, Any]) -> int | None:
+    before = query.get("before")
+    if before is None:
+        return None
+    if not isinstance(before, Mapping):
+        raise StateError("run page boundary must be an object or null")
+    return _run_sequence(before.get("sequenceNo"), "boundary sequenceNo")
+
+
 def _copy(value: Mapping[str, Any]) -> JsonObject:
     return copy.deepcopy(dict(value))
 
@@ -1033,6 +1048,53 @@ class SessionStore:
 
     async def list_runs(self, session_id: str) -> list[RunRecord]:
         raise NotImplementedError
+
+    async def list_recent_runs(self, session_id: str, limit: int) -> list[RunRecord]:
+        """Return the bounded newest run suffix in ascending sequence order."""
+
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+            raise StateError("recent run limit must be a non-negative integer")
+        if limit == 0:
+            return []
+        records = await self.list_runs(session_id)
+        records.sort(
+            key=lambda record: _run_sequence(
+                record.to_dict().get("sequence_no"), "record sequence_no"
+            )
+        )
+        return records[-limit:]
+
+    async def list_run_page(self, session_id: str, query: Mapping[str, Any]) -> JsonObject:
+        """Return one stable newest-first run page for native callers."""
+
+        limit = query.get("limit")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+            raise StateError("run page limit must be between 1 and 200")
+        before = query.get("before")
+        before_sequence = _run_page_boundary(query)
+        records = [record.to_dict() for record in await self.list_runs(session_id)]
+        records.sort(
+            key=lambda record: _run_sequence(record.get("sequence_no"), "record sequence_no"),
+            reverse=True,
+        )
+        if before_sequence is not None:
+            records = [
+                record
+                for record in records
+                if _run_sequence(record.get("sequence_no"), "record sequence_no") < before_sequence
+            ]
+
+        has_more = len(records) > limit
+        runs = records[:limit]
+        if runs:
+            next_key: JsonObject | None = {
+                "sequenceNo": _run_sequence(runs[-1].get("sequence_no"), "record sequence_no")
+            }
+        elif isinstance(before, Mapping):
+            next_key = {"sequenceNo": before_sequence}
+        else:
+            next_key = None
+        return {"runs": runs, "nextKey": next_key, "hasMore": has_more}
 
     async def update_run_status(
         self,
@@ -2268,6 +2330,18 @@ class SqliteSessionStore(SessionStore):
 
     async def list_runs(self, session_id: str) -> list[RunRecord]:
         return [RunRecord(record) for record in await self._native.list_runs(session_id)]
+
+    async def list_recent_runs(self, session_id: str, limit: int) -> list[RunRecord]:
+        return [
+            RunRecord(record) for record in await self._native.list_recent_runs(session_id, limit)
+        ]
+
+    async def list_run_page(self, session_id: str, query: Mapping[str, Any]) -> JsonObject:
+        limit = query.get("limit")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+            raise StateError("run page limit must be between 1 and 200")
+        before_sequence = _run_page_boundary(query)
+        return _copy(await self._native.list_run_page(session_id, limit, before_sequence))
 
     async def update_run_status(
         self,
