@@ -103,7 +103,7 @@ fn usage_from_named_with_options(
 }
 
 fn usage_cache_write_tokens(usage: &Value) -> u64 {
-    let direct = usage_u64(
+    if let Some(direct) = usage_optional_u64(
         usage,
         &[
             "cache_write_tokens",
@@ -112,18 +112,20 @@ fn usage_cache_write_tokens(usage: &Value) -> u64 {
             "cacheWriteInputTokens",
             "cache_write_input_tokens",
         ],
-    );
-    let provider_total = usage_nested_u64(
+    ) {
+        return direct;
+    }
+    if let Some(provider_total) = usage_optional_nested_u64(
         usage,
         &[
             &["prompt_tokens_details", "cache_write_tokens"],
             &["input_tokens_details", "cache_write_tokens"],
             &["input_token_details", "cache_write_tokens"],
         ],
-    );
-    let duration_total =
-        usage_cache_write_5m_tokens(usage).saturating_add(usage_cache_write_1h_tokens(usage));
-    direct.max(provider_total).max(duration_total)
+    ) {
+        return provider_total;
+    }
+    usage_cache_write_5m_tokens(usage).saturating_add(usage_cache_write_1h_tokens(usage))
 }
 
 fn usage_cache_write_5m_tokens(usage: &Value) -> u64 {
@@ -181,19 +183,23 @@ fn usage_cache_read_tokens(usage: &Value) -> u64 {
     )
 }
 
-fn usage_u64(value: &Value, keys: &[&str]) -> u64 {
+fn usage_optional_u64(value: &Value, keys: &[&str]) -> Option<u64> {
     keys.iter()
         .find_map(|key| value.get(*key).and_then(Value::as_u64))
-        .unwrap_or_default()
+}
+
+fn usage_u64(value: &Value, keys: &[&str]) -> u64 {
+    usage_optional_u64(value, keys).unwrap_or_default()
+}
+
+fn usage_optional_nested_u64(value: &Value, paths: &[&[&str]]) -> Option<u64> {
+    paths.iter().find_map(|path| {
+        path.iter()
+            .try_fold(value, |current, key| current.get(*key))
+            .and_then(Value::as_u64)
+    })
 }
 
 fn usage_nested_u64(value: &Value, paths: &[&[&str]]) -> u64 {
-    paths
-        .iter()
-        .find_map(|path| {
-            path.iter()
-                .try_fold(value, |current, key| current.get(*key))
-                .and_then(Value::as_u64)
-        })
-        .unwrap_or_default()
+    usage_optional_nested_u64(value, paths).unwrap_or_default()
 }

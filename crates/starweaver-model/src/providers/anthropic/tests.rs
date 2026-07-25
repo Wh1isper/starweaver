@@ -165,7 +165,7 @@ fn parse_response_preserves_anthropic_redacted_thinking() {
 }
 
 #[test]
-fn parse_response_normalizes_anthropic_cache_write_durations() {
+fn parse_response_preserves_reported_anthropic_cache_write_aggregate() {
     let response = AnthropicMessagesAdapter::parse_response(&json!({
         "id": "msg_cache",
         "model": "claude-test",
@@ -184,9 +184,11 @@ fn parse_response_normalizes_anthropic_cache_write_durations() {
     }))
     .unwrap();
 
-    assert_eq!(response.usage.input_tokens, 26);
-    assert_eq!(response.usage.cache_write_tokens, 9);
+    assert_eq!(response.usage.input_tokens, 25);
+    assert_eq!(response.usage.cache_write_tokens, 8);
     assert_eq!(response.usage.cache_write_1h_tokens, 5);
     assert_eq!(response.usage.cache_read_tokens, 10);
-    assert_eq!(response.usage.total_tokens, 34);
+    assert_eq!(response.usage.total_tokens, 33);
+    assert_eq!(response.usage.effective_cache_write_tokens(), 8);
+    assert_eq!(response.usage.effective_cache_write_1h_tokens(), 5);
 }

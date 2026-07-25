@@ -558,6 +558,10 @@ def test_observability_helpers_wrap_usage_snapshots_and_trace_metadata() -> None
     assert latest_usage is not None
     assert latest_usage.cache_write_tokens == 3
     assert latest_usage.cache_write_1h_tokens == 1
+    assert latest_usage.effective_cache_write_tokens == 2
+    assert latest_usage.effective_cache_write_1h_tokens == 1
+    assert latest_usage.effective_cache_read_tokens == 0
+    assert latest_usage.effective_standard_input_tokens == 0
     assert latest_usage.tool_calls == 7
     assert snapshot.total_usage.cache_write_1h_tokens == 0
     assert snapshot.total_usage.total_tokens == 14
@@ -568,6 +572,81 @@ def test_observability_helpers_wrap_usage_snapshots_and_trace_metadata() -> None
     assert snapshot.agent_usages["main"].usage.requests == 2
     assert snapshot.model_usages["test:test"].total_tokens == 14
     assert snapshot.model_estimate_pricing["test:test"].amount_micros_usd == 123
+
+    max_u64 = 2**64 - 1
+    malformed_vectors = [
+        (
+            {
+                "input_tokens": 300,
+                "cache_write_tokens": 100,
+                "cache_write_1h_tokens": 200,
+                "cache_read_tokens": 50,
+            },
+            (200, 200, 50, 50),
+        ),
+        (
+            {
+                "input_tokens": 100,
+                "cache_write_tokens": 200,
+                "cache_write_1h_tokens": 50,
+                "cache_read_tokens": 10,
+            },
+            (100, 50, 0, 0),
+        ),
+        (
+            {
+                "input_tokens": 100,
+                "cache_write_tokens": 60,
+                "cache_write_1h_tokens": 20,
+                "cache_read_tokens": 70,
+            },
+            (60, 20, 40, 0),
+        ),
+        (
+            {
+                "input_tokens": max_u64,
+                "cache_write_tokens": max_u64 - 1,
+                "cache_write_1h_tokens": max_u64,
+                "cache_read_tokens": max_u64,
+            },
+            (max_u64, max_u64, 0, 0),
+        ),
+        (
+            {
+                "input_tokens": 100,
+                "cache_write_tokens": -5,
+                "cache_write_1h_tokens": -2,
+                "cache_read_tokens": -7,
+            },
+            (0, 0, 0, 100),
+        ),
+        (
+            {
+                "input_tokens": max_u64 + 10,
+                "cache_write_tokens": max_u64 + 20,
+                "cache_write_1h_tokens": 0,
+                "cache_read_tokens": max_u64 + 30,
+            },
+            (max_u64, 0, 0, 0),
+        ),
+    ]
+    for raw_usage, expected in malformed_vectors:
+        malformed_usage = starweaver.Usage(raw_usage)
+        effective = (
+            malformed_usage.effective_cache_write_tokens,
+            malformed_usage.effective_cache_write_1h_tokens,
+            malformed_usage.effective_cache_read_tokens,
+            malformed_usage.effective_standard_input_tokens,
+        )
+        assert effective == expected
+        assert effective[0] + effective[2] + effective[3] == min(
+            max(int(raw_usage["input_tokens"]), 0), max_u64
+        )
+
+    with pytest.raises(TypeError, match="input_tokens must not be bool"):
+        _ = starweaver.Usage({"input_tokens": True}).effective_cache_write_tokens
+    with pytest.raises(TypeError, match="input_tokens must be an integer"):
+        _ = starweaver.Usage({"input_tokens": 1.5}).effective_cache_write_tokens
 
     model_event = starweaver.StreamEvent(
         {"event": {"kind": "model_response", "usage": {"requests": 1, "total_tokens": 8}}}

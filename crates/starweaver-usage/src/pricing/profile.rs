@@ -77,9 +77,10 @@ impl ModelPricingDetails {
     ///
     /// `Usage::input_tokens` is treated as total input tokens, including cache-write
     /// and cache-read tokens when providers report those subtotals. Provider
-    /// adapters and callers should normalize usage to that inclusive shape. The
-    /// estimate subtracts known cache subtotals from standard input tokens and
-    /// charges them with cache-specific rates when available.
+    /// adapters and callers should normalize usage to that inclusive shape. Raw
+    /// provider counters remain evidence; estimation uses `Usage::effective_*`
+    /// projections to repair a one-hour subset larger than its aggregate and to
+    /// cap writes plus reads at inclusive input before applying category rates.
     #[must_use]
     pub const fn estimate_micros(&self, usage: &Usage) -> u64 {
         let cache_write_rate = match self.cache_write_micros_per_million_tokens {
@@ -94,35 +95,25 @@ impl ModelPricingDetails {
             Some(rate) => rate,
             None => self.input_micros_per_million_tokens,
         };
-        let cache_write_tokens = if usage.cache_write_tokens > usage.cache_write_1h_tokens {
-            usage.cache_write_tokens
-        } else {
-            usage.cache_write_1h_tokens
-        };
-        let cache_write_1h_tokens = if usage.cache_write_1h_tokens < cache_write_tokens {
-            usage.cache_write_1h_tokens
-        } else {
-            cache_write_tokens
-        };
+        let cache_write_tokens = usage.effective_cache_write_tokens();
+        let cache_write_1h_tokens = usage.effective_cache_write_1h_tokens();
+        let cache_read_tokens = usage.effective_cache_read_tokens();
         let default_cache_write_tokens = cache_write_tokens.saturating_sub(cache_write_1h_tokens);
-        let standard_input_tokens = usage
-            .input_tokens
-            .saturating_sub(cache_write_tokens)
-            .saturating_sub(usage.cache_read_tokens);
-        let cache_write_cost = if cache_write_rate == cache_write_1h_rate {
-            cost_for_tokens(cache_write_tokens, cache_write_rate)
-        } else {
-            cost_for_tokens(default_cache_write_tokens, cache_write_rate)
-                .saturating_add(cost_for_tokens(cache_write_1h_tokens, cache_write_1h_rate))
-        };
+        let standard_input_tokens = usage.effective_standard_input_tokens();
+        let weighted_input_cost = (standard_input_tokens as u128)
+            .saturating_mul(self.input_micros_per_million_tokens as u128)
+            .saturating_add(
+                (default_cache_write_tokens as u128).saturating_mul(cache_write_rate as u128),
+            )
+            .saturating_add(
+                (cache_write_1h_tokens as u128).saturating_mul(cache_write_1h_rate as u128),
+            )
+            .saturating_add((cache_read_tokens as u128).saturating_mul(cache_read_rate as u128));
 
-        cost_for_tokens(standard_input_tokens, self.input_micros_per_million_tokens)
-            .saturating_add(cache_write_cost)
-            .saturating_add(cost_for_tokens(usage.cache_read_tokens, cache_read_rate))
-            .saturating_add(cost_for_tokens(
-                usage.output_tokens,
-                self.output_micros_per_million_tokens,
-            ))
+        micros_from_weighted_tokens(weighted_input_cost).saturating_add(cost_for_tokens(
+            usage.output_tokens,
+            self.output_micros_per_million_tokens,
+        ))
     }
 
     /// Estimate cache-aware usage pricing with this model pricing record.
@@ -278,12 +269,14 @@ impl ModelPricingProfile {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
 pub(crate) const fn cost_for_tokens(tokens: u64, micros_per_million_tokens: u64) -> u64 {
-    let cost = (tokens as u128)
-        .saturating_mul(micros_per_million_tokens as u128)
-        .saturating_add(999_999)
-        / 1_000_000;
+    let weighted_cost = (tokens as u128).saturating_mul(micros_per_million_tokens as u128);
+    micros_from_weighted_tokens(weighted_cost)
+}
+
+#[allow(clippy::cast_possible_truncation)]
+const fn micros_from_weighted_tokens(weighted_cost: u128) -> u64 {
+    let cost = weighted_cost.saturating_add(999_999) / 1_000_000;
     if cost > u64::MAX as u128 {
         u64::MAX
     } else {
