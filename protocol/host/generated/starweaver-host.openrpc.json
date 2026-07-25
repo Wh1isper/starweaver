@@ -718,6 +718,477 @@
         ],
         "type": "object"
       },
+      "ConfigActivateParams": {
+        "additionalProperties": false,
+        "properties": {
+          "activationId": {
+            "$ref": "#/components/schemas/ConfigActivationId"
+          },
+          "authorization": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "desiredEtag": {
+            "$ref": "#/components/schemas/ConfigEtag"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "desiredEtag",
+          "activationId",
+          "authorization",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "ConfigActivateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ConfigStatus"
+          }
+        },
+        "required": [
+          "status",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "ConfigActivationId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "ConfigCategory": {
+        "enum": [
+          "default_profile",
+          "profiles",
+          "providers",
+          "tools",
+          "mcp",
+          "environment",
+          "sandbox",
+          "runtime"
+        ],
+        "type": "string"
+      },
+      "ConfigChangedNotificationParams": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/ConfigStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "ConfigDiscardParams": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "desiredEtag": {
+            "$ref": "#/components/schemas/ConfigEtag"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "desiredEtag",
+          "authorization",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "ConfigDiscardResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ConfigStatus"
+          }
+        },
+        "required": [
+          "status",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "ConfigDocument": {
+        "additionalProperties": false,
+        "properties": {
+          "defaultProfile": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "type": "string"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/LaunchProfile"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ConfigProvider"
+            },
+            "maxItems": 32,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "defaultProfile",
+          "profiles",
+          "providers"
+        ],
+        "type": "object"
+      },
+      "ConfigEtag": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "ConfigGetParams": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "ConfigGetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/ConfigDocument"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ConfigStatus"
+          }
+        },
+        "required": [
+          "config",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ConfigIssue": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/ConfigCategory"
+          },
+          "code": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9._-]*$",
+            "type": "string"
+          },
+          "message": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "warning",
+              "error"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "severity",
+          "category",
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ConfigProvider": {
+        "additionalProperties": false,
+        "properties": {
+          "baseUrl": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "endpointPath": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "ConfigReloadMode": {
+        "enum": [
+          "dry_run",
+          "commit"
+        ],
+        "type": "string"
+      },
+      "ConfigReloadParams": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization": {
+            "oneOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "candidateEtag": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ConfigEtag"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "expectedActiveEtag": {
+            "$ref": "#/components/schemas/ConfigEtag"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ConfigReloadMode"
+          }
+        },
+        "required": [
+          "mode",
+          "expectedActiveEtag",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "ConfigReloadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "candidateEtag": {
+            "$ref": "#/components/schemas/ConfigEtag"
+          },
+          "receipt": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MutationReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "status": {
+            "$ref": "#/components/schemas/ConfigStatus"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/ConfigValidation"
+          }
+        },
+        "required": [
+          "candidateEtag",
+          "status",
+          "validation"
+        ],
+        "type": "object"
+      },
+      "ConfigRevision": {
+        "additionalProperties": false,
+        "properties": {
+          "etag": {
+            "$ref": "#/components/schemas/ConfigEtag"
+          },
+          "generation": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "materializationDigest": {
+            "$ref": "#/components/schemas/SchemaDigest"
+          }
+        },
+        "required": [
+          "generation",
+          "etag",
+          "materializationDigest"
+        ],
+        "type": "object"
+      },
+      "ConfigStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "$ref": "#/components/schemas/ConfigRevision"
+          },
+          "desired": {
+            "$ref": "#/components/schemas/ConfigRevision"
+          },
+          "restartRequired": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "active",
+          "desired",
+          "restartRequired"
+        ],
+        "type": "object"
+      },
+      "ConfigUpdateParams": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "candidate": {
+            "$ref": "#/components/schemas/ConfigDocument"
+          },
+          "candidateFingerprint": {
+            "$ref": "#/components/schemas/SchemaDigest"
+          },
+          "expectedActiveEtag": {
+            "$ref": "#/components/schemas/ConfigEtag"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "expectedActiveEtag",
+          "candidate",
+          "candidateFingerprint",
+          "authorization",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "ConfigUpdateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ConfigStatus"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/ConfigValidation"
+          }
+        },
+        "required": [
+          "status",
+          "validation",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "ConfigValidateParams": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate": {
+            "$ref": "#/components/schemas/ConfigDocument"
+          }
+        },
+        "required": [
+          "candidate"
+        ],
+        "type": "object"
+      },
+      "ConfigValidateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "validation": {
+            "$ref": "#/components/schemas/ConfigValidation"
+          }
+        },
+        "required": [
+          "validation"
+        ],
+        "type": "object"
+      },
+      "ConfigValidation": {
+        "additionalProperties": false,
+        "properties": {
+          "candidateFingerprint": {
+            "$ref": "#/components/schemas/SchemaDigest"
+          },
+          "changedCategories": {
+            "items": {
+              "$ref": "#/components/schemas/ConfigCategory"
+            },
+            "maxItems": 16,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ConfigIssue"
+            },
+            "maxItems": 128,
+            "minItems": 0,
+            "type": "array"
+          },
+          "restartRequired": {
+            "type": "boolean"
+          },
+          "valid": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "candidateFingerprint",
+          "valid",
+          "restartRequired",
+          "changedCategories",
+          "issues"
+        ],
+        "type": "object"
+      },
       "ConfigurationFailedData": {
         "additionalProperties": false,
         "properties": {
@@ -1838,6 +2309,21 @@
         ],
         "type": "object"
       },
+      "ExecutionDomainCompatibility": {
+        "additionalProperties": false,
+        "properties": {
+          "executionDomainId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "executionDomainId"
+        ],
+        "type": "object"
+      },
       "FeatureId": {
         "maxLength": 128,
         "minLength": 1,
@@ -2008,6 +2494,9 @@
       "InitializeResult": {
         "additionalProperties": false,
         "properties": {
+          "executionDomain": {
+            "$ref": "#/components/schemas/ExecutionDomainCompatibility"
+          },
           "launch": {
             "$ref": "#/components/schemas/LaunchCompatibility"
           },
@@ -2052,9 +2541,6 @@
             "type": "array",
             "uniqueItems": true,
             "x-starweaver-canonical-order": "utf8-byte-ascending"
-          },
-          "workspace": {
-            "$ref": "#/components/schemas/WorkspaceCompatibility"
           }
         },
         "required": [
@@ -2066,7 +2552,7 @@
           "runtimeStatus",
           "launch",
           "storage",
-          "workspace",
+          "executionDomain",
           "startupReconciliation"
         ],
         "type": "object"
@@ -2413,16 +2899,12 @@
             "maxLength": 4096,
             "minLength": 1,
             "type": "string"
-          },
-          "workspace": {
-            "$ref": "#/components/schemas/LaunchWorkspace"
           }
         },
         "required": [
           "schema",
           "mode",
           "database",
-          "workspace",
           "stateDirectory",
           "executionDomainId",
           "configurationGeneration",
@@ -2538,27 +3020,6 @@
         "required": [
           "name",
           "version"
-        ],
-        "type": "object"
-      },
-      "LaunchWorkspace": {
-        "additionalProperties": false,
-        "properties": {
-          "identity": {
-            "maxLength": 128,
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-            "type": "string"
-          },
-          "root": {
-            "maxLength": 4096,
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "identity",
-          "root"
         ],
         "type": "object"
       },
@@ -3451,22 +3912,15 @@
             "x-starweaver-nullable": true
           },
           "sessionId": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/SessionId"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "x-starweaver-nullable": true
+            "$ref": "#/components/schemas/SessionId"
           }
         },
         "required": [
           "input",
           "idempotencyKey",
           "continuationMode",
-          "environmentAttachments"
+          "environmentAttachments",
+          "sessionId"
         ],
         "type": "object"
       },
@@ -3751,9 +4205,13 @@
               }
             ],
             "x-starweaver-nullable": true
+          },
+          "workspaceId": {
+            "$ref": "#/components/schemas/WorkspaceId"
           }
         },
         "required": [
+          "workspaceId",
           "idempotencyKey",
           "deferredTools"
         ],
@@ -4206,6 +4664,17 @@
           "updatedAt": {
             "$ref": "#/components/schemas/Timestamp"
           },
+          "workspaceId": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
           "workspaceLabel": {
             "oneOf": [
               {
@@ -4222,6 +4691,7 @@
         },
         "required": [
           "sessionId",
+          "workspaceId",
           "status",
           "revision",
           "createdAt",
@@ -4528,25 +4998,184 @@
         ],
         "type": "object"
       },
-      "WorkspaceCompatibility": {
+      "WorkspaceId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "WorkspaceListParams": {
         "additionalProperties": false,
         "properties": {
-          "executionDomainId": {
-            "maxLength": 128,
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-            "type": "string"
+          "cursor": {
+            "oneOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
           },
-          "workspaceIdentity": {
-            "maxLength": 128,
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "limit"
+        ],
+        "type": "object"
+      },
+      "WorkspaceListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
+            "$ref": "#/components/schemas/PageInfo"
+          },
+          "workspaces": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceSummary"
+            },
+            "maxItems": 200,
+            "minItems": 0,
+            "type": "array"
+          }
+        },
+        "required": [
+          "workspaces",
+          "page"
+        ],
+        "type": "object"
+      },
+      "WorkspaceRegisterParams": {
+        "additionalProperties": false,
+        "properties": {
+          "displayLabel": {
+            "oneOf": [
+              {
+                "maxLength": 512,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "root": {
+            "maxLength": 4096,
             "minLength": 1,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
             "type": "string"
           }
         },
         "required": [
-          "executionDomainId",
-          "workspaceIdentity"
+          "root",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "WorkspaceRegisterResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/WorkspaceSummary"
+          }
+        },
+        "required": [
+          "workspace",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "WorkspaceRemoveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "workspaceId": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "expectedRevision",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "WorkspaceRemoveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/WorkspaceSummary"
+          }
+        },
+        "required": [
+          "workspace",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "WorkspaceState": {
+        "enum": [
+          "active",
+          "revoked"
+        ],
+        "type": "string"
+      },
+      "WorkspaceSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "displayLabel": {
+            "oneOf": [
+              {
+                "maxLength": 512,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "provenanceDigest": {
+            "$ref": "#/components/schemas/SchemaDigest"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "state": {
+            "$ref": "#/components/schemas/WorkspaceState"
+          },
+          "workspaceId": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "provenanceDigest",
+          "revision",
+          "state"
         ],
         "type": "object"
       }
@@ -6835,6 +7464,588 @@
         "stdio",
         "http"
       ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `workspace.register`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/ConfigurationFailed"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "name": "workspace.register",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/WorkspaceRegisterParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkspaceRegisterResult"
+        }
+      },
+      "summary": "Execute workspace.register",
+      "x-starweaver-features": [
+        "workspace.registry"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "WorkspaceRegisterParams",
+      "x-starweaver-result-type": "WorkspaceRegisterResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/desktop/04-workspaces-sessions-and-runs.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `workspace.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "name": "workspace.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/WorkspaceListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkspaceListResult"
+        }
+      },
+      "summary": "Execute workspace.list",
+      "x-starweaver-features": [
+        "workspace.registry"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "WorkspaceListParams",
+      "x-starweaver-result-type": "WorkspaceListResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/desktop/04-workspaces-sessions-and-runs.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `workspace.remove`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/ConfigurationFailed"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "name": "workspace.remove",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/WorkspaceRemoveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkspaceRemoveResult"
+        }
+      },
+      "summary": "Execute workspace.remove",
+      "x-starweaver-features": [
+        "workspace.registry"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "WorkspaceRemoveParams",
+      "x-starweaver-result-type": "WorkspaceRemoveResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/desktop/04-workspaces-sessions-and-runs.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `config.get`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "name": "config.get",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ConfigGetParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConfigGetResult"
+        }
+      },
+      "summary": "Execute config.get",
+      "x-starweaver-features": [
+        "config.reload.v1"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "ConfigGetParams",
+      "x-starweaver-result-type": "ConfigGetResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/desktop/08-configuration-and-reload.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `config.validate`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/ConfigurationFailed"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "name": "config.validate",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ConfigValidateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConfigValidateResult"
+        }
+      },
+      "summary": "Execute config.validate",
+      "x-starweaver-features": [
+        "config.reload.v1"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "ConfigValidateParams",
+      "x-starweaver-result-type": "ConfigValidateResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/desktop/08-configuration-and-reload.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `config.update`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/ConfigurationFailed"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "name": "config.update",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ConfigUpdateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConfigUpdateResult"
+        }
+      },
+      "summary": "Execute config.update",
+      "x-starweaver-features": [
+        "config.reload.v1"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "ConfigUpdateParams",
+      "x-starweaver-result-type": "ConfigUpdateResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/desktop/08-configuration-and-reload.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `config.reload`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/ConfigurationFailed"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "name": "config.reload",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ConfigReloadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConfigReloadResult"
+        }
+      },
+      "summary": "Execute config.reload",
+      "x-starweaver-features": [
+        "config.reload.v1"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "ConfigReloadParams",
+      "x-starweaver-result-type": "ConfigReloadResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/desktop/08-configuration-and-reload.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `config.activate`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/ConfigurationFailed"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "name": "config.activate",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ConfigActivateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConfigActivateResult"
+        }
+      },
+      "summary": "Execute config.activate",
+      "x-starweaver-features": [
+        "config.reload.v1"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "ConfigActivateParams",
+      "x-starweaver-result-type": "ConfigActivateResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/desktop/08-configuration-and-reload.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `config.discard`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/ConfigurationFailed"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyConflict"
+        },
+        {
+          "$ref": "#/components/errors/RunConflict"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "name": "config.discard",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ConfigDiscardParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConfigDiscardResult"
+        }
+      },
+      "summary": "Execute config.discard",
+      "x-starweaver-features": [
+        "config.reload.v1"
+      ],
+      "x-starweaver-idempotency": "idempotent",
+      "x-starweaver-params-type": "ConfigDiscardParams",
+      "x-starweaver-result-type": "ConfigDiscardResult",
+      "x-starweaver-scopes": [
+        "admin"
+      ],
+      "x-starweaver-spec": "spec/desktop/08-configuration-and-reload.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
     }
   ],
   "openrpc": "1.4.0",
@@ -6956,6 +8167,7 @@
   },
   "x-starweaver-features": [
     "clarifications",
+    "config.reload.v1",
     "diagnostics.safe",
     "environment.attachments",
     "environment.mounts",
@@ -6968,7 +8180,8 @@
     "session.fork",
     "session.search",
     "sessions",
-    "steering"
+    "steering",
+    "workspace.registry"
   ],
   "x-starweaver-notifications": [
     {
@@ -7002,12 +8215,28 @@
       "transports": [
         "stdio"
       ]
+    },
+    {
+      "features": [
+        "config.reload.v1"
+      ],
+      "name": "config.changed",
+      "params": {
+        "$ref": "#/components/schemas/ConfigChangedNotificationParams"
+      },
+      "scopes": [
+        "read"
+      ],
+      "spec": "spec/desktop/08-configuration-and-reload.md",
+      "transports": [
+        "stdio"
+      ]
     }
   ],
   "x-starweaver-protocol": {
     "major": 1,
     "name": "starweaver.host",
-    "revision": "2026-07-21",
-    "schemaDigest": "sha256:69d2b33653ad2c5eed6b23afb4e19abd14c431240634f30ac3fe756cd4a907b5"
+    "revision": "2026-07-24",
+    "schemaDigest": "sha256:2a9e9fad809f55e34f2b701aed6008b2a91148c19f3988a8e79b5c00d404e6dd"
   }
 }

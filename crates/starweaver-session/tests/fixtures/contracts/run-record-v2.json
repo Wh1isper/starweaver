@@ -1,0 +1,20 @@
+{
+  "schema": "starweaver.session.run_record",
+  "version": 2,
+  "payload": {
+    "session_id": "session-fixture",
+    "run_id": "run-fixture",
+    "revision": 1,
+    "conversation_id": "conversation-fixture",
+    "input": [
+      {
+        "kind": "text",
+        "text": "hello"
+      }
+    ],
+    "status": "queued",
+    "sequence_no": 0,
+    "created_at": "2026-07-11T00:00:00Z",
+    "updated_at": "2026-07-11T00:00:00Z"
+  }
+}

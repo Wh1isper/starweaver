@@ -664,4 +664,10 @@ pub const SQLITE_MIGRATIONS: &[SqliteMigration] = &[
     ",
         hook_version: None,
     },
+    SqliteMigration {
+        id: "20260724_000018_session_run_provenance_v2",
+        description: "rewrite durable session and run records with typed workspace and runtime-config provenance v2 envelopes",
+        sql: "-- JSON record migration is performed by the versioned Rust hook.",
+        hook_version: Some("session-run-provenance-v2"),
+    },
 ];

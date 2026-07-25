@@ -233,7 +233,7 @@ async fn in_memory_store_saves_session_runs_and_resume_snapshot() {
     let conversation_id = ConversationId::from_string("conv-1");
     let mut session = SessionRecord::new(session_id.clone());
     session.profile = Some("default".to_string());
-    session.workspace = Some("workspace".to_string());
+    session.workspace = Some(WorkspaceProvenanceRef::from_legacy_display("workspace"));
     session.state = AgentContext::default().export_state();
     session.trace_context = TraceContext::from_trace_id("trace-1");
     store.save_session(session).await.unwrap();
@@ -352,10 +352,10 @@ async fn list_sessions_filters_and_orders_by_update_time() {
     let store = InMemorySessionStore::new();
     let mut first = SessionRecord::new(SessionId::from_string("session-a"));
     first.profile = Some("default".to_string());
-    first.workspace = Some("repo-a".to_string());
+    first.workspace = Some(WorkspaceProvenanceRef::from_legacy_display("repo-a"));
     let mut second = SessionRecord::new(SessionId::from_string("session-b"));
     second.profile = Some("research".to_string());
-    second.workspace = Some("repo-a".to_string());
+    second.workspace = Some(WorkspaceProvenanceRef::from_legacy_display("repo-a"));
     store.save_session(first).await.unwrap();
     store.save_session(second).await.unwrap();
 

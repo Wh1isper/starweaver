@@ -1,5 +1,6 @@
 use serde::Serialize;
 use tauri::{AppHandle, Manager as _, State, ipc::Channel};
+use tauri_plugin_dialog::{DialogExt as _, MessageDialogButtons};
 
 use crate::{
     app_state::{DesktopActivation, DesktopState, EventViewKey},
@@ -58,14 +59,128 @@ pub fn unsubscribe_desktop_activation(state: State<'_, DesktopState>, subscripti
     state.unsubscribe_from_activations(subscription_token);
 }
 
+async fn confirm_native_presence(
+    app: &AppHandle,
+    title: &'static str,
+    message: &'static str,
+) -> Result<(), SupervisorError> {
+    let app = app.clone();
+    let accepted = tokio::task::spawn_blocking(move || {
+        app.dialog()
+            .message(message)
+            .title(title)
+            .buttons(MessageDialogButtons::OkCancel)
+            .blocking_show()
+    })
+    .await
+    .map_err(|_| SupervisorError::transport())?;
+    if accepted {
+        Ok(())
+    } else {
+        Err(SupervisorError::invalid_configuration(
+            "native user confirmation was cancelled",
+        ))
+    }
+}
+
+async fn native_operation_fields(
+    app: &AppHandle,
+    supervisor: &LocalHostSupervisor,
+    invocation: &DesktopHostInvocation,
+) -> Result<crate::generated::host::SupervisorDynamicFields, SupervisorError> {
+    use crate::generated::host::{ConfigReloadMode, DesktopHostOperation};
+
+    let mut fields = crate::generated::host::SupervisorDynamicFields::default();
+    match &invocation.operation {
+        DesktopHostOperation::WorkspaceRegister(_) => {
+            let app = app.clone();
+            let selected = tokio::task::spawn_blocking(move || {
+                app.dialog()
+                    .file()
+                    .set_title("Open Starweaver workspace")
+                    .blocking_pick_folder()
+            })
+            .await
+            .map_err(|_| SupervisorError::transport())?
+            .ok_or_else(|| {
+                SupervisorError::invalid_configuration("native folder selection was cancelled")
+            })?;
+            let root = selected.into_path().map_err(|_| {
+                SupervisorError::invalid_configuration("selected workspace is not a local folder")
+            })?;
+            let root = root.to_str().ok_or_else(|| {
+                SupervisorError::invalid_configuration("selected workspace path is not UTF-8")
+            })?;
+            fields
+                .insert("root", root)
+                .map_err(|_| SupervisorError::transport())?;
+        }
+        DesktopHostOperation::ConfigUpdate(_) => {
+            confirm_native_presence(
+                app,
+                "Apply Starweaver configuration",
+                "Apply these runtime configuration changes to future runs?",
+            )
+            .await?;
+            return supervisor.config_authorization_fields(invocation).await;
+        }
+        DesktopHostOperation::ConfigReload(intent) => match intent.mode {
+            ConfigReloadMode::DryRun => {
+                return supervisor.config_authorization_fields(invocation).await;
+            }
+            ConfigReloadMode::Commit => {
+                intent.candidate_etag.as_ref().ok_or_else(|| {
+                    SupervisorError::invalid_configuration(
+                        "config reload commit requires a validated candidate etag",
+                    )
+                })?;
+                confirm_native_presence(
+                    app,
+                    "Reload Starweaver configuration",
+                    "Commit the validated runtime configuration reload for future runs?",
+                )
+                .await?;
+                return supervisor.config_authorization_fields(invocation).await;
+            }
+        },
+        DesktopHostOperation::ConfigActivate(_) => {
+            confirm_native_presence(
+                app,
+                "Restart Starweaver runtime",
+                "Activate the staged runtime configuration with a supervised restart?",
+            )
+            .await?;
+            return supervisor.config_authorization_fields(invocation).await;
+        }
+        DesktopHostOperation::ConfigDiscard(_) => {
+            confirm_native_presence(
+                app,
+                "Discard staged Starweaver configuration",
+                "Discard the staged runtime configuration and keep the active configuration?",
+            )
+            .await?;
+            return supervisor.config_authorization_fields(invocation).await;
+        }
+        _ => {}
+    }
+    Ok(fields)
+}
+
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub async fn execute_host_operation(
+    app: AppHandle,
     state: State<'_, DesktopState>,
     invocation: DesktopHostInvocation,
 ) -> Result<DesktopHostOperationDelivery, SupervisorError> {
-    state
-        .supervisor()
-        .execute_renderer_operation(invocation)
+    let supervisor = state.supervisor();
+    let fields = if let Some(fields) = supervisor.reusable_renderer_operation_fields(&invocation)? {
+        fields
+    } else {
+        native_operation_fields(&app, supervisor, &invocation).await?
+    };
+    supervisor
+        .execute_renderer_operation_with_fields(invocation, fields)
         .await
 }
 

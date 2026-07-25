@@ -83,6 +83,7 @@ pub fn initialize_request(id: &str, client_name: &str) -> Value {
             "requiredFeatures": [],
             "supportedFeatures": [
                 "clarifications",
+                "config.reload.v1",
                 "diagnostics.safe",
                 "environment.attachments",
                 "environment.mounts",
@@ -95,7 +96,8 @@ pub fn initialize_request(id: &str, client_name: &str) -> Value {
                 "session.fork",
                 "session.search",
                 "sessions",
-                "steering"
+                "steering",
+                "workspace.registry"
             ]
         }
     })

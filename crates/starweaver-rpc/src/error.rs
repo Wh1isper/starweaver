@@ -4,6 +4,7 @@ use starweaver_rpc_core::generated as host;
 use thiserror::Error;
 
 pub(crate) const ALREADY_EXISTS: i64 = host::ERROR_CODE_ALREADY_EXISTS;
+pub(crate) const CONFIGURATION_FAILED: i64 = host::ERROR_CODE_CONFIGURATION_FAILED;
 pub(crate) const ENVIRONMENT_UNAVAILABLE: i64 = host::ERROR_CODE_ENVIRONMENT_UNAVAILABLE;
 pub(crate) const IDEMPOTENCY_CONFLICT: i64 = host::ERROR_CODE_IDEMPOTENCY_CONFLICT;
 pub(crate) const INVALID_PARAMS: i64 = host::ERROR_CODE_INVALID_PARAMS;
@@ -48,6 +49,9 @@ pub enum RpcHostError {
     /// Environment initialization or availability failure.
     #[error("environment error: {0}")]
     Environment(String),
+    /// Reloadable runtime configuration failed semantic validation.
+    #[error("configuration failed: {0}")]
+    ConfigurationFailed(String),
     /// Agent runtime failure.
     #[error("runtime error: {0}")]
     Runtime(String),
@@ -111,6 +115,10 @@ impl From<RpcHostError> for RpcError {
             RpcHostError::Environment(_) => {
                 Self::new(ENVIRONMENT_UNAVAILABLE, "environment is unavailable")
             }
+            RpcHostError::ConfigurationFailed(_) => Self::new(
+                CONFIGURATION_FAILED,
+                "runtime configuration validation failed",
+            ),
             RpcHostError::Runtime(_) => Self::new(SERVER_ERROR, "runtime operation failed"),
             RpcHostError::Io(_) => Self::new(SERVER_ERROR, "host I/O operation failed"),
         }
@@ -162,6 +170,7 @@ mod tests {
             RpcHostError::from(SessionStoreError::RetryableStorage(secret.to_string())),
             RpcHostError::from(starweaver_stream::ReplayError::Failed(secret.to_string())),
             RpcHostError::Environment(secret.to_string()),
+            RpcHostError::ConfigurationFailed(secret.to_string()),
             RpcHostError::Runtime(secret.to_string()),
             RpcHostError::Io(std::io::Error::other(secret)),
         ];

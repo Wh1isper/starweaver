@@ -13,7 +13,7 @@ Core foundation:
 - `core/04-context-state-executor.md` — AgentContext, StateStore, events, messages, notes, usage, checkpoints, and executor preparation
 - `core/05-agent-foundation-feature-map.md` — non-normative Agent foundation design-coverage map across agents, providers, tools, output, streaming, and testing
 - `core/06-message-request-abstractions.md` — Starweaver-native message AST, model request envelope, preparation pipeline, streaming parts, and provider boundary
-- `core/07-versioned-protocol-contracts.md` — normative versioned durable envelopes, canonical input/lifecycle/cursor vocabularies, protocol identities, and fixture gates
+- `core/07-versioned-protocol-contracts.md` — normative versioned durable envelopes, canonical vocabularies, planned workspace/run-config provenance migrations, protocol identities, and fixture gates
 - `core/08-boundaries-and-usage.md` — runtime/context/SDK/usage boundaries, usage snapshot pricing contract, and cleanup acceptance gates
 
 SDK layer:
@@ -67,25 +67,26 @@ Operations and products:
 - `ops/README.md` — operational layer scope and readiness model
 - `ops/00-product-boundaries.md` — normative independence and shared-library boundaries for CLI/TUI, standalone RPC, and envd
 - `ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
-- `ops/02-shared-execution-components.md` — shared session storage and stream protocol contracts
-- `ops/03-durable-service-runtime.md` — durable sessions, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
+- `ops/02-shared-execution-components.md` — shared session/stream contracts, durable workspace provenance versus live grants, and run config snapshot references
+- `ops/03-durable-service-runtime.md` — durable sessions with workspace/config provenance, stream archive, resume, interruption, service transports, replay, and storage contracts
 - `ops/04-cli-product.md` — CLI-first product surface, display-message rendering, launcher dispatch, GitHub install/update flow, and the planned hardened RPC component contract
 - `ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 - `ops/06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP transport profiles, typed method/event/error contracts, replay subscriptions, projections, and idempotency
 - `ops/07-session-search.md` — optional product-neutral session search, local SQLite/filesystem discovery, external index ingestion, and independent CLI/RPC integration
 - `ops/08-agent-session-management.md` — agent-facing session query/control tools, query-only CLI policy, grant-gated RPC mutations, and lifecycle-safe run creation/steering/interruption
-- `ops/09-rpc-idl-and-client-generation.md` — single IDL-first JSON-RPC major-1 contract, `protocol/host/` source, generated Rust and safe Desktop TypeScript boundaries, on-demand external TypeScript generation, exact revision/digest admission, atomic replacement, and validation
+- `ops/09-rpc-idl-and-client-generation.md` — single IDL-first JSON-RPC major-1 contract, `protocol/host/` source, generated Rust and safe Desktop TypeScript boundaries, on-demand external TypeScript generation, exact revision/digest admission, atomic replacement, and planned domain-host workspace/config methods
 
 Desktop product specs:
 
 - `desktop/README.md` — Desktop architecture baseline, ownership map, readiness prerequisites, and delivery phases
-- `desktop/01-product-and-process-boundaries.md` — Desktop shell/supervisor ownership, per-workspace RPC children, stdio transport, and process lifetime
-- `desktop/02-rpc-client-and-lifecycle.md` — client handshake, request discipline, replay recovery, run control, HITL, and required protocol additions
-- `desktop/03-cli-migration-and-compatibility.md` — shared history, custom database discovery, OAuth/profile migration, continuation preflight, and version skew
-- `desktop/04-workspaces-sessions-and-runs.md` — workspace routing, global history, run ownership, multi-window behavior, and bounded pagination
-- `desktop/05-auth-interaction-and-security.md` — renderer isolation, OAuth, approval/clarification semantics, authority scopes, framing, and security gates
+- `desktop/01-product-and-process-boundaries.md` — Desktop shell/supervisor ownership, one RPC host per execution domain, workspace registry, transport, and process lifetime
+- `desktop/02-rpc-client-and-lifecycle.md` — client handshake, request discipline, replay recovery, run control, HITL, workspace/config methods, and required protocol additions
+- `desktop/03-cli-migration-and-compatibility.md` — shared history, custom database discovery, profile/provider-boundary compatibility, continuation preflight, and version skew
+- `desktop/04-workspaces-sessions-and-runs.md` — one-host multi-workspace/session routing, global history, run ownership, multi-window behavior, and bounded pagination
+- `desktop/05-auth-interaction-and-security.md` — renderer/provider-credential isolation, approval/clarification semantics, authority scopes, framing, and security gates
 - `desktop/06-runtime-updates-and-release.md` — dedicated runtime channels, manifests, staging, compatibility, storage migration, activation, and rollback
-- `desktop/07-ssh-remote-workspaces.md` — SSH execution domains, system OpenSSH transport, login-shell RPC bootstrap, account authority, remote provisioning, updates, and reconnect
+- `desktop/07-ssh-remote-workspaces.md` — one host per SSH execution domain, system OpenSSH transport, private-endpoint bootstrap, account authority, provisioning, updates, and reconnect
+- `desktop/08-configuration-and-reload.md` — Desktop/bootstrap/runtime configuration planes, typed config editing, atomic reload, run snapshot pinning, and restart-required changes
 
 `capabilities.toml` is the single source for current capability implementation status. `capability-status.md` is generated from it and is the normative human-readable status view. Feature maps, roadmaps, and backlogs are non-normative design views and must defer current status to that generated file. Implemented registry entries must name an owning workspace crate, normative spec, implementation paths, and contract-test evidence; `make capability-check` validates the registry, verifies those references, and rejects a stale generated status view.
 
@@ -188,13 +189,13 @@ flowchart TD
 - `starweaver-cli` owns local/headless command and TUI coordination.
 - The sole host-protocol target is the atomically replaced `starweaver.host` major 1 with checked-in `protocol/host/` OpenRPC/JSON Schema source as structural wire truth. It generates the Rust boundary owned by `starweaver-rpc-core` and the manifest-filtered safe TypeScript client consumed by Desktop; neither generated language surface is an independent protocol definition.
 - `starweaver-rpc-core` owns generated major-1 wire types, validators, server trait, dispatcher, and narrow framing/projection helpers after atomic replacement. Handwritten DTOs, registries, aliases, fixtures, and fallback dispatch are removed; `starweaver-rpc` retains handlers, authorization, subscriptions, coordination, and transports.
-- Starweaver Desktop is a separate product with an implemented cross-platform shell foundation. Its execution path requires exact host major-1 revision/schema-digest agreement and consumes IDL-derived safe bridge bindings, while its privileged Rust backend retains local child and SSH-hosted transport, routing, string request identity, replay recovery, authority, safe projection, and runtime-update ownership. The renderer never sends arbitrary JSON-RPC or complete host params, links runtime/storage implementations, controls SSH directly, or reads local/remote shared storage.
+- Starweaver Desktop is a separate product with an implemented cross-platform shell foundation. Its target topology is one RPC host per execution domain, each managing multiple registered workspaces, sessions, concurrent runs, and runtime config snapshots. Its execution path requires exact host major-1 revision/schema-digest agreement and consumes IDL-derived safe bridge bindings, while its privileged Rust backend retains local child and SSH-hosted transport, workspace grants/routing, request identity, replay recovery, configuration, safe projection, and runtime-update ownership. The renderer never sends arbitrary JSON-RPC or complete host params, links runtime/storage implementations, controls SSH directly, or reads local/remote shared storage.
 - Platform adapters graduate from specs after responsibilities, call sites, and validation commands are clear.
 
 ## Current Priorities
 
 - Establish the single host IDL, generated Rust/TypeScript parity, typed errors, exact revision/digest validation, explicit feature negotiation, and durable unified event surface before connecting the Desktop shell foundation to an execution host.
-- Close the RPC recovery, interaction, authorization, framing, pagination, and compatibility prerequisites recorded under `desktop/` before connecting the Desktop shell foundation to an execution host.
+- Refactor the current single-workspace RPC launch into one domain host with workspace register/list/remove, `session.create.workspaceId`, and typed config get/validate/update/reload before connecting the Desktop product flows.
 - Define the verified Desktop-managed RPC runtime update channel and a hardened product-neutral RPC component installer/update contract shared with `sw`/CLI and SSH provisioning, without linking Desktop to CLI-private handlers or configuration.
 - Build envd as a standalone environment service with a reusable client crate.
 - Keep Starweaver environment integration at the `EnvironmentProvider` adapter boundary.

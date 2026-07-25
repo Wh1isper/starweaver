@@ -6,6 +6,15 @@ local `starweaver-rpc` supervisor. Runtime selection and update activation are n
 normal application launch remains `unconfigured` until a trusted backend owner supplies an exact
 managed runtime and public launch envelope.
 
+The implemented local topology is one long-lived RPC host per execution domain managing multiple
+registered workspaces, sessions, and concurrent runs. Supervised launch is domain-only; explicit
+workspace registration creates live authority, while durable session provenance never recreates a
+grant. The host implements typed runtime config get/validate/update/reload/activate/discard and the
+Desktop backend supplies native-confirmation-bound HMAC grants without exposing the key, token,
+paths, or idempotency identity to the renderer. Desktop never edits `rpc.toml` directly. The
+corresponding system-OpenSSH remote supervisor, updater-owned runtime selection, and complete UI
+flows remain later product phases.
+
 ## Supported Targets
 
 `targets.toml` is the reviewed source of truth for the initial native matrix:
@@ -83,7 +92,7 @@ production build. The Rust gate runs check, Clippy with warnings denied, and uni
 - `run.start` accepts text input only. The manifest excludes public host resource URI variants from
   both generated bridge languages until a privileged backend grant flow can issue opaque resource
   handles, so renderer-provided file paths and URIs cannot reach the host.
-- No filesystem, shell, process, opener, HTTP, storage, OAuth, or updater plugin is installed.
+- No filesystem, shell, process, opener, HTTP, storage, provider-credential, or updater plugin is installed.
 - The renderer receives no secondary-launch arguments or working directory. The process-to-process
   activation protocol also carries only a fixed versioned signal: Linux uses the authenticated
   session D-Bus, macOS uses a current-user peer-checked socket in a private directory, and Windows

@@ -27,6 +27,7 @@
     ],
     "idempotencyKey": "session-create-example",
     "profile": "default",
+    "workspaceId": "workspace-example",
     "title": "Chart review"
   }
 }

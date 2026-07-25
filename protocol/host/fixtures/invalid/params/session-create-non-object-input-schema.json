@@ -10,6 +10,7 @@
         "name": "invalid_tool"
       }
     ],
-    "idempotencyKey": "invalid-schema"
+    "idempotencyKey": "invalid-schema",
+    "workspaceId": "workspace-invalid-schema"
   }
 }

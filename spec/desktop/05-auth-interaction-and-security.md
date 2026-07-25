@@ -1,14 +1,14 @@
-# Authentication, Interaction, and Security
+# Interaction, Authorization, and Transport Security
 
-Status: accepted architecture baseline; renderer/stdio/local-child controls implemented; OAuth, updater, sandbox, and SSH controls planned
+Status: accepted architecture baseline; renderer/stdio/local-child controls implemented; updater, sandbox, and SSH private-endpoint controls planned
 
-Desktop introduces a privileged local UI around filesystem, shell, model, and durable-control capabilities. Its security boundary is the Desktop backend plus the workspace-scoped RPC child, not the renderer.
+Desktop introduces a privileged local UI around filesystem, shell, model, and durable-control capabilities. Its security boundary is the Desktop backend plus the execution-domain RPC host and its typed workspace registry, not the renderer.
 
 ## Threat Model
 
 The design must account for:
 
-- compromised or injected renderer content;
+- compromised or injected renderer content, including valid-looking attempts to redirect providers, broaden tools, or mutate runtime configuration;
 - malformed JSON-RPC frames or notifications;
 - a compromised model attempting unauthorized tool use;
 - another local process reading credentials or connecting to an HTTP endpoint;
@@ -28,32 +28,21 @@ The renderer receives a narrow application API. It cannot:
 - spawn local or SSH-carried RPC/runtime processes;
 - choose arbitrary runtime or OpenSSH binary paths;
 - send arbitrary JSON-RPC methods;
-- read environment variables, OAuth files, RPC token files, or SQLite;
+- read environment variables, provider credential files, RPC transport-token files, or SQLite;
 - select unrestricted workspace paths without a native backend grant flow;
 - decide authorization scopes;
 - install or activate runtime updates;
 - access raw stderr, SSH prompts, provisioning channels, or internal error chains.
 
-All external links, file reveals, shell actions, and credential flows pass through explicit backend commands and platform validation.
+All external links, file reveals, shell actions, SSH credential prompts, and authority/destination-changing configuration mutations pass through explicit backend commands and platform validation. A closed config DTO is not user authorization: the backend requires native user presence or a managed allowlist bound to the exact candidate fingerprint before adding host admin authority, as defined in `08-configuration-and-reload.md`.
 
-## OAuth Contract
+## Model Provider Credential Boundary
 
-RPC owns provider authentication by using `starweaver-oauth` and `starweaver-oauth-provider` in its execution domain. A remote RPC uses remote credentials and provider environment; Desktop receives only typed safe projections and never forwards the local OAuth store over SSH.
+Each RPC host resolves model-provider configuration and credentials inside its own execution domain. It may internally use environment variables, API-key stores, `starweaver-oauth`, or `starweaver-oauth-provider`, but those are RPC/model implementation details rather than a Desktop product contract.
 
-Required methods or equivalent typed operations:
+Desktop and its renderer have no provider `status`, `login`, `refresh`, `logout`, account-selection, token-transfer, or credential-migration API. They never receive access tokens, refresh tokens, provider account metadata, authorization headers, raw JWTs, login codes, provider environment values, or credential-file contents. Missing or invalid provider configuration appears only as a typed, secret-free host execution/materialization error with an external recovery hint.
 
-- `auth.status`;
-- `auth.login.start`;
-- `auth.login.poll` or progress notifications;
-- `auth.refresh`;
-- `auth.logout`;
-- `auth.account.select` if multiple accounts become supported.
-
-Safe status may include provider, account label allowed by the provider, expiry/refreshability, scopes summary, and required user action. It never includes access tokens, refresh tokens, authorization headers, raw JWTs, or auth-file contents.
-
-Device/login URLs are opened only after validating scheme and provider identity. User-entered codes are treated as sensitive transient data and are not logged or persisted in renderer state.
-
-Because multiple workspace children may share one OAuth store, credential access must be process-safe across refresh and write, not only atomic at the final file replacement. Refresh uses a provider/account generation check or an inter-process refresh lease so rotating refresh tokens cannot be consumed concurrently and overwritten by a stale child. A child that loses the refresh race reloads the durable credential before retrying; it never forwards tokens through the Desktop supervisor to synchronize peers.
+Provider credential persistence, refresh coordination, and account selection remain host-owned. A local host never forwards them to a remote host, and Desktop never synchronizes them across execution domains or exposes them to workspace/session state.
 
 ## Client Capability Negotiation
 
@@ -118,7 +107,7 @@ Deferred resolution follows the same durable discipline:
 
 ## Workspace and Tool Authority
 
-Each execution host receives one canonical workspace identity. Local filesystem tools use path/capability grants intersected with host policy and cannot infer authority from historical session metadata. Remote paths are canonicalized by the remote RPC and never by local filesystem APIs.
+Each execution-domain host owns a registry of explicitly granted workspaces. Every session is durably bound to exactly one workspace identity, and every run/tool/environment context receives only that session's live grant; no process-global default root or sibling workspace handle is injected. Local filesystem tools use the selected grant intersected with host policy and cannot infer authority from historical session metadata. Remote paths are canonicalized by the remote RPC and never by local filesystem APIs. Concurrent cross-workspace materialization tests must prove that one session cannot acquire another session's root or resources.
 
 A canonical root and process boundary do not restrict a native shell running as the user. Public local shell-enabled profiles must use an enforceable sandboxed environment/process provider that confines filesystem, process, and inherited-resource effects to the granted workspace/resources. When no supported sandbox is available, native local shell is disabled by default.
 
@@ -135,9 +124,9 @@ Desktop displays effective authority before a sensitive decision:
 
 Changing workspace, environment, tool grants, or model/provider during continuation is materialization drift and requires the policy in `03-cli-migration-and-compatibility.md`.
 
-## Stdio Framing and Process Security
+## RPC Framing and Process Security
 
-The local and SSH-carried stdio transports must have an inbound byte limit before allocating a complete line. An unbounded `lines()` decoder is not sufficient for the Desktop boundary.
+The local stdio and SSH-tunneled private-endpoint transports must have an inbound byte limit before allocating a complete frame. An unbounded `lines()` decoder is not sufficient for the Desktop boundary.
 
 Required controls:
 
@@ -145,12 +134,12 @@ Required controls:
 - advertised maximum request/notification/result sizes;
 - bounded outbound queue and slow-consumer policy, with reserved capacity/priority for responses and subscription terminal control frames;
 - generation-safe subscriptions so an old tail cannot delete a newly reused subscription ID;
-- no inherited stdin/stdout handles beyond the intended child;
+- no inherited stdin/stdout handles beyond the intended local host;
 - clean environment allowlist rather than forwarding all Desktop environment variables;
 - bounded stderr capture with secret scrubbing;
-- no shell interpolation in local child launch arguments;
+- no shell interpolation in local host launch arguments;
 - SSH remote commands are fixed backend-owned templates; workspace paths, provider/profile values, launch envelopes, and renderer text travel only in bounded typed frames;
-- login-shell output is bounded and ignored until an exact nonce-bound RPC marker, after which stdout purity is strict;
+- login-shell output is bounded until an exact nonce-bound bootstrap marker; marker-following stdout accepts only the finite typed workspace-resolution and endpoint frames, never becomes RPC stdout, and any unexpected output fails the bootstrap;
 - if `subscription.closed` cannot flush within its terminal-control deadline, close the transport so recovery starts from the client's last applied opaque cursor;
 - successful unsubscribe response flush is a barrier after which no event from that subscription generation may be written; and
 - process-tree or SSH-channel termination on forced shutdown.
@@ -167,29 +156,29 @@ Before Desktop public release, RPC must close these host-side gaps:
 - subscription registry removal is generation-safe across immediate unsubscribe/resubscribe;
 - synchronous client-state file locks and I/O move off Tokio runtime workers with bounded waiting;
 - live subscription/status errors pass through the same safe public error projection as request errors;
-- stdio frame sizes are bounded before allocation;
+- local stdio and SSH-private-endpoint frame sizes are bounded before allocation;
 - session/run/interaction list queries are storage-bounded and paginated.
 
 These are implementation prerequisites discovered by the Desktop readiness review, not optional UI polish.
 
 ## SSH Transport Security
 
-System OpenSSH transport, host-key verification, askpass mediation, effective-config restrictions, provisioning isolation, account-authority disclosure, and reconnect behavior are normative in `07-ssh-remote-workspaces.md`.
+System OpenSSH transport, host-key verification, askpass mediation, effective-config restrictions, provisioning isolation, account-authority disclosure, private endpoint forwarding, and reconnect behavior are normative in `07-ssh-remote-workspaces.md`.
 
-Agent, X11, port, socket, local/remote-command, multiplexing, and environment forwarding are disabled. V1 invokes OpenSSH only with a generated least-authority configuration produced by a non-executing allowlist importer; it rejects `Match exec`, command/helper/provider loaders, `SetEnv`/`SendEnv`, recursive `Include`, and other non-allowlisted directives before OpenSSH parses them. The local SSH agent may authenticate but is never forwarded. Unknown keys require explicit native confirmation; changed keys fail closed. Remote component installation runs on a separate bounded provisioning channel and uses the signed, exact-version public Starweaver installer contract rather than renderer-authored commands or unpinned `curl | sh`.
+Agent, X11, dynamic forwarding, arbitrary local/remote forwarding, renderer-authored commands, multiplexing, and environment forwarding are disabled. V1 permits only one backend-constructed local or stream-local forward to the exact owner-private RPC endpoint returned by the nonce-bound bootstrap. Every forwarded connection completes a mandatory random per-launch endpoint-authenticator preface; a local stream socket also requires current-user ownership, restrictive mode/ACL, no-follow creation, and safe stale-socket handling, while a local TCP fallback binds only an OS-assigned loopback port. It invokes OpenSSH only with a generated least-authority configuration produced by a non-executing allowlist importer; it rejects `Match exec`, command/helper/provider loaders, `SetEnv`/`SendEnv`, recursive `Include`, and other non-allowlisted directives before OpenSSH parses them. The local SSH agent may authenticate but is never forwarded. Unknown keys require explicit native confirmation; changed keys fail closed. Remote component installation runs on a separate bounded provisioning channel and uses the signed, exact-version public Starweaver installer contract rather than renderer-authored commands or unpinned `curl | sh`.
 
 ## HTTP and Future Transports
 
-Desktop v1 does not expose RPC HTTP to the renderer. If HTTP is enabled for another local client:
+Desktop v1 does not expose standalone RPC HTTP to the renderer. Every SSH-forwarded endpoint uses a per-launch bootstrap authenticator; the loopback fallback is an SSH-confined private transport, not the public HTTP integration profile. If HTTP is independently enabled for another local client:
 
 - bind remains loopback-only unless an authenticated TLS reverse proxy owns exposure;
 - bearer credentials have narrow scopes and constant-time comparison;
 - browser use requires an explicit CORS/preflight policy rather than relying on `Origin` validation alone;
 - token files must have platform-appropriate owner/ACL validation, including Windows DACL handling;
 - live notification support must be explicitly negotiated;
-- Desktop does not silently downgrade from stdio to HTTP.
+- Desktop does not silently downgrade local host stdio or SSH private-endpoint transport to standalone HTTP.
 
-Unix domain sockets, Windows named pipes, WebSocket, and daemon mode require separate transport specifications.
+Local daemon mode, WebSocket, and general-purpose named-pipe/socket transports require separate specifications. The narrowly scoped remote Unix-socket/loopback endpoint and SSH tunnel are specified in `07-ssh-remote-workspaces.md`.
 
 ## Diagnostics and Privacy
 
@@ -198,15 +187,15 @@ Renderer-visible diagnostics use stable codes and sanitized messages. Raw errors
 Secret scrub tests include sentinels in:
 
 - provider errors;
-- OAuth failures;
+- provider authentication or configuration failures;
 - SQLite/replay errors;
 - environment endpoint metadata;
-- child stderr;
+- host stderr;
 - subscription failure notifications;
 - active generated `host.event` deliveries whose `delivery.record.event.kind` is `run_status_changed` or a typed diagnostic variant;
 - updater URLs and headers.
 
-Diagnostic export requires explicit user action, previews included files, excludes OAuth/token files and the session database by default, and redacts home/workspace paths when possible.
+Diagnostic export requires explicit user action, previews included files, excludes provider credential files, RPC transport-token files, and the session database by default, and redacts home/workspace paths when possible.
 
 ## Update Security
 
@@ -214,16 +203,17 @@ Runtime update trust, checksums, staged activation, downgrade policy, and rollba
 
 ## Acceptance Gates
 
-- Existing local and remote OAuth credentials can be reused without token projection into frontend IPC or copying between execution domains.
-- Full login, refresh, expiry, logout, restart, and concurrent multi-child refresh flows pass deterministic tests.
+- The Desktop-required operation manifest contains no provider credential lifecycle methods; local and remote provider secrets never enter frontend IPC, Desktop logs, or cross-domain forwarding.
+- Config update, reload commit, activate, and discard cannot gain mutation authority from renderer intent alone; native confirmation or managed policy is bound to the exact domain, revision, candidate fingerprint, changed categories, and one operation. Side-effect-free validate/dry-run remains available to derive that fingerprint under bounded config-inspection authority.
+- Missing provider configuration is projected only as a typed secret-free host error and does not cause Desktop to start a login flow.
 - Question → typed answer → durable decision → resume → model-visible result passes RPC subprocess E2E.
 - Approval-only HTTP credentials receive authorization failure for `run.resume` and all execution methods.
 - Renderer compromise tests cannot send arbitrary RPC or read credentials/storage.
 - Local sandboxed shell tests reject absolute-path, parent-traversal, symlink, subprocess, and sibling-root escapes; unsandboxed native local shell remains disabled by default.
 - Remote native shell tests and UI fixtures consistently disclose full authenticated-account authority and never claim workspace containment.
 - Path-checked filesystem traversal and changed-authority continuation fail closed independently of shell policy.
-- Oversized stdio frames, slow consumers, duplicate subscription IDs, and immediate resubscribe remain bounded and deterministic.
+- Oversized local stdio or SSH-private-endpoint frames, slow consumers, duplicate subscription IDs, and immediate resubscribe remain bounded and deterministic.
 - Blocking state-file locks do not stall run heartbeat or shutdown workers.
 - Live and terminal errors pass secret-sentinel projection tests.
-- SSH host-key, askpass, static-config allowlist/denylist, forwarding/environment disablement, login-shell bootstrap, command-injection, execution-host exclusivity, provisioning, and partition/reconnect tests pass before remote public readiness.
-- Windows token-file ACL policy is implemented before Windows public readiness.
+- SSH host-key, askpass, static-config allowlist/denylist, exact private-endpoint forwarding, environment disablement, login-shell bootstrap, command-injection, execution-host exclusivity, provisioning, and partition/reconnect tests pass before remote public readiness.
+- Windows standalone HTTP transport-token ACL policy is implemented before that independent transport is publicly supported on Windows.

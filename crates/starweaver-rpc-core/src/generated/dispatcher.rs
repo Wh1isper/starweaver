@@ -40,6 +40,36 @@ pub async fn dispatch<S: HostServer>(
             .await
             .map_err(Into::<HostError>::into)
             .and_then(|value| encode_result(Method::ClarificationResolve, value)),
+        HostCall::ConfigActivate(params) => server
+            .config_activate(context, params)
+            .await
+            .map_err(Into::<HostError>::into)
+            .and_then(|value| encode_result(Method::ConfigActivate, value)),
+        HostCall::ConfigDiscard(params) => server
+            .config_discard(context, params)
+            .await
+            .map_err(Into::<HostError>::into)
+            .and_then(|value| encode_result(Method::ConfigDiscard, value)),
+        HostCall::ConfigGet(params) => server
+            .config_get(context, params)
+            .await
+            .map_err(Into::<HostError>::into)
+            .and_then(|value| encode_result(Method::ConfigGet, value)),
+        HostCall::ConfigReload(params) => server
+            .config_reload(context, params)
+            .await
+            .map_err(Into::<HostError>::into)
+            .and_then(|value| encode_result(Method::ConfigReload, value)),
+        HostCall::ConfigUpdate(params) => server
+            .config_update(context, params)
+            .await
+            .map_err(Into::<HostError>::into)
+            .and_then(|value| encode_result(Method::ConfigUpdate, value)),
+        HostCall::ConfigValidate(params) => server
+            .config_validate(context, params)
+            .await
+            .map_err(Into::<HostError>::into)
+            .and_then(|value| encode_result(Method::ConfigValidate, value)),
         HostCall::DeferredComplete(params) => server
             .deferred_complete(context, params)
             .await
@@ -195,6 +225,21 @@ pub async fn dispatch<S: HostServer>(
             .await
             .map_err(Into::<HostError>::into)
             .and_then(|value| encode_result(Method::Shutdown, value)),
+        HostCall::WorkspaceList(params) => server
+            .workspace_list(context, params)
+            .await
+            .map_err(Into::<HostError>::into)
+            .and_then(|value| encode_result(Method::WorkspaceList, value)),
+        HostCall::WorkspaceRegister(params) => server
+            .workspace_register(context, params)
+            .await
+            .map_err(Into::<HostError>::into)
+            .and_then(|value| encode_result(Method::WorkspaceRegister, value)),
+        HostCall::WorkspaceRemove(params) => server
+            .workspace_remove(context, params)
+            .await
+            .map_err(Into::<HostError>::into)
+            .and_then(|value| encode_result(Method::WorkspaceRemove, value)),
     };
     HostResponse { id, result }
 }

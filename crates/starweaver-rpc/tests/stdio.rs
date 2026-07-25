@@ -127,6 +127,44 @@ fn notification_stdout_failure_fails_closed_the_whole_stdio_transport() {
         .as_str()
         .expect("subscriber attachment id")
         .to_string();
+    let workspaces = rpc_round_trip(
+        &mut subscriber_stdin,
+        &mut subscriber_stdout,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "req_list_subscriber_workspaces",
+            "method": "workspace.list",
+            "params": {"limit": 1}
+        }),
+    );
+    let workspace_id = workspaces["result"]["workspaces"][0]["workspaceId"]
+        .as_str()
+        .expect("bootstrap workspace id")
+        .to_string();
+
+    // Preload enough durable events to keep notification delivery active after the subscription
+    // response is flushed. This preserves the one-host-per-domain invariant while making closing
+    // stdout's read end deterministically exercise the notification supervisor path.
+    for index in 0..256 {
+        let created = rpc_round_trip(
+            &mut subscriber_stdin,
+            &mut subscriber_stdout,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": format!("req_preload_transport_failure_event_{index}"),
+                "method": "session.create",
+                "params": {
+                    "deferredTools": [],
+                    "idempotencyKey": format!("preload-transport-failure-event-{index}"),
+                    "profile": "default",
+                    "title": format!("Preloaded notification {index}"),
+                    "workspaceId": workspace_id
+                }
+            }),
+        );
+        assert!(created.get("result").is_some(), "{created}");
+    }
+
     let subscribed = rpc_round_trip(
         &mut subscriber_stdin,
         &mut subscriber_stdout,
@@ -145,39 +183,10 @@ fn notification_stdout_failure_fails_closed_the_whole_stdio_transport() {
     );
     assert!(subscribed.get("result").is_some(), "{subscribed}");
 
-    let mut publisher = ChildGuard::spawn(&mut command());
-    let mut publisher_stdin = publisher.stdin();
-    let mut publisher_stdout = BufReader::new(publisher.stdout());
-    let publisher_initialized = rpc_round_trip(
-        &mut publisher_stdin,
-        &mut publisher_stdout,
-        &common::initialize_request("req_initialize_publisher", "rpc-stdio-publisher"),
-    );
-    assert!(
-        publisher_initialized.get("result").is_some(),
-        "{publisher_initialized}"
-    );
-
-    // Keep subscriber stdin open and idle. Closing only stdout's read end makes the next
-    // subscription notification hit a real broken pipe, so no request-response failure can mask
-    // the notification supervisor path.
+    // Keep stdin open and idle. The response flush barrier guarantees that the subscription
+    // response arrived before any replay notification; closing only stdout's read end now makes a
+    // notification hit a real broken pipe rather than masking the path with a response failure.
     drop(subscriber_stdout);
-    let created = rpc_round_trip(
-        &mut publisher_stdin,
-        &mut publisher_stdout,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": "req_publish_transport_failure_event",
-            "method": "session.create",
-            "params": {
-                "deferredTools": [],
-                "idempotencyKey": "notification-transport-failure-event",
-                "profile": "default",
-                "title": "Trigger subscriber notification"
-            }
-        }),
-    );
-    assert!(created.get("result").is_some(), "{created}");
 
     let (status, stderr) = subscriber.wait_for_failure(Duration::from_secs(8));
     assert_eq!(
@@ -201,20 +210,6 @@ fn notification_stdout_failure_fails_closed_the_whole_stdio_transport() {
         )
         .expect("subscriber connection attachment record");
     assert_eq!(status, "detached");
-
-    let shutdown = rpc_round_trip(
-        &mut publisher_stdin,
-        &mut publisher_stdout,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": "req_shutdown_publisher",
-            "method": "shutdown",
-            "params": {"deadlineMs": 5_000}
-        }),
-    );
-    assert_eq!(shutdown["result"]["status"], "shutdown");
-    drop(publisher_stdin);
-    publisher.wait_for_exit();
 }
 
 #[test]

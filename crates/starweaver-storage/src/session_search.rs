@@ -537,7 +537,11 @@ impl LocalSessionSearchProvider {
             digest.update(session.updated_at.to_rfc3339().as_bytes());
             digest.update(session.title.as_deref().unwrap_or_default().as_bytes());
             digest.update(session.profile.as_deref().unwrap_or_default().as_bytes());
-            digest.update(session.workspace.as_deref().unwrap_or_default().as_bytes());
+            if let Some(workspace) = session.workspace.as_ref() {
+                digest.update(workspace.workspace_id.as_bytes());
+                digest.update(workspace.provenance_digest.as_bytes());
+                digest.update(workspace.display_value().as_bytes());
+            }
             digest.update(format!("{:?}", session.status).as_bytes());
             for run in runs {
                 digest.update(run.run_id.as_str().as_bytes());
@@ -808,8 +812,8 @@ fn build_hit(
                 .map(|profile| bounded_plain(profile, 128)),
             workspace: session
                 .workspace
-                .as_deref()
-                .map(|workspace| bounded_plain(workspace, 512)),
+                .as_ref()
+                .map(|workspace| bounded_plain(workspace.display_value(), 512)),
             created_at: session.created_at,
             updated_at: session.updated_at,
             run_status: run.map(|run| run.status),
@@ -1075,7 +1079,9 @@ mod tests {
         let mut session = SessionRecord::new(session_id.clone());
         session.title = Some("OAuth investigation".to_string());
         session.profile = Some("coding".to_string());
-        session.workspace = Some("/workspace/project".to_string());
+        session.workspace = Some(
+            starweaver_session::WorkspaceProvenanceRef::from_legacy_display("/workspace/project"),
+        );
         session.metadata = Metadata::from_iter([(
             "secret".to_string(),
             json!("metadata-credential-never-indexed"),

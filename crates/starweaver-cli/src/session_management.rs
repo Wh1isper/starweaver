@@ -243,7 +243,10 @@ fn session_view(
         title: session.title.as_deref().map(|value| truncate(value, 256)),
         status: session.status,
         profile: session.profile.as_deref().map(|value| truncate(value, 128)),
-        workspace: session.workspace.as_deref().map(safe_workspace),
+        workspace: session
+            .workspace
+            .as_ref()
+            .map(|workspace| safe_workspace(workspace.display_value())),
         revision: session.revision,
         head_run_id: session.head_run_id.clone(),
         active_run_id: session.active_run_id.clone(),

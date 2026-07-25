@@ -45,16 +45,21 @@ use tokio::{
     task::JoinHandle,
 };
 
+#[cfg(test)]
+use crate::RpcConfig;
+
 use crate::{
-    RpcAgentCatalog, RpcConfig, RpcHostError, RpcHostResult,
+    RpcAgentCatalog, RpcHostError, RpcHostResult,
     environment::{
         effective_rpc_environment_attachments, resolve_rpc_environment,
         safe_rpc_environment_attachments,
     },
     environment_contract::{EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef},
     environment_manager::EnvironmentAttachmentManager,
+    runtime_config::RuntimeConfigManager,
     session_management::{RpcAgentSessionAdapter, command_fingerprint},
     session_tools::{deferred_toolset_for_session, deferred_toolset_summary},
+    workspace_registry::{WorkspaceGrantLease, WorkspaceRegistry},
 };
 
 const DURABLE_SESSION_ID_METADATA_KEY: &str = "starweaver.durable_session_id";
@@ -259,10 +264,10 @@ struct TerminalRun {
 /// Thin RPC-owned registry around live SDK control handles.
 #[derive(Clone)]
 pub struct RpcRuntimeCoordinator {
-    config: RpcConfig,
-    catalog: RpcAgentCatalog,
     storage: SqliteStorage,
     environment_manager: EnvironmentAttachmentManager,
+    workspace_registry: WorkspaceRegistry,
+    runtime_config: RuntimeConfigManager,
     active: Arc<Mutex<HashMap<ManagedRunTarget, ActiveRun>>>,
     terminal: Arc<Mutex<VecDeque<TerminalRun>>>,
     tasks: Arc<Mutex<HashMap<ManagedRunTarget, JoinHandle<()>>>>,
@@ -271,22 +276,59 @@ pub struct RpcRuntimeCoordinator {
     supervisors: Arc<Mutex<HashMap<SessionId, Arc<BackgroundSubagentSupervisor>>>>,
     accepting: Arc<AtomicBool>,
     host_instance_id: Arc<String>,
+    owner_generation: u64,
 }
 
 impl RpcRuntimeCoordinator {
     /// Create an RPC coordinator. It does not share state with CLI/TUI.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn new(
         config: RpcConfig,
         catalog: RpcAgentCatalog,
         storage: SqliteStorage,
         environment_manager: EnvironmentAttachmentManager,
     ) -> Self {
-        Self {
-            config,
-            catalog,
+        let workspace_registry = WorkspaceRegistry::load_or_create(
+            &config.state_dir,
+            &config.launch.execution_domain_id,
+        )
+        .unwrap_or_else(|error| panic!("test workspace registry: {error}"));
+        let fingerprint = format!("sha256:{:064x}", 0_u8);
+        workspace_registry
+            .register(
+                config.workspace_root_for_tests(),
+                Some("Test workspace".to_string()),
+                "test-bootstrap-workspace",
+                &fingerprint,
+            )
+            .unwrap_or_else(|error| panic!("test bootstrap workspace: {error}"));
+        let runtime_config =
+            RuntimeConfigManager::load_or_create(&config.state_dir, config.clone(), catalog)
+                .unwrap_or_else(|error| panic!("test runtime config: {error}"));
+        Self::new_with_workspace_registry(
             storage,
             environment_manager,
+            workspace_registry,
+            runtime_config,
+            format!("rpc-test-host-{}", uuid::Uuid::new_v4()),
+            1,
+        )
+    }
+
+    pub(crate) fn new_with_workspace_registry(
+        storage: SqliteStorage,
+        environment_manager: EnvironmentAttachmentManager,
+        workspace_registry: WorkspaceRegistry,
+        runtime_config: RuntimeConfigManager,
+        host_instance_id: String,
+        owner_generation: u64,
+    ) -> Self {
+        Self {
+            storage,
+            environment_manager,
+            workspace_registry,
+            runtime_config,
             active: Arc::new(Mutex::new(HashMap::new())),
             terminal: Arc::new(Mutex::new(VecDeque::with_capacity(TERMINAL_CACHE_LIMIT))),
             tasks: Arc::new(Mutex::new(HashMap::new())),
@@ -294,14 +336,57 @@ impl RpcRuntimeCoordinator {
             background_reconciler: Arc::new(Mutex::new(None)),
             supervisors: Arc::new(Mutex::new(HashMap::new())),
             accepting: Arc::new(AtomicBool::new(true)),
-            host_instance_id: Arc::new(format!("rpc-host-{}", uuid::Uuid::new_v4())),
+            host_instance_id: Arc::new(host_instance_id),
+            owner_generation,
         }
     }
 
-    fn materialization_plan(
+    async fn lease_session_workspace(
         &self,
+        session: &starweaver_session::SessionRecord,
+    ) -> RpcHostResult<WorkspaceGrantLease> {
+        let provenance = match session.workspace.as_ref() {
+            Some(provenance) => provenance,
+            None => {
+                #[cfg(test)]
+                {
+                    let registry = self.workspace_registry.clone();
+                    return tokio::task::spawn_blocking(move || {
+                        registry.lease_first_active_for_tests()
+                    })
+                    .await
+                    .map_err(|error| {
+                        RpcHostError::Runtime(format!("workspace lease task failed: {error}"))
+                    })?;
+                }
+                #[cfg(not(test))]
+                {
+                    return Err(RpcHostError::Invalid(
+                        "session has no registered workspace provenance".to_string(),
+                    ));
+                }
+            }
+        };
+        let registry = self.workspace_registry.clone();
+        let workspace_id = provenance.workspace_id.clone();
+        let lease = tokio::task::spawn_blocking(move || registry.lease_active(&workspace_id))
+            .await
+            .map_err(|error| {
+                RpcHostError::Runtime(format!("workspace lease task failed: {error}"))
+            })??;
+        if lease.grant().provenance_digest != provenance.provenance_digest {
+            return Err(RpcHostError::Invalid(
+                "session workspace provenance does not match the live grant".to_string(),
+            ));
+        }
+        Ok(lease)
+    }
+
+    fn materialization_plan(
+        catalog: &RpcAgentCatalog,
         profile: &str,
         attachments: &[EnvironmentAttachmentRef],
+        workspace_binding_digest: &str,
         additional_toolset_identity: Option<&str>,
         source: Option<&RunRecord>,
         mode: ContinuationMaterializationMode,
@@ -316,7 +401,8 @@ impl RpcRuntimeCoordinator {
             };
             (attachment.kind.clone(), mode.to_string())
         }));
-        let mut materialization = self.catalog.materialization(profile, binding_class)?;
+        let mut materialization =
+            catalog.materialization(profile, binding_class, workspace_binding_digest)?;
         if let Some(identity) = additional_toolset_identity {
             materialization = materialization.with_additional_toolset_identity(identity);
         }
@@ -359,7 +445,11 @@ impl RpcRuntimeCoordinator {
         let supervisor = Arc::new(
             BackgroundSubagentSupervisor::new()
                 .with_durable_store(store, LOCAL_SESSION_NAMESPACE)
-                .with_durable_owner((*self.host_instance_id).clone(), 1, ACTIVE_LEASE_TTL)
+                .with_durable_owner(
+                    (*self.host_instance_id).clone(),
+                    self.owner_generation,
+                    ACTIVE_LEASE_TTL,
+                )
                 .with_completion_callback(callback),
         );
         supervisors.insert(session_id.clone(), supervisor.clone());
@@ -587,14 +677,18 @@ impl RpcRuntimeCoordinator {
 
         // Resolve the complete runtime boundary before claiming. This may open provider handles,
         // but it does not preprocess user input, execute tools, or mutate durable claim state.
+        let workspace_lease = self.lease_session_workspace(&snapshot.session).await?;
         let resolved_environment = resolve_rpc_environment(
-            &self.config.workspace_root,
+            workspace_lease.canonical_root(),
             request.session_id.as_str(),
             &request.environment_attachments,
         )?;
-        let (materialization, continuation) = self.materialization_plan(
+        let runtime_snapshot = self.runtime_config.active_snapshot()?;
+        let (materialization, continuation) = Self::materialization_plan(
+            &runtime_snapshot.catalog,
             &request.profile,
             &request.environment_attachments,
+            &workspace_lease.grant().provenance_digest,
             deferred_toolset_summary
                 .as_ref()
                 .map(|summary| summary.binding_id.as_str()),
@@ -602,7 +696,7 @@ impl RpcRuntimeCoordinator {
             request.continuation_mode,
         )?;
         let preflight_context = AgentContext::from_state(snapshot.state.clone());
-        let mut preflight_builder = self.catalog.runtime_builder(&request.profile)?;
+        let mut preflight_builder = runtime_snapshot.catalog.runtime_builder(&request.profile)?;
         if let Some(toolset) = deferred_toolset.as_ref() {
             preflight_builder = preflight_builder.toolset(toolset);
         }
@@ -624,6 +718,7 @@ impl RpcRuntimeCoordinator {
         run.restore_from_run_id = Some(request.source_run_id.clone());
         run.trigger_type = Some("rpc_hitl_resume".to_string());
         run.status = RunStatus::Queued;
+        run.config_snapshot = Some(runtime_snapshot.durable_ref());
         run.metadata
             .insert(RPC_PROFILE_METADATA_KEY.to_string(), json!(request.profile));
         run.metadata.insert(
@@ -952,6 +1047,15 @@ impl RpcRuntimeCoordinator {
                 .await?
         };
         let session_id = session.session_id.clone();
+        let workspace_lease = self.lease_session_workspace(&session).await?;
+        let runtime_snapshot = match preadmitted
+            .as_ref()
+            .and_then(|admission| admission.run.config_snapshot.as_ref())
+        {
+            Some(reference) => self.runtime_config.snapshot_for_ref(reference)?,
+            None => self.runtime_config.active_snapshot()?,
+        };
+        let runtime_catalog = Arc::clone(&runtime_snapshot.catalog);
         let deferred_toolset_summary = deferred_toolset_summary(&session)?;
         let deferred_toolset = deferred_toolset_for_session(&session)?;
         let materialization_plan = if preadmitted.is_none() {
@@ -964,17 +1068,17 @@ impl RpcRuntimeCoordinator {
                 ),
                 None => None,
             };
-            Some(
-                self.materialization_plan(
-                    &request.profile,
-                    &request.environment_attachments,
-                    deferred_toolset_summary
-                        .as_ref()
-                        .map(|summary| summary.binding_id.as_str()),
-                    source.as_ref(),
-                    request.continuation_mode,
-                )?,
-            )
+            Some(Self::materialization_plan(
+                &runtime_catalog,
+                &request.profile,
+                &request.environment_attachments,
+                &workspace_lease.grant().provenance_digest,
+                deferred_toolset_summary
+                    .as_ref()
+                    .map(|summary| summary.binding_id.as_str()),
+                source.as_ref(),
+                request.continuation_mode,
+            )?)
         } else {
             None
         };
@@ -1007,6 +1111,7 @@ impl RpcRuntimeCoordinator {
                 .clone_from(&request.restore_from_run_id);
             run.trigger_type = Some("rpc".to_string());
             run.status = RunStatus::Queued;
+            run.config_snapshot = Some(runtime_snapshot.durable_ref());
             run.metadata
                 .insert(RPC_PROFILE_METADATA_KEY.to_string(), json!(request.profile));
             run.metadata.insert(
@@ -1159,7 +1264,7 @@ impl RpcRuntimeCoordinator {
                 .insert(RPC_PROFILE_METADATA_KEY.to_string(), json!(request.profile));
 
             let resolved_environment = resolve_rpc_environment(
-                &self.config.workspace_root,
+                workspace_lease.canonical_root(),
                 session_id.as_str(),
                 &request.environment_attachments,
             )?;
@@ -1167,11 +1272,9 @@ impl RpcRuntimeCoordinator {
             let stream_archive = Arc::new(self.storage.stream_archive());
             let mut context = AgentContext::from_state(state);
             if request.install_session_management {
-                let query_granted = self
-                    .catalog
+                let query_granted = runtime_catalog
                     .grants_toolset(&request.profile, "agent_session_query");
-                let control_granted = self
-                    .catalog
+                let control_granted = runtime_catalog
                     .grants_toolset(&request.profile, "agent_session_control");
                 let mut operations = BTreeSet::new();
                 if query_granted {
@@ -1202,8 +1305,8 @@ impl RpcRuntimeCoordinator {
                 let adapter = Arc::new(RpcAgentSessionAdapter::new(
                     self.storage.clone(),
                     self.clone(),
-                    self.catalog.clone(),
-                    self.config.workspace_root.clone(),
+                    (*runtime_catalog).clone(),
+                    workspace_lease.grant().clone(),
                 ));
                 if query_granted {
                     attach_agent_session_query(
@@ -1219,7 +1322,7 @@ impl RpcRuntimeCoordinator {
                 }
             }
             let terminal_replay_sequence = Arc::new(AtomicUsize::new(0));
-            let mut runtime_builder = self.catalog.runtime_builder(&request.profile)?;
+            let mut runtime_builder = runtime_catalog.runtime_builder(&request.profile)?;
             if let Some(toolset) = deferred_toolset.as_ref() {
                 runtime_builder = runtime_builder.toolset(toolset);
             }
@@ -1409,6 +1512,7 @@ impl RpcRuntimeCoordinator {
         let worker_hitl_launch = hitl_launch;
         let completion_coordinator = self.clone();
         let task = tokio::spawn(async move {
+            let _workspace_lease = workspace_lease;
             let projection_context =
                 DisplayProjectionContext::new(worker_session_id.clone(), worker_run_id.clone());
             let mut heartbeat = tokio::time::interval(ACTIVE_LEASE_HEARTBEAT);
@@ -2373,6 +2477,7 @@ impl RpcRuntimeCoordinator {
             }
         }
         let session = store.load_session(&background.parent_session_id).await?;
+        let workspace_lease = self.lease_session_workspace(&session).await?;
         let fence = store
             .session_continuation_fence(&background.namespace_id, &background.parent_session_id)
             .await?;
@@ -2393,7 +2498,8 @@ impl RpcRuntimeCoordinator {
         let source = store
             .load_run(&background.parent_session_id, &source_run_id)
             .await?;
-        self.catalog.profile(&background.profile)?;
+        let runtime_snapshot = self.runtime_config.active_snapshot()?;
+        runtime_snapshot.catalog.profile(&background.profile)?;
         let recorded_attachments = recorded_environment_attachments(&source);
         let environment_attachments = self
             .environment_manager
@@ -2405,9 +2511,11 @@ impl RpcRuntimeCoordinator {
             .await
             .map_err(|error| RpcHostError::Invalid(error.message))?;
         let deferred_toolset_summary = deferred_toolset_summary(&session)?;
-        let (materialization, continuation) = self.materialization_plan(
+        let (materialization, continuation) = Self::materialization_plan(
+            &runtime_snapshot.catalog,
             &background.profile,
             &environment_attachments,
+            &workspace_lease.grant().provenance_digest,
             deferred_toolset_summary
                 .as_ref()
                 .map(|summary| summary.binding_id.as_str()),
@@ -2440,6 +2548,7 @@ impl RpcRuntimeCoordinator {
         run.trace_context = background.trace_context.clone().unwrap_or_default();
         run.trigger_type = Some("async_subagent_result".to_string());
         run.status = RunStatus::Queued;
+        run.config_snapshot = Some(runtime_snapshot.durable_ref());
         run.metadata.insert(
             RPC_PROFILE_METADATA_KEY.to_string(),
             json!(background.profile),
@@ -3465,7 +3574,7 @@ mod tests {
     async fn await_terminal_prefers_durable_terminal_state_over_stale_active_watch() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
         let coordinator = RpcRuntimeCoordinator::new(
@@ -3519,7 +3628,7 @@ mod tests {
     async fn await_terminal_without_local_active_waits_for_durable_terminal_evidence() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let session = storage
             .create_session(Some("default".to_string()), None)
@@ -3606,7 +3715,7 @@ mod tests {
     async fn await_terminal_after_local_watcher_closes_waits_for_durable_terminal_evidence() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let coordinator = Arc::new(RpcRuntimeCoordinator::new(
             config.clone(),
@@ -3661,7 +3770,7 @@ mod tests {
     async fn await_terminal_requires_durable_evidence_for_local_terminal_projection() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let coordinator = RpcRuntimeCoordinator::new(
             config.clone(),
@@ -3704,7 +3813,7 @@ mod tests {
     async fn hitl_preflight_does_not_claim_and_denied_resume_terminalizes_atomically() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
         let coordinator = RpcRuntimeCoordinator::new(
@@ -3832,7 +3941,7 @@ mod tests {
     async fn admitted_hitl_preparation_failure_aborts_only_replacement() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let session_id = SessionId::from_string("rpc-hitl-preparation-failure-session");
         let executions = Arc::new(AtomicUsize::new(0));
@@ -3947,7 +4056,7 @@ mod tests {
     async fn started_hitl_commit_failure_never_finalizes_continuation_without_source_evidence() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let session_id = SessionId::from_string("rpc-hitl-atomic-failure-session");
         let executions = Arc::new(AtomicUsize::new(0));
@@ -4064,7 +4173,7 @@ mod tests {
             .insert("retired".to_string(), retired);
         let mut restarted_config = initial_config.clone();
         restarted_config.profiles.remove("retired");
-        std::fs::create_dir_all(&initial_config.workspace_root).unwrap();
+        std::fs::create_dir_all(initial_config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&initial_config.database_path).unwrap();
         let session_id = SessionId::from_string("rpc-hitl-retired-profile-session");
         let executions = Arc::new(AtomicUsize::new(0));
@@ -4155,7 +4264,7 @@ mod tests {
     async fn concurrent_exact_hitl_resume_executes_approved_tool_once() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let session_id = SessionId::from_string("rpc-hitl-effect-once-session");
         let executions = Arc::new(AtomicUsize::new(0));
@@ -4319,7 +4428,7 @@ mod tests {
     async fn run_start_persists_and_replays_only_safe_environment_attachments() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
         let coordinator = RpcRuntimeCoordinator::new(
@@ -4419,7 +4528,7 @@ mod tests {
     async fn starts_and_awaits_a_run_without_cli_types() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
         let coordinator = RpcRuntimeCoordinator::new(
@@ -4465,7 +4574,7 @@ mod tests {
     async fn exact_start_retry_replays_receipt_and_conflicting_retry_is_rejected() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
         let coordinator = RpcRuntimeCoordinator::new(
@@ -4535,7 +4644,7 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
         let coordinator = RpcRuntimeCoordinator::new(
@@ -5014,7 +5123,7 @@ mod tests {
     async fn display_projection_batch_rolls_back_when_second_event_fails() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let coordinator = RpcRuntimeCoordinator::new(
             config.clone(),
@@ -5107,7 +5216,7 @@ mod tests {
     async fn replay_append_failure_publishes_no_cursor_and_cannot_complete_run() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let connection = Connection::open(&config.database_path).unwrap();
         connection
@@ -5245,7 +5354,7 @@ mod tests {
     async fn every_published_cursor_replays_in_bounded_pages_after_restart() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let coordinator = RpcRuntimeCoordinator::new(
             config.clone(),
@@ -5339,7 +5448,7 @@ mod tests {
     async fn online_reconciliation_terminalizes_a_lease_that_expires_after_startup() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());
-        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
         let storage = SqliteStorage::open(&config.database_path).unwrap();
         let session = storage
             .create_session(Some("default".to_string()), None)

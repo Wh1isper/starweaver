@@ -13,7 +13,7 @@ use starweaver_session::{
     ExecutionStatus, HitlResumeClaim, HitlResumeClaimState, InteractionPage, InteractionPageKey,
     InteractionPageQuery, PendingStreamPublication, RunAdmissionLease, RunEvidenceCommit,
     RunRecord, RunStatus, SessionRecord, SessionStoreError, SessionStoreResult,
-    append_authoritative_run_publications,
+    WorkspaceProvenanceRef, append_authoritative_run_publications,
 };
 use starweaver_stream::{AgentStreamRecord, DisplayMessage, ReplayEvent, ReplayScope};
 
@@ -84,10 +84,33 @@ impl SqliteStorage {
         workspace: Option<String>,
         source_product: Option<&str>,
     ) -> SessionStoreResult<SessionRecord> {
+        self.create_session_with_provenance(
+            profile,
+            title,
+            workspace.map(WorkspaceProvenanceRef::from_legacy_display),
+            source_product,
+        )
+    }
+
+    /// Create a durable session with an explicit non-authorizing workspace provenance reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error when the record cannot be persisted.
+    pub fn create_session_with_provenance(
+        &self,
+        profile: Option<String>,
+        title: Option<String>,
+        workspace: Option<WorkspaceProvenanceRef>,
+        source_product: Option<&str>,
+    ) -> SessionStoreResult<SessionRecord> {
         let mut session = SessionRecord::new(SessionId::new());
         session.profile = profile;
         session.title = title;
         session.workspace = workspace;
+        session
+            .validate_provenance()
+            .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
         if let Some(source_product) = source_product {
             session.metadata.insert(
                 crate::SESSION_SOURCE_PRODUCT_METADATA_KEY.to_string(),

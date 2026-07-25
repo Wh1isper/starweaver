@@ -100,16 +100,22 @@ fn check_native_default_paths(cli: &Path, rpc: &Path, root: &Path) -> Result<(),
     set_native_home(&mut rpc_command, &home);
     let mut host = RpcHost::spawn_command(&mut rpc_command)?;
     host.initialize()?;
+    let workspaces = host.request(2, "workspace.list", json!({"limit": 1}))?;
+    assert_no_rpc_error(&workspaces)
+        .map_err(|error| format!("native-default workspace.list failed: {error}"))?;
+    let workspace_id = required_json_string(&workspaces["result"]["workspaces"][0], "workspaceId")?;
     let created = host.request(
-        2,
+        3,
         "session.create",
         json!({
             "deferredTools": [],
             "idempotencyKey": "native-default-shared-storage",
-            "title": "Native default path evidence"
+            "title": "Native default path evidence",
+            "workspaceId": workspace_id
         }),
     )?;
-    assert_no_rpc_error(&created)?;
+    assert_no_rpc_error(&created)
+        .map_err(|error| format!("native-default session.create failed: {error}"))?;
     let session_id = required_json_string(&created["result"]["session"], "sessionId")?;
     host.shutdown()?;
 
@@ -190,7 +196,8 @@ fn run_e2e(cli: &Path, rpc: &Path, root: &Path) -> Result<(), String> {
     let mut host = RpcHost::spawn(rpc, &workspace, &global, &store)?;
     host.initialize()?;
     let listed = host.request(2, "session.list", json!({"limit": 50}))?;
-    assert_no_rpc_error(&listed)?;
+    assert_no_rpc_error(&listed)
+        .map_err(|error| format!("CLI-to-RPC session.list failed: {error}"))?;
     if !listed["result"]["sessions"]
         .as_array()
         .is_some_and(|sessions| {
@@ -208,7 +215,8 @@ fn run_e2e(cli: &Path, rpc: &Path, root: &Path) -> Result<(), String> {
         "session.get",
         json!({"sessionId": session_id, "runLimit": 20}),
     )?;
-    assert_no_rpc_error(&loaded)?;
+    assert_no_rpc_error(&loaded)
+        .map_err(|error| format!("CLI-to-RPC session.get failed: {error}"))?;
     if loaded["result"]["session"]["sessionId"] != session_id
         || !loaded["result"]["runs"]
             .as_array()
@@ -232,7 +240,8 @@ fn run_e2e(cli: &Path, rpc: &Path, root: &Path) -> Result<(), String> {
             "sessionId": session_id
         }),
     )?;
-    assert_no_rpc_error(&started)?;
+    assert_no_rpc_error(&started)
+        .map_err(|error| format!("CLI-to-RPC run.start failed: {error}"))?;
     let rpc_run_id = required_json_string(&started["result"]["run"], "runId")?;
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -241,7 +250,8 @@ fn run_e2e(cli: &Path, rpc: &Path, root: &Path) -> Result<(), String> {
             "run.status",
             json!({"sessionId": session_id, "runId": rpc_run_id}),
         )?;
-        assert_no_rpc_error(&status)?;
+        assert_no_rpc_error(&status)
+            .map_err(|error| format!("CLI-to-RPC run.status failed: {error}"))?;
         match status["result"]["run"]["status"].as_str() {
             Some("completed") => break,
             Some("failed" | "cancelled") => {
@@ -382,7 +392,7 @@ impl RpcHost {
         *params
             .get_mut("supportedFeatures")
             .ok_or("canonical initialize example is missing supportedFeatures")? =
-            json!(["host.shutdown", "runs", "sessions"]);
+            json!(["host.shutdown", "runs", "sessions", "workspace.registry"]);
         let response = self.request(1, "initialize", params)?;
         assert_no_rpc_error(&response)?;
         if response.pointer("/result/protocol") != example.pointer("/params/protocol") {

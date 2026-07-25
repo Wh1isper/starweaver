@@ -1,0 +1,465 @@
+{
+  "components": {
+    "schemas": {
+      "ConfigActivateParams": {
+        "additionalProperties": false,
+        "properties": {
+          "activationId": {
+            "$ref": "#/components/schemas/ConfigActivationId"
+          },
+          "authorization": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "desiredEtag": {
+            "$ref": "#/components/schemas/ConfigEtag"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "desiredEtag",
+          "activationId",
+          "authorization",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "ConfigActivateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ConfigStatus"
+          }
+        },
+        "required": [
+          "status",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "ConfigCategory": {
+        "enum": [
+          "default_profile",
+          "profiles",
+          "providers",
+          "tools",
+          "mcp",
+          "environment",
+          "sandbox",
+          "runtime"
+        ],
+        "type": "string"
+      },
+      "ConfigChangedNotificationParams": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/ConfigStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "ConfigDiscardParams": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "desiredEtag": {
+            "$ref": "#/components/schemas/ConfigEtag"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "desiredEtag",
+          "authorization",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "ConfigDiscardResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ConfigStatus"
+          }
+        },
+        "required": [
+          "status",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "ConfigDocument": {
+        "additionalProperties": false,
+        "properties": {
+          "defaultProfile": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "type": "string"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/LaunchProfile"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ConfigProvider"
+            },
+            "maxItems": 32,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "defaultProfile",
+          "profiles",
+          "providers"
+        ],
+        "type": "object"
+      },
+      "ConfigGetParams": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "ConfigGetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/ConfigDocument"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ConfigStatus"
+          }
+        },
+        "required": [
+          "config",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ConfigIssue": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/ConfigCategory"
+          },
+          "code": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9._-]*$",
+            "type": "string"
+          },
+          "message": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "warning",
+              "error"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "severity",
+          "category",
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ConfigProvider": {
+        "additionalProperties": false,
+        "properties": {
+          "baseUrl": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "endpointPath": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "ConfigReloadMode": {
+        "enum": [
+          "dry_run",
+          "commit"
+        ],
+        "type": "string"
+      },
+      "ConfigReloadParams": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization": {
+            "oneOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "candidateEtag": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ConfigEtag"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "expectedActiveEtag": {
+            "$ref": "#/components/schemas/ConfigEtag"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ConfigReloadMode"
+          }
+        },
+        "required": [
+          "mode",
+          "expectedActiveEtag",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "ConfigReloadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "candidateEtag": {
+            "$ref": "#/components/schemas/ConfigEtag"
+          },
+          "receipt": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MutationReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "status": {
+            "$ref": "#/components/schemas/ConfigStatus"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/ConfigValidation"
+          }
+        },
+        "required": [
+          "candidateEtag",
+          "status",
+          "validation"
+        ],
+        "type": "object"
+      },
+      "ConfigRevision": {
+        "additionalProperties": false,
+        "properties": {
+          "etag": {
+            "$ref": "#/components/schemas/ConfigEtag"
+          },
+          "generation": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "materializationDigest": {
+            "$ref": "#/components/schemas/SchemaDigest"
+          }
+        },
+        "required": [
+          "generation",
+          "etag",
+          "materializationDigest"
+        ],
+        "type": "object"
+      },
+      "ConfigStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "$ref": "#/components/schemas/ConfigRevision"
+          },
+          "desired": {
+            "$ref": "#/components/schemas/ConfigRevision"
+          },
+          "restartRequired": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "active",
+          "desired",
+          "restartRequired"
+        ],
+        "type": "object"
+      },
+      "ConfigUpdateParams": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "candidate": {
+            "$ref": "#/components/schemas/ConfigDocument"
+          },
+          "candidateFingerprint": {
+            "$ref": "#/components/schemas/SchemaDigest"
+          },
+          "expectedActiveEtag": {
+            "$ref": "#/components/schemas/ConfigEtag"
+          },
+          "idempotencyKey": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "expectedActiveEtag",
+          "candidate",
+          "candidateFingerprint",
+          "authorization",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "ConfigUpdateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceipt"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ConfigStatus"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/ConfigValidation"
+          }
+        },
+        "required": [
+          "status",
+          "validation",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "ConfigValidateParams": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate": {
+            "$ref": "#/components/schemas/ConfigDocument"
+          }
+        },
+        "required": [
+          "candidate"
+        ],
+        "type": "object"
+      },
+      "ConfigValidateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "validation": {
+            "$ref": "#/components/schemas/ConfigValidation"
+          }
+        },
+        "required": [
+          "validation"
+        ],
+        "type": "object"
+      },
+      "ConfigValidation": {
+        "additionalProperties": false,
+        "properties": {
+          "candidateFingerprint": {
+            "$ref": "#/components/schemas/SchemaDigest"
+          },
+          "changedCategories": {
+            "items": {
+              "$ref": "#/components/schemas/ConfigCategory"
+            },
+            "maxItems": 16,
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ConfigIssue"
+            },
+            "maxItems": 128,
+            "minItems": 0,
+            "type": "array"
+          },
+          "restartRequired": {
+            "type": "boolean"
+          },
+          "valid": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "candidateFingerprint",
+          "valid",
+          "restartRequired",
+          "changedCategories",
+          "issues"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}

@@ -34,7 +34,7 @@ use starweaver_session::{
     SessionPageQuery, SessionRecord, SessionSearchError, SessionSearchFilter,
     SessionSearchGranularity, SessionSearchProvider, SessionSearchQuery, SessionSearchQueryMode,
     SessionSearchScope, SessionSearchSort, SessionStatus, SessionStore, SessionStoreResult,
-    UnmountEnvironmentResource,
+    UnmountEnvironmentResource, WorkspaceProvenanceRef,
 };
 use starweaver_storage::{LocalSessionSearchLimits, LocalSessionSearchProvider, SqliteStorage};
 use tokio::{
@@ -48,13 +48,20 @@ use starweaver_rpc_core::generated as host;
 use crate::{
     RpcAgentCatalog, RpcConfig, RpcHitlResumeRequest, RpcHostError, RpcHostResult, RpcRunRequest,
     RpcRuntimeCoordinator,
+    config_authorization::ConfigAuthorizationManager,
     environment_contract::{EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef},
     environment_manager::EnvironmentAttachmentManager,
     error::{
         INVALID_PARAMS, RpcError, SERVER_ERROR, SESSION_SEARCH_UNAVAILABLE, UNSUPPORTED_FEATURE,
     },
+    execution_domain_lock::ExecutionDomainOwnerLease,
     host_cursor::{CursorAdmissionError, HostCursorCodec},
+    runtime_config::{
+        RuntimeConfigIssue, RuntimeConfigManager, RuntimeConfigRevision, RuntimeConfigStatus,
+        RuntimeConfigValidation,
+    },
     session_tools::{DeferredToolDefinition as LegacyDeferredToolDefinition, bind_deferred_tools},
+    workspace_registry::{WorkspaceGrant, WorkspaceGrantState, WorkspaceRegistry},
 };
 
 const MAX_CONNECTION_SUBSCRIPTIONS: usize = 32;
@@ -101,6 +108,27 @@ impl Drop for RpcExecutionRuntime {
     }
 }
 
+async fn run_generated_blocking<T, F>(operation: F) -> Result<T, host::HostError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, host::HostError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|_| internal_error("host blocking task failed", true))?
+}
+
+async fn run_host_blocking<T, F>(operation: F) -> Result<T, host::HostError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> RpcHostResult<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|_| internal_error("host blocking task failed", true))?
+        .map_err(rpc_host_to_generated_error)
+}
+
 async fn run_storage<T, F>(storage: SqliteStorage, operation: F) -> Result<T, RpcError>
 where
     T: Send + 'static,
@@ -129,10 +157,13 @@ enum RpcNotificationMode {
 #[derive(Clone)]
 pub struct RpcService {
     config: Arc<RpcConfig>,
-    catalog: Arc<RpcAgentCatalog>,
+    _execution_domain_owner: Arc<ExecutionDomainOwnerLease>,
+    runtime_config: RuntimeConfigManager,
+    config_authorization: ConfigAuthorizationManager,
     storage: SqliteStorage,
     coordinator: Arc<RpcRuntimeCoordinator>,
     environment_manager: EnvironmentAttachmentManager,
+    workspace_registry: WorkspaceRegistry,
     session_search: Option<Arc<dyn SessionSearchProvider>>,
     session_search_scope: SessionSearchScope,
     notifications: RpcNotificationMode,
@@ -482,13 +513,22 @@ impl RpcConnection {
         Ok(durable_event_classes(view.profile))
     }
 
+    fn active_runtime_snapshot(
+        &self,
+    ) -> Result<Arc<crate::runtime_config::RuntimeConfigSnapshot>, host::HostError> {
+        self.service
+            .runtime_config
+            .active_snapshot()
+            .map_err(rpc_host_to_generated_error)
+    }
+
     async fn catalog_list_generated(
         &self,
         _params: host::CatalogListParams,
     ) -> Result<host::CatalogListResult, host::HostError> {
         let selection = self.current_model_selection().await?;
-        let profiles = self
-            .service
+        let runtime = self.active_runtime_snapshot()?;
+        let profiles = runtime
             .catalog
             .profiles()
             .into_iter()
@@ -515,9 +555,9 @@ impl RpcConnection {
     }
 
     async fn current_model_selection(&self) -> Result<host::ModelSelection, host::HostError> {
-        let default_profile = self.service.catalog.default_profile().to_string();
-        let default_model = self
-            .service
+        let runtime = self.active_runtime_snapshot()?;
+        let default_profile = runtime.catalog.default_profile().to_string();
+        let default_model = runtime
             .catalog
             .profile(&default_profile)
             .map_err(rpc_host_to_generated_error)?
@@ -543,8 +583,8 @@ impl RpcConnection {
         &self,
         params: host::ModelSelectParams,
     ) -> Result<host::ModelSelectResult, host::HostError> {
-        let profile = self
-            .service
+        let runtime = self.active_runtime_snapshot()?;
+        let profile = runtime
             .catalog
             .profile(&params.profile)
             .map_err(rpc_host_to_generated_error)?;
@@ -573,8 +613,8 @@ impl RpcConnection {
         &self,
         params: host::ProfileGetParams,
     ) -> Result<host::ProfileGetResult, host::HostError> {
-        let profile = self
-            .service
+        let runtime = self.active_runtime_snapshot()?;
+        let profile = runtime
             .catalog
             .profile(&params.name)
             .map_err(rpc_host_to_generated_error)?;
@@ -582,12 +622,417 @@ impl RpcConnection {
             profile: host::ProfileDetail {
                 instructions: profile.instructions.clone(),
                 label: profile.label.clone(),
-                mcp_servers: self.service.catalog.effective_mcp_server_names(profile),
+                mcp_servers: runtime.catalog.effective_mcp_server_names(profile),
                 model_id: profile.model_id.clone(),
                 name: params.name,
                 subagents: profile.subagents.clone(),
                 toolsets: profile.toolsets.clone(),
             },
+        })
+    }
+
+    fn config_get_generated(
+        &self,
+        _params: host::ConfigGetParams,
+    ) -> Result<host::ConfigGetResult, host::HostError> {
+        let (config, status) = self
+            .service
+            .runtime_config
+            .get()
+            .map_err(rpc_host_to_generated_error)?;
+        Ok(host::ConfigGetResult {
+            config,
+            status: generated_config_status(&status)?,
+        })
+    }
+
+    fn config_validate_generated(
+        &self,
+        params: host::ConfigValidateParams,
+    ) -> Result<host::ConfigValidateResult, host::HostError> {
+        let validation = self
+            .service
+            .runtime_config
+            .validate(&params.candidate)
+            .map_err(rpc_host_to_generated_error)?;
+        Ok(host::ConfigValidateResult {
+            validation: generated_config_validation(&validation)?,
+        })
+    }
+
+    fn config_update_generated(
+        &self,
+        params: host::ConfigUpdateParams,
+    ) -> Result<host::ConfigUpdateResult, host::HostError> {
+        let fingerprint = mutation_fingerprint("config.update", &params)?;
+        self.service
+            .config_authorization
+            .verify_and_consume(
+                &params.authorization,
+                &self.service.config.launch.execution_domain_id,
+                "config.update",
+                params.expected_active_etag.as_str(),
+                params.candidate_fingerprint.as_str(),
+                params.idempotency_key.as_str(),
+                &fingerprint,
+            )
+            .map_err(|_| {
+                authorization_denied_error("configuration authorization grant was rejected")
+            })?;
+        let scoped_key = authority_scoped_idempotency_key(
+            &self.state.authority_identity,
+            params.idempotency_key.as_str(),
+        );
+        let mutation = self
+            .service
+            .runtime_config
+            .update(
+                params.expected_active_etag.as_str(),
+                params.candidate,
+                params.candidate_fingerprint.as_str(),
+                &scoped_key,
+                &fingerprint,
+            )
+            .map_err(rpc_host_to_generated_error)?;
+        let status = generated_config_status(&mutation.status)?;
+        self.queue_config_changed(status.clone())?;
+        Ok(host::ConfigUpdateResult {
+            receipt: mutation_receipt(
+                "config.update",
+                &params.idempotency_key,
+                &fingerprint,
+                &format!("config-generation:{}", mutation.target_generation),
+                if mutation.status.restart_required() {
+                    "staged"
+                } else {
+                    "committed"
+                },
+                mutation.replayed,
+                false,
+            )?,
+            status,
+            validation: generated_config_validation(&mutation.validation)?,
+        })
+    }
+
+    fn config_reload_generated(
+        &self,
+        params: host::ConfigReloadParams,
+    ) -> Result<host::ConfigReloadResult, host::HostError> {
+        if params.mode == host::ConfigReloadMode::Commit {
+            let candidate_etag = params.candidate_etag.as_ref().ok_or_else(|| {
+                authorization_denied_error(
+                    "committing a runtime config reload requires the validated candidate etag",
+                )
+            })?;
+            let authorization = params.authorization.as_deref().ok_or_else(|| {
+                authorization_denied_error(
+                    "committing a runtime config reload requires native authorization evidence",
+                )
+            })?;
+            let fingerprint = mutation_fingerprint("config.reload", &params)?;
+            self.service
+                .config_authorization
+                .verify_and_consume(
+                    authorization,
+                    &self.service.config.launch.execution_domain_id,
+                    "config.reload",
+                    params.expected_active_etag.as_str(),
+                    candidate_etag.as_str(),
+                    params.idempotency_key.as_str(),
+                    &fingerprint,
+                )
+                .map_err(|_| {
+                    authorization_denied_error("configuration authorization grant was rejected")
+                })?;
+        }
+        let fingerprint = mutation_fingerprint("config.reload", &params)?;
+        let scoped_key = authority_scoped_idempotency_key(
+            &self.state.authority_identity,
+            params.idempotency_key.as_str(),
+        );
+        let mode = params.mode;
+        let (mutation, candidate_etag) = self
+            .service
+            .runtime_config
+            .reload(
+                mode,
+                params.expected_active_etag.as_str(),
+                params.candidate_etag.as_ref().map(host::ConfigEtag::as_str),
+                &scoped_key,
+                &fingerprint,
+            )
+            .map_err(rpc_host_to_generated_error)?;
+        let status = generated_config_status(&mutation.status)?;
+        if mode == host::ConfigReloadMode::Commit {
+            self.queue_config_changed(status.clone())?;
+        }
+        let receipt = if mode == host::ConfigReloadMode::Commit {
+            Some(mutation_receipt(
+                "config.reload",
+                &params.idempotency_key,
+                &fingerprint,
+                &format!("config-generation:{}", mutation.target_generation),
+                if mutation.status.restart_required() {
+                    "staged"
+                } else {
+                    "committed"
+                },
+                mutation.replayed,
+                false,
+            )?)
+        } else {
+            None
+        };
+        Ok(host::ConfigReloadResult {
+            candidate_etag: host::ConfigEtag::new(candidate_etag).map_err(|_| {
+                internal_error(
+                    "runtime config candidate etag violated protocol schema",
+                    true,
+                )
+            })?,
+            receipt,
+            status,
+            validation: generated_config_validation(&mutation.validation)?,
+        })
+    }
+
+    fn config_discard_generated(
+        &self,
+        params: host::ConfigDiscardParams,
+    ) -> Result<host::ConfigDiscardResult, host::HostError> {
+        let fingerprint = mutation_fingerprint("config.discard", &params)?;
+        self.service
+            .config_authorization
+            .verify_and_consume(
+                &params.authorization,
+                &self.service.config.launch.execution_domain_id,
+                "config.discard",
+                params.desired_etag.as_str(),
+                params.desired_etag.as_str(),
+                params.idempotency_key.as_str(),
+                &fingerprint,
+            )
+            .map_err(|_| {
+                authorization_denied_error("configuration authorization grant was rejected")
+            })?;
+        let scoped_key = authority_scoped_idempotency_key(
+            &self.state.authority_identity,
+            params.idempotency_key.as_str(),
+        );
+        let mutation = self
+            .service
+            .runtime_config
+            .discard(params.desired_etag.as_str(), &scoped_key, &fingerprint)
+            .map_err(rpc_host_to_generated_error)?;
+        let status = generated_config_status(&mutation.status)?;
+        self.queue_config_changed(status.clone())?;
+        Ok(host::ConfigDiscardResult {
+            receipt: mutation_receipt(
+                "config.discard",
+                &params.idempotency_key,
+                &fingerprint,
+                &format!("config-generation:{}", mutation.target_generation),
+                "committed",
+                mutation.replayed,
+                false,
+            )?,
+            status,
+        })
+    }
+
+    fn config_activate_generated(
+        &self,
+        params: host::ConfigActivateParams,
+    ) -> Result<host::ConfigActivateResult, host::HostError> {
+        let fingerprint = mutation_fingerprint("config.activate", &params)?;
+        self.service
+            .config_authorization
+            .verify_and_consume(
+                &params.authorization,
+                &self.service.config.launch.execution_domain_id,
+                "config.activate",
+                params.desired_etag.as_str(),
+                params.desired_etag.as_str(),
+                params.idempotency_key.as_str(),
+                &fingerprint,
+            )
+            .map_err(|_| {
+                authorization_denied_error("configuration authorization grant was rejected")
+            })?;
+        let scoped_key = authority_scoped_idempotency_key(
+            &self.state.authority_identity,
+            params.idempotency_key.as_str(),
+        );
+        let mutation = self
+            .service
+            .runtime_config
+            .activate(
+                params.desired_etag.as_str(),
+                params.activation_id.as_str(),
+                &scoped_key,
+                &fingerprint,
+            )
+            .map_err(rpc_host_to_generated_error)?;
+        let status = generated_config_status(&mutation.status)?;
+        self.queue_config_changed(status.clone())?;
+        Ok(host::ConfigActivateResult {
+            receipt: mutation_receipt(
+                "config.activate",
+                &params.idempotency_key,
+                &fingerprint,
+                &format!("config-generation:{}", mutation.target_generation),
+                "activation_requested",
+                mutation.replayed,
+                true,
+            )?,
+            status,
+        })
+    }
+
+    fn queue_config_changed(&self, status: host::ConfigStatus) -> Result<(), host::HostError> {
+        let Some(output) = self.state.output.clone() else {
+            return Ok(());
+        };
+        let (activate, activated) = oneshot::channel();
+        self.state
+            .pending_activations
+            .lock()
+            .map_err(|_| internal_error("config notification activation queue unavailable", true))?
+            .push(activate);
+        self.service.runtime.spawn(async move {
+            if activated.await.is_ok() {
+                let _ = send_generated_notification(
+                    &output,
+                    host::HostNotificationParams::ConfigChanged(Box::new(
+                        host::ConfigChangedNotificationParams { status },
+                    )),
+                )
+                .await;
+            }
+        });
+        Ok(())
+    }
+
+    async fn workspace_register_generated(
+        &self,
+        params: host::WorkspaceRegisterParams,
+    ) -> Result<host::WorkspaceRegisterResult, host::HostError> {
+        let fingerprint = mutation_fingerprint("workspace.register", &params)?;
+        let scoped_key = authority_scoped_idempotency_key(
+            &self.state.authority_identity,
+            params.idempotency_key.as_str(),
+        );
+        let registry = self.service.workspace_registry.clone();
+        let root = params.root;
+        let display_label = params.display_label;
+        let register_fingerprint = fingerprint.clone();
+        let mutation = run_host_blocking(move || {
+            registry.register(
+                std::path::Path::new(&root),
+                display_label,
+                &scoped_key,
+                &register_fingerprint,
+            )
+        })
+        .await?;
+        Ok(host::WorkspaceRegisterResult {
+            receipt: mutation_receipt(
+                "workspace.register",
+                &params.idempotency_key,
+                &fingerprint,
+                &mutation.grant.workspace_id,
+                "committed",
+                mutation.replayed,
+                false,
+            )?,
+            workspace: generated_workspace_summary(&mutation.grant)?,
+        })
+    }
+
+    async fn workspace_list_generated(
+        &self,
+        params: host::WorkspaceListParams,
+    ) -> Result<host::WorkspaceListResult, host::HostError> {
+        let cursor_view = ("workspace.list", true);
+        let after = params
+            .cursor
+            .as_deref()
+            .map(|cursor| {
+                self.service.cursor_codec.decode_page::<String, _>(
+                    "workspace-list",
+                    cursor,
+                    &self.state.authority_identity,
+                    &cursor_view,
+                )
+            })
+            .transpose()
+            .map_err(cursor_invalid_error)?;
+        let limit = usize::try_from(params.limit).unwrap_or(200);
+        let registry = self.service.workspace_registry.clone();
+        let (workspaces, has_more) =
+            run_host_blocking(move || registry.list_after(after.as_deref(), limit)).await?;
+        let next_cursor = if has_more {
+            workspaces
+                .last()
+                .map(|workspace| {
+                    self.service.cursor_codec.encode_page(
+                        "workspace-list",
+                        &workspace.workspace_id,
+                        &self.state.authority_identity,
+                        &cursor_view,
+                    )
+                })
+                .transpose()
+                .map_err(|_| internal_error("failed to encode workspace cursor", true))?
+        } else {
+            None
+        };
+        Ok(host::WorkspaceListResult {
+            page: host::PageInfo {
+                has_more,
+                next_cursor,
+            },
+            workspaces: workspaces
+                .iter()
+                .map(generated_workspace_summary)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
+    async fn workspace_remove_generated(
+        &self,
+        params: host::WorkspaceRemoveParams,
+    ) -> Result<host::WorkspaceRemoveResult, host::HostError> {
+        let fingerprint = mutation_fingerprint("workspace.remove", &params)?;
+        let scoped_key = authority_scoped_idempotency_key(
+            &self.state.authority_identity,
+            params.idempotency_key.as_str(),
+        );
+        let registry = self.service.workspace_registry.clone();
+        let workspace_id = params.workspace_id.as_str().to_string();
+        let expected_revision = params.expected_revision.get();
+        let remove_fingerprint = fingerprint.clone();
+        let mutation = run_host_blocking(move || {
+            registry.remove(
+                &workspace_id,
+                expected_revision,
+                &scoped_key,
+                &remove_fingerprint,
+            )
+        })
+        .await?;
+        Ok(host::WorkspaceRemoveResult {
+            receipt: mutation_receipt(
+                "workspace.remove",
+                &params.idempotency_key,
+                &fingerprint,
+                &mutation.grant.workspace_id,
+                "revoked",
+                mutation.replayed,
+                false,
+            )?,
+            workspace: generated_workspace_summary(&mutation.grant)?,
         })
     }
 
@@ -623,11 +1068,12 @@ impl RpcConnection {
                 session: session_summary(&session)?,
             });
         }
+        let runtime = self.active_runtime_snapshot()?;
         let profile = params
             .profile
             .clone()
-            .unwrap_or_else(|| self.service.config.default_profile.clone());
-        self.service
+            .unwrap_or_else(|| runtime.catalog.default_profile().to_string());
+        runtime
             .catalog
             .profile(&profile)
             .map_err(rpc_host_to_generated_error)?;
@@ -636,10 +1082,11 @@ impl RpcConnection {
             .iter()
             .map(legacy_deferred_tool)
             .collect::<Result<Vec<_>, _>>()?;
-        let workspace = std::fs::canonicalize(&self.service.config.workspace_root)
-            .unwrap_or_else(|_| self.service.config.workspace_root.clone())
-            .to_string_lossy()
-            .into_owned();
+        let registry = self.service.workspace_registry.clone();
+        let workspace_id = params.workspace_id.as_str().to_string();
+        let workspace_lease =
+            run_host_blocking(move || registry.lease_active(&workspace_id)).await?;
+        let workspace = workspace_lease.grant();
         let candidate_id = deterministic_session_id(
             &self.state.authority_identity,
             params.idempotency_key.as_str(),
@@ -648,7 +1095,11 @@ impl RpcConnection {
         let candidate_created_at = session.created_at;
         session.profile = Some(profile);
         session.title = params.title;
-        session.workspace = Some(workspace);
+        session.workspace = Some(WorkspaceProvenanceRef::new(
+            workspace.workspace_id.clone(),
+            workspace.display_label.clone(),
+            workspace.provenance_digest.clone(),
+        ));
         session.metadata.insert(
             starweaver_storage::SESSION_SOURCE_PRODUCT_METADATA_KEY.to_string(),
             json!("rpc"),
@@ -1538,19 +1989,38 @@ impl RpcConnection {
                 "environment attachment scope does not permit this run",
             ));
         }
-        self.service
-            .storage
-            .session_store()
+        let store = self.service.storage.session_store();
+        store
             .load_run(
                 &SessionId::from_string(&session_id),
                 &RunId::from_string(&run_id),
             )
             .await
             .map_err(session_store_to_generated_error)?;
+        let session = store
+            .load_session(&SessionId::from_string(&session_id))
+            .await
+            .map_err(session_store_to_generated_error)?;
+        let provenance = session.workspace.as_ref().ok_or_else(|| {
+            authorization_denied_error("session has no registered workspace provenance")
+        })?;
+        let registry = self.service.workspace_registry.clone();
+        let workspace_id = provenance.workspace_id.clone();
+        let workspace_lease =
+            run_host_blocking(move || registry.lease_active(&workspace_id)).await?;
+        if workspace_lease.grant().provenance_digest != provenance.provenance_digest {
+            return Err(authorization_denied_error(
+                "session workspace provenance does not match its live grant",
+            ));
+        }
         let resource = self
             .service
             .config
-            .resolve_environment_resource(&attachment.environment_id, &params.resource_ref)
+            .resolve_environment_resource(
+                &attachment.environment_id,
+                &params.resource_ref,
+                Some(workspace_lease.canonical_root()),
+            )
             .map_err(rpc_host_to_generated_error)?;
         let fingerprint = mutation_fingerprint("environment.mount", &params)?;
         let mount_id = deterministic_environment_id(
@@ -1733,14 +2203,11 @@ impl RpcConnection {
             Some(profile) => profile,
             None => self.current_model_selection().await?.selected_profile,
         };
-        self.service
+        self.active_runtime_snapshot()?
             .catalog
             .profile(&profile)
             .map_err(rpc_host_to_generated_error)?;
-        let session_id = params
-            .session_id
-            .as_ref()
-            .map(|id| SessionId::from_string(id.as_str()));
+        let session_id = SessionId::from_string(params.session_id.as_str());
         let restore_from_run_id = params
             .restore_from_run_id
             .as_ref()
@@ -1748,14 +2215,14 @@ impl RpcConnection {
         let environment_attachments = self
             .resolve_run_environment_attachments(
                 &params.environment_attachments,
-                session_id.as_ref(),
+                Some(&session_id),
                 restore_from_run_id.as_ref(),
             )
             .await?;
         let mut request = RpcRunRequest {
             durable_input,
             input,
-            session_id,
+            session_id: Some(session_id),
             restore_from_run_id,
             profile,
             environment_attachments,
@@ -1851,13 +2318,14 @@ impl RpcConnection {
             .load_session(&session_id)
             .await
             .map_err(session_store_to_generated_error)?;
+        let runtime = self.active_runtime_snapshot()?;
         let profile = params
             .profile
             .clone()
             .or(source.profile)
             .or(session.profile)
-            .unwrap_or_else(|| self.service.catalog.default_profile().to_string());
-        self.service
+            .unwrap_or_else(|| runtime.catalog.default_profile().to_string());
+        runtime
             .catalog
             .profile(&profile)
             .map_err(rpc_host_to_generated_error)?;
@@ -2552,9 +3020,8 @@ impl RpcConnection {
                 .map(host::FeatureId::new)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|_| internal_error("server feature id violated protocol schema", true))?,
-            workspace: host::WorkspaceCompatibility {
+            execution_domain: host::ExecutionDomainCompatibility {
                 execution_domain_id: self.service.config.launch.execution_domain_id.clone(),
-                workspace_identity: self.service.config.launch.workspace_identity.clone(),
             },
         };
         Ok(result)
@@ -3037,6 +3504,72 @@ impl host::HostServer for RpcConnection {
             .map_err(Into::into)
     }
 
+    async fn config_activate(
+        &self,
+        _context: &Self::Context,
+        params: host::ConfigActivateParams,
+    ) -> Result<host::ConfigActivateResult, host::ConfigActivateError> {
+        let connection = self.clone();
+        run_generated_blocking(move || connection.config_activate_generated(params))
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn config_discard(
+        &self,
+        _context: &Self::Context,
+        params: host::ConfigDiscardParams,
+    ) -> Result<host::ConfigDiscardResult, host::ConfigDiscardError> {
+        let connection = self.clone();
+        run_generated_blocking(move || connection.config_discard_generated(params))
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn config_get(
+        &self,
+        _context: &Self::Context,
+        params: host::ConfigGetParams,
+    ) -> Result<host::ConfigGetResult, host::ConfigGetError> {
+        let connection = self.clone();
+        run_generated_blocking(move || connection.config_get_generated(params))
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn config_reload(
+        &self,
+        _context: &Self::Context,
+        params: host::ConfigReloadParams,
+    ) -> Result<host::ConfigReloadResult, host::ConfigReloadError> {
+        let connection = self.clone();
+        run_generated_blocking(move || connection.config_reload_generated(params))
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn config_update(
+        &self,
+        _context: &Self::Context,
+        params: host::ConfigUpdateParams,
+    ) -> Result<host::ConfigUpdateResult, host::ConfigUpdateError> {
+        let connection = self.clone();
+        run_generated_blocking(move || connection.config_update_generated(params))
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn config_validate(
+        &self,
+        _context: &Self::Context,
+        params: host::ConfigValidateParams,
+    ) -> Result<host::ConfigValidateResult, host::ConfigValidateError> {
+        let connection = self.clone();
+        run_generated_blocking(move || connection.config_validate_generated(params))
+            .await
+            .map_err(Into::into)
+    }
+
     async fn deferred_complete(
         &self,
         _context: &Self::Context,
@@ -3321,6 +3854,36 @@ impl host::HostServer for RpcConnection {
         params: host::ShutdownParams,
     ) -> Result<host::ShutdownResult, host::ShutdownError> {
         self.shutdown_generated(params).await.map_err(Into::into)
+    }
+
+    async fn workspace_list(
+        &self,
+        _context: &Self::Context,
+        params: host::WorkspaceListParams,
+    ) -> Result<host::WorkspaceListResult, host::WorkspaceListError> {
+        self.workspace_list_generated(params)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn workspace_register(
+        &self,
+        _context: &Self::Context,
+        params: host::WorkspaceRegisterParams,
+    ) -> Result<host::WorkspaceRegisterResult, host::WorkspaceRegisterError> {
+        self.workspace_register_generated(params)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn workspace_remove(
+        &self,
+        _context: &Self::Context,
+        params: host::WorkspaceRemoveParams,
+    ) -> Result<host::WorkspaceRemoveResult, host::WorkspaceRemoveError> {
+        self.workspace_remove_generated(params)
+            .await
+            .map_err(Into::into)
     }
 }
 fn generated_notification_value(
@@ -3664,9 +4227,7 @@ fn configured_environment_attachment_ref(
         .resolve_environment_source(&attachment.environment_id)
         .map_err(rpc_host_to_generated_error)?
     {
-        crate::ResolvedRpcEnvironmentSource::Local { .. } => {
-            ("local".to_string(), None, None, None)
-        }
+        crate::ResolvedRpcEnvironmentSource::Local => ("local".to_string(), None, None, None),
         crate::ResolvedRpcEnvironmentSource::Envd {
             endpoint_ref,
             environment_id,
@@ -3949,6 +4510,73 @@ fn generated_timestamp(
         .map_err(|_| internal_error("durable timestamp violated protocol schema", true))
 }
 
+fn generated_config_revision(
+    revision: &RuntimeConfigRevision,
+) -> Result<host::ConfigRevision, host::HostError> {
+    Ok(host::ConfigRevision {
+        etag: host::ConfigEtag::new(&revision.etag)
+            .map_err(|_| internal_error("runtime config etag violated protocol schema", true))?,
+        generation: host::DecimalU64::new(revision.generation),
+        materialization_digest: host::SchemaDigest::new(&revision.materialization_digest)
+            .map_err(|_| internal_error("runtime config digest violated protocol schema", true))?,
+    })
+}
+
+fn generated_config_status(
+    status: &RuntimeConfigStatus,
+) -> Result<host::ConfigStatus, host::HostError> {
+    Ok(host::ConfigStatus {
+        active: generated_config_revision(&status.active)?,
+        desired: generated_config_revision(&status.desired)?,
+        restart_required: status.restart_required(),
+    })
+}
+
+fn generated_config_issue(issue: &RuntimeConfigIssue) -> host::ConfigIssue {
+    host::ConfigIssue {
+        category: issue.category,
+        code: issue.code.clone(),
+        message: issue.message.clone(),
+        severity: issue.severity.clone(),
+    }
+}
+
+fn generated_config_validation(
+    validation: &RuntimeConfigValidation,
+) -> Result<host::ConfigValidation, host::HostError> {
+    Ok(host::ConfigValidation {
+        candidate_fingerprint: host::SchemaDigest::new(&validation.fingerprint).map_err(|_| {
+            internal_error("runtime config fingerprint violated protocol schema", true)
+        })?,
+        changed_categories: validation.changed_categories.clone(),
+        issues: validation
+            .issues
+            .iter()
+            .map(generated_config_issue)
+            .collect(),
+        restart_required: validation.restart_required,
+        valid: validation.valid,
+    })
+}
+
+fn generated_workspace_summary(
+    workspace: &WorkspaceGrant,
+) -> Result<host::WorkspaceSummary, host::HostError> {
+    Ok(host::WorkspaceSummary {
+        display_label: workspace.display_label.clone(),
+        provenance_digest: host::SchemaDigest::new(&workspace.provenance_digest).map_err(|_| {
+            internal_error("workspace provenance digest violated protocol schema", true)
+        })?,
+        revision: host::DecimalU64::new(workspace.revision),
+        state: match workspace.state {
+            WorkspaceGrantState::Active => host::WorkspaceState::Active,
+            WorkspaceGrantState::Revoked => host::WorkspaceState::Revoked,
+        },
+        workspace_id: host::WorkspaceId::new(&workspace.workspace_id)
+            .map_err(|_| internal_error("workspace identity violated protocol schema", true))?,
+    })
+}
+
 fn session_summary(session: &SessionRecord) -> Result<host::SessionSummary, host::HostError> {
     let status = match session.status {
         SessionStatus::Active => host::SessionStatus::Active,
@@ -3966,7 +4594,14 @@ fn session_summary(session: &SessionRecord) -> Result<host::SessionSummary, host
         status,
         title: session.title.clone(),
         updated_at: generated_timestamp(session.updated_at)?,
-        workspace_label: session.workspace.clone(),
+        workspace_id: session
+            .workspace
+            .as_ref()
+            .and_then(|workspace| host::WorkspaceId::new(&workspace.workspace_id).ok()),
+        workspace_label: session
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.display_label.clone()),
     })
 }
 
@@ -4372,18 +5007,30 @@ impl RpcService {
     }
 
     fn new(config: RpcConfig, notifications: RpcNotificationMode) -> Result<Self, RpcHostError> {
+        let execution_domain_owner = ExecutionDomainOwnerLease::acquire(
+            &config.launch.execution_domain_id,
+            &config.launch.database_identity,
+        )?;
         if let Some(parent) = config.database_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::create_dir_all(&config.workspace_root)?;
+        let workspace_registry = WorkspaceRegistry::load_or_create(
+            &config.state_dir,
+            &config.launch.execution_domain_id,
+        )?;
         let storage = SqliteStorage::open(&config.database_path)?;
+        let config_authorization = ConfigAuthorizationManager::load_or_create(&config.state_dir)?;
         let catalog = RpcAgentCatalog::new(config.clone())?;
+        let runtime_config =
+            RuntimeConfigManager::load_or_create(&config.state_dir, config.clone(), catalog)?;
         let environment_manager = EnvironmentAttachmentManager::new();
-        let coordinator = Arc::new(RpcRuntimeCoordinator::new(
-            config.clone(),
-            catalog.clone(),
+        let coordinator = Arc::new(RpcRuntimeCoordinator::new_with_workspace_registry(
             storage.clone(),
             environment_manager,
+            workspace_registry.clone(),
+            runtime_config.clone(),
+            execution_domain_owner.host_instance_id().to_string(),
+            execution_domain_owner.generation(),
         ));
         let session_search_scope =
             SessionSearchScope::local(config.database_path.to_string_lossy().into_owned());
@@ -4439,10 +5086,13 @@ impl RpcService {
         let cursor_codec = HostCursorCodec::load_or_create(&config.state_dir, &storage_identity)?;
         Ok(Self {
             config: Arc::new(config),
-            catalog: Arc::new(catalog),
+            _execution_domain_owner: execution_domain_owner,
+            runtime_config,
+            config_authorization,
             storage,
             coordinator,
             environment_manager,
+            workspace_registry,
             session_search,
             session_search_scope,
             notifications,
@@ -4450,6 +5100,42 @@ impl RpcService {
             runtime,
             startup_repaired_runs,
         })
+    }
+
+    pub(crate) fn register_standalone_initial_workspace(&self) -> RpcHostResult<()> {
+        let root = self
+            .config
+            .initial_workspace_root
+            .as_deref()
+            .ok_or_else(|| {
+                RpcHostError::Invalid(
+                    "standalone startup requires an explicit initial workspace intent".to_string(),
+                )
+            })?;
+        std::fs::create_dir_all(root)?;
+        let fingerprint = format!(
+            "sha256:{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&(
+                    "standalone-initial-workspace",
+                    &self.config.launch.database_identity,
+                    root,
+                ))
+                .map_err(|error| RpcHostError::Runtime(error.to_string()))?
+            )
+        );
+        self.workspace_registry.register(
+            root,
+            root.file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .map(str::to_string),
+            &format!(
+                "standalone-initial:{}",
+                self.config.launch.database_identity
+            ),
+            &fingerprint,
+        )?;
+        Ok(())
     }
 
     async fn drain_host_event_outbox(&self) -> Result<(), host::HostError> {
@@ -4624,15 +5310,288 @@ fn session_search_error(error: SessionSearchError) -> RpcError {
 mod generated_service_tests {
     #![allow(clippy::similar_names, clippy::too_many_lines, clippy::unwrap_used)]
 
+    use std::fs;
+
     use serde::de::DeserializeOwned;
     use serde_json::{Value, json};
     use starweaver_rpc_core::generated::HostServer as _;
 
     use super::*;
-    use crate::config::RpcEnvironmentResourceConfig;
+    use crate::{
+        config::RpcEnvironmentResourceConfig, config_authorization::ConfigAuthorizationClaims,
+    };
 
     fn typed<T: DeserializeOwned>(value: Value) -> T {
         serde_json::from_value(value).unwrap()
+    }
+
+    fn config_authorization_grant(
+        service: &RpcService,
+        operation: &str,
+        expected_revision: &str,
+        candidate_fingerprint: &str,
+        idempotency_key: &str,
+    ) -> String {
+        let now = chrono::Utc::now().timestamp_millis();
+        service
+            .config_authorization
+            .sign_for_test(&ConfigAuthorizationClaims {
+                version: 1,
+                execution_domain_id: service.config.launch.execution_domain_id.clone(),
+                operation: operation.to_string(),
+                expected_revision: expected_revision.to_string(),
+                candidate_fingerprint: candidate_fingerprint.to_string(),
+                idempotency_key: idempotency_key.to_string(),
+                nonce: uuid::Uuid::new_v4().to_string(),
+                issued_at_ms: now,
+                expires_at_ms: now + 60_000,
+            })
+            .unwrap()
+    }
+
+    fn active_workspace_id(service: &RpcService) -> String {
+        if let Some(workspace) = service
+            .workspace_registry
+            .list_after(None, 1)
+            .unwrap()
+            .0
+            .into_iter()
+            .next()
+        {
+            return workspace.workspace_id;
+        }
+        let root = service.config.initial_workspace_root.as_deref().unwrap();
+        fs::create_dir_all(root).unwrap();
+        service
+            .workspace_registry
+            .register(
+                root,
+                Some("Test workspace".to_string()),
+                "test-workspace-register",
+                "sha256:test-workspace-register",
+            )
+            .unwrap()
+            .grant
+            .workspace_id
+    }
+
+    #[test]
+    fn workspace_methods_bind_sessions_to_registered_authority_and_reject_revoked_grants() {
+        let temp = tempfile::tempdir().unwrap();
+        let secondary = temp.path().join("secondary");
+        fs::create_dir_all(&secondary).unwrap();
+        let service = RpcService::replay_only(RpcConfig::for_tests(temp.path())).unwrap();
+        let connection = service.new_connection(
+            None,
+            "desktop-workspace-authority",
+            host::Transport::Stdio,
+            all_connection_scopes(),
+        );
+        let runtime = service.runtime.clone();
+        let secondary_root = secondary.to_string_lossy().into_owned();
+        let (registered, created, removed, rejected) = execute_on_runtime(&runtime, async move {
+            let registered = connection
+                .workspace_register_generated(typed(json!({
+                    "displayLabel": "Secondary",
+                    "idempotencyKey": "workspace-register-secondary",
+                    "root": secondary_root,
+                })))
+                .await
+                .unwrap();
+            let workspace_id = registered.workspace.workspace_id.as_str().to_string();
+            let created = connection
+                .session_create_generated(typed(json!({
+                    "deferredTools": [],
+                    "idempotencyKey": "session-create-secondary",
+                    "profile": "default",
+                    "title": "Secondary session",
+                    "workspaceId": workspace_id,
+                })))
+                .await
+                .unwrap();
+            let removed = connection
+                .workspace_remove_generated(typed(json!({
+                    "expectedRevision": registered.workspace.revision.get().to_string(),
+                    "idempotencyKey": "workspace-remove-secondary",
+                    "workspaceId": workspace_id,
+                })))
+                .await
+                .unwrap();
+            let rejected = connection
+                .session_create_generated(typed(json!({
+                    "deferredTools": [],
+                    "idempotencyKey": "session-create-revoked",
+                    "profile": "default",
+                    "workspaceId": workspace_id,
+                })))
+                .await
+                .unwrap_err();
+            (registered, created, removed, rejected)
+        })
+        .unwrap();
+
+        assert_eq!(
+            created
+                .session
+                .workspace_id
+                .as_ref()
+                .map(host::WorkspaceId::as_str),
+            Some(registered.workspace.workspace_id.as_str())
+        );
+        assert_eq!(removed.workspace.state, host::WorkspaceState::Revoked);
+        assert_eq!(rejected.code, host::ERROR_CODE_NOT_FOUND);
+        let persisted = execute_on_runtime(&runtime, {
+            let store = service.storage.session_store();
+            let session_id = SessionId::from_string(created.session.session_id.as_str());
+            async move { store.load_session(&session_id).await }
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            persisted
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.workspace_id.as_str()),
+            Some(registered.workspace.workspace_id.as_str())
+        );
+    }
+
+    #[test]
+    fn config_notifications_wait_for_explicit_response_flush_activation() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = RpcService::live(RpcConfig::for_tests(temp.path())).unwrap();
+        let (output, mut notifications) = mpsc::channel(4);
+        let connection = service.live_connection(output);
+        let status = connection
+            .config_get_generated(host::ConfigGetParams {})
+            .unwrap()
+            .status;
+        connection.queue_config_changed(status).unwrap();
+
+        execute_on_runtime(&service.runtime, async move {
+            assert!(
+                tokio::time::timeout(Duration::from_millis(25), notifications.recv())
+                    .await
+                    .is_err(),
+                "notification must not overtake the unflushed response"
+            );
+            connection.activate_pending_subscriptions();
+            let notification =
+                match tokio::time::timeout(Duration::from_secs(1), notifications.recv()).await {
+                    Ok(Some(notification)) => notification,
+                    Ok(None) => panic!("notification channel closed before activation delivery"),
+                    Err(error) => panic!("activated notification deadline elapsed: {error}"),
+                };
+            let encoded = notification.value.to_string();
+            assert!(encoded.contains("config.changed"));
+            let _ = notification.flushed.send(());
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn config_update_requires_bound_authorization_and_pins_the_next_run_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = RpcService::replay_only(RpcConfig::for_tests(temp.path())).unwrap();
+        let connection = service.new_connection(
+            None,
+            "desktop-config-authority",
+            host::Transport::Stdio,
+            all_connection_scopes(),
+        );
+        let current = connection.config_get_generated(typed(json!({}))).unwrap();
+        let mut candidate = current.config;
+        candidate.profiles[0]
+            .instructions
+            .push("updated runtime instruction".to_string());
+        let validation = connection
+            .config_validate_generated(host::ConfigValidateParams {
+                candidate: candidate.clone(),
+            })
+            .unwrap()
+            .validation;
+        let rejected_grant = config_authorization_grant(
+            &service,
+            "config.update",
+            current.status.active.etag.as_str(),
+            validation.candidate_fingerprint.as_str(),
+            "config-update-rejected",
+        );
+        let rejected = connection
+            .config_update_generated(typed(json!({
+                "authorization": format!("{rejected_grant}tampered"),
+                "candidate": candidate.clone(),
+                "candidateFingerprint": validation.candidate_fingerprint.as_str(),
+                "expectedActiveEtag": current.status.active.etag.as_str(),
+                "idempotencyKey": "config-update-rejected",
+            })))
+            .unwrap_err();
+        assert_eq!(rejected.code, host::ERROR_CODE_AUTHORIZATION_DENIED);
+
+        let accepted_grant = config_authorization_grant(
+            &service,
+            "config.update",
+            current.status.active.etag.as_str(),
+            validation.candidate_fingerprint.as_str(),
+            "config-update-accepted",
+        );
+        let updated = connection
+            .config_update_generated(typed(json!({
+                "authorization": accepted_grant,
+                "candidate": candidate,
+                "candidateFingerprint": validation.candidate_fingerprint.as_str(),
+                "expectedActiveEtag": current.status.active.etag.as_str(),
+                "idempotencyKey": "config-update-accepted",
+            })))
+            .unwrap();
+        assert_eq!(
+            updated.status.active.generation.get(),
+            current.status.active.generation.get() + 1
+        );
+
+        let workspace_id = active_workspace_id(&service);
+        let runtime = service.runtime.clone();
+        let (session, run) = execute_on_runtime(&runtime, {
+            async move {
+                let session = connection
+                    .session_create_generated(typed(json!({
+                        "deferredTools": [],
+                        "idempotencyKey": "config-session-create",
+                        "profile": "default",
+                        "workspaceId": workspace_id,
+                    })))
+                    .await
+                    .unwrap();
+                let run = connection
+                    .run_start_generated(typed(json!({
+                        "continuationMode": "preserve",
+                        "environmentAttachments": [],
+                        "idempotencyKey": "config-run-start",
+                        "input": [{"kind": "text", "text": "hello"}],
+                        "profile": "default",
+                        "sessionId": session.session.session_id.as_str(),
+                    })))
+                    .await
+                    .unwrap();
+                (session, run)
+            }
+        })
+        .unwrap();
+        let persisted = execute_on_runtime(&runtime, {
+            let store = service.storage.session_store();
+            let session_id = SessionId::from_string(session.session.session_id.as_str());
+            let run_id = starweaver_core::RunId::from_string(run.run.run_id.as_str());
+            async move { store.load_run(&session_id, &run_id).await }
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            persisted
+                .config_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.generation),
+            Some(updated.status.active.generation.get())
+        );
     }
 
     #[test]
@@ -4746,13 +5705,15 @@ mod generated_service_tests {
             host::Transport::Http,
             all_connection_scopes(),
         );
+        let workspace_id = active_workspace_id(&service);
         let runtime = service.runtime.runtime.as_ref().unwrap();
         let (first_id, first_replay_id, second_id) = execute_on_runtime(runtime, async move {
             let params: host::SessionCreateParams = typed(json!({
                 "deferredTools": [],
                 "idempotencyKey": "same-key",
                 "profile": "default",
-                "title": "Authority scoped receipt"
+                "title": "Authority scoped receipt",
+                "workspaceId": workspace_id
             }));
             let first_result = first.session_create(&(), params.clone()).await.unwrap();
             let first_replay = first.session_create(&(), params.clone()).await.unwrap();
@@ -5055,6 +6016,7 @@ mod generated_service_tests {
             all_connection_scopes(),
         );
         *connection.state.negotiated_features.lock().unwrap() = connection.supported_features();
+        let workspace_id = active_workspace_id(&service);
         let runtime = service.runtime.runtime.as_ref().unwrap();
 
         execute_on_runtime(runtime, async move {
@@ -5065,7 +6027,8 @@ mod generated_service_tests {
                         "deferredTools": [],
                         "idempotencyKey": "create-environment-test-session",
                         "profile": "default",
-                        "title": "Generated environment test"
+                        "title": "Generated environment test",
+                        "workspaceId": workspace_id
                     })),
                 )
                 .await

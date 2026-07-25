@@ -50,10 +50,12 @@ impl InMemorySessionStore {
                     .is_none_or(|profile| session.profile.as_ref() == Some(profile))
             })
             .filter(|session| {
-                filter
-                    .workspace
-                    .as_ref()
-                    .is_none_or(|workspace| session.workspace.as_ref() == Some(workspace))
+                filter.workspace.as_ref().is_none_or(|workspace| {
+                    session
+                        .workspace
+                        .as_ref()
+                        .is_some_and(|provenance| provenance.matches_filter(workspace))
+                })
             })
             .cloned()
             .collect::<Vec<_>>();

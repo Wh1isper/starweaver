@@ -79,9 +79,13 @@
               }
             ],
             "x-starweaver-nullable": true
+          },
+          "workspaceId": {
+            "$ref": "#/components/schemas/WorkspaceId"
           }
         },
         "required": [
+          "workspaceId",
           "idempotencyKey",
           "deferredTools"
         ],
@@ -339,6 +343,17 @@
           "updatedAt": {
             "$ref": "#/components/schemas/Timestamp"
           },
+          "workspaceId": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
           "workspaceLabel": {
             "oneOf": [
               {
@@ -355,6 +370,7 @@
         },
         "required": [
           "sessionId",
+          "workspaceId",
           "status",
           "revision",
           "createdAt",

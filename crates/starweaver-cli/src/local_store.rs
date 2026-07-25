@@ -15,7 +15,7 @@ use starweaver_session::{
     PreparedContinuation, RelatedRunUpdate, RunAdmissionLease, RunRecord, RunStatus,
     RunTerminalError, SessionRecord, SessionSearchError, SessionSearchPage, SessionSearchProvider,
     SessionSearchQuery, SessionSearchScope, SessionStatus, SessionStore, SessionStoreError,
-    StreamCursorRef,
+    StreamCursorRef, WorkspaceProvenanceRef,
 };
 use starweaver_storage::{
     LocalSessionSearchProvider, LocalStoreImportReport, RunEvidenceCommit, SqliteStorage,
@@ -37,6 +37,7 @@ pub const HITL_RESUME_CLAIM_ID_METADATA_KEY: &str = "starweaver.cli.hitl_resume_
 pub const HITL_RESUME_SOURCE_RUN_ID_METADATA_KEY: &str = "starweaver.cli.hitl_resume_source_run_id";
 pub const HITL_RESUME_PREFLIGHT_SOURCE_RUN_ID_METADATA_KEY: &str =
     "starweaver.cli.hitl_resume_preflight_source_run_id";
+const CLI_LOCAL_EXECUTION_DOMAIN_ID: &str = "standalone-local";
 
 /// Local product facade backed by the workspace-wide canonical `SQLite` schema.
 pub struct LocalStore {
@@ -167,11 +168,16 @@ impl LocalStore {
         profile: &str,
         title: Option<String>,
     ) -> CliResult<SessionRecord> {
+        let workspace = WorkspaceProvenanceRef::for_execution_domain_root(
+            CLI_LOCAL_EXECUTION_DOMAIN_ID,
+            &self.workspace,
+            Some(self.workspace.clone()),
+        );
         self.storage
-            .create_session_for_product(
+            .create_session_with_provenance(
                 Some(profile.to_string()),
                 title,
-                Some(self.workspace.clone()),
+                Some(workspace),
                 Some("cli"),
             )
             .map_err(storage_error)
@@ -187,7 +193,11 @@ impl LocalStore {
     /// Load a session and require it to belong to the current workspace.
     pub fn load_workspace_session(&self, session_id: &str) -> CliResult<SessionRecord> {
         let session = self.load_session(session_id)?;
-        if session.workspace.as_deref() != Some(self.workspace.as_str()) {
+        if !session
+            .workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.matches_filter(&self.workspace))
+        {
             return Err(CliError::NotFound(session_id.to_string()));
         }
         Ok(session)
@@ -724,7 +734,10 @@ impl LocalStore {
             .map_err(storage_error)?
             .into_iter()
             .filter(|session| {
-                session.workspace.as_deref() == Some(self.workspace.as_str())
+                session
+                    .workspace
+                    .as_ref()
+                    .is_some_and(|workspace| workspace.matches_filter(&self.workspace))
                     && session.status != SessionStatus::Deleted
             })
             .collect())

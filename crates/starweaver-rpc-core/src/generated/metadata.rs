@@ -151,6 +151,12 @@ pub enum Method {
     ApprovalShow,
     CatalogList,
     ClarificationResolve,
+    ConfigActivate,
+    ConfigDiscard,
+    ConfigGet,
+    ConfigReload,
+    ConfigUpdate,
+    ConfigValidate,
     DeferredComplete,
     DeferredFail,
     DeferredList,
@@ -182,6 +188,9 @@ pub enum Method {
     SessionList,
     SessionSearch,
     Shutdown,
+    WorkspaceList,
+    WorkspaceRegister,
+    WorkspaceRemove,
 }
 pub const METHODS: &[MethodMetadata] = &[
     MethodMetadata {
@@ -223,6 +232,54 @@ pub const METHODS: &[MethodMetadata] = &[
         transports: &[Transport::Stdio, Transport::Http],
         scopes: &["approval"],
         idempotency: Idempotency::Idempotent,
+    },
+    MethodMetadata {
+        method: Method::ConfigActivate,
+        name: "config.activate",
+        features: &["config.reload.v1"],
+        transports: &[Transport::Stdio, Transport::Http],
+        scopes: &["admin"],
+        idempotency: Idempotency::Idempotent,
+    },
+    MethodMetadata {
+        method: Method::ConfigDiscard,
+        name: "config.discard",
+        features: &["config.reload.v1"],
+        transports: &[Transport::Stdio, Transport::Http],
+        scopes: &["admin"],
+        idempotency: Idempotency::Idempotent,
+    },
+    MethodMetadata {
+        method: Method::ConfigGet,
+        name: "config.get",
+        features: &["config.reload.v1"],
+        transports: &[Transport::Stdio, Transport::Http],
+        scopes: &["read"],
+        idempotency: Idempotency::None,
+    },
+    MethodMetadata {
+        method: Method::ConfigReload,
+        name: "config.reload",
+        features: &["config.reload.v1"],
+        transports: &[Transport::Stdio, Transport::Http],
+        scopes: &["admin"],
+        idempotency: Idempotency::Idempotent,
+    },
+    MethodMetadata {
+        method: Method::ConfigUpdate,
+        name: "config.update",
+        features: &["config.reload.v1"],
+        transports: &[Transport::Stdio, Transport::Http],
+        scopes: &["admin"],
+        idempotency: Idempotency::Idempotent,
+    },
+    MethodMetadata {
+        method: Method::ConfigValidate,
+        name: "config.validate",
+        features: &["config.reload.v1"],
+        transports: &[Transport::Stdio, Transport::Http],
+        scopes: &["admin"],
+        idempotency: Idempotency::None,
     },
     MethodMetadata {
         method: Method::DeferredComplete,
@@ -472,6 +529,30 @@ pub const METHODS: &[MethodMetadata] = &[
         scopes: &["shutdown"],
         idempotency: Idempotency::Effectful,
     },
+    MethodMetadata {
+        method: Method::WorkspaceList,
+        name: "workspace.list",
+        features: &["workspace.registry"],
+        transports: &[Transport::Stdio, Transport::Http],
+        scopes: &["read"],
+        idempotency: Idempotency::None,
+    },
+    MethodMetadata {
+        method: Method::WorkspaceRegister,
+        name: "workspace.register",
+        features: &["workspace.registry"],
+        transports: &[Transport::Stdio, Transport::Http],
+        scopes: &["admin"],
+        idempotency: Idempotency::Idempotent,
+    },
+    MethodMetadata {
+        method: Method::WorkspaceRemove,
+        name: "workspace.remove",
+        features: &["workspace.registry"],
+        transports: &[Transport::Stdio, Transport::Http],
+        scopes: &["admin"],
+        idempotency: Idempotency::Idempotent,
+    },
 ];
 impl Method {
     #[must_use]
@@ -482,6 +563,12 @@ impl Method {
             "approval.show" => Some(Self::ApprovalShow),
             "catalog.list" => Some(Self::CatalogList),
             "clarification.resolve" => Some(Self::ClarificationResolve),
+            "config.activate" => Some(Self::ConfigActivate),
+            "config.discard" => Some(Self::ConfigDiscard),
+            "config.get" => Some(Self::ConfigGet),
+            "config.reload" => Some(Self::ConfigReload),
+            "config.update" => Some(Self::ConfigUpdate),
+            "config.validate" => Some(Self::ConfigValidate),
             "deferred.complete" => Some(Self::DeferredComplete),
             "deferred.fail" => Some(Self::DeferredFail),
             "deferred.list" => Some(Self::DeferredList),
@@ -513,6 +600,9 @@ impl Method {
             "session.list" => Some(Self::SessionList),
             "session.search" => Some(Self::SessionSearch),
             "shutdown" => Some(Self::Shutdown),
+            "workspace.list" => Some(Self::WorkspaceList),
+            "workspace.register" => Some(Self::WorkspaceRegister),
+            "workspace.remove" => Some(Self::WorkspaceRemove),
             _ => None,
         }
     }
@@ -539,10 +629,18 @@ impl Method {
 }
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Notification {
+    ConfigChanged,
     HostEvent,
     SubscriptionClosed,
 }
 pub const NOTIFICATIONS: &[NotificationMetadata] = &[
+    NotificationMetadata {
+        notification: Notification::ConfigChanged,
+        name: "config.changed",
+        features: &["config.reload.v1"],
+        transports: &[Transport::Stdio],
+        scopes: &["read"],
+    },
     NotificationMetadata {
         notification: Notification::HostEvent,
         name: "host.event",
@@ -562,6 +660,7 @@ impl Notification {
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "config.changed" => Some(Self::ConfigChanged),
             "host.event" => Some(Self::HostEvent),
             "subscription.closed" => Some(Self::SubscriptionClosed),
             _ => None,

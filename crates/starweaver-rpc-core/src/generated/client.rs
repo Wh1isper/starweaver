@@ -66,6 +66,12 @@ pub enum HostResult {
     ApprovalShow(ApprovalShowResult),
     CatalogList(CatalogListResult),
     ClarificationResolve(ClarificationResolveResult),
+    ConfigActivate(ConfigActivateResult),
+    ConfigDiscard(ConfigDiscardResult),
+    ConfigGet(ConfigGetResult),
+    ConfigReload(ConfigReloadResult),
+    ConfigUpdate(ConfigUpdateResult),
+    ConfigValidate(ConfigValidateResult),
     DeferredComplete(DeferredCompleteResult),
     DeferredFail(DeferredFailResult),
     DeferredList(DeferredListResult),
@@ -97,6 +103,9 @@ pub enum HostResult {
     SessionList(SessionListResult),
     SessionSearch(SessionSearchResult),
     Shutdown(ShutdownResult),
+    WorkspaceList(WorkspaceListResult),
+    WorkspaceRegister(WorkspaceRegisterResult),
+    WorkspaceRemove(WorkspaceRemoveResult),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct CorrelatedHostResponse {
@@ -120,6 +129,12 @@ pub fn encode_request_frame(
         HostCall::ApprovalShow(params) => serde_json::to_value(params),
         HostCall::CatalogList(params) => serde_json::to_value(params),
         HostCall::ClarificationResolve(params) => serde_json::to_value(params),
+        HostCall::ConfigActivate(params) => serde_json::to_value(params),
+        HostCall::ConfigDiscard(params) => serde_json::to_value(params),
+        HostCall::ConfigGet(params) => serde_json::to_value(params),
+        HostCall::ConfigReload(params) => serde_json::to_value(params),
+        HostCall::ConfigUpdate(params) => serde_json::to_value(params),
+        HostCall::ConfigValidate(params) => serde_json::to_value(params),
         HostCall::DeferredComplete(params) => serde_json::to_value(params),
         HostCall::DeferredFail(params) => serde_json::to_value(params),
         HostCall::DeferredList(params) => serde_json::to_value(params),
@@ -151,6 +166,9 @@ pub fn encode_request_frame(
         HostCall::SessionList(params) => serde_json::to_value(params),
         HostCall::SessionSearch(params) => serde_json::to_value(params),
         HostCall::Shutdown(params) => serde_json::to_value(params),
+        HostCall::WorkspaceList(params) => serde_json::to_value(params),
+        HostCall::WorkspaceRegister(params) => serde_json::to_value(params),
+        HostCall::WorkspaceRemove(params) => serde_json::to_value(params),
     }
     .map_err(|_| EncodeRequestError::Serialization)?;
     validate_method_params(method, &params).map_err(|()| EncodeRequestError::SchemaViolation)?;
@@ -234,6 +252,10 @@ where
     validate_notification_params(notification, &params)
         .map_err(|()| DecodeServerFrameError::InvalidNotification)?;
     let params = match notification {
+        Notification::ConfigChanged => HostNotificationParams::ConfigChanged(Box::new(
+            serde_json::from_value::<ConfigChangedNotificationParams>(params)
+                .map_err(|_| DecodeServerFrameError::InvalidNotification)?,
+        )),
         Notification::HostEvent => HostNotificationParams::HostEvent(Box::new(
             serde_json::from_value::<HostEventNotificationParams>(params)
                 .map_err(|_| DecodeServerFrameError::InvalidNotification)?,
@@ -262,6 +284,24 @@ fn decode_result(method: Method, value: Value) -> Result<HostResult, DecodeServe
             .map_err(|_| DecodeServerFrameError::InvalidResult),
         Method::ClarificationResolve => serde_json::from_value::<ClarificationResolveResult>(value)
             .map(HostResult::ClarificationResolve)
+            .map_err(|_| DecodeServerFrameError::InvalidResult),
+        Method::ConfigActivate => serde_json::from_value::<ConfigActivateResult>(value)
+            .map(HostResult::ConfigActivate)
+            .map_err(|_| DecodeServerFrameError::InvalidResult),
+        Method::ConfigDiscard => serde_json::from_value::<ConfigDiscardResult>(value)
+            .map(HostResult::ConfigDiscard)
+            .map_err(|_| DecodeServerFrameError::InvalidResult),
+        Method::ConfigGet => serde_json::from_value::<ConfigGetResult>(value)
+            .map(HostResult::ConfigGet)
+            .map_err(|_| DecodeServerFrameError::InvalidResult),
+        Method::ConfigReload => serde_json::from_value::<ConfigReloadResult>(value)
+            .map(HostResult::ConfigReload)
+            .map_err(|_| DecodeServerFrameError::InvalidResult),
+        Method::ConfigUpdate => serde_json::from_value::<ConfigUpdateResult>(value)
+            .map(HostResult::ConfigUpdate)
+            .map_err(|_| DecodeServerFrameError::InvalidResult),
+        Method::ConfigValidate => serde_json::from_value::<ConfigValidateResult>(value)
+            .map(HostResult::ConfigValidate)
             .map_err(|_| DecodeServerFrameError::InvalidResult),
         Method::DeferredComplete => serde_json::from_value::<DeferredCompleteResult>(value)
             .map(HostResult::DeferredComplete)
@@ -358,6 +398,15 @@ fn decode_result(method: Method, value: Value) -> Result<HostResult, DecodeServe
         Method::Shutdown => serde_json::from_value::<ShutdownResult>(value)
             .map(HostResult::Shutdown)
             .map_err(|_| DecodeServerFrameError::InvalidResult),
+        Method::WorkspaceList => serde_json::from_value::<WorkspaceListResult>(value)
+            .map(HostResult::WorkspaceList)
+            .map_err(|_| DecodeServerFrameError::InvalidResult),
+        Method::WorkspaceRegister => serde_json::from_value::<WorkspaceRegisterResult>(value)
+            .map(HostResult::WorkspaceRegister)
+            .map_err(|_| DecodeServerFrameError::InvalidResult),
+        Method::WorkspaceRemove => serde_json::from_value::<WorkspaceRemoveResult>(value)
+            .map(HostResult::WorkspaceRemove)
+            .map_err(|_| DecodeServerFrameError::InvalidResult),
     }
 }
 
@@ -441,6 +490,79 @@ const fn is_remote_error_valid(method: Method, error: &HostError) -> bool {
                 | HostErrorData::IdempotencyConflict(_)
                 | HostErrorData::RunConflict(_)
                 | HostErrorData::StaleFence(_)
+        ),
+        Method::ConfigActivate => matches!(
+            &error.data,
+            HostErrorData::NotInitialized(_)
+                | HostErrorData::UnsupportedFeature(_)
+                | HostErrorData::InvalidParams(_)
+                | HostErrorData::NotFound(_)
+                | HostErrorData::StorageUnavailable(_)
+                | HostErrorData::AuthorizationDenied(_)
+                | HostErrorData::ConfigurationFailed(_)
+                | HostErrorData::IdempotencyConflict(_)
+                | HostErrorData::RunConflict(_)
+                | HostErrorData::InternalError(_)
+        ),
+        Method::ConfigDiscard => matches!(
+            &error.data,
+            HostErrorData::NotInitialized(_)
+                | HostErrorData::UnsupportedFeature(_)
+                | HostErrorData::InvalidParams(_)
+                | HostErrorData::NotFound(_)
+                | HostErrorData::StorageUnavailable(_)
+                | HostErrorData::AuthorizationDenied(_)
+                | HostErrorData::ConfigurationFailed(_)
+                | HostErrorData::IdempotencyConflict(_)
+                | HostErrorData::RunConflict(_)
+                | HostErrorData::InternalError(_)
+        ),
+        Method::ConfigGet => matches!(
+            &error.data,
+            HostErrorData::NotInitialized(_)
+                | HostErrorData::UnsupportedFeature(_)
+                | HostErrorData::StorageUnavailable(_)
+                | HostErrorData::AuthorizationDenied(_)
+                | HostErrorData::InternalError(_)
+        ),
+        Method::ConfigReload => matches!(
+            &error.data,
+            HostErrorData::NotInitialized(_)
+                | HostErrorData::UnsupportedFeature(_)
+                | HostErrorData::InvalidParams(_)
+                | HostErrorData::NotFound(_)
+                | HostErrorData::StorageUnavailable(_)
+                | HostErrorData::AuthorizationDenied(_)
+                | HostErrorData::ConfigurationFailed(_)
+                | HostErrorData::IdempotencyConflict(_)
+                | HostErrorData::RunConflict(_)
+                | HostErrorData::InternalError(_)
+        ),
+        Method::ConfigUpdate => matches!(
+            &error.data,
+            HostErrorData::NotInitialized(_)
+                | HostErrorData::UnsupportedFeature(_)
+                | HostErrorData::InvalidParams(_)
+                | HostErrorData::NotFound(_)
+                | HostErrorData::StorageUnavailable(_)
+                | HostErrorData::AuthorizationDenied(_)
+                | HostErrorData::ConfigurationFailed(_)
+                | HostErrorData::IdempotencyConflict(_)
+                | HostErrorData::RunConflict(_)
+                | HostErrorData::InternalError(_)
+        ),
+        Method::ConfigValidate => matches!(
+            &error.data,
+            HostErrorData::NotInitialized(_)
+                | HostErrorData::UnsupportedFeature(_)
+                | HostErrorData::InvalidParams(_)
+                | HostErrorData::NotFound(_)
+                | HostErrorData::StorageUnavailable(_)
+                | HostErrorData::AuthorizationDenied(_)
+                | HostErrorData::ConfigurationFailed(_)
+                | HostErrorData::IdempotencyConflict(_)
+                | HostErrorData::RunConflict(_)
+                | HostErrorData::InternalError(_)
         ),
         Method::DeferredComplete => matches!(
             &error.data,
@@ -797,6 +919,40 @@ const fn is_remote_error_valid(method: Method, error: &HostError) -> bool {
                 | HostErrorData::IdempotencyConflict(_)
                 | HostErrorData::RunConflict(_)
                 | HostErrorData::StaleFence(_)
+        ),
+        Method::WorkspaceList => matches!(
+            &error.data,
+            HostErrorData::NotInitialized(_)
+                | HostErrorData::UnsupportedFeature(_)
+                | HostErrorData::StorageUnavailable(_)
+                | HostErrorData::AuthorizationDenied(_)
+                | HostErrorData::InternalError(_)
+        ),
+        Method::WorkspaceRegister => matches!(
+            &error.data,
+            HostErrorData::NotInitialized(_)
+                | HostErrorData::UnsupportedFeature(_)
+                | HostErrorData::InvalidParams(_)
+                | HostErrorData::NotFound(_)
+                | HostErrorData::StorageUnavailable(_)
+                | HostErrorData::AuthorizationDenied(_)
+                | HostErrorData::ConfigurationFailed(_)
+                | HostErrorData::IdempotencyConflict(_)
+                | HostErrorData::RunConflict(_)
+                | HostErrorData::InternalError(_)
+        ),
+        Method::WorkspaceRemove => matches!(
+            &error.data,
+            HostErrorData::NotInitialized(_)
+                | HostErrorData::UnsupportedFeature(_)
+                | HostErrorData::InvalidParams(_)
+                | HostErrorData::NotFound(_)
+                | HostErrorData::StorageUnavailable(_)
+                | HostErrorData::AuthorizationDenied(_)
+                | HostErrorData::ConfigurationFailed(_)
+                | HostErrorData::IdempotencyConflict(_)
+                | HostErrorData::RunConflict(_)
+                | HostErrorData::InternalError(_)
         ),
     }
 }

@@ -19,6 +19,18 @@
         "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
         "type": "string"
       },
+      "ConfigActivationId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "ConfigEtag": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
       "ClientInfo": {
         "additionalProperties": false,
         "properties": {
@@ -395,6 +407,12 @@
         "additionalProperties": true,
         "type": "object",
         "x-starweaver-json-value": "object"
+      },
+      "WorkspaceId": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
       }
     }
   }

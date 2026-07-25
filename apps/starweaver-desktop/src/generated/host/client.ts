@@ -168,6 +168,34 @@ export class DesktopHostClient {
   ): Promise<import("./types").ClarificationResolveResult> {
     return this.execute(this.prepare({ kind: "clarification.resolve", input }));
   }
+  configActivate(
+    input: import("./types").ConfigActivateIntent,
+  ): Promise<import("./types").ConfigActivateResult> {
+    return this.execute(this.prepare({ kind: "config.activate", input }));
+  }
+  configDiscard(
+    input: import("./types").ConfigDiscardIntent,
+  ): Promise<import("./types").ConfigDiscardResult> {
+    return this.execute(this.prepare({ kind: "config.discard", input }));
+  }
+  configGet(input: import("./types").ConfigGetIntent): Promise<import("./types").ConfigGetResult> {
+    return this.execute(this.prepare({ kind: "config.get", input }));
+  }
+  configReload(
+    input: import("./types").ConfigReloadIntent,
+  ): Promise<import("./types").ConfigReloadResult> {
+    return this.execute(this.prepare({ kind: "config.reload", input }));
+  }
+  configUpdate(
+    input: import("./types").ConfigUpdateIntent,
+  ): Promise<import("./types").ConfigUpdateResult> {
+    return this.execute(this.prepare({ kind: "config.update", input }));
+  }
+  configValidate(
+    input: import("./types").ConfigValidateIntent,
+  ): Promise<import("./types").ConfigValidateResult> {
+    return this.execute(this.prepare({ kind: "config.validate", input }));
+  }
   deferredComplete(
     input: import("./types").DeferredCompleteIntent,
   ): Promise<import("./types").DeferredCompleteResult> {
@@ -264,6 +292,21 @@ export class DesktopHostClient {
     input: import("./types").SessionSearchIntent,
   ): Promise<import("./types").SessionSearchResult> {
     return this.execute(this.prepare({ kind: "session.search", input }));
+  }
+  workspaceList(
+    input: import("./types").WorkspaceListIntent,
+  ): Promise<import("./types").WorkspaceListResult> {
+    return this.execute(this.prepare({ kind: "workspace.list", input }));
+  }
+  workspaceRegister(
+    input: import("./types").WorkspaceRegisterIntent,
+  ): Promise<import("./types").WorkspaceRegisterResult> {
+    return this.execute(this.prepare({ kind: "workspace.register", input }));
+  }
+  workspaceRemove(
+    input: import("./types").WorkspaceRemoveIntent,
+  ): Promise<import("./types").WorkspaceRemoveResult> {
+    return this.execute(this.prepare({ kind: "workspace.remove", input }));
   }
   async subscribe(
     scope: import("./types").DesktopHostEventScope,

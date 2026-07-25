@@ -14,17 +14,25 @@
     "notifications"
   ],
   "properties": {
-    "$schema": { "const": "./manifest.schema.json" },
-    "schemaVersion": { "const": 1 },
+    "$schema": {
+      "const": "./manifest.schema.json"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
     "protocol": {
       "type": "object",
       "additionalProperties": false,
       "required": ["name", "major", "digest"],
       "properties": {
-        "name": { "const": "starweaver.host" },
-        "major": { "const": 1 },
+        "name": {
+          "const": "starweaver.host"
+        },
+        "major": {
+          "const": 1
+        },
         "digest": {
-          "const": "sha256:69d2b33653ad2c5eed6b23afb4e19abd14c431240634f30ac3fe756cd4a907b5",
+          "const": "sha256:2a9e9fad809f55e34f2b701aed6008b2a91148c19f3988a8e79b5c00d404e6dd",
           "description": "Exact reviewed ProtocolIr digest; protocol changes require an explicit renderer-surface review."
         }
       }
@@ -41,12 +49,24 @@
         "unsubscribe"
       ],
       "properties": {
-        "acknowledge": { "const": "acknowledge_host_event" },
-        "acknowledgeOperation": { "const": "acknowledge_host_operation" },
-        "execute": { "const": "execute_host_operation" },
-        "listPendingOperations": { "const": "list_pending_host_operations" },
-        "subscribe": { "const": "subscribe_host_events" },
-        "unsubscribe": { "const": "unsubscribe_host_events" }
+        "acknowledge": {
+          "const": "acknowledge_host_event"
+        },
+        "acknowledgeOperation": {
+          "const": "acknowledge_host_operation"
+        },
+        "execute": {
+          "const": "execute_host_operation"
+        },
+        "listPendingOperations": {
+          "const": "list_pending_host_operations"
+        },
+        "subscribe": {
+          "const": "subscribe_host_events"
+        },
+        "unsubscribe": {
+          "const": "unsubscribe_host_events"
+        }
       }
     },
     "rendererInputVariants": {
@@ -56,28 +76,44 @@
         "type": "array",
         "minItems": 1,
         "uniqueItems": true,
-        "items": { "type": "string", "pattern": "^[A-Z][A-Za-z0-9]*$" }
+        "items": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        }
       },
-      "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" }
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      }
     },
     "operations": {
       "type": "object",
       "minProperties": 1,
-      "additionalProperties": { "$ref": "#/definitions/operation" },
-      "propertyNames": { "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9]*)*$" }
+      "additionalProperties": {
+        "$ref": "#/definitions/operation"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9]*)*$"
+      }
     },
     "notifications": {
       "type": "object",
       "minProperties": 1,
-      "additionalProperties": { "$ref": "#/definitions/notification" },
-      "propertyNames": { "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9]*)*$" }
+      "additionalProperties": {
+        "$ref": "#/definitions/notification"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9]*)*$"
+      }
     }
   },
   "definitions": {
     "fieldNames": {
       "type": "array",
       "uniqueItems": true,
-      "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]*$" }
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z][A-Za-z0-9]*$"
+      }
     },
     "inputAuthority": {
       "type": "object",
@@ -89,10 +125,18 @@
         "forbidden"
       ],
       "properties": {
-        "rendererProvided": { "$ref": "#/definitions/fieldNames" },
-        "supervisorConstructed": { "$ref": "#/definitions/fieldNames" },
-        "supervisorOverridden": { "$ref": "#/definitions/fieldNames" },
-        "forbidden": { "$ref": "#/definitions/fieldNames" }
+        "rendererProvided": {
+          "$ref": "#/definitions/fieldNames"
+        },
+        "supervisorConstructed": {
+          "$ref": "#/definitions/fieldNames"
+        },
+        "supervisorOverridden": {
+          "$ref": "#/definitions/fieldNames"
+        },
+        "forbidden": {
+          "$ref": "#/definitions/fieldNames"
+        }
       }
     },
     "outputAuthority": {
@@ -100,9 +144,15 @@
       "additionalProperties": false,
       "required": ["select", "transform", "forbidden"],
       "properties": {
-        "select": { "$ref": "#/definitions/fieldNames" },
-        "transform": { "$ref": "#/definitions/fieldNames" },
-        "forbidden": { "$ref": "#/definitions/fieldNames" }
+        "select": {
+          "$ref": "#/definitions/fieldNames"
+        },
+        "transform": {
+          "$ref": "#/definitions/fieldNames"
+        },
+        "forbidden": {
+          "$ref": "#/definitions/fieldNames"
+        }
       }
     },
     "operation": {
@@ -110,8 +160,12 @@
       "additionalProperties": false,
       "required": ["input", "output"],
       "properties": {
-        "input": { "$ref": "#/definitions/inputAuthority" },
-        "output": { "$ref": "#/definitions/outputAuthority" }
+        "input": {
+          "$ref": "#/definitions/inputAuthority"
+        },
+        "output": {
+          "$ref": "#/definitions/outputAuthority"
+        }
       }
     },
     "notification": {
@@ -119,9 +173,18 @@
       "additionalProperties": false,
       "required": ["profile", "projection", "output"],
       "properties": {
-        "profile": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "projection": { "type": "string", "pattern": "^[A-Z][A-Za-z0-9]*$" },
-        "output": { "$ref": "#/definitions/outputAuthority" }
+        "profile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "projection": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        },
+        "output": {
+          "$ref": "#/definitions/outputAuthority"
+        }
       }
     }
   }

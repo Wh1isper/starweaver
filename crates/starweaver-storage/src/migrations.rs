@@ -6,7 +6,9 @@ use chrono::Utc;
 use rusqlite::{Connection, TransactionBehavior, params};
 use starweaver_context::AgentCheckpoint;
 use starweaver_core::{from_versioned_json, to_versioned_json};
-use starweaver_session::{CheckpointRef, SessionStoreError, SessionStoreResult};
+use starweaver_session::{
+    CheckpointRef, RunRecord, SessionRecord, SessionStoreError, SessionStoreResult,
+};
 use starweaver_stream::{
     DisplayMessage, ReplayCursorFamily, ReplayEvent, ReplayEventKind, ReplayScope, ReplaySnapshot,
 };
@@ -189,6 +191,9 @@ pub fn apply_sqlite_migrations(
         if migration.id == "20260712_000004_evidence_outbox_and_resume_claims" {
             backfill_run_evidence_digests(&transaction)?;
         }
+        if migration.id == "20260724_000018_session_run_provenance_v2" {
+            rewrite_session_and_run_provenance_v2(&transaction)?;
+        }
         transaction
             .execute(
                 &format!(
@@ -210,6 +215,121 @@ pub fn apply_sqlite_migrations(
 }
 
 const LEGACY_UNSEALED_EVIDENCE_DIGEST: &str = "legacy-unsealed:v1";
+
+fn rewrite_session_and_run_provenance_v2(connection: &Connection) -> SessionStoreResult<()> {
+    let mut session_statement = connection
+        .prepare("SELECT session_id, record FROM session_records")
+        .map_err(map_sqlite_session_error)?;
+    let session_rows = session_statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(map_sqlite_session_error)?;
+    let mut sessions = Vec::new();
+    for row in session_rows {
+        let (session_id, payload) = row.map_err(map_sqlite_session_error)?;
+        let record = match from_versioned_json::<SessionRecord>(&payload) {
+            Ok(record) => record,
+            Err(_)
+                if !looks_like_versioned_envelope(&payload)
+                    && !looks_like_bare_session_record(&payload) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(SessionStoreError::Failed(error.to_string())),
+        };
+        if let Some(workspace) = record.workspace.as_ref() {
+            workspace.validate().map_err(|error| {
+                SessionStoreError::Failed(format!("invalid session workspace provenance: {error}"))
+            })?;
+        }
+        let payload = to_versioned_json(&record)
+            .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
+        sessions.push((session_id, payload));
+    }
+    drop(session_statement);
+    for (session_id, payload) in sessions {
+        connection
+            .execute(
+                "UPDATE session_records SET record = ?1 WHERE session_id = ?2",
+                params![payload, session_id],
+            )
+            .map_err(map_sqlite_session_error)?;
+    }
+
+    let mut run_statement = connection
+        .prepare("SELECT session_id, run_id, record FROM run_records")
+        .map_err(map_sqlite_session_error)?;
+    let run_rows = run_statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(map_sqlite_session_error)?;
+    let mut runs = Vec::new();
+    for row in run_rows {
+        let (session_id, run_id, payload) = row.map_err(map_sqlite_session_error)?;
+        let record = match from_versioned_json::<RunRecord>(&payload) {
+            Ok(record) => record,
+            Err(_)
+                if !looks_like_versioned_envelope(&payload)
+                    && !looks_like_bare_run_record(&payload) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(SessionStoreError::Failed(error.to_string())),
+        };
+        if let Some(config) = record.config_snapshot.as_ref() {
+            config.validate().map_err(|error| {
+                SessionStoreError::Failed(format!("invalid run config provenance: {error}"))
+            })?;
+        }
+        let payload = to_versioned_json(&record)
+            .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
+        runs.push((session_id, run_id, payload));
+    }
+    drop(run_statement);
+    for (session_id, run_id, payload) in runs {
+        connection
+            .execute(
+                "UPDATE run_records SET record = ?1 WHERE session_id = ?2 AND run_id = ?3",
+                params![payload, session_id, run_id],
+            )
+            .map_err(map_sqlite_session_error)?;
+    }
+    Ok(())
+}
+
+fn looks_like_versioned_envelope(payload: &str) -> bool {
+    payload_object(payload)
+        .is_some_and(|object| object.contains_key("schema") || object.contains_key("version"))
+}
+
+fn looks_like_bare_session_record(payload: &str) -> bool {
+    payload_object(payload).is_some_and(|object| {
+        object.contains_key("session_id")
+            || object.contains_key("workspace")
+            || object.contains_key("namespace_id")
+    })
+}
+
+fn looks_like_bare_run_record(payload: &str) -> bool {
+    payload_object(payload).is_some_and(|object| {
+        object.contains_key("run_id")
+            || object.contains_key("conversation_id")
+            || object.contains_key("config_snapshot")
+    })
+}
+
+fn payload_object(payload: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    serde_json::from_str::<serde_json::Value>(payload)
+        .ok()?
+        .as_object()
+        .cloned()
+}
 
 fn backfill_run_evidence_digests(connection: &Connection) -> SessionStoreResult<()> {
     let mut statement = connection
@@ -1192,7 +1312,7 @@ mod tests {
             .expect("legacy full checkpoint");
 
         let applied = apply_sqlite_migrations(&mut connection).expect("migrate legacy database");
-        assert_eq!(applied.len(), 17);
+        assert_eq!(applied.len(), 18);
         assert_eq!(
             scalar_string(&connection, "SELECT record FROM session_records"),
             r#"{"kind":"legacy-session"}"#
@@ -1460,6 +1580,7 @@ mod tests {
                 "20260721_000015_interaction_mutation_receipts",
                 "20260721_000016_environment_aggregate",
                 "20260721_000017_durable_run_control_effects",
+                "20260724_000018_session_run_provenance_v2",
             ]
         );
         let migrated_checkpoint = from_versioned_json::<AgentCheckpoint>(&scalar_string(
@@ -1638,6 +1759,7 @@ mod tests {
                 "20260721_000015_interaction_mutation_receipts",
                 "20260721_000016_environment_aggregate",
                 "20260721_000017_durable_run_control_effects",
+                "20260724_000018_session_run_provenance_v2",
             ]
         );
         let moved = from_versioned_json::<ReplaySnapshot>(&scalar_string(
@@ -1884,6 +2006,234 @@ mod tests {
                 )
             ),
             0
+        );
+    }
+
+    #[test]
+    fn provenance_migration_rewrites_v1_records_to_v2() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        apply_sqlite_migrations(&mut connection).expect("apply current migrations");
+        connection
+            .execute(
+                &format!(
+                    "DELETE FROM {SQLITE_SCHEMA_MIGRATION_TABLE} WHERE id = '20260724_000018_session_run_provenance_v2'"
+                ),
+                [],
+            )
+            .expect("rewind provenance migration");
+
+        let session_payload = r#"{
+            "schema":"starweaver.session.session_record",
+            "version":1,
+            "payload":{
+                "session_id":"session-provenance-v1",
+                "workspace":"/legacy/project",
+                "created_at":"2026-07-11T00:00:00Z",
+                "updated_at":"2026-07-11T00:00:00Z"
+            }
+        }"#;
+        let run_payload = r#"{
+            "schema":"starweaver.session.run_record",
+            "version":1,
+            "payload":{
+                "session_id":"session-provenance-v1",
+                "run_id":"run-provenance-v1",
+                "conversation_id":"conversation-provenance-v1",
+                "created_at":"2026-07-11T00:00:00Z",
+                "updated_at":"2026-07-11T00:00:00Z"
+            }
+        }"#;
+        connection
+            .execute(
+                "INSERT INTO session_records VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    "session-provenance-v1",
+                    session_payload,
+                    "2026-07-11T00:00:00Z",
+                    "2026-07-11T00:00:00Z"
+                ],
+            )
+            .expect("insert v1 session");
+        connection
+            .execute(
+                "INSERT INTO run_records VALUES (?1, ?2, ?3, 1, ?4, ?5)",
+                params![
+                    "session-provenance-v1",
+                    "run-provenance-v1",
+                    run_payload,
+                    "2026-07-11T00:00:00Z",
+                    "2026-07-11T00:00:00Z"
+                ],
+            )
+            .expect("insert v1 run");
+
+        assert_eq!(
+            apply_sqlite_migrations(&mut connection).expect("apply provenance migration"),
+            vec!["20260724_000018_session_run_provenance_v2"]
+        );
+        let session_payload = scalar_string(
+            &connection,
+            "SELECT record FROM session_records WHERE session_id = 'session-provenance-v1'",
+        );
+        let run_payload = scalar_string(
+            &connection,
+            "SELECT record FROM run_records WHERE run_id = 'run-provenance-v1'",
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&session_payload).expect("session envelope")
+                ["version"],
+            2
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&run_payload).expect("run envelope")["version"],
+            2
+        );
+        let session = from_versioned_json::<SessionRecord>(&session_payload)
+            .expect("decode migrated session");
+        assert!(
+            session
+                .workspace
+                .as_ref()
+                .is_some_and(starweaver_session::WorkspaceProvenanceRef::is_legacy_unbound)
+        );
+        assert_eq!(
+            session
+                .workspace
+                .as_ref()
+                .map(starweaver_session::WorkspaceProvenanceRef::display_value),
+            Some("/legacy/project")
+        );
+        let run = from_versioned_json::<RunRecord>(&run_payload).expect("decode migrated run");
+        assert!(run.config_snapshot.is_none());
+    }
+
+    #[test]
+    fn provenance_migration_rejects_recognized_bare_records_with_partial_provenance() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        apply_sqlite_migrations(&mut connection).expect("apply current migrations");
+        connection
+            .execute(
+                &format!(
+                    "DELETE FROM {SQLITE_SCHEMA_MIGRATION_TABLE} WHERE id = '20260724_000018_session_run_provenance_v2'"
+                ),
+                [],
+            )
+            .expect("rewind provenance migration");
+        let valid_session = r#"{
+            "schema":"starweaver.session.session_record",
+            "version":1,
+            "payload":{
+                "session_id":"session-valid-v1",
+                "workspace":"/legacy/valid",
+                "created_at":"2026-07-11T00:00:00Z",
+                "updated_at":"2026-07-11T00:00:00Z"
+            }
+        }"#;
+        let malformed_session = r#"{
+            "session_id":"session-malformed-bare",
+            "workspace":{"workspace_id":"partial"},
+            "created_at":"2026-07-11T00:00:00Z",
+            "updated_at":"2026-07-11T00:00:00Z"
+        }"#;
+        connection
+            .execute(
+                "INSERT INTO session_records VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    "session-valid-v1",
+                    valid_session,
+                    "2026-07-11T00:00:00Z",
+                    "2026-07-11T00:00:00Z"
+                ],
+            )
+            .expect("insert valid v1 session");
+        connection
+            .execute(
+                "INSERT INTO session_records VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    "session-malformed-bare",
+                    malformed_session,
+                    "2026-07-11T00:00:00Z",
+                    "2026-07-11T00:00:00Z"
+                ],
+            )
+            .expect("insert malformed bare session");
+
+        apply_sqlite_migrations(&mut connection)
+            .expect_err("recognized malformed provenance must reject migration");
+        let preserved = scalar_string(
+            &connection,
+            "SELECT record FROM session_records WHERE session_id = 'session-valid-v1'",
+        );
+        let preserved: serde_json::Value = match serde_json::from_str(&preserved) {
+            Ok(value) => value,
+            Err(error) => panic!("preserved session record must remain JSON: {error}"),
+        };
+        assert_eq!(
+            preserved["version"], 1,
+            "the migration transaction must roll back earlier rewrites"
+        );
+        assert_eq!(
+            scalar_i64(
+                &connection,
+                &format!(
+                    "SELECT COUNT(*) FROM {SQLITE_SCHEMA_MIGRATION_TABLE} WHERE id = '20260724_000018_session_run_provenance_v2'"
+                )
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn provenance_migration_rejects_partial_bare_run_but_preserves_truly_opaque_rows() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        apply_sqlite_migrations(&mut connection).expect("apply current migrations");
+        connection
+            .execute(
+                &format!(
+                    "DELETE FROM {SQLITE_SCHEMA_MIGRATION_TABLE} WHERE id = '20260724_000018_session_run_provenance_v2'"
+                ),
+                [],
+            )
+            .expect("rewind provenance migration");
+        connection
+            .execute(
+                "INSERT INTO session_records VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    "opaque-session-row",
+                    r#"{"opaque":"pre-contract"}"#,
+                    "2026-07-11T00:00:00Z",
+                    "2026-07-11T00:00:00Z"
+                ],
+            )
+            .expect("insert opaque row");
+        connection
+            .execute(
+                "INSERT INTO run_records VALUES (?1, ?2, ?3, 1, ?4, ?5)",
+                params![
+                    "session-malformed-run",
+                    "run-malformed-bare",
+                    r#"{
+                        "session_id":"session-malformed-run",
+                        "run_id":"run-malformed-bare",
+                        "conversation_id":"conversation-malformed-bare",
+                        "config_snapshot":{"etag":"partial"},
+                        "created_at":"2026-07-11T00:00:00Z",
+                        "updated_at":"2026-07-11T00:00:00Z"
+                    }"#,
+                    "2026-07-11T00:00:00Z",
+                    "2026-07-11T00:00:00Z"
+                ],
+            )
+            .expect("insert malformed bare run");
+
+        apply_sqlite_migrations(&mut connection)
+            .expect_err("recognized malformed run provenance must reject migration");
+        assert_eq!(
+            scalar_string(
+                &connection,
+                "SELECT record FROM session_records WHERE session_id = 'opaque-session-row'"
+            ),
+            r#"{"opaque":"pre-contract"}"#
         );
     }
 

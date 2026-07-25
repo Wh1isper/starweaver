@@ -131,6 +131,131 @@
         ]
       }
     },
+    "config.activate": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "desiredEtag"
+        ],
+        "supervisorConstructed": [
+          "activationId",
+          "authorization",
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "receipt",
+          "status"
+        ]
+      }
+    },
+    "config.discard": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "desiredEtag"
+        ],
+        "supervisorConstructed": [
+          "authorization",
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "receipt",
+          "status"
+        ]
+      }
+    },
+    "config.get": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [],
+        "supervisorConstructed": [],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "config",
+          "status"
+        ]
+      }
+    },
+    "config.reload": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "candidateEtag",
+          "expectedActiveEtag",
+          "mode"
+        ],
+        "supervisorConstructed": [
+          "authorization",
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "candidateEtag",
+          "receipt",
+          "status",
+          "validation"
+        ]
+      }
+    },
+    "config.update": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "candidate",
+          "expectedActiveEtag"
+        ],
+        "supervisorConstructed": [
+          "authorization",
+          "candidateFingerprint",
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "receipt",
+          "status",
+          "validation"
+        ]
+      }
+    },
+    "config.validate": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "candidate"
+        ],
+        "supervisorConstructed": [],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "validation"
+        ]
+      }
+    },
     "deferred.complete": {
       "input": {
         "forbidden": [],
@@ -442,7 +567,8 @@
         "forbidden": [],
         "rendererProvided": [
           "profile",
-          "title"
+          "title",
+          "workspaceId"
         ],
         "supervisorConstructed": [
           "deferredTools",
@@ -565,10 +691,71 @@
           "page"
         ]
       }
+    },
+    "workspace.list": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [],
+        "supervisorConstructed": [],
+        "supervisorOverridden": [
+          "cursor",
+          "limit"
+        ]
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "page",
+          "workspaces"
+        ]
+      }
+    },
+    "workspace.register": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "displayLabel"
+        ],
+        "supervisorConstructed": [
+          "idempotencyKey",
+          "root"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "receipt",
+          "workspace"
+        ]
+      }
+    },
+    "workspace.remove": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "expectedRevision",
+          "workspaceId"
+        ],
+        "supervisorConstructed": [
+          "idempotencyKey"
+        ],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "receipt",
+          "workspace"
+        ]
+      }
     }
   },
   "protocol": {
-    "digest": "sha256:69d2b33653ad2c5eed6b23afb4e19abd14c431240634f30ac3fe756cd4a907b5",
+    "digest": "sha256:2a9e9fad809f55e34f2b701aed6008b2a91148c19f3988a8e79b5c00d404e6dd",
     "major": 1,
     "name": "starweaver.host"
   },

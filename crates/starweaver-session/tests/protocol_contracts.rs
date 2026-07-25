@@ -8,7 +8,7 @@ use starweaver_core::{
 use starweaver_model::ContentPart;
 use starweaver_session::{
     ApprovalRecord, DeferredToolRecord, DurableRunStatus, InputConversionError, InputPart,
-    RunRecord, SessionRecord, StreamCursorRef,
+    RunRecord, RuntimeConfigSnapshotRef, SessionRecord, StreamCursorRef, WorkspaceProvenanceRef,
 };
 use starweaver_stream::ReplayCursorFamily;
 
@@ -20,8 +20,15 @@ const CURSOR_V1: &str = include_str!("fixtures/contracts/cursor-ref-v1.json");
 const CURSOR_MIXED: &str = include_str!("fixtures/contracts/cursor-ref-mixed-invalid.json");
 const SESSION_V0: &str = include_str!("fixtures/contracts/session-record-v0.json");
 const SESSION_V1: &str = include_str!("fixtures/contracts/session-record-v1.json");
+const SESSION_V1_WORKSPACE: &str =
+    include_str!("fixtures/contracts/session-record-v1-workspace.json");
+const SESSION_V2: &str = include_str!("fixtures/contracts/session-record-v2.json");
+const SESSION_V2_WORKSPACE: &str =
+    include_str!("fixtures/contracts/session-record-v2-workspace.json");
 const RUN_V0: &str = include_str!("fixtures/contracts/run-record-v0.json");
 const RUN_V1: &str = include_str!("fixtures/contracts/run-record-v1.json");
+const RUN_V2: &str = include_str!("fixtures/contracts/run-record-v2.json");
+const RUN_V2_CONFIG: &str = include_str!("fixtures/contracts/run-record-v2-config.json");
 const APPROVAL_V0: &str = include_str!("fixtures/contracts/approval-record-v0.json");
 const APPROVAL_V1: &str = include_str!("fixtures/contracts/approval-record-v1.json");
 const DEFERRED_V0: &str = include_str!("fixtures/contracts/deferred-record-v0.json");
@@ -132,14 +139,16 @@ fn cursor_updates_reject_mixed_shapes_wrong_runs_and_sequence_regression() {
 }
 
 #[test]
-fn durable_records_read_v0_and_v1_and_write_current_envelopes() {
-    assert_v0_v1::<SessionRecord>(SESSION_V0, SESSION_V1);
-    assert_v0_v1::<RunRecord>(RUN_V0, RUN_V1);
-    assert_v0_v1::<ApprovalRecord>(APPROVAL_V0, APPROVAL_V1);
-    assert_v0_v1::<DeferredToolRecord>(DEFERRED_V0, DEFERRED_V1);
+fn durable_records_read_previous_versions_and_write_current_envelopes() {
+    assert_previous_current::<SessionRecord>(SESSION_V0, SESSION_V2);
+    assert_previous_current::<SessionRecord>(SESSION_V1, SESSION_V2);
+    assert_previous_current::<RunRecord>(RUN_V0, RUN_V2);
+    assert_previous_current::<RunRecord>(RUN_V1, RUN_V2);
+    assert_previous_current::<ApprovalRecord>(APPROVAL_V0, APPROVAL_V1);
+    assert_previous_current::<DeferredToolRecord>(DEFERRED_V0, DEFERRED_V1);
 }
 
-fn assert_v0_v1<T>(legacy: &str, current: &str)
+fn assert_previous_current<T>(legacy: &str, current: &str)
 where
     T: serde::de::DeserializeOwned
         + serde::Serialize
@@ -147,8 +156,8 @@ where
         + std::fmt::Debug
         + PartialEq,
 {
-    let legacy = from_versioned_json::<T>(legacy).expect("read v0 record");
-    let current_value = from_versioned_json::<T>(current).expect("read v1 record");
+    let legacy = from_versioned_json::<T>(legacy).expect("read previous record");
+    let current_value = from_versioned_json::<T>(current).expect("read current record");
     assert_eq!(legacy, current_value);
     assert_eq!(
         to_versioned_value(&legacy).expect("write current record"),
@@ -157,10 +166,66 @@ where
 }
 
 #[test]
+fn canonical_workspace_provenance_is_stable_and_execution_domain_bound() {
+    let first = WorkspaceProvenanceRef::for_execution_domain_root(
+        "standalone-local",
+        "/workspace/project",
+        Some("Project".to_string()),
+    );
+    let relabeled = WorkspaceProvenanceRef::for_execution_domain_root(
+        "standalone-local",
+        "/workspace/project",
+        Some("Renamed".to_string()),
+    );
+    let other_domain = WorkspaceProvenanceRef::for_execution_domain_root(
+        "remote-domain",
+        "/workspace/project",
+        None,
+    );
+
+    assert_eq!(first.workspace_id, relabeled.workspace_id);
+    assert_eq!(first.provenance_digest, relabeled.provenance_digest);
+    assert_ne!(first.workspace_id, other_domain.workspace_id);
+    assert_ne!(first.provenance_digest, other_domain.provenance_digest);
+    assert!(first.workspace_id.starts_with("workspace_"));
+    assert!(first.provenance_digest.starts_with("sha256:"));
+    assert!(!first.is_legacy_unbound());
+    assert_eq!(first.validate(), Ok(()));
+}
+
+#[test]
+fn workspace_and_config_v2_provenance_are_typed_and_authority_neutral() {
+    let legacy = from_versioned_json::<SessionRecord>(SESSION_V1_WORKSPACE)
+        .expect("migrate legacy workspace");
+    let legacy_workspace = legacy.workspace.expect("legacy workspace provenance");
+    assert!(legacy_workspace.is_legacy_unbound());
+    assert_eq!(legacy_workspace.display_value(), "/legacy/project");
+    assert!(legacy_workspace.provenance_digest.starts_with("sha256:"));
+
+    let current = from_versioned_json::<SessionRecord>(SESSION_V2_WORKSPACE)
+        .expect("read current workspace provenance");
+    let current_workspace = current.workspace.expect("current workspace provenance");
+    assert_eq!(current_workspace.workspace_id, "ws_01JABCDEF");
+    assert!(!current_workspace.is_legacy_unbound());
+    assert_eq!(current_workspace.display_value(), "project");
+
+    let run =
+        from_versioned_json::<RunRecord>(RUN_V2_CONFIG).expect("read config snapshot provenance");
+    assert_eq!(
+        run.config_snapshot,
+        Some(RuntimeConfigSnapshotRef::new(
+            7,
+            "cfg_01JABCDEF",
+            "sha256:materialization-fixture"
+        ))
+    );
+}
+
+#[test]
 fn durable_records_reject_unknown_versions_and_wrong_schemas() {
     assert!(matches!(
         from_versioned_json::<RunRecord>(RUN_UNKNOWN),
-        Err(VersionedRecordError::UnsupportedVersion { actual: 2, .. })
+        Err(VersionedRecordError::UnsupportedVersion { actual: 3, .. })
     ));
     assert!(matches!(
         from_versioned_json::<RunRecord>(RUN_WRONG_SCHEMA),

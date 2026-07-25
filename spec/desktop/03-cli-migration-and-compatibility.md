@@ -2,11 +2,13 @@
 
 Status: accepted architecture baseline; implementation planned
 
-The Desktop migration goal is that existing CLI users see their durable history without export or duplication and can continue it safely. “Seamless” does not mean ignoring database overrides, materialization drift, workspace authority, authentication, or version skew.
+The Desktop migration goal is that existing CLI users see their durable history without export or duplication and can continue it safely. “Seamless” does not mean ignoring database overrides, materialization drift, workspace authority, provider availability, or version skew.
 
 ## Shared Data Principle
 
-When CLI and Desktop resolve the same canonical database in one execution domain, no data migration occurs. Local Desktop RPC children open the existing local database; an SSH-hosted RPC process independently opens the remote user's canonical database and shares it with remote CLI/RPC products. Desktop never merges or synchronizes local and remote canonical databases.
+When CLI and Desktop resolve the same canonical database in one execution domain, no data migration occurs. The one local Desktop RPC host opens the existing local database; each SSH-hosted domain process independently opens the remote user's canonical database and shares it with remote CLI/RPC products. Desktop never merges or synchronizes local and remote canonical databases.
+
+Current CLI session writers persist typed workspace provenance using the same execution-domain/canonical-root identity contract as the RPC workspace registry. RPC still registers the root independently and matches that live grant before continuation. Legacy display-only workspace rows remain `legacy:`-unbound and readable; a stored path never recreates authority.
 
 Shared durable data includes:
 
@@ -78,23 +80,20 @@ The adapter reads only known, versioned CLI fields and produces a preview contai
 - skill, subagent, MCP, and tool configuration that has a compatible RPC representation;
 - unsupported fields with an explanation.
 
-The user confirms the preview before Desktop writes its product-owned profile model and materializes a supported version of the public RPC launch envelope. It never emits private `rpc.toml` fields. Environment variable names may be imported; environment variable values and inline secrets are not copied into ordinary config or launch-envelope files.
+The user confirms the preview before Desktop submits a typed runtime-config patch through `config.validate` and `config.update`. RPC remains the authoritative validator and persister; Desktop neither emits private `rpc.toml` fields nor moves mutable profiles/providers into the bootstrap launch envelope. Environment variable names may be imported as reviewed credential references; environment variable values and inline secrets are not copied into Desktop or runtime config.
 
 Unknown CLI fields are preserved in the source and ignored safely. A failed or partial import can be retried without changing the source configuration.
 
-## OAuth Migration
+## Provider Configuration Boundary
 
-The CLI and RPC should use the shared OAuth credential store through `starweaver-oauth` within one execution domain. Desktop does not copy access or refresh tokens. An SSH-hosted RPC uses the remote OAuth store and remote provider environment; local OAuth credentials are never forwarded.
+Provider credentials are not migrated into Desktop and Desktop does not own provider login, refresh, logout, or account selection. The execution-domain RPC host resolves models and credentials from its runtime configuration using existing provider mechanisms. An SSH-hosted RPC uses only remote provider configuration and environment; local credentials are never forwarded.
 
-On first launch:
+Desktop needs only safe operational projection:
 
-- RPC reports safe provider authentication status;
-- an existing valid Codex credential is reused;
-- expired but refreshable credentials are refreshed by the OAuth provider layer;
-- missing or invalid credentials start a Desktop-visible device/login flow;
-- logout and account replacement are explicit user operations.
+- the selected profile/model is available and the run may start; or
+- the RPC execution domain requires external provider configuration, reported with a stable non-secret error and recovery hint.
 
-Desktop displays account/provider metadata allowed by the safe projection but never receives bearer or refresh tokens.
+Any credential setup occurs outside the Desktop-to-RPC transport contract. Desktop never receives bearer tokens, refresh tokens, provider environment values, or credential-file contents.
 
 ## Profile and Materialization Compatibility
 
@@ -153,7 +152,7 @@ The release matrix must cover at least:
 | Previous supported | Current                   | Read when schema range permits; otherwise fail with update required |
 | Staged next        | Current database snapshot | Preflight and migration dry run                                     |
 
-Every CLI, RPC, and Desktop runtime path that can apply pending migrations participates in the same product-neutral maintenance barrier. A standalone CLI or RPC startup cannot bypass the barrier and silently migrate the database while Desktop children are active.
+Every CLI, RPC, and Desktop runtime path that can apply pending migrations participates in the same product-neutral maintenance barrier. A standalone CLI or RPC startup cannot bypass the barrier and silently migrate the database while Desktop-owned domain hosts are active.
 
 Remote component updates use the same compatibility declarations and maintenance barrier against the remote canonical database; they do not inspect or migrate the local database.
 
@@ -173,7 +172,7 @@ Unknown future migrations fail closed with a structured update-required result. 
 
 A runtime that may migrate shared storage is activated only through the quiesced update flow in `06-runtime-updates-and-release.md`.
 
-- All Desktop-owned RPC children are drained before the real migration.
+- The affected Desktop-owned domain host is drained before the real migration.
 - The updater first publishes a fenced maintenance drain cutoff that rejects new admission while allowing pre-cutoff owners to finalize, then promotes it to exclusive migration ownership only after every eligible owner is gone.
 - The updater creates a consistent backup before an irreversible migration.
 - CLI cannot be forcibly stopped by Desktop; the updater detects active foreign admissions and non-participating older processes, then delays migration or asks the user to close active CLI work.
@@ -188,7 +187,7 @@ On first launch, Desktop reports one of these concise outcomes:
 - no existing history found;
 - custom CLI history found and awaiting selection;
 - history available but workspace missing;
-- history available but profile/authentication setup required;
+- history available but host-side profile/provider configuration is unavailable;
 - history available but continuation requires a runtime switch;
 - database requires a newer Desktop runtime;
 - migration blocked by an active foreign process.
@@ -200,7 +199,7 @@ A session remains browsable even when its original workspace, profile, provider,
 - Default CLI history appears in Desktop without copy/export.
 - Candidate collection inspects custom history before selecting or creating an empty canonical store, so discovery cannot create a misleading parallel database.
 - Legacy import is idempotent and provenance-preserving, and byte/schema checks prove the original source database remains unchanged.
-- Local and remote OAuth reuse is tested without token projection into the renderer or credential forwarding between execution domains.
+- Local and remote provider configuration remains execution-domain-local; tests prove no credential projection into the renderer or forwarding between domains.
 - Current-version CLI/RPC bidirectional subprocess interoperability remains green.
 - N/N-1 database and protocol fixtures run in CI using released binaries or immutable fixtures, including the shared maintenance barrier.
 - Preserve, switch, blocked, waiting, and foreign-owner continuation outcomes have typed contract tests.

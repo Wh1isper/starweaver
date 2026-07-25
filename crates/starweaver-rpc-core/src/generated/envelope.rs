@@ -14,6 +14,12 @@ pub enum HostCall {
     ApprovalShow(ApprovalShowParams),
     CatalogList(CatalogListParams),
     ClarificationResolve(ClarificationResolveParams),
+    ConfigActivate(ConfigActivateParams),
+    ConfigDiscard(ConfigDiscardParams),
+    ConfigGet(ConfigGetParams),
+    ConfigReload(ConfigReloadParams),
+    ConfigUpdate(ConfigUpdateParams),
+    ConfigValidate(ConfigValidateParams),
     DeferredComplete(DeferredCompleteParams),
     DeferredFail(DeferredFailParams),
     DeferredList(InteractionListParams),
@@ -45,6 +51,9 @@ pub enum HostCall {
     SessionList(SessionListParams),
     SessionSearch(SessionSearchParams),
     Shutdown(ShutdownParams),
+    WorkspaceList(WorkspaceListParams),
+    WorkspaceRegister(WorkspaceRegisterParams),
+    WorkspaceRemove(WorkspaceRemoveParams),
 }
 impl HostCall {
     #[must_use]
@@ -55,6 +64,12 @@ impl HostCall {
             Self::ApprovalShow(_) => Method::ApprovalShow,
             Self::CatalogList(_) => Method::CatalogList,
             Self::ClarificationResolve(_) => Method::ClarificationResolve,
+            Self::ConfigActivate(_) => Method::ConfigActivate,
+            Self::ConfigDiscard(_) => Method::ConfigDiscard,
+            Self::ConfigGet(_) => Method::ConfigGet,
+            Self::ConfigReload(_) => Method::ConfigReload,
+            Self::ConfigUpdate(_) => Method::ConfigUpdate,
+            Self::ConfigValidate(_) => Method::ConfigValidate,
             Self::DeferredComplete(_) => Method::DeferredComplete,
             Self::DeferredFail(_) => Method::DeferredFail,
             Self::DeferredList(_) => Method::DeferredList,
@@ -86,6 +101,9 @@ impl HostCall {
             Self::SessionList(_) => Method::SessionList,
             Self::SessionSearch(_) => Method::SessionSearch,
             Self::Shutdown(_) => Method::Shutdown,
+            Self::WorkspaceList(_) => Method::WorkspaceList,
+            Self::WorkspaceRegister(_) => Method::WorkspaceRegister,
+            Self::WorkspaceRemove(_) => Method::WorkspaceRemove,
         }
     }
 }
@@ -120,6 +138,7 @@ impl DecodeRequestError {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HostNotificationParams {
+    ConfigChanged(Box<ConfigChangedNotificationParams>),
     HostEvent(Box<HostEventNotificationParams>),
     SubscriptionClosed(Box<SubscriptionClosedNotificationParams>),
 }
@@ -127,6 +146,7 @@ impl HostNotificationParams {
     #[must_use]
     pub const fn notification(&self) -> Notification {
         match self {
+            Self::ConfigChanged(_) => Notification::ConfigChanged,
             Self::HostEvent(_) => Notification::HostEvent,
             Self::SubscriptionClosed(_) => Notification::SubscriptionClosed,
         }
@@ -190,6 +210,30 @@ pub fn decode_request_frame(bytes: &[u8]) -> Result<HostRequest, DecodeRequestEr
         ),
         Method::ClarificationResolve => HostCall::ClarificationResolve(
             serde_json::from_value::<ClarificationResolveParams>(params)
+                .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
+        ),
+        Method::ConfigActivate => HostCall::ConfigActivate(
+            serde_json::from_value::<ConfigActivateParams>(params)
+                .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
+        ),
+        Method::ConfigDiscard => HostCall::ConfigDiscard(
+            serde_json::from_value::<ConfigDiscardParams>(params)
+                .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
+        ),
+        Method::ConfigGet => HostCall::ConfigGet(
+            serde_json::from_value::<ConfigGetParams>(params)
+                .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
+        ),
+        Method::ConfigReload => HostCall::ConfigReload(
+            serde_json::from_value::<ConfigReloadParams>(params)
+                .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
+        ),
+        Method::ConfigUpdate => HostCall::ConfigUpdate(
+            serde_json::from_value::<ConfigUpdateParams>(params)
+                .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
+        ),
+        Method::ConfigValidate => HostCall::ConfigValidate(
+            serde_json::from_value::<ConfigValidateParams>(params)
                 .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
         ),
         Method::DeferredComplete => HostCall::DeferredComplete(
@@ -316,6 +360,18 @@ pub fn decode_request_frame(bytes: &[u8]) -> Result<HostRequest, DecodeRequestEr
             serde_json::from_value::<ShutdownParams>(params)
                 .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
         ),
+        Method::WorkspaceList => HostCall::WorkspaceList(
+            serde_json::from_value::<WorkspaceListParams>(params)
+                .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
+        ),
+        Method::WorkspaceRegister => HostCall::WorkspaceRegister(
+            serde_json::from_value::<WorkspaceRegisterParams>(params)
+                .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
+        ),
+        Method::WorkspaceRemove => HostCall::WorkspaceRemove(
+            serde_json::from_value::<WorkspaceRemoveParams>(params)
+                .map_err(|_| decode_error(Some(id.clone()), invalid_params()))?,
+        ),
     };
     Ok(HostRequest { id, call })
 }
@@ -341,6 +397,9 @@ pub fn encode_notification_frame(
 ) -> Result<Vec<u8>, serde_json::Error> {
     let method = notification.params.notification().metadata().name;
     match &notification.params {
+        HostNotificationParams::ConfigChanged(params) => {
+            encode_notification_params(Notification::ConfigChanged, method, params)
+        }
         HostNotificationParams::HostEvent(params) => {
             encode_notification_params(Notification::HostEvent, method, params)
         }

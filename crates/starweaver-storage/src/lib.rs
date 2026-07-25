@@ -97,6 +97,7 @@ mod tests {
                 "20260721_000015_interaction_mutation_receipts",
                 "20260721_000016_environment_aggregate",
                 "20260721_000017_durable_run_control_effects",
+                "20260724_000018_session_run_provenance_v2",
             ]
         );
         let second = migrate_sqlite_database(&database_path).expect("second migration");
