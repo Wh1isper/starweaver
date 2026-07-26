@@ -7,6 +7,7 @@
     "decision": "approved",
     "expectedRevision": "2",
     "idempotencyKey": "approval-decide-example",
-    "reason": "Reviewed"
+    "reason": "Reviewed",
+    "sessionId": "session_example"
   }
 }

@@ -370,22 +370,15 @@ impl ClarificationMutationResult {
     }
 }
 
-/// Parse and strictly validate a durable clarification request and caller answers.
-///
-/// The request must be an object containing a non-empty `questions` array. Questions and option
-/// labels must be unique. Answers must bind one-to-one by exact question text; selected labels
-/// must exist, single-select questions accept at most one label, and every answer must contain a
-/// selection or non-empty free text.
+/// Parse and strictly validate the questions in a durable clarification request.
 ///
 /// # Errors
 ///
-/// Returns an error when the durable request is malformed or answers do not bind one-to-one to
-/// its questions and option constraints.
-#[allow(clippy::too_many_lines)]
-pub fn validate_clarification_answers(
+/// Returns an error when the durable request is malformed or contains duplicate/invalid question
+/// or option identities.
+pub fn parse_clarification_questions(
     request: &Value,
-    answers: &[ClarificationAnswer],
-) -> SessionStoreResult<(Vec<ClarificationQuestion>, Vec<ClarificationAnswer>)> {
+) -> SessionStoreResult<Vec<ClarificationQuestion>> {
     let questions_value = request
         .as_object()
         .and_then(|object| object.get("questions"))
@@ -404,9 +397,15 @@ pub fn validate_clarification_answers(
         ));
     }
 
-    let mut by_question = BTreeMap::new();
+    let mut question_ids = BTreeSet::new();
     for question in &questions {
         require_non_empty("clarification question", &question.question)?;
+        if !question_ids.insert(question.question.as_str()) {
+            return Err(SessionStoreError::Failed(format!(
+                "duplicate clarification question {}",
+                question.question
+            )));
+        }
         let mut labels = BTreeSet::new();
         for option in &question.options {
             require_non_empty("clarification option label", &option.label)?;
@@ -417,16 +416,31 @@ pub fn validate_clarification_answers(
                 )));
             }
         }
-        if by_question
-            .insert(question.question.as_str(), question)
-            .is_some()
-        {
-            return Err(SessionStoreError::Failed(format!(
-                "duplicate clarification question {}",
-                question.question
-            )));
-        }
     }
+    Ok(questions)
+}
+
+/// Parse and strictly validate a durable clarification request and caller answers.
+///
+/// The request must be an object containing a non-empty `questions` array. Questions and option
+/// labels must be unique. Answers must bind one-to-one by exact question text; selected labels
+/// must exist, single-select questions accept at most one label, and every answer must contain a
+/// selection or non-empty free text.
+///
+/// # Errors
+///
+/// Returns an error when the durable request is malformed or answers do not bind one-to-one to
+/// its questions and option constraints.
+#[allow(clippy::too_many_lines)]
+pub fn validate_clarification_answers(
+    request: &Value,
+    answers: &[ClarificationAnswer],
+) -> SessionStoreResult<(Vec<ClarificationQuestion>, Vec<ClarificationAnswer>)> {
+    let questions = parse_clarification_questions(request)?;
+    let by_question = questions
+        .iter()
+        .map(|question| (question.question.as_str(), question))
+        .collect::<BTreeMap<_, _>>();
 
     if answers.len() != questions.len() {
         return Err(SessionStoreError::Failed(

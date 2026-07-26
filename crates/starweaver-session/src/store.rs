@@ -14,8 +14,9 @@ use starweaver_core::SessionId;
 use crate::RunAdmissionLease;
 
 pub use contract::{
-    InteractionPage, InteractionPageKey, InteractionPageQuery, MAX_STABLE_PAGE_SIZE, SessionFilter,
-    SessionPage, SessionPageKey, SessionPageQuery, SessionStore,
+    InteractionPage, InteractionPageKey, InteractionPageQuery, InteractionStateFilter,
+    MAX_STABLE_PAGE_SIZE, RunPage, RunPageKey, RunPageQuery, SessionFilter, SessionPage,
+    SessionPageKey, SessionPageQuery, SessionStore,
 };
 pub use memory::InMemorySessionStore;
 

@@ -242,10 +242,14 @@
               }
             ],
             "x-starweaver-nullable": true
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
           }
         },
         "required": [
           "approvalId",
+          "sessionId",
           "expectedRevision",
           "decision",
           "idempotencyKey"
@@ -265,6 +269,28 @@
         "required": [
           "approval",
           "receipt"
+        ],
+        "type": "object"
+      },
+      "ApprovalDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "argumentsComplete": {
+            "type": "boolean"
+          },
+          "argumentsJson": {
+            "maxLength": 32768,
+            "minLength": 0,
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ApprovalSummary"
+          }
+        },
+        "required": [
+          "summary",
+          "argumentsJson",
+          "argumentsComplete"
         ],
         "type": "object"
       },
@@ -300,10 +326,14 @@
         "properties": {
           "approvalId": {
             "$ref": "#/components/schemas/ApprovalId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
           }
         },
         "required": [
-          "approvalId"
+          "approvalId",
+          "sessionId"
         ],
         "type": "object"
       },
@@ -311,7 +341,7 @@
         "additionalProperties": false,
         "properties": {
           "approval": {
-            "$ref": "#/components/schemas/ApprovalSummary"
+            "$ref": "#/components/schemas/ApprovalDetail"
           }
         },
         "required": [
@@ -525,6 +555,27 @@
         "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
         "type": "string"
       },
+      "ClarificationListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "clarifications": {
+            "items": {
+              "$ref": "#/components/schemas/ClarificationSummary"
+            },
+            "maxItems": 200,
+            "minItems": 0,
+            "type": "array"
+          },
+          "page": {
+            "$ref": "#/components/schemas/PageInfo"
+          }
+        },
+        "required": [
+          "clarifications",
+          "page"
+        ],
+        "type": "object"
+      },
       "ClarificationQuestion": {
         "additionalProperties": false,
         "properties": {
@@ -623,10 +674,14 @@
               }
             ],
             "x-starweaver-nullable": true
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
           }
         },
         "required": [
           "clarificationId",
+          "sessionId",
           "expectedRevision",
           "answers",
           "idempotencyKey"
@@ -646,6 +701,34 @@
         "required": [
           "clarification",
           "receipt"
+        ],
+        "type": "object"
+      },
+      "ClarificationShowParams": {
+        "additionalProperties": false,
+        "properties": {
+          "clarificationId": {
+            "$ref": "#/components/schemas/ClarificationId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "clarificationId",
+          "sessionId"
+        ],
+        "type": "object"
+      },
+      "ClarificationShowResult": {
+        "additionalProperties": false,
+        "properties": {
+          "clarification": {
+            "$ref": "#/components/schemas/ClarificationSummary"
+          }
+        },
+        "required": [
+          "clarification"
         ],
         "type": "object"
       },
@@ -1363,10 +1446,14 @@
             "maxLength": 65536,
             "minLength": 0,
             "type": "string"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
           }
         },
         "required": [
           "deferredId",
+          "sessionId",
           "resultText",
           "expectedRevision",
           "idempotencyKey"
@@ -1389,6 +1476,28 @@
         ],
         "type": "object"
       },
+      "DeferredDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "requestComplete": {
+            "type": "boolean"
+          },
+          "requestJson": {
+            "maxLength": 32768,
+            "minLength": 0,
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/DeferredSummary"
+          }
+        },
+        "required": [
+          "summary",
+          "requestJson",
+          "requestComplete"
+        ],
+        "type": "object"
+      },
       "DeferredFailParams": {
         "additionalProperties": false,
         "properties": {
@@ -1405,10 +1514,14 @@
           },
           "idempotencyKey": {
             "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
           }
         },
         "required": [
           "deferredId",
+          "sessionId",
           "error",
           "expectedRevision",
           "idempotencyKey"
@@ -1463,10 +1576,14 @@
         "properties": {
           "deferredId": {
             "$ref": "#/components/schemas/DeferredId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
           }
         },
         "required": [
-          "deferredId"
+          "deferredId",
+          "sessionId"
         ],
         "type": "object"
       },
@@ -1474,7 +1591,7 @@
         "additionalProperties": false,
         "properties": {
           "deferred": {
-            "$ref": "#/components/schemas/DeferredSummary"
+            "$ref": "#/components/schemas/DeferredDetail"
           }
         },
         "required": [
@@ -2358,6 +2475,9 @@
             "$ref": "#/components/schemas/OutputAvailableEvent"
           },
           {
+            "$ref": "#/components/schemas/TranscriptChangedEvent"
+          },
+          {
             "$ref": "#/components/schemas/ApprovalChangedEvent"
           },
           {
@@ -2612,6 +2732,14 @@
               }
             ],
             "x-starweaver-nullable": true
+          },
+          "state": {
+            "enum": [
+              "all",
+              "unresolved",
+              "resolved"
+            ],
+            "type": "string"
           }
         },
         "required": [
@@ -3773,6 +3901,59 @@
         ],
         "type": "object"
       },
+      "RunListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "oneOf": [
+              {
+                "maxLength": 1024,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "sessionId",
+          "cursor",
+          "limit"
+        ],
+        "type": "object"
+      },
+      "RunListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
+            "$ref": "#/components/schemas/PageInfo"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            },
+            "maxItems": 100,
+            "minItems": 0,
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs",
+          "page"
+        ],
+        "type": "object"
+      },
       "RunResourceScope": {
         "additionalProperties": false,
         "properties": {
@@ -3971,12 +4152,16 @@
       "RunStatusResult": {
         "additionalProperties": false,
         "properties": {
+          "controllableByCurrentHost": {
+            "type": "boolean"
+          },
           "run": {
             "$ref": "#/components/schemas/RunSummary"
           }
         },
         "required": [
-          "run"
+          "run",
+          "controllableByCurrentHost"
         ],
         "type": "object"
       },
@@ -4032,6 +4217,19 @@
             "oneOf": [
               {
                 "maxLength": 256,
+                "minLength": 0,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-starweaver-nullable": true
+          },
+          "inputPreview": {
+            "oneOf": [
+              {
+                "maxLength": 4096,
                 "minLength": 0,
                 "type": "string"
               },
@@ -4950,6 +5148,119 @@
         "minLength": 1,
         "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$",
         "type": "string"
+      },
+      "TranscriptChangedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "transcript_changed",
+            "type": "string"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "transcriptSequence": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "update": {
+            "$ref": "#/components/schemas/TranscriptUpdate"
+          }
+        },
+        "required": [
+          "kind",
+          "sessionId",
+          "runId",
+          "transcriptSequence",
+          "update"
+        ],
+        "type": "object"
+      },
+      "TranscriptMessageFinished": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "message_finished",
+            "type": "string"
+          },
+          "messageId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "messageId"
+        ],
+        "type": "object"
+      },
+      "TranscriptMessageStarted": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "message_started",
+            "type": "string"
+          },
+          "messageId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "role": {
+            "const": "assistant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "messageId",
+          "role"
+        ],
+        "type": "object"
+      },
+      "TranscriptTextAppended": {
+        "additionalProperties": false,
+        "properties": {
+          "delta": {
+            "maxLength": 16384,
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "const": "text_appended",
+            "type": "string"
+          },
+          "messageId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "messageId",
+          "delta"
+        ],
+        "type": "object"
+      },
+      "TranscriptUpdate": {
+        "discriminator": {
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TranscriptMessageStarted"
+          },
+          {
+            "$ref": "#/components/schemas/TranscriptTextAppended"
+          },
+          {
+            "$ref": "#/components/schemas/TranscriptMessageFinished"
+          }
+        ]
       },
       "UnsupportedFeatureData": {
         "additionalProperties": false,
@@ -5973,6 +6284,65 @@
       ]
     },
     {
+      "description": "Canonical typed Starweaver host operation `run.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/CursorInvalid"
+        }
+      ],
+      "name": "run.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/RunListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RunListResult"
+        }
+      },
+      "summary": "Execute run.list",
+      "x-starweaver-features": [
+        "runs"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "RunListParams",
+      "x-starweaver-result-type": "RunListResult",
+      "x-starweaver-scopes": [
+        "read"
+      ],
+      "x-starweaver-spec": "spec/desktop/04-workspaces-sessions-and-runs.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
       "description": "Canonical typed Starweaver host operation `run.start`. Behavioral semantics are defined by the linked owning specification.",
       "errors": [
         {
@@ -6536,7 +6906,7 @@
       "x-starweaver-params-type": "InteractionListParams",
       "x-starweaver-result-type": "ApprovalListResult",
       "x-starweaver-scopes": [
-        "read"
+        "approval"
       ],
       "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
       "x-starweaver-stability": "stable",
@@ -6595,7 +6965,7 @@
       "x-starweaver-params-type": "ApprovalShowParams",
       "x-starweaver-result-type": "ApprovalShowResult",
       "x-starweaver-scopes": [
-        "read"
+        "approval"
       ],
       "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
       "x-starweaver-stability": "stable",
@@ -6722,7 +7092,7 @@
       "x-starweaver-params-type": "InteractionListParams",
       "x-starweaver-result-type": "DeferredListResult",
       "x-starweaver-scopes": [
-        "read"
+        "approval"
       ],
       "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
       "x-starweaver-stability": "stable",
@@ -6781,7 +7151,7 @@
       "x-starweaver-params-type": "DeferredShowParams",
       "x-starweaver-result-type": "DeferredShowResult",
       "x-starweaver-scopes": [
-        "read"
+        "approval"
       ],
       "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
       "x-starweaver-stability": "stable",
@@ -6920,6 +7290,126 @@
         "approval"
       ],
       "x-starweaver-spec": "spec/ops/09-rpc-idl-and-client-generation.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `clarification.list`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "clarification.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/InteractionListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ClarificationListResult"
+        }
+      },
+      "summary": "Execute clarification.list",
+      "x-starweaver-features": [
+        "clarifications",
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "InteractionListParams",
+      "x-starweaver-result-type": "ClarificationListResult",
+      "x-starweaver-scopes": [
+        "approval"
+      ],
+      "x-starweaver-spec": "spec/desktop/05-auth-interaction-and-security.md",
+      "x-starweaver-stability": "stable",
+      "x-starweaver-transports": [
+        "stdio",
+        "http"
+      ]
+    },
+    {
+      "description": "Canonical typed Starweaver host operation `clarification.show`. Behavioral semantics are defined by the linked owning specification.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotInitialized"
+        },
+        {
+          "$ref": "#/components/errors/UnsupportedFeature"
+        },
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/StorageUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/AuthorizationDenied"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/SessionSearchUnavailable"
+        }
+      ],
+      "name": "clarification.show",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ClarificationShowParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ClarificationShowResult"
+        }
+      },
+      "summary": "Execute clarification.show",
+      "x-starweaver-features": [
+        "clarifications",
+        "hitl"
+      ],
+      "x-starweaver-idempotency": "none",
+      "x-starweaver-params-type": "ClarificationShowParams",
+      "x-starweaver-result-type": "ClarificationShowResult",
+      "x-starweaver-scopes": [
+        "approval"
+      ],
+      "x-starweaver-spec": "spec/desktop/05-auth-interaction-and-security.md",
       "x-starweaver-stability": "stable",
       "x-starweaver-transports": [
         "stdio",
@@ -8141,12 +8631,22 @@
       "scopes": [
         "read"
       ]
+    },
+    "transcript_changed": {
+      "feature": "runs",
+      "schema": {
+        "$ref": "#/components/schemas/TranscriptChangedEvent"
+      },
+      "scopes": [
+        "run"
+      ]
     }
   },
   "x-starweaver-event-profiles": {
     "conversation.v1": [
       "run_changed",
       "output_available",
+      "transcript_changed",
       "approval_changed",
       "deferred_changed",
       "clarification_changed"
@@ -8154,6 +8654,7 @@
     "desktop.conversation.v1": [
       "run_changed",
       "output_available",
+      "transcript_changed",
       "approval_changed",
       "deferred_changed",
       "clarification_changed"
@@ -8237,6 +8738,6 @@
     "major": 1,
     "name": "starweaver.host",
     "revision": "2026-07-24",
-    "schemaDigest": "sha256:2a9e9fad809f55e34f2b701aed6008b2a91148c19f3988a8e79b5c00d404e6dd"
+    "schemaDigest": "sha256:92ebe8f13baf1e3aced0f0edcae3b2a9a23e2e5b64718e615bb0c6812b01c2bf"
   }
 }

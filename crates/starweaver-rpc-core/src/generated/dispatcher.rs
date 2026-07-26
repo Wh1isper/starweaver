@@ -35,11 +35,21 @@ pub async fn dispatch<S: HostServer>(
             .await
             .map_err(Into::<HostError>::into)
             .and_then(|value| encode_result(Method::CatalogList, value)),
+        HostCall::ClarificationList(params) => server
+            .clarification_list(context, params)
+            .await
+            .map_err(Into::<HostError>::into)
+            .and_then(|value| encode_result(Method::ClarificationList, value)),
         HostCall::ClarificationResolve(params) => server
             .clarification_resolve(context, params)
             .await
             .map_err(Into::<HostError>::into)
             .and_then(|value| encode_result(Method::ClarificationResolve, value)),
+        HostCall::ClarificationShow(params) => server
+            .clarification_show(context, params)
+            .await
+            .map_err(Into::<HostError>::into)
+            .and_then(|value| encode_result(Method::ClarificationShow, value)),
         HostCall::ConfigActivate(params) => server
             .config_activate(context, params)
             .await
@@ -170,6 +180,11 @@ pub async fn dispatch<S: HostServer>(
             .await
             .map_err(Into::<HostError>::into)
             .and_then(|value| encode_result(Method::RunInterrupt, value)),
+        HostCall::RunList(params) => server
+            .run_list(context, params)
+            .await
+            .map_err(Into::<HostError>::into)
+            .and_then(|value| encode_result(Method::RunList, value)),
         HostCall::RunResume(params) => server
             .run_resume(context, params)
             .await

@@ -1,6 +1,6 @@
 # Desktop Product and Process Boundaries
 
-Status: accepted architecture baseline; shell and single local-child supervisor implemented; multi-workspace host refactor, configuration reload, updates, and SSH planned
+Status: accepted local-only architecture; shell, one domain host, multi-workspace routing, and configuration reload implemented; updates planned; SSH removed from Desktop scope
 
 This document defines the ownership and process model for Starweaver Desktop. The existing CLI/RPC independence rules in `../ops/00-product-boundaries.md` remain normative. SSH remote execution extends this model through `07-ssh-remote-workspaces.md` without moving execution into Desktop.
 

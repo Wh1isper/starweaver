@@ -65,7 +65,9 @@ pub enum HostResult {
     ApprovalList(ApprovalListResult),
     ApprovalShow(ApprovalShowResult),
     CatalogList(CatalogListResult),
+    ClarificationList(ClarificationListResult),
     ClarificationResolve(ClarificationResolveResult),
+    ClarificationShow(ClarificationShowResult),
     ConfigActivate(ConfigActivateResult),
     ConfigDiscard(ConfigDiscardResult),
     ConfigGet(ConfigGetResult),
@@ -92,6 +94,7 @@ pub enum HostResult {
     ModelSelectionGet(ModelSelectionGetResult),
     ProfileGet(ProfileGetResult),
     RunInterrupt(RunInterruptResult),
+    RunList(RunListResult),
     RunResume(RunResumeResult),
     RunStart(RunStartResult),
     RunStatus(RunStatusResult),
@@ -128,7 +131,9 @@ pub fn encode_request_frame(
         HostCall::ApprovalList(params) => serde_json::to_value(params),
         HostCall::ApprovalShow(params) => serde_json::to_value(params),
         HostCall::CatalogList(params) => serde_json::to_value(params),
+        HostCall::ClarificationList(params) => serde_json::to_value(params),
         HostCall::ClarificationResolve(params) => serde_json::to_value(params),
+        HostCall::ClarificationShow(params) => serde_json::to_value(params),
         HostCall::ConfigActivate(params) => serde_json::to_value(params),
         HostCall::ConfigDiscard(params) => serde_json::to_value(params),
         HostCall::ConfigGet(params) => serde_json::to_value(params),
@@ -155,6 +160,7 @@ pub fn encode_request_frame(
         HostCall::ModelSelectionGet(params) => serde_json::to_value(params),
         HostCall::ProfileGet(params) => serde_json::to_value(params),
         HostCall::RunInterrupt(params) => serde_json::to_value(params),
+        HostCall::RunList(params) => serde_json::to_value(params),
         HostCall::RunResume(params) => serde_json::to_value(params),
         HostCall::RunStart(params) => serde_json::to_value(params),
         HostCall::RunStatus(params) => serde_json::to_value(params),
@@ -282,8 +288,14 @@ fn decode_result(method: Method, value: Value) -> Result<HostResult, DecodeServe
         Method::CatalogList => serde_json::from_value::<CatalogListResult>(value)
             .map(HostResult::CatalogList)
             .map_err(|_| DecodeServerFrameError::InvalidResult),
+        Method::ClarificationList => serde_json::from_value::<ClarificationListResult>(value)
+            .map(HostResult::ClarificationList)
+            .map_err(|_| DecodeServerFrameError::InvalidResult),
         Method::ClarificationResolve => serde_json::from_value::<ClarificationResolveResult>(value)
             .map(HostResult::ClarificationResolve)
+            .map_err(|_| DecodeServerFrameError::InvalidResult),
+        Method::ClarificationShow => serde_json::from_value::<ClarificationShowResult>(value)
+            .map(HostResult::ClarificationShow)
             .map_err(|_| DecodeServerFrameError::InvalidResult),
         Method::ConfigActivate => serde_json::from_value::<ConfigActivateResult>(value)
             .map(HostResult::ConfigActivate)
@@ -364,6 +376,9 @@ fn decode_result(method: Method, value: Value) -> Result<HostResult, DecodeServe
             .map_err(|_| DecodeServerFrameError::InvalidResult),
         Method::RunInterrupt => serde_json::from_value::<RunInterruptResult>(value)
             .map(HostResult::RunInterrupt)
+            .map_err(|_| DecodeServerFrameError::InvalidResult),
+        Method::RunList => serde_json::from_value::<RunListResult>(value)
+            .map(HostResult::RunList)
             .map_err(|_| DecodeServerFrameError::InvalidResult),
         Method::RunResume => serde_json::from_value::<RunResumeResult>(value)
             .map(HostResult::RunResume)
@@ -478,6 +493,16 @@ const fn is_remote_error_valid(method: Method, error: &HostError) -> bool {
                 | HostErrorData::AuthorizationDenied(_)
                 | HostErrorData::InternalError(_)
         ),
+        Method::ClarificationList => matches!(
+            &error.data,
+            HostErrorData::NotInitialized(_)
+                | HostErrorData::UnsupportedFeature(_)
+                | HostErrorData::NotFound(_)
+                | HostErrorData::StorageUnavailable(_)
+                | HostErrorData::AuthorizationDenied(_)
+                | HostErrorData::InternalError(_)
+                | HostErrorData::SessionSearchUnavailable(_)
+        ),
         Method::ClarificationResolve => matches!(
             &error.data,
             HostErrorData::NotInitialized(_)
@@ -490,6 +515,16 @@ const fn is_remote_error_valid(method: Method, error: &HostError) -> bool {
                 | HostErrorData::IdempotencyConflict(_)
                 | HostErrorData::RunConflict(_)
                 | HostErrorData::StaleFence(_)
+        ),
+        Method::ClarificationShow => matches!(
+            &error.data,
+            HostErrorData::NotInitialized(_)
+                | HostErrorData::UnsupportedFeature(_)
+                | HostErrorData::NotFound(_)
+                | HostErrorData::StorageUnavailable(_)
+                | HostErrorData::AuthorizationDenied(_)
+                | HostErrorData::InternalError(_)
+                | HostErrorData::SessionSearchUnavailable(_)
         ),
         Method::ConfigActivate => matches!(
             &error.data,
@@ -789,6 +824,16 @@ const fn is_remote_error_valid(method: Method, error: &HostError) -> bool {
                 | HostErrorData::IdempotencyConflict(_)
                 | HostErrorData::RunConflict(_)
                 | HostErrorData::StaleFence(_)
+        ),
+        Method::RunList => matches!(
+            &error.data,
+            HostErrorData::NotInitialized(_)
+                | HostErrorData::UnsupportedFeature(_)
+                | HostErrorData::NotFound(_)
+                | HostErrorData::StorageUnavailable(_)
+                | HostErrorData::AuthorizationDenied(_)
+                | HostErrorData::InternalError(_)
+                | HostErrorData::CursorInvalid(_)
         ),
         Method::RunResume => matches!(
             &error.data,

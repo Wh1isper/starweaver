@@ -163,10 +163,20 @@ export class DesktopHostClient {
   ): Promise<import("./types").CatalogListResult> {
     return this.execute(this.prepare({ kind: "catalog.list", input }));
   }
+  clarificationList(
+    input: import("./types").ClarificationListIntent,
+  ): Promise<import("./types").ClarificationListResult> {
+    return this.execute(this.prepare({ kind: "clarification.list", input }));
+  }
   clarificationResolve(
     input: import("./types").ClarificationResolveIntent,
   ): Promise<import("./types").ClarificationResolveResult> {
     return this.execute(this.prepare({ kind: "clarification.resolve", input }));
+  }
+  clarificationShow(
+    input: import("./types").ClarificationShowIntent,
+  ): Promise<import("./types").ClarificationShowResult> {
+    return this.execute(this.prepare({ kind: "clarification.show", input }));
   }
   configActivate(
     input: import("./types").ConfigActivateIntent,
@@ -251,6 +261,9 @@ export class DesktopHostClient {
   ): Promise<import("./types").RunInterruptResult> {
     return this.execute(this.prepare({ kind: "run.interrupt", input }));
   }
+  runList(input: import("./types").RunListIntent): Promise<import("./types").RunListResult> {
+    return this.execute(this.prepare({ kind: "run.list", input }));
+  }
   runResume(input: import("./types").RunResumeIntent): Promise<import("./types").RunResumeResult> {
     return this.execute(this.prepare({ kind: "run.resume", input }));
   }
@@ -313,6 +326,7 @@ export class DesktopHostClient {
     handler: (event: SafeHostEvent) => void | Promise<void>,
   ): Promise<{
     readonly token: DesktopHostSubscriptionToken;
+    readonly caughtUp: Promise<void>;
     readonly close: () => Promise<void>;
     readonly done: Promise<void>;
   }> {
@@ -442,13 +456,27 @@ export class DesktopHostClient {
       });
     });
 
+    const onComplete = new Channel<unknown>((value) => {
+      if (
+        typeof value !== "string" ||
+        !value.startsWith("desktop-host-subscription-") ||
+        readyToken === undefined ||
+        value !== readyToken
+      ) {
+        failSubscription(new Error("invalid host subscription completion token"));
+        return;
+      }
+      acceptingDeliveries = false;
+      void finalize();
+    });
+
     // The readiness channel makes the cancellation handle available before the command can be
     // blocked on the first replay acknowledgement. Command completion is validated in the
     // background and becomes an observable terminal subscription failure after readiness.
     const subscriptionCommand = Promise.resolve().then(() =>
-      invoke(SUBSCRIBE_HOST_EVENTS_COMMAND, { scope, onReady, onEvent }),
+      invoke(SUBSCRIBE_HOST_EVENTS_COMMAND, { scope, onReady, onEvent, onComplete }),
     );
-    void subscriptionCommand.then(
+    const caughtUp = subscriptionCommand.then(
       (tokenValue: unknown) => {
         if (
           typeof tokenValue !== "string" ||
@@ -456,16 +484,25 @@ export class DesktopHostClient {
           readyToken === undefined ||
           tokenValue !== readyToken
         ) {
-          failSubscription(
-            new Error("host subscription readiness token does not match response token"),
+          const error = new Error(
+            "host subscription readiness token does not match response token",
           );
+          failSubscription(error);
+          throw error;
         }
       },
-      (error: unknown) => failSubscription(error),
+      (error: unknown) => {
+        failSubscription(error);
+        throw error;
+      },
     );
+    // Setup may reject before the returned handle is observed. Keep that path handled while
+    // preserving the original promise for callers that need a replay catch-up barrier.
+    void caughtUp.catch(() => undefined);
     const token = await tokenReady;
     return {
       token,
+      caughtUp,
       close: async () => {
         const cancellation = requestClose();
         void finalize();

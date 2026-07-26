@@ -1,6 +1,6 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "description": "Generated least-authority host operation fragment for sha256:2a9e9fad809f55e34f2b701aed6008b2a91148c19f3988a8e79b5c00d404e6dd",
+  "description": "Generated least-authority host operation fragment for sha256:92ebe8f13baf1e3aced0f0edcae3b2a9a23e2e5b64718e615bb0c6812b01c2bf",
   "identifier": "generated-host",
   "permissions": [
     "allow-acknowledge-host-event",
@@ -10,5 +10,5 @@
     "allow-subscribe-host-events",
     "allow-unsubscribe-host-events"
   ],
-  "windows": ["main"]
+  "windows": ["main", "conversation-*"]
 }

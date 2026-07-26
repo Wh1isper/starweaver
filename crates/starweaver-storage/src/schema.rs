@@ -670,4 +670,83 @@ pub const SQLITE_MIGRATIONS: &[SqliteMigration] = &[
         sql: "-- JSON record migration is performed by the versioned Rust hook.",
         hook_version: Some("session-run-provenance-v2"),
     },
+    SqliteMigration {
+        id: "20260725_000019_transcript_host_events",
+        description: "admit safe incremental transcript changes into the durable host-event log and outbox",
+        sql: r"
+        DROP INDEX IF EXISTS ix_host_event_records_session_position;
+        DROP INDEX IF EXISTS ix_host_event_records_run_position;
+        DROP INDEX IF EXISTS ix_host_event_records_class_position;
+        DROP INDEX IF EXISTS ix_host_event_outbox_sequence;
+
+        ALTER TABLE host_event_records RENAME TO host_event_records_before_transcript;
+        CREATE TABLE host_event_records (
+            position INTEGER PRIMARY KEY CHECK (position > 0),
+            publication_key TEXT NOT NULL UNIQUE,
+            event_id TEXT NOT NULL UNIQUE,
+            scope_kind TEXT NOT NULL CHECK (scope_kind IN ('global', 'session', 'run')),
+            session_id TEXT,
+            run_id TEXT,
+            event_class TEXT NOT NULL CHECK (event_class IN (
+                'session_changed', 'run_changed', 'output_available', 'transcript_changed',
+                'approval_changed', 'deferred_changed', 'clarification_changed',
+                'environment_changed', 'diagnostic'
+            )),
+            record TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            CHECK (
+                (scope_kind = 'global' AND session_id IS NULL AND run_id IS NULL) OR
+                (scope_kind = 'session' AND session_id IS NOT NULL AND run_id IS NULL) OR
+                (scope_kind = 'run' AND session_id IS NOT NULL AND run_id IS NOT NULL)
+            )
+        );
+        INSERT INTO host_event_records
+            (position, publication_key, event_id, scope_kind, session_id, run_id, event_class,
+             record, occurred_at)
+        SELECT position, publication_key, event_id, scope_kind, session_id, run_id, event_class,
+               record, occurred_at
+        FROM host_event_records_before_transcript;
+        DROP TABLE host_event_records_before_transcript;
+        CREATE INDEX ix_host_event_records_session_position
+            ON host_event_records(session_id, position);
+        CREATE INDEX ix_host_event_records_run_position
+            ON host_event_records(session_id, run_id, position);
+        CREATE INDEX ix_host_event_records_class_position
+            ON host_event_records(event_class, position);
+
+        ALTER TABLE host_event_publication_outbox
+            RENAME TO host_event_publication_outbox_before_transcript;
+        CREATE TABLE host_event_publication_outbox (
+            publication_key TEXT PRIMARY KEY,
+            enqueue_sequence INTEGER NOT NULL UNIQUE CHECK (enqueue_sequence > 0),
+            event_id TEXT NOT NULL UNIQUE,
+            scope_kind TEXT NOT NULL CHECK (scope_kind IN ('global', 'session', 'run')),
+            session_id TEXT,
+            run_id TEXT,
+            event_class TEXT NOT NULL CHECK (event_class IN (
+                'session_changed', 'run_changed', 'output_available', 'transcript_changed',
+                'approval_changed', 'deferred_changed', 'clarification_changed',
+                'environment_changed', 'diagnostic'
+            )),
+            record TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            CHECK (
+                (scope_kind = 'global' AND session_id IS NULL AND run_id IS NULL) OR
+                (scope_kind = 'session' AND session_id IS NOT NULL AND run_id IS NULL) OR
+                (scope_kind = 'run' AND session_id IS NOT NULL AND run_id IS NOT NULL)
+            )
+        );
+        INSERT INTO host_event_publication_outbox
+            (publication_key, enqueue_sequence, event_id, scope_kind, session_id, run_id,
+             event_class, record, occurred_at, created_at)
+        SELECT publication_key, enqueue_sequence, event_id, scope_kind, session_id, run_id,
+               event_class, record, occurred_at, created_at
+        FROM host_event_publication_outbox_before_transcript;
+        DROP TABLE host_event_publication_outbox_before_transcript;
+        CREATE INDEX ix_host_event_outbox_sequence
+            ON host_event_publication_outbox(enqueue_sequence);
+    ",
+        hook_version: None,
+    },
 ];

@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import os
+import sys
 import tempfile
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -149,6 +150,34 @@ def _session_page_boundary(query: Mapping[str, Any]) -> tuple[datetime, str] | N
     if not isinstance(session_id, str):
         raise StateError("session page boundary is missing its stable identity")
     return _session_page_timestamp(after.get("updatedAt"), "boundary updatedAt"), session_id
+
+
+def _run_sequence(value: object, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise StateError(f"run page {field} must be a positive integer")
+    return value
+
+
+def _recent_run_limit(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0 or value > sys.maxsize:
+        raise StateError("recent run limit must be a non-negative platform-sized integer")
+    return value
+
+
+def _run_page_limit(query: Mapping[str, Any]) -> int:
+    limit = query.get("limit")
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+        raise StateError("run page limit must be between 1 and 200")
+    return limit
+
+
+def _run_page_boundary(query: Mapping[str, Any]) -> int | None:
+    before = query.get("before")
+    if before is None:
+        return None
+    if not isinstance(before, Mapping):
+        raise StateError("run page boundary must be an object or null")
+    return _run_sequence(before.get("sequenceNo"), "boundary sequenceNo")
 
 
 def _copy(value: Mapping[str, Any]) -> JsonObject:
@@ -1034,6 +1063,19 @@ class SessionStore:
     async def list_runs(self, session_id: str) -> list[RunRecord]:
         raise NotImplementedError
 
+    async def list_recent_runs(self, session_id: str, limit: int) -> list[RunRecord]:
+        """Return the bounded newest run suffix in ascending sequence order."""
+
+        _recent_run_limit(limit)
+        raise NotImplementedError
+
+    async def list_run_page(self, session_id: str, query: Mapping[str, Any]) -> JsonObject:
+        """Return one stable newest-first run page for native callers."""
+
+        _run_page_limit(query)
+        _run_page_boundary(query)
+        raise NotImplementedError
+
     async def update_run_status(
         self,
         session_id: str,
@@ -1731,6 +1773,50 @@ class InMemorySessionStore(SessionStore):
             if record_session_id == session_id
         ]
 
+    async def list_recent_runs(self, session_id: str, limit: int) -> list[RunRecord]:
+        limit = _recent_run_limit(limit)
+        if limit == 0:
+            return []
+        records = [
+            record
+            for (record_session_id, _), record in self._runs.items()
+            if record_session_id == session_id
+        ]
+        records.sort(
+            key=lambda record: _run_sequence(record.get("sequence_no"), "record sequence_no")
+        )
+        return [RunRecord(_copy(record)) for record in records[-limit:]]
+
+    async def list_run_page(self, session_id: str, query: Mapping[str, Any]) -> JsonObject:
+        limit = _run_page_limit(query)
+        before = query.get("before")
+        before_sequence = _run_page_boundary(query)
+        records = [
+            record
+            for (record_session_id, _), record in self._runs.items()
+            if record_session_id == session_id
+            and (
+                before_sequence is None
+                or _run_sequence(record.get("sequence_no"), "record sequence_no") < before_sequence
+            )
+        ]
+        records.sort(
+            key=lambda record: _run_sequence(record.get("sequence_no"), "record sequence_no"),
+            reverse=True,
+        )
+        has_more = len(records) > limit
+        selected = records[:limit]
+        runs = [_copy(record) for record in selected]
+        if selected:
+            next_key: JsonObject | None = {
+                "sequenceNo": _run_sequence(selected[-1].get("sequence_no"), "record sequence_no")
+            }
+        elif isinstance(before, Mapping):
+            next_key = {"sequenceNo": before_sequence}
+        else:
+            next_key = None
+        return {"runs": runs, "nextKey": next_key, "hasMore": has_more}
+
     async def append_checkpoint(
         self,
         session_id: str,
@@ -2268,6 +2354,17 @@ class SqliteSessionStore(SessionStore):
 
     async def list_runs(self, session_id: str) -> list[RunRecord]:
         return [RunRecord(record) for record in await self._native.list_runs(session_id)]
+
+    async def list_recent_runs(self, session_id: str, limit: int) -> list[RunRecord]:
+        limit = _recent_run_limit(limit)
+        return [
+            RunRecord(record) for record in await self._native.list_recent_runs(session_id, limit)
+        ]
+
+    async def list_run_page(self, session_id: str, query: Mapping[str, Any]) -> JsonObject:
+        limit = _run_page_limit(query)
+        before_sequence = _run_page_boundary(query)
+        return _copy(await self._native.list_run_page(session_id, limit, before_sequence))
 
     async def update_run_status(
         self,

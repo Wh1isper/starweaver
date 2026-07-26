@@ -315,16 +315,36 @@ fn check_renderer_boundary(desktop_root: &Path) -> Result<(), String> {
     let bridge = fs::read_to_string(&allowed_bridge).map_err(|error| error.to_string())?;
     if bridge.matches("@tauri-apps/api").count() != 1
         || !bridge.contains("from \"@tauri-apps/api/core\"")
-        || bridge.matches("invoke<").count() != 3
-        || bridge.contains("invoke(")
+        || bridge.matches("invoke<").count() != 9
+        || bridge.matches("invoke(").count() != 3
         || bridge.matches("new Channel<DesktopActivation>").count() != 1
     {
         return Err(
             "Desktop bridge must use only the reviewed core invoke/channel surface".to_string(),
         );
     }
+    for (constant, expected_uses) in [
+        ("EXECUTE_HOST_OPERATION_COMMAND", 2),
+        ("ACKNOWLEDGE_HOST_OPERATION_COMMAND", 3),
+    ] {
+        if bridge.matches(constant).count() != expected_uses {
+            return Err(format!(
+                "Desktop workspace grant bridge must use only the generated {constant} command"
+            ));
+        }
+    }
     for (constant, command) in [
         ("GET_DESKTOP_STATUS_COMMAND", "get_desktop_status"),
+        ("RETRY_MANAGED_RUNTIME_COMMAND", "retry_managed_runtime"),
+        ("GET_DESKTOP_PREFERENCES_COMMAND", "get_desktop_preferences"),
+        (
+            "UPDATE_DESKTOP_PREFERENCES_COMMAND",
+            "update_desktop_preferences",
+        ),
+        (
+            "RELOAD_DESKTOP_PREFERENCES_COMMAND",
+            "reload_desktop_preferences",
+        ),
         (
             "SUBSCRIBE_DESKTOP_ACTIVATION_COMMAND",
             "subscribe_desktop_activation",
@@ -368,9 +388,9 @@ fn check_generated_host_surface(desktop_root: &Path, client_path: &Path) -> Resu
         .get("operations")
         .and_then(Value::as_object)
         .ok_or("Desktop host surface operations must be an object")?;
-    if operations.len() != 35 {
+    if operations.len() != 38 {
         return Err(format!(
-            "Desktop generated host surface must expose exactly 35 renderer user intents, found {}",
+            "Desktop generated host surface must expose exactly 38 renderer user intents, found {}",
             operations.len()
         ));
     }
@@ -455,8 +475,14 @@ fn check_security_configuration(desktop_root: &Path) -> Result<(), String> {
     let permissions = string_set(&capability, "permissions")?;
     let expected_permissions = BTreeSet::from([
         "allow-get-desktop-status",
+        "allow-retry-managed-runtime",
+        "allow-get-desktop-preferences",
+        "allow-update-desktop-preferences",
+        "allow-reload-desktop-preferences",
         "allow-subscribe-desktop-activation",
         "allow-unsubscribe-desktop-activation",
+        "allow-get-desktop-window-route",
+        "allow-open-conversation-window",
     ]);
     if permissions != expected_permissions {
         return Err(format!(
@@ -470,6 +496,24 @@ fn check_security_configuration(desktop_root: &Path) -> Result<(), String> {
         ));
     }
 
+    let conversation_capability =
+        read_json(&desktop_root.join("src-tauri/capabilities/conversation.json"))?;
+    if string_set(&conversation_capability, "permissions")?
+        != BTreeSet::from([
+            "allow-get-desktop-status",
+            "allow-get-desktop-preferences",
+            "allow-get-desktop-window-route",
+        ])
+        || string_set(&conversation_capability, "windows")? != BTreeSet::from(["conversation-*"])
+        || string_set(&conversation_capability, "platforms")?
+            != BTreeSet::from(["linux", "macOS", "windows"])
+    {
+        return Err(
+            "Desktop conversation capability must remain backend-routed and least-authority"
+                .to_string(),
+        );
+    }
+
     let generated_capability =
         read_json(&desktop_root.join("src-tauri/capabilities/generated-host.json"))?;
     let generated_permissions = string_set(&generated_capability, "permissions")?;
@@ -481,9 +525,12 @@ fn check_security_configuration(desktop_root: &Path) -> Result<(), String> {
         "allow-subscribe-host-events",
         "allow-unsubscribe-host-events",
     ]);
-    if generated_permissions != expected_generated_permissions {
+    if generated_permissions != expected_generated_permissions
+        || string_set(&generated_capability, "windows")?
+            != BTreeSet::from(["main", "conversation-*"])
+    {
         return Err(format!(
-            "generated Desktop host capability has unexpected permissions: {generated_permissions:?}"
+            "generated Desktop host capability has unexpected permissions or window roles: {generated_permissions:?}"
         ));
     }
     for (file, identifier, command) in [
@@ -579,6 +626,7 @@ fn check_security_configuration(desktop_root: &Path) -> Result<(), String> {
     if security.get("capabilities")
         != Some(&Value::Array(vec![
             Value::String("main".to_string()),
+            Value::String("conversation".to_string()),
             Value::String("generated-host".to_string()),
         ]))
     {
@@ -592,8 +640,11 @@ fn check_security_configuration(desktop_root: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     for command in [
         "get_desktop_status",
+        "retry_managed_runtime",
         "subscribe_desktop_activation",
         "unsubscribe_desktop_activation",
+        "get_desktop_window_route",
+        "open_conversation_window",
     ] {
         if build_script.matches(&format!("\"{command}\"")).count() != 1 {
             return Err(format!(

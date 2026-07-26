@@ -37,7 +37,8 @@
           "approvalId",
           "decision",
           "expectedRevision",
-          "reason"
+          "reason",
+          "sessionId"
         ],
         "supervisorConstructed": [
           "idempotencyKey"
@@ -58,7 +59,8 @@
         "forbidden": [],
         "rendererProvided": [
           "runId",
-          "sessionId"
+          "sessionId",
+          "state"
         ],
         "supervisorConstructed": [],
         "supervisorOverridden": [
@@ -79,7 +81,8 @@
       "input": {
         "forbidden": [],
         "rendererProvided": [
-          "approvalId"
+          "approvalId",
+          "sessionId"
         ],
         "supervisorConstructed": [],
         "supervisorOverridden": []
@@ -115,7 +118,8 @@
           "answers",
           "clarificationId",
           "expectedRevision",
-          "response"
+          "response",
+          "sessionId"
         ],
         "supervisorConstructed": [
           "idempotencyKey"
@@ -262,7 +266,8 @@
         "rendererProvided": [
           "deferredId",
           "expectedRevision",
-          "resultText"
+          "resultText",
+          "sessionId"
         ],
         "supervisorConstructed": [
           "idempotencyKey"
@@ -284,7 +289,8 @@
         "rendererProvided": [
           "deferredId",
           "error",
-          "expectedRevision"
+          "expectedRevision",
+          "sessionId"
         ],
         "supervisorConstructed": [
           "idempotencyKey"
@@ -305,7 +311,8 @@
         "forbidden": [],
         "rendererProvided": [
           "runId",
-          "sessionId"
+          "sessionId",
+          "state"
         ],
         "supervisorConstructed": [],
         "supervisorOverridden": [
@@ -326,7 +333,8 @@
       "input": {
         "forbidden": [],
         "rendererProvided": [
-          "deferredId"
+          "deferredId",
+          "sessionId"
         ],
         "supervisorConstructed": [],
         "supervisorOverridden": []
@@ -472,6 +480,27 @@
         ]
       }
     },
+    "run.list": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "sessionId"
+        ],
+        "supervisorConstructed": [],
+        "supervisorOverridden": [
+          "cursor",
+          "limit"
+        ]
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "page",
+          "runs"
+        ]
+      }
+    },
     "run.resume": {
       "input": {
         "forbidden": [],
@@ -536,6 +565,7 @@
         "forbidden": [],
         "select": [],
         "transform": [
+          "controllableByCurrentHost",
           "run"
         ]
       }
@@ -752,10 +782,51 @@
           "workspace"
         ]
       }
+    },
+    "clarification.list": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "runId",
+          "sessionId",
+          "state"
+        ],
+        "supervisorConstructed": [],
+        "supervisorOverridden": [
+          "cursor",
+          "limit"
+        ]
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "clarifications",
+          "page"
+        ]
+      }
+    },
+    "clarification.show": {
+      "input": {
+        "forbidden": [],
+        "rendererProvided": [
+          "clarificationId",
+          "sessionId"
+        ],
+        "supervisorConstructed": [],
+        "supervisorOverridden": []
+      },
+      "output": {
+        "forbidden": [],
+        "select": [],
+        "transform": [
+          "clarification"
+        ]
+      }
     }
   },
   "protocol": {
-    "digest": "sha256:2a9e9fad809f55e34f2b701aed6008b2a91148c19f3988a8e79b5c00d404e6dd",
+    "digest": "sha256:92ebe8f13baf1e3aced0f0edcae3b2a9a23e2e5b64718e615bb0c6812b01c2bf",
     "major": 1,
     "name": "starweaver.host"
   },

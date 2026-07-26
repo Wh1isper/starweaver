@@ -9,8 +9,9 @@ const eventDelivery = {
   acknowledgementToken: "desktop-event-ack-v1-safe",
   event: { delivery: { record: { eventId: "event-safe" } } },
 };
-const readyCallback = (subscriptionIndex = 0) => channelCallbacks[subscriptionIndex * 2];
-const eventCallback = (subscriptionIndex = 0) => channelCallbacks[subscriptionIndex * 2 + 1];
+const readyCallback = (subscriptionIndex = 0) => channelCallbacks[subscriptionIndex * 3];
+const eventCallback = (subscriptionIndex = 0) => channelCallbacks[subscriptionIndex * 3 + 1];
+const completionCallback = (subscriptionIndex = 0) => channelCallbacks[subscriptionIndex * 3 + 2];
 
 describe("generated Desktop host client", () => {
   beforeEach(() => {
@@ -190,6 +191,64 @@ describe("generated Desktop host client", () => {
     expect(
       mockInvoke.mock.calls.filter((call) => call[0] === UNSUBSCRIBE_HOST_EVENTS_COMMAND),
     ).toHaveLength(2);
+  });
+
+  it("exposes replay catch-up separately from cancellation readiness", async () => {
+    const { DesktopHostClient, SUBSCRIBE_HOST_EVENTS_COMMAND } = await import(
+      "../generated/host/client"
+    );
+    const token = "desktop-host-subscription-catch-up";
+    let finishReplay!: (value: string) => void;
+    mockInvoke.mockImplementation((command: unknown) => {
+      if (command === SUBSCRIBE_HOST_EVENTS_COMMAND) {
+        readyCallback()?.(token);
+        return new Promise<string>((resolve) => {
+          finishReplay = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const subscription = await new DesktopHostClient().subscribe(
+      { runId: "run-terminal", sessionId: "session-safe" },
+      () => undefined,
+    );
+    let caughtUp = false;
+    void subscription.caughtUp.then(() => {
+      caughtUp = true;
+    });
+    await Promise.resolve();
+    expect(caughtUp).toBe(false);
+
+    finishReplay(token);
+    await expect(subscription.caughtUp).resolves.toBeUndefined();
+    expect(caughtUp).toBe(true);
+    await subscription.close();
+    await expect(subscription.done).resolves.toBeUndefined();
+  });
+
+  it("completes done when the backend reports a terminal tail", async () => {
+    const { DesktopHostClient, SUBSCRIBE_HOST_EVENTS_COMMAND, UNSUBSCRIBE_HOST_EVENTS_COMMAND } =
+      await import("../generated/host/client");
+    const token = "desktop-host-subscription-terminal";
+    mockInvoke.mockImplementation(async (command: unknown) => {
+      if (command === SUBSCRIBE_HOST_EVENTS_COMMAND) {
+        readyCallback()?.(token);
+        queueMicrotask(() => completionCallback()?.(token));
+        return token;
+      }
+      return undefined;
+    });
+
+    const subscription = await new DesktopHostClient().subscribe(
+      { runId: "run-terminal", sessionId: "session-safe" },
+      () => undefined,
+    );
+
+    await expect(subscription.done).resolves.toBeUndefined();
+    expect(mockInvoke).toHaveBeenCalledWith(UNSUBSCRIBE_HOST_EVENTS_COMMAND, {
+      subscriptionToken: token,
+    });
   });
 
   it("uses the readiness token to cancel a failed replay before subscribe returns", async () => {

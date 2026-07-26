@@ -16,7 +16,9 @@ use crate::{
     generated::host::{
         DesktopHostEventAcknowledgementToken, DesktopHostEventDelivery, DesktopHostEventScope,
     },
-    supervisor::{BackendHostEvent, LocalHostSupervisor, SupervisorError},
+    supervisor::{
+        BackendHostEvent, HostChildState, LocalHostSupervisor, LocalLaunchSpec, SupervisorError,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -44,10 +46,23 @@ struct HostSubscriptionControl {
     completed: watch::Receiver<bool>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DesktopWindowRoute {
+    Main,
+    Conversation { session_id: String },
+}
+
+fn default_event_window_label() -> String {
+    "main".to_string()
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct EventViewKey {
     pub(crate) execution_domain: String,
+    #[serde(default = "default_event_window_label")]
+    window_label: String,
     session_id: String,
     run_id: String,
 }
@@ -81,9 +96,13 @@ pub struct DesktopState {
     next_subscription_token: AtomicU64,
     activation_subscriptions: Mutex<BTreeMap<u64, Channel<DesktopActivation>>>,
     host_subscriptions: Mutex<BTreeMap<String, HostSubscriptionControl>>,
+    conversation_window_gate: Mutex<()>,
+    conversation_window_routes: Mutex<BTreeMap<String, String>>,
     event_storage_root: Mutex<Option<PathBuf>>,
     event_cursors: Mutex<BTreeMap<EventViewKey, EventCursorRecord>>,
     pending_event_acknowledgements: Mutex<BTreeMap<String, PendingEventAcknowledgement>>,
+    runtime_issue: Mutex<Option<SupervisorError>>,
+    runtime_start_gate: AsyncMutex<()>,
     event_cursor_gate: AsyncMutex<()>,
     supervisor: LocalHostSupervisor,
 }
@@ -97,9 +116,13 @@ impl Default for DesktopState {
             next_subscription_token: AtomicU64::new(1),
             activation_subscriptions: Mutex::new(BTreeMap::new()),
             host_subscriptions: Mutex::new(BTreeMap::new()),
+            conversation_window_gate: Mutex::new(()),
+            conversation_window_routes: Mutex::new(BTreeMap::new()),
             event_storage_root: Mutex::new(None),
             event_cursors: Mutex::new(BTreeMap::new()),
             pending_event_acknowledgements: Mutex::new(BTreeMap::new()),
+            runtime_issue: Mutex::new(None),
+            runtime_start_gate: AsyncMutex::new(()),
             event_cursor_gate: AsyncMutex::new(()),
             supervisor: LocalHostSupervisor::default(),
         }
@@ -156,6 +179,122 @@ impl DesktopState {
         &self.supervisor
     }
 
+    pub fn window_route(&self, window_label: &str) -> Option<DesktopWindowRoute> {
+        if window_label == "main" {
+            return Some(DesktopWindowRoute::Main);
+        }
+        self.conversation_window_routes
+            .lock()
+            .ok()
+            .and_then(|routes| routes.get(window_label).cloned())
+            .map(|session_id| DesktopWindowRoute::Conversation { session_id })
+    }
+
+    pub fn lock_conversation_windows(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, ()>, SupervisorError> {
+        self.conversation_window_gate
+            .lock()
+            .map_err(|_| SupervisorError::transport())
+    }
+
+    pub fn reserve_conversation_window(
+        &self,
+        session_id: &str,
+    ) -> Result<(String, bool), SupervisorError> {
+        let mut routes = self
+            .conversation_window_routes
+            .lock()
+            .map_err(|_| SupervisorError::transport())?;
+        if let Some((label, _)) = routes
+            .iter()
+            .find(|(_, existing)| existing.as_str() == session_id)
+        {
+            return Ok((label.clone(), true));
+        }
+        if routes.len() >= MAX_ACTIVATION_SUBSCRIPTIONS {
+            return Err(SupervisorError::not_ready());
+        }
+        let label = format!("conversation-{}", uuid::Uuid::new_v4().simple());
+        routes.insert(label.clone(), session_id.to_string());
+        drop(routes);
+        Ok((label, false))
+    }
+
+    pub fn release_window(&self, window_label: &str) {
+        if window_label != "main"
+            && let Ok(mut routes) = self.conversation_window_routes.lock()
+        {
+            routes.remove(window_label);
+        }
+        if let Ok(mut subscriptions) = self.host_subscriptions.lock() {
+            for control in subscriptions
+                .values_mut()
+                .filter(|control| control.key.window_label == window_label)
+            {
+                let _ = control.cancel.send(true);
+            }
+        }
+    }
+
+    pub fn runtime_issue(&self) -> Option<SupervisorError> {
+        self.runtime_issue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn record_runtime_issue(&self, issue: SupervisorError) {
+        *self
+            .runtime_issue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(issue);
+    }
+
+    pub async fn prepare_and_start_managed_runtime<F>(
+        &self,
+        prepare: F,
+    ) -> Result<(), SupervisorError>
+    where
+        F: FnOnce() -> Result<LocalLaunchSpec, SupervisorError> + Send + 'static,
+    {
+        let _attempt = self.runtime_start_gate.lock().await;
+        if self.exit_shutdown_started.load(Ordering::Acquire) {
+            return Err(SupervisorError::not_ready());
+        }
+        match self.supervisor.status().state {
+            HostChildState::Unconfigured | HostChildState::Stopped | HostChildState::Failed => {}
+            HostChildState::Starting
+            | HostChildState::Handshaking
+            | HostChildState::Ready
+            | HostChildState::Draining
+            | HostChildState::Recovering => return Ok(()),
+            HostChildState::Incompatible => return Err(SupervisorError::not_ready()),
+        }
+        *self
+            .runtime_issue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        let result = match tokio::task::spawn_blocking(prepare).await {
+            Ok(Ok(_)) if self.exit_shutdown_started.load(Ordering::Acquire) => {
+                return Err(SupervisorError::not_ready());
+            }
+            Ok(Ok(spec)) => self.supervisor.start(spec).await,
+            Ok(Err(issue)) => Err(issue),
+            Err(_) => Err(SupervisorError::transport()),
+        };
+        if let Err(issue) = &result {
+            self.record_runtime_issue(issue.clone());
+        }
+        result
+    }
+
+    pub async fn shutdown_managed_runtime(&self) -> Result<(), SupervisorError> {
+        let _ = self.supervisor.shutdown().await;
+        let _attempt = self.runtime_start_gate.lock().await;
+        self.supervisor.shutdown().await
+    }
+
     pub fn configure_supervisor_storage(&self, root: PathBuf) -> Result<(), SupervisorError> {
         let cursors = load_event_cursors(&root)?;
         self.supervisor.configure_storage_root(root.clone())?;
@@ -170,9 +309,14 @@ impl DesktopState {
         Ok(())
     }
 
-    pub fn event_view_key(execution_domain: String, scope: &DesktopHostEventScope) -> EventViewKey {
+    pub fn event_view_key(
+        execution_domain: String,
+        window_label: String,
+        scope: &DesktopHostEventScope,
+    ) -> EventViewKey {
         EventViewKey {
             execution_domain,
+            window_label,
             session_id: scope.session_id.0.clone(),
             run_id: scope.run_id.0.clone(),
         }
@@ -237,7 +381,11 @@ impl DesktopState {
         }
     }
 
-    pub async fn acknowledge_event(&self, token: &str) -> Result<(), SupervisorError> {
+    pub async fn acknowledge_event(
+        &self,
+        window_label: &str,
+        token: &str,
+    ) -> Result<(), SupervisorError> {
         let (key, cursor, event_id) = {
             let pending = self
                 .pending_event_acknowledgements
@@ -248,6 +396,11 @@ impl DesktopState {
                     "event acknowledgement token is invalid or expired",
                 )
             })?;
+            if entry.key.window_label != window_label {
+                return Err(SupervisorError::invalid_configuration(
+                    "event acknowledgement is owned by another Desktop window",
+                ));
+            }
             let values = (
                 entry.key.clone(),
                 entry.cursor.clone(),
@@ -275,6 +428,36 @@ impl DesktopState {
     ) -> Result<(), SupervisorError> {
         self.persist_event_cursor(key, event.cursor.clone(), event.event_id.clone())
             .await
+    }
+
+    pub async fn reset_event_cursor(&self, key: &EventViewKey) -> Result<(), SupervisorError> {
+        let _gate = self.event_cursor_gate.lock().await;
+        let root = self
+            .event_storage_root
+            .lock()
+            .map_err(|_| SupervisorError::transport())?
+            .clone()
+            .ok_or_else(SupervisorError::not_ready)?;
+        let mut next = self
+            .event_cursors
+            .lock()
+            .map_err(|_| SupervisorError::transport())?
+            .clone();
+        if next.remove(key).is_none() {
+            return Ok(());
+        }
+        let persisted = tokio::task::spawn_blocking({
+            let snapshot = next.clone();
+            move || persist_event_cursors(&root, &snapshot)
+        })
+        .await
+        .map_err(|_| SupervisorError::transport())?;
+        persisted?;
+        *self
+            .event_cursors
+            .lock()
+            .map_err(|_| SupervisorError::transport())? = next;
+        Ok(())
     }
 
     async fn persist_event_cursor(
@@ -410,16 +593,27 @@ impl DesktopState {
         }
     }
 
-    pub fn begin_host_unsubscribe(&self, token: &str) -> Option<watch::Receiver<bool>> {
+    pub fn begin_host_unsubscribe(
+        &self,
+        window_label: &str,
+        token: &str,
+    ) -> Result<Option<watch::Receiver<bool>>, SupervisorError> {
         let mut subscriptions = self
             .host_subscriptions
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let control = subscriptions.get_mut(token)?;
+            .map_err(|_| SupervisorError::transport())?;
+        let Some(control) = subscriptions.get_mut(token) else {
+            return Ok(None);
+        };
+        if control.key.window_label != window_label {
+            return Err(SupervisorError::invalid_configuration(
+                "host subscription is owned by another Desktop window",
+            ));
+        }
         let _ = control.cancel.send(true);
         let completed = control.completed.clone();
         drop(subscriptions);
-        Some(completed)
+        Ok(Some(completed))
     }
 
     pub fn complete_host_subscription(&self, token: &str) {
@@ -544,6 +738,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_runtime_preparation_is_single_flight() {
+        use std::{
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering as AtomicOrdering},
+            },
+            time::Duration,
+        };
+
+        let state = Arc::new(DesktopState::default());
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let launch = |message: &'static str,
+                      state: Arc<DesktopState>,
+                      active: Arc<AtomicUsize>,
+                      maximum: Arc<AtomicUsize>| {
+            tokio::spawn(async move {
+                state
+                    .prepare_and_start_managed_runtime(move || {
+                        let current = active.fetch_add(1, AtomicOrdering::AcqRel) + 1;
+                        maximum.fetch_max(current, AtomicOrdering::AcqRel);
+                        std::thread::sleep(Duration::from_millis(25));
+                        active.fetch_sub(1, AtomicOrdering::AcqRel);
+                        Err(SupervisorError::invalid_configuration(message))
+                    })
+                    .await
+            })
+        };
+        let first = launch(
+            "first preparation failed",
+            state.clone(),
+            active.clone(),
+            maximum.clone(),
+        );
+        let second = launch(
+            "second preparation failed",
+            state.clone(),
+            active,
+            maximum.clone(),
+        );
+
+        let _ = first.await.expect("first task");
+        let _ = second.await.expect("second task");
+        assert_eq!(maximum.load(AtomicOrdering::Acquire), 1);
+        assert!(state.runtime_issue().is_some());
+    }
+
+    #[tokio::test]
+    async fn exit_waits_for_preparation_without_starting_a_child_after_shutdown() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool as TestAtomicBool, Ordering as AtomicOrdering},
+        };
+
+        let state = Arc::new(DesktopState::default());
+        let started = Arc::new(TestAtomicBool::new(false));
+        let release = Arc::new(TestAtomicBool::new(false));
+        let attempt_state = state.clone();
+        let attempt_started = started.clone();
+        let attempt_release = release.clone();
+        let attempt = tokio::spawn(async move {
+            attempt_state
+                .prepare_and_start_managed_runtime(move || {
+                    attempt_started.store(true, AtomicOrdering::Release);
+                    while !attempt_release.load(AtomicOrdering::Acquire) {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    Ok(LocalLaunchSpec {
+                        runtime_path: PathBuf::from("/unused/runtime"),
+                        runtime_digest: "sha256:unused".to_string(),
+                        runtime_version: "unused".to_string(),
+                        build_revision: "unused".to_string(),
+                        target: "unused".to_string(),
+                        launch_envelope_path: PathBuf::from("/unused/launch.json"),
+                        launch_envelope_digest: "sha256:unused".to_string(),
+                        configuration_generation: 1,
+                        execution_domain_id: "unused".to_string(),
+                    })
+                })
+                .await
+        });
+        while !started.load(AtomicOrdering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+
+        assert!(state.begin_exit_shutdown());
+        let shutdown_state = state.clone();
+        let shutdown = tokio::spawn(async move { shutdown_state.shutdown_managed_runtime().await });
+        release.store(true, AtomicOrdering::Release);
+
+        assert!(attempt.await.expect("startup task").is_err());
+        shutdown
+            .await
+            .expect("shutdown task")
+            .expect("shutdown barrier");
+        assert_eq!(state.supervisor().status().generation, 0);
+        assert!(state.runtime_issue().is_none());
+    }
+
+    #[tokio::test]
     async fn event_acknowledgement_persists_cursor_across_restart() {
         let temp = tempfile::tempdir().expect("temporary directory");
         let state = DesktopState::default();
@@ -555,7 +849,8 @@ mod tests {
             "runId": "run-test"
         }))
         .expect("event scope");
-        let key = DesktopState::event_view_key("domain-test".to_string(), &scope);
+        let key =
+            DesktopState::event_view_key("domain-test".to_string(), "main".to_string(), &scope);
         let event = BackendHostEvent {
             event: crate::generated::host::SafeHostEvent {
                 delivery: serde_json::json!({"record": {"eventId": "event-test"}}),
@@ -567,7 +862,7 @@ mod tests {
             .prepare_event_acknowledgement(key.clone(), event)
             .expect("prepare acknowledgement");
         state
-            .acknowledge_event(&delivery.acknowledgement_token.0)
+            .acknowledge_event("main", &delivery.acknowledgement_token.0)
             .await
             .expect("acknowledge event");
         acknowledged.await.expect("acknowledgement barrier");
@@ -589,6 +884,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fresh_renderer_subscription_resets_persisted_cursor_to_origin() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let state = DesktopState::default();
+        state
+            .configure_supervisor_storage(temp.path().to_path_buf())
+            .expect("configure storage");
+        let key = EventViewKey {
+            execution_domain: "domain".to_string(),
+            window_label: "main".to_string(),
+            session_id: "session".to_string(),
+            run_id: "run".to_string(),
+        };
+        state
+            .persist_event_cursor(
+                key.clone(),
+                "cursor-before-reload".to_string(),
+                "event-before-reload".to_string(),
+            )
+            .await
+            .expect("persist cursor");
+
+        state
+            .reset_event_cursor(&key)
+            .await
+            .expect("reset renderer projection cursor");
+
+        assert_eq!(state.acknowledged_event_cursor(&key), None);
+        assert!(!state.event_was_acknowledged(&key, "event-before-reload"));
+        let restarted = DesktopState::default();
+        restarted
+            .configure_supervisor_storage(temp.path().to_path_buf())
+            .expect("reload storage");
+        assert_eq!(restarted.acknowledged_event_cursor(&key), None);
+    }
+
+    #[tokio::test]
     async fn cursor_capacity_evicts_inactive_views_and_reloads_from_origin() {
         let temp = tempfile::tempdir().expect("temporary directory");
         let state = DesktopState::default();
@@ -600,6 +931,7 @@ mod tests {
         for index in 0..=MAX_EVENT_CURSOR_VIEWS {
             let key = EventViewKey {
                 execution_domain: "domain".to_string(),
+                window_label: "main".to_string(),
                 session_id: format!("session-{index:04}"),
                 run_id: "run".to_string(),
             };
@@ -648,6 +980,7 @@ mod tests {
         let state = DesktopState::default();
         let key = EventViewKey {
             execution_domain: "domain".to_string(),
+            window_label: "main".to_string(),
             session_id: "session".to_string(),
             run_id: "run".to_string(),
         };
@@ -671,6 +1004,7 @@ mod tests {
         let state = DesktopState::default();
         let key = EventViewKey {
             execution_domain: "domain".to_string(),
+            window_label: "main".to_string(),
             session_id: "session".to_string(),
             run_id: "run".to_string(),
         };
@@ -678,10 +1012,12 @@ mod tests {
             .register_host_subscription(key)
             .expect("register subscription");
         let mut first = state
-            .begin_host_unsubscribe(&token)
+            .begin_host_unsubscribe("main", &token)
+            .expect("unsubscribe state")
             .expect("first unsubscribe");
         let mut second = state
-            .begin_host_unsubscribe(&token)
+            .begin_host_unsubscribe("main", &token)
+            .expect("unsubscribe state")
             .expect("second unsubscribe");
         cancelled.changed().await.expect("cancellation signal");
         assert!(*cancelled.borrow());
@@ -695,9 +1031,81 @@ mod tests {
         state.complete_host_subscription(&token);
         let replacement_key = EventViewKey {
             execution_domain: "domain".to_string(),
+            window_label: "main".to_string(),
             session_id: "session".to_string(),
             run_id: "run".to_string(),
         };
         assert!(state.register_host_subscription(replacement_key).is_ok());
+    }
+
+    #[tokio::test]
+    async fn same_run_subscriptions_are_owned_per_window() {
+        let state = DesktopState::default();
+        let main_key = EventViewKey {
+            execution_domain: "domain".to_string(),
+            window_label: "main".to_string(),
+            session_id: "session".to_string(),
+            run_id: "run".to_string(),
+        };
+        let conversation_key = EventViewKey {
+            window_label: "conversation-one".to_string(),
+            ..main_key.clone()
+        };
+        let (_, main_cancelled, _main_completion) = state
+            .register_host_subscription(main_key)
+            .expect("main subscription");
+        let (_, mut old_conversation_cancelled, old_conversation_completion) = state
+            .register_host_subscription(conversation_key.clone())
+            .expect("conversation subscription");
+
+        let ((), replacement) = tokio::join!(
+            async {
+                old_conversation_cancelled
+                    .changed()
+                    .await
+                    .expect("conversation replacement cancel");
+                old_conversation_completion
+                    .send(true)
+                    .expect("conversation completion");
+            },
+            state.replace_host_subscription(conversation_key)
+        );
+
+        assert!(replacement.is_ok());
+        assert!(!*main_cancelled.borrow());
+        assert!(
+            !main_cancelled
+                .has_changed()
+                .expect("main cancellation state")
+        );
+    }
+
+    #[test]
+    fn conversation_window_route_is_reused_and_released_by_session() {
+        let state = DesktopState::default();
+        let (label, reused) = state
+            .reserve_conversation_window("session-one")
+            .expect("reserve conversation window");
+        assert!(!reused);
+        assert_eq!(
+            state.window_route(&label),
+            Some(DesktopWindowRoute::Conversation {
+                session_id: "session-one".to_string()
+            })
+        );
+        assert_eq!(
+            state
+                .reserve_conversation_window("session-one")
+                .expect("reuse conversation window"),
+            (label.clone(), true)
+        );
+
+        state.release_window(&label);
+        assert_eq!(state.window_route(&label), None);
+        let (replacement, reused) = state
+            .reserve_conversation_window("session-one")
+            .expect("reserve replacement window");
+        assert!(!reused);
+        assert_ne!(replacement, label);
     }
 }

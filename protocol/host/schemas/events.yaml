@@ -324,6 +324,9 @@
             "$ref": "#/components/schemas/OutputAvailableEvent"
           },
           {
+            "$ref": "#/components/schemas/TranscriptChangedEvent"
+          },
+          {
             "$ref": "#/components/schemas/ApprovalChangedEvent"
           },
           {
@@ -359,6 +362,119 @@
           "delivery"
         ],
         "type": "object"
+      },
+      "TranscriptChangedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "transcript_changed",
+            "type": "string"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "transcriptSequence": {
+            "$ref": "#/components/schemas/DecimalU64"
+          },
+          "update": {
+            "$ref": "#/components/schemas/TranscriptUpdate"
+          }
+        },
+        "required": [
+          "kind",
+          "sessionId",
+          "runId",
+          "transcriptSequence",
+          "update"
+        ],
+        "type": "object"
+      },
+      "TranscriptMessageFinished": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "message_finished",
+            "type": "string"
+          },
+          "messageId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "messageId"
+        ],
+        "type": "object"
+      },
+      "TranscriptMessageStarted": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "message_started",
+            "type": "string"
+          },
+          "messageId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "role": {
+            "const": "assistant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "messageId",
+          "role"
+        ],
+        "type": "object"
+      },
+      "TranscriptTextAppended": {
+        "additionalProperties": false,
+        "properties": {
+          "delta": {
+            "maxLength": 16384,
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "const": "text_appended",
+            "type": "string"
+          },
+          "messageId": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "messageId",
+          "delta"
+        ],
+        "type": "object"
+      },
+      "TranscriptUpdate": {
+        "discriminator": {
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TranscriptMessageStarted"
+          },
+          {
+            "$ref": "#/components/schemas/TranscriptTextAppended"
+          },
+          {
+            "$ref": "#/components/schemas/TranscriptMessageFinished"
+          }
+        ]
       },
       "OutputAvailableEvent": {
         "additionalProperties": false,

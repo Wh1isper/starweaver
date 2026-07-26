@@ -6,6 +6,7 @@
     "deferredId": "deferred_example",
     "expectedRevision": "4",
     "idempotencyKey": "deferred-complete-example",
-    "resultText": "Completed by the trusted client"
+    "resultText": "Completed by the trusted client",
+    "sessionId": "session_example"
   }
 }

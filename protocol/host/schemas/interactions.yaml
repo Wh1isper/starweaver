@@ -7,6 +7,9 @@
           "approvalId": {
             "$ref": "#/components/schemas/ApprovalId"
           },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
           "decision": {
             "enum": [
               "approved",
@@ -36,6 +39,7 @@
         },
         "required": [
           "approvalId",
+          "sessionId",
           "expectedRevision",
           "decision",
           "idempotencyKey"
@@ -84,10 +88,14 @@
         "properties": {
           "approvalId": {
             "$ref": "#/components/schemas/ApprovalId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
           }
         },
         "required": [
-          "approvalId"
+          "approvalId",
+          "sessionId"
         ],
         "type": "object"
       },
@@ -95,7 +103,7 @@
         "additionalProperties": false,
         "properties": {
           "approval": {
-            "$ref": "#/components/schemas/ApprovalSummary"
+            "$ref": "#/components/schemas/ApprovalDetail"
           }
         },
         "required": [
@@ -157,6 +165,9 @@
           "clarificationId": {
             "$ref": "#/components/schemas/ClarificationId"
           },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
           "idempotencyKey": {
             "$ref": "#/components/schemas/IdempotencyKey"
           },
@@ -187,6 +198,7 @@
         },
         "required": [
           "clarificationId",
+          "sessionId",
           "expectedRevision",
           "answers",
           "idempotencyKey"
@@ -264,6 +276,9 @@
           "deferredId": {
             "$ref": "#/components/schemas/DeferredId"
           },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
           "idempotencyKey": {
             "$ref": "#/components/schemas/IdempotencyKey"
           },
@@ -278,6 +293,7 @@
         },
         "required": [
           "deferredId",
+          "sessionId",
           "resultText",
           "expectedRevision",
           "idempotencyKey"
@@ -306,6 +322,9 @@
           "deferredId": {
             "$ref": "#/components/schemas/DeferredId"
           },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          },
           "error": {
             "maxLength": 4096,
             "minLength": 1,
@@ -320,6 +339,7 @@
         },
         "required": [
           "deferredId",
+          "sessionId",
           "error",
           "expectedRevision",
           "idempotencyKey"
@@ -368,10 +388,14 @@
         "properties": {
           "deferredId": {
             "$ref": "#/components/schemas/DeferredId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
           }
         },
         "required": [
-          "deferredId"
+          "deferredId",
+          "sessionId"
         ],
         "type": "object"
       },
@@ -379,7 +403,7 @@
         "additionalProperties": false,
         "properties": {
           "deferred": {
-            "$ref": "#/components/schemas/DeferredSummary"
+            "$ref": "#/components/schemas/DeferredDetail"
           }
         },
         "required": [
@@ -479,6 +503,14 @@
               }
             ],
             "x-starweaver-nullable": true
+          },
+          "state": {
+            "enum": [
+              "all",
+              "unresolved",
+              "resolved"
+            ],
+            "type": "string"
           }
         },
         "required": [
@@ -588,6 +620,99 @@
         "required": [
           "question",
           "selectedOptions"
+        ],
+        "type": "object"
+      },
+      "ApprovalDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "summary": {
+            "$ref": "#/components/schemas/ApprovalSummary"
+          },
+          "argumentsJson": {
+            "maxLength": 32768,
+            "minLength": 0,
+            "type": "string"
+          },
+          "argumentsComplete": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "summary",
+          "argumentsJson",
+          "argumentsComplete"
+        ],
+        "type": "object"
+      },
+      "ClarificationListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "clarifications": {
+            "items": {
+              "$ref": "#/components/schemas/ClarificationSummary"
+            },
+            "maxItems": 200,
+            "minItems": 0,
+            "type": "array"
+          },
+          "page": {
+            "$ref": "#/components/schemas/PageInfo"
+          }
+        },
+        "required": [
+          "clarifications",
+          "page"
+        ],
+        "type": "object"
+      },
+      "ClarificationShowParams": {
+        "additionalProperties": false,
+        "properties": {
+          "clarificationId": {
+            "$ref": "#/components/schemas/ClarificationId"
+          },
+          "sessionId": {
+            "$ref": "#/components/schemas/SessionId"
+          }
+        },
+        "required": [
+          "clarificationId",
+          "sessionId"
+        ],
+        "type": "object"
+      },
+      "ClarificationShowResult": {
+        "additionalProperties": false,
+        "properties": {
+          "clarification": {
+            "$ref": "#/components/schemas/ClarificationSummary"
+          }
+        },
+        "required": [
+          "clarification"
+        ],
+        "type": "object"
+      },
+      "DeferredDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "summary": {
+            "$ref": "#/components/schemas/DeferredSummary"
+          },
+          "requestJson": {
+            "maxLength": 32768,
+            "minLength": 0,
+            "type": "string"
+          },
+          "requestComplete": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "summary",
+          "requestJson",
+          "requestComplete"
         ],
         "type": "object"
       }

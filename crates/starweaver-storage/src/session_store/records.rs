@@ -1,7 +1,8 @@
 use rusqlite::{Connection, OptionalExtension, params};
 use starweaver_core::{RunId, SessionId};
 use starweaver_session::{
-    RunRecord, RunStatus, SessionRecord, SessionStoreError, SessionStoreResult,
+    RunPage, RunPageKey, RunPageQuery, RunRecord, RunStatus, SessionRecord, SessionStoreError,
+    SessionStoreResult,
 };
 
 use crate::sqlite::{
@@ -159,11 +160,106 @@ pub fn list_run_records(
         .query_map(params![session_id.as_str()], |row| row.get::<_, String>(0))
         .map_err(map_sqlite_session_error)?;
     let runs = collect_json_record_rows::<RunRecord>(rows)?;
-    for run in &runs {
+    validate_run_records(&runs)?;
+    Ok(runs)
+}
+
+pub fn list_recent_run_records(
+    connection: &Connection,
+    session_id: &SessionId,
+    limit: usize,
+) -> SessionStoreResult<Vec<RunRecord>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let limit = i64::try_from(limit).map_err(map_display_session_error)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT record
+             FROM run_records
+             WHERE session_id = ?1
+             ORDER BY sequence_no DESC
+             LIMIT ?2",
+        )
+        .map_err(map_sqlite_session_error)?;
+    let rows = statement
+        .query_map(params![session_id.as_str(), limit], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(map_sqlite_session_error)?;
+    let mut runs = collect_json_record_rows::<RunRecord>(rows)?;
+    validate_run_records(&runs)?;
+    runs.reverse();
+    Ok(runs)
+}
+
+pub fn list_run_record_page(
+    connection: &Connection,
+    session_id: &SessionId,
+    query: &RunPageQuery,
+) -> SessionStoreResult<RunPage> {
+    let fetch_limit =
+        i64::try_from(query.limit().saturating_add(1)).map_err(map_display_session_error)?;
+    let payloads = if let Some(boundary) = query.before() {
+        let boundary = i64::try_from(boundary.sequence_no).map_err(map_display_session_error)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT record
+                 FROM run_records
+                 WHERE session_id = ?1 AND sequence_no < ?2
+                 ORDER BY sequence_no DESC
+                 LIMIT ?3",
+            )
+            .map_err(map_sqlite_session_error)?;
+        let rows = statement
+            .query_map(params![session_id.as_str(), boundary, fetch_limit], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(map_sqlite_session_error)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(map_sqlite_session_error)?
+    } else {
+        let mut statement = connection
+            .prepare(
+                "SELECT record
+                 FROM run_records
+                 WHERE session_id = ?1
+                 ORDER BY sequence_no DESC
+                 LIMIT ?2",
+            )
+            .map_err(map_sqlite_session_error)?;
+        let rows = statement
+            .query_map(params![session_id.as_str(), fetch_limit], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(map_sqlite_session_error)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(map_sqlite_session_error)?
+    };
+    let mut runs = payloads
+        .iter()
+        .map(|payload| deserialize_json_record::<RunRecord>(payload))
+        .collect::<SessionStoreResult<Vec<_>>>()?;
+    validate_run_records(&runs)?;
+    let has_more = runs.len() > query.limit();
+    runs.truncate(query.limit());
+    let next_key = runs
+        .last()
+        .map(RunPageKey::from_run)
+        .or_else(|| query.before().cloned());
+    Ok(RunPage {
+        runs,
+        next_key,
+        has_more,
+    })
+}
+
+fn validate_run_records(runs: &[RunRecord]) -> SessionStoreResult<()> {
+    for run in runs {
         run.validate_provenance()
             .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
     }
-    Ok(runs)
+    Ok(())
 }
 
 pub fn apply_run_to_session(session: &mut SessionRecord, run: &RunRecord) {
