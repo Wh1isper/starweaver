@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import type { DesktopPreferences } from "../bridge/types";
 import type { DesktopPreferencesState } from "./useDesktopPreferences";
 import { useModalDialog } from "./useModalDialog";
+import { UpdateSettings } from "./UpdateSettings";
 import type { RuntimeConfigDocument, useWorkspaceProduct } from "./useWorkspaceProduct";
 
 type Product = ReturnType<typeof useWorkspaceProduct>;
-type SettingsSection = "appearance" | "profile" | "runtime" | "providers" | "source";
+type SettingsSection = "appearance" | "updates" | "profile" | "runtime" | "providers" | "source";
 
 function lines(value: string): readonly string[] {
   return value
@@ -126,6 +127,7 @@ export function SettingsPanel({
           {(
             [
               ["appearance", "Appearance"],
+              ["updates", "Updates"],
               ["profile", "Default profile"],
               ["runtime", "Profile details"],
               ["providers", "Provider routes"],
@@ -254,9 +256,14 @@ export function SettingsPanel({
             </div>
           ) : null}
 
-          {product.settingsLoading && draft === undefined && section !== "appearance" ? (
+          {product.settingsLoading &&
+          draft === undefined &&
+          section !== "appearance" &&
+          section !== "updates" ? (
             <p className="settings-loading">Loading safe runtime settings…</p>
           ) : null}
+
+          {section === "updates" ? <UpdateSettings /> : null}
 
           {section === "profile" ? (
             <div className="settings-section">

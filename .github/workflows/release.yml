@@ -89,6 +89,199 @@ jobs:
           path: ${{ matrix.archive }}
           if-no-files-found: error
 
+      - name: Upload raw RPC workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpc-binary-${{ matrix.target }}
+          path: dist/starweaver-rpc*
+          if-no-files-found: error
+
+  build-runtime-update-artifacts:
+    name: Build independent RPC runtime update artifacts
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: runtime-update-release
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install signing dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download raw RPC workflow artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rpc-binary-*
+          path: runtime-input
+
+      - name: Package, sign, and verify runtime update artifacts
+        env:
+          STARWEAVER_UPDATE_PUBLIC_KEY: ${{ vars.STARWEAVER_UPDATE_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          version="${{ github.event.release.tag_name }}"
+          version="${version#v}"
+          mkdir -p dist/runtime
+          for target in \
+            x86_64-unknown-linux-gnu \
+            x86_64-apple-darwin \
+            aarch64-apple-darwin \
+            x86_64-pc-windows-msvc; do
+            binary="runtime-input/rpc-binary-${target}/starweaver-rpc"
+            if [[ "$target" == "x86_64-pc-windows-msvc" ]]; then binary="${binary}.exe"; fi
+            node apps/starweaver-desktop/scripts/package-runtime-update.mjs \
+              --version "$version" \
+              --target "$target" \
+              --revision "${{ github.sha }}" \
+              --binary "$binary" \
+              --output dist/runtime
+            manifest="$GITHUB_WORKSPACE/dist/runtime/starweaver-runtime-${target}.manifest.json"
+            pnpm --filter @starweaver/desktop tauri signer sign "$manifest"
+            cargo run --locked -p xtask -- verify-update-signature "$manifest" "$manifest.sig"
+          done
+
+      - name: Attest runtime update assets
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/runtime/*
+
+      - name: Upload runtime update workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-update-artifacts
+          path: dist/runtime/*
+          if-no-files-found: error
+
+  build-desktop-artifacts:
+    name: Build Desktop ${{ matrix.target }} packages
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            bundles: dmg
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bundles: dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/setup-tauri-linux
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: desktop-release-${{ matrix.target }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build updater-ready Desktop packages
+        env:
+          STARWEAVER_BUILD_REVISION: ${{ github.sha }}
+          STARWEAVER_DESKTOP_TARGET: ${{ matrix.target }}
+          STARWEAVER_UPDATE_PUBLIC_KEY: ${{ vars.STARWEAVER_UPDATE_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          updater_config="$(node apps/starweaver-desktop/scripts/tauri-updater-config.mjs)"
+          pnpm --filter @starweaver/desktop tauri build --ci \
+            --target ${{ matrix.target }} \
+            --bundles ${{ matrix.bundles }} \
+            --config src-tauri/tauri.updater.conf.json \
+            --config "$updater_config"
+
+      - name: Collect and verify canonical Desktop update assets
+        env:
+          STARWEAVER_UPDATE_PUBLIC_KEY: ${{ vars.STARWEAVER_UPDATE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          version="${{ github.event.release.tag_name }}"
+          version="${version#v}"
+          mkdir -p dist/desktop
+          node apps/starweaver-desktop/scripts/collect-desktop-artifacts.mjs \
+            --version "$version" \
+            --target "${{ matrix.target }}" \
+            --bundle-root "target/${{ matrix.target }}/release/bundle" \
+            --output dist/desktop
+          expected_signature_count=1
+          if [[ "${{ runner.os }}" == "Linux" ]]; then expected_signature_count=2; fi
+          actual_signature_count=$(find dist/desktop -maxdepth 1 -type f \
+            -name 'starweaver-desktop-*.sig' -print | wc -l | tr -d ' ')
+          test "$actual_signature_count" -eq "$expected_signature_count"
+          while IFS= read -r desktop_signature; do
+            cargo run --locked -p xtask -- verify-update-signature \
+              "${desktop_signature%.sig}" "$desktop_signature"
+          done < <(find dist/desktop -maxdepth 1 -type f \
+            -name 'starweaver-desktop-*.sig' -print)
+
+      - name: Attest Desktop assets
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/desktop/*
+
+      - name: Upload Desktop workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: dist/desktop/*
+          if-no-files-found: error
+
   build-protocol-artifacts:
     name: Package public host protocol
     runs-on: ubuntu-latest
@@ -235,34 +428,171 @@ jobs:
           path: dist/python/*
           if-no-files-found: error
 
-  upload-assets:
-    name: Upload release assets
+  upload-core-assets:
+    name: Upload core release assets
     needs: [build-binaries, build-protocol-artifacts, build-python-sdist, build-python-wheels]
     runs-on: ubuntu-latest
     steps:
-      - name: Download binary artifacts
+      - name: Download CLI archives
         uses: actions/download-artifact@v4
         with:
+          pattern: starweaver-cli-*
           path: dist
           merge-multiple: true
 
-      - name: Generate checksums
+      - name: Download protocol artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: host-protocol
+          path: dist
+
+      - name: Download Python distributions
+        uses: actions/download-artifact@v4
+        with:
+          pattern: python-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate core checksums
         run: |
           cd dist
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum * > checksums.txt
-          else
-            shasum -a 256 * > checksums.txt
-          fi
+          sha256sum * > checksums.txt
 
-      - name: Upload assets to release
+      - name: Upload immutable core assets to release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber --repo "${{ github.repository }}"
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.release.tag_name }}"
+          repo="${{ github.repository }}"
+          existing_assets="$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name')"
+          for asset in dist/*; do
+            name="${asset##*/}"
+            if printf '%s\n' "$existing_assets" | grep -Fqx "$name"; then
+              echo "release asset already exists and will not be replaced: $name" >&2
+              exit 1
+            fi
+          done
+          payloads=()
+          for asset in dist/*; do
+            if [[ "$asset" != "dist/checksums.txt" ]]; then payloads+=("$asset"); fi
+          done
+          test "${#payloads[@]}" -gt 0
+          gh release upload "$tag" "${payloads[@]}" --repo "$repo"
+          gh release upload "$tag" dist/checksums.txt --repo "$repo"
+
+  upload-runtime-assets:
+    name: Upload independent RPC runtime update assets
+    needs: build-runtime-update-artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download runtime update artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-update-artifacts
+          path: dist
+
+      - name: Generate runtime checksums
+        run: |
+          cd dist
+          sha256sum * > runtime-checksums.txt
+
+      - name: Upload immutable runtime update assets to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.release.tag_name }}"
+          repo="${{ github.repository }}"
+          existing_assets="$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name')"
+          for asset in dist/*; do
+            name="${asset##*/}"
+            if printf '%s\n' "$existing_assets" | grep -Fqx "$name"; then
+              echo "release asset already exists and will not be replaced: $name" >&2
+              exit 1
+            fi
+          done
+          runtime_payloads=()
+          runtime_signatures=()
+          runtime_manifests=()
+          for asset in dist/*; do
+            case "$asset" in
+              dist/runtime-checksums.txt) ;;
+              *.manifest.json.sig) runtime_signatures+=("$asset") ;;
+              *.manifest.json) runtime_manifests+=("$asset") ;;
+              *) runtime_payloads+=("$asset") ;;
+            esac
+          done
+          test "${#runtime_payloads[@]}" -eq 4
+          test "${#runtime_signatures[@]}" -eq 4
+          test "${#runtime_manifests[@]}" -eq 4
+          gh release upload "$tag" "${runtime_payloads[@]}" --repo "$repo"
+          gh release upload "$tag" "${runtime_signatures[@]}" --repo "$repo"
+          gh release upload "$tag" "${runtime_manifests[@]}" --repo "$repo"
+          gh release upload "$tag" dist/runtime-checksums.txt --repo "$repo"
+
+  upload-desktop-assets:
+    name: Upload Desktop release assets
+    needs: build-desktop-artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Download Desktop artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: dist
+          merge-multiple: true
+
+      - name: Finalize Tauri updater metadata
+        run: |
+          version="${{ github.event.release.tag_name }}"
+          version="${version#v}"
+          node apps/starweaver-desktop/scripts/finalize-update-metadata.mjs \
+            --version "$version" \
+            --published-at "${{ github.event.release.published_at }}" \
+            --output dist
+
+      - name: Generate Desktop checksums
+        run: |
+          cd dist
+          sha256sum * > desktop-checksums.txt
+
+      - name: Upload immutable Desktop assets to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.release.tag_name }}"
+          repo="${{ github.repository }}"
+          existing_assets="$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name')"
+          for asset in dist/*; do
+            name="${asset##*/}"
+            if printf '%s\n' "$existing_assets" | grep -Fqx "$name"; then
+              echo "release asset already exists and will not be replaced: $name" >&2
+              exit 1
+            fi
+          done
+          payloads=()
+          for asset in dist/*; do
+            case "$asset" in
+              dist/latest.json|dist/desktop-checksums.txt) ;;
+              *) payloads+=("$asset") ;;
+            esac
+          done
+          test "${#payloads[@]}" -gt 0
+          test -f dist/latest.json
+          gh release upload "$tag" "${payloads[@]}" --repo "$repo"
+          gh release upload "$tag" dist/latest.json --repo "$repo"
+          gh release upload "$tag" dist/desktop-checksums.txt --repo "$repo"
 
   publish-crates:
     name: Publish crates
-    needs: upload-assets
+    needs: upload-core-assets
     runs-on: ubuntu-latest
     environment: Release
     steps:
@@ -284,7 +614,7 @@ jobs:
 
   publish-python:
     name: Publish Python package
-    needs: upload-assets
+    needs: upload-core-assets
     runs-on: ubuntu-latest
     environment: Release
     steps:

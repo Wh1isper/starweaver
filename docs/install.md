@@ -1,7 +1,9 @@
 # Install
 
 Install Starweaver from GitHub Release artifacts, use crates.io packages for SDK code, or run from a
-checkout while developing inside this repository.
+checkout while developing inside this repository. For native application packages, see
+[Install and Update Starweaver Desktop](desktop-install.md), including verification and unsigned-app
+warnings.
 
 ## From source
 

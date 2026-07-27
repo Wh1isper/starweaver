@@ -1,6 +1,6 @@
 # Workspaces, Sessions, and Runs
 
-Status: local workspace entry, multi-workspace history, backend-routed conversation windows, window-owned subscriptions, run-control ownership projection, storage-bounded session/run pagination, restart recovery, and D9 dogfood interaction polish implemented; user-guided visual review remains an acceptance gate
+Status: local workspace entry, multi-workspace history, backend-routed conversation windows, window-owned subscriptions, run-control ownership projection, storage-bounded session/run pagination, restart recovery, and D9 local-product interaction polish implemented; user-guided visual review remains an acceptance gate
 
 This document defines the local-only Codex App-like Desktop product surface: the user opens an existing folder, creates an empty folder, or starts without choosing a folder. Desktop registers that choice with its one long-lived local RPC host, then creates a session bound to the returned workspace identity. The RPC host, not Desktop, owns all workspaces, agents, sessions, runs, durable evidence, and workspace execution contexts. SSH and remote execution domains are outside the Desktop product.
 

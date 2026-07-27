@@ -127,6 +127,10 @@ clean: ## Remove Rust build artifacts for the workspace and Python extension
 	@echo "Cleaning Python Rust extension artifacts"
 	@cargo clean --manifest-path $(PY_PACKAGE)/Cargo.toml
 
+.PHONY: desktop
+desktop: desktop-sync ## Run the Desktop application in development mode
+	@$(PNPM) desktop:dev
+
 .PHONY: desktop-sync
 desktop-sync: ## Install locked Desktop frontend dependencies
 	@$(PNPM) install --frozen-lockfile
@@ -148,6 +152,18 @@ desktop-rust-check: ## Check, lint, and test the Desktop Rust crate
 .PHONY: desktop-build
 desktop-build: desktop-sync ## Build the current-platform Desktop shell without bundling
 	@$(PNPM) --filter @starweaver/desktop tauri build --ci --no-bundle
+
+.PHONY: desktop-package
+desktop-package: desktop-sync ## Build unsigned current-platform Desktop installers with the bundled RPC sidecar
+	@$(PNPM) --filter @starweaver/desktop tauri build --ci --config src-tauri/tauri.bundle.conf.json
+
+.PHONY: desktop-package-updater
+desktop-package-updater: desktop-sync ## Build Tauri-signed updater artifacts; requires STARWEAVER_UPDATE_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY
+	@test -n "$$STARWEAVER_UPDATE_PUBLIC_KEY" || { echo "STARWEAVER_UPDATE_PUBLIC_KEY is required"; exit 1; }
+	@test -n "$$TAURI_SIGNING_PRIVATE_KEY" || { echo "TAURI_SIGNING_PRIVATE_KEY is required"; exit 1; }
+	@$(PNPM) --filter @starweaver/desktop tauri build --ci \
+		--config src-tauri/tauri.updater.conf.json \
+		--config "$$(node apps/starweaver-desktop/scripts/tauri-updater-config.mjs)"
 
 .PHONY: desktop-check
 desktop-check: desktop-boundaries-check desktop-frontend-check desktop-rust-check ## Run all local Desktop quality gates

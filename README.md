@@ -62,6 +62,7 @@ make cli -- -p "hello" --output text
 make sw -- --help
 make sw -- -p "hello" --output text
 make sw -- version
+make desktop
 ```
 
 ## SDK Quickstart
@@ -152,7 +153,7 @@ Starweaver is organized as focused crates:
 - `starweaver-cli`: local CLI product surface, launcher dispatch, profiles, TUI, storage, install, and update workflows.
 - `starweaver-rpc-core`: generated IDL-first `starweaver.host` major-1 wire boundary, strict server/client codecs, typed errors/events/cursors, launch-envelope contracts, and narrow framing/projection helpers; the generated contract atomically replaces handwritten DTO authority.
 - `starweaver-rpc`: standalone JSON-RPC host process for local and external integrations and implementer of the generated single-contract server boundary; HTTP exposes only `POST /rpc`.
-- `apps/starweaver-desktop`: Tauri 2 shell for Linux, macOS, and Windows with a manifest-filtered renderer bridge and verified local stdio RPC supervisor; normal runtime activation remains gated on the updater/configuration owner.
+- `apps/starweaver-desktop`: Tauri 2 shell for Linux, macOS, and Windows with a manifest-filtered renderer bridge, verified local stdio RPC supervisor, compatibility-gated independent RPC selection/rollback, and Rust-owned Tauri Desktop updates.
 - `packages/starweaver-py`: in-process Python SDK bindings, Python tool injection, live run control, message bus facades, typed HITL helpers, deterministic test models, sessions, and Python distribution artifacts.
 
 The canonical host protocol lives under `protocol/host/`. Default generation writes the bundled OpenRPC artifact, Rust server bindings, and Desktop's manifest-filtered safe bindings:
@@ -200,7 +201,7 @@ Prepare a release:
 gh workflow run prepare-release.yml -f version=X.Y.Z
 ```
 
-The workflow pushes `release/vX.Y.Z` for review. After that release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release; the published Release event builds CLI archives, the self-contained host OpenRPC bundle and schema/profile artifacts, and Python distributions, uploads checksums, and publishes crates plus the Python package through the `Release` environment.
+The workflow pushes `release/vX.Y.Z` for review. After that release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release. The published Release event runs independent core, signed RPC runtime, and Desktop publication lanes with channel-specific checksums; Desktop packaging failure remains visible without blocking CLI/protocol assets, crates.io, PyPI, or RPC runtime assets.
 
 ## Acknowledgements
 

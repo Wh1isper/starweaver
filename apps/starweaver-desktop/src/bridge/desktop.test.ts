@@ -28,13 +28,20 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import {
+  checkDesktopUpdate,
+  checkRuntimeUpdate,
   executeDesktopWorkspaceRegistration,
   getDesktopPreferences,
+  getDesktopUpdateStatus,
   getDesktopWindowRoute,
+  getRuntimeUpdateStatus,
+  installDesktopUpdate,
+  installRuntimeUpdate,
   onDesktopActivation,
   openConversationWindow,
   reloadDesktopPreferences,
   retryManagedRuntime,
+  rollbackRuntimeUpdate,
   updateDesktopPreferences,
 } from "./desktop";
 
@@ -50,6 +57,28 @@ describe("desktop bridge", () => {
     await retryManagedRuntime();
 
     expect(coreMocks.invoke).toHaveBeenCalledWith("retry_managed_runtime");
+  });
+
+  it("uses only fixed backend-owned product update commands", async () => {
+    coreMocks.invoke.mockResolvedValue({});
+
+    await getRuntimeUpdateStatus();
+    await checkRuntimeUpdate();
+    await installRuntimeUpdate("sha256:candidate");
+    await rollbackRuntimeUpdate();
+    await getDesktopUpdateStatus();
+    await checkDesktopUpdate();
+    await installDesktopUpdate("0.10.1");
+
+    expect(coreMocks.invoke.mock.calls).toEqual([
+      ["get_runtime_update_status"],
+      ["check_runtime_update"],
+      ["install_runtime_update", { candidateId: "sha256:candidate" }],
+      ["rollback_runtime_update"],
+      ["get_desktop_update_status"],
+      ["check_desktop_update"],
+      ["install_desktop_update", { version: "0.10.1" }],
+    ]);
   });
 
   it("uses only closed Desktop preference commands and update fields", async () => {

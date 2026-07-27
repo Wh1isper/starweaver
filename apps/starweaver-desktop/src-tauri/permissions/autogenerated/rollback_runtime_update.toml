@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-rollback-runtime-update"
+description = "Enables the rollback_runtime_update command without any pre-configured scope."
+commands.allow = ["rollback_runtime_update"]
+
+[[permission]]
+identifier = "deny-rollback-runtime-update"
+description = "Denies the rollback_runtime_update command without any pre-configured scope."
+commands.deny = ["rollback_runtime_update"]

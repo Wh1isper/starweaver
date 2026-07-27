@@ -12,6 +12,10 @@ concurrency:
   group: desktop-ci-${{ github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -66,15 +70,19 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb
             run_tests: true
           - os: macos-latest
             target: x86_64-apple-darwin
+            bundles: dmg
             run_tests: false
           - os: macos-latest
             target: aarch64-apple-darwin
+            bundles: dmg
             run_tests: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            bundles: nsis
             run_tests: true
     steps:
       - name: Checkout
@@ -106,12 +114,118 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Set up Python for packaged RPC smoke
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
       - name: Run native unit tests
         if: matrix.run_tests
         run: cargo test -p starweaver-desktop --all-targets --locked
 
-      - name: Build native shell without bundling
-        run: pnpm --filter @starweaver/desktop tauri build --ci --no-bundle --target ${{ matrix.target }}
+      - name: Build updater-ready native installers with exact RPC sidecar
+        env:
+          STARWEAVER_BUILD_REVISION: ${{ github.sha }}
+          STARWEAVER_DESKTOP_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          key_root="$PWD/target/desktop-test-key/${{ matrix.target }}"
+          update_smoke="$PWD/target/desktop-release-smoke/${{ matrix.target }}"
+          rm -rf "$key_root" "$update_smoke"
+          mkdir -p "$key_root" "$update_smoke/runtime" "$update_smoke/desktop"
+          pnpm --filter @starweaver/desktop tauri signer generate \
+            --write-keys "$key_root/updater.key" --ci
+          export STARWEAVER_UPDATE_PUBLIC_KEY="$(cat "$key_root/updater.key.pub")"
+          export TAURI_SIGNING_PRIVATE_KEY="$(cat "$key_root/updater.key")"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          updater_config="$(node apps/starweaver-desktop/scripts/tauri-updater-config.mjs)"
+          pnpm --filter @starweaver/desktop tauri build --ci \
+            --target ${{ matrix.target }} \
+            --bundles ${{ matrix.bundles }} \
+            --config src-tauri/tauri.updater.conf.json \
+            --config "$updater_config"
+
+          version=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("apps/starweaver-desktop/package.json", "utf8")).version)')
+          binary="target/${{ matrix.target }}/release/starweaver-rpc"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then binary="${binary}.exe"; fi
+          node apps/starweaver-desktop/scripts/package-runtime-update.mjs \
+            --version "$version" \
+            --target "${{ matrix.target }}" \
+            --revision "${{ github.sha }}" \
+            --binary "$binary" \
+            --output "$update_smoke/runtime"
+          manifest="$update_smoke/runtime/starweaver-runtime-${{ matrix.target }}.manifest.json"
+          pnpm --filter @starweaver/desktop tauri signer sign "$manifest"
+          node apps/starweaver-desktop/scripts/collect-desktop-artifacts.mjs \
+            --version "$version" \
+            --target "${{ matrix.target }}" \
+            --bundle-root "target/${{ matrix.target }}/release/bundle" \
+            --output "$update_smoke/desktop"
+          cargo run --locked -p xtask -- verify-update-signature "$manifest" "$manifest.sig"
+          expected_signature_count=1
+          if [[ "${{ runner.os }}" == "Linux" ]]; then expected_signature_count=2; fi
+          actual_signature_count=$(find "$update_smoke/desktop" -maxdepth 1 -type f \
+            -name 'starweaver-desktop-*.sig' -print | wc -l | tr -d ' ')
+          test "$actual_signature_count" -eq "$expected_signature_count"
+          while IFS= read -r desktop_signature; do
+            cargo run --locked -p xtask -- verify-update-signature \
+              "${desktop_signature%.sig}" "$desktop_signature"
+          done < <(find "$update_smoke/desktop" -maxdepth 1 -type f \
+            -name 'starweaver-desktop-*.sig' -print)
+
+      - name: Verify packaged sidecar and public handshake
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_root="target/${{ matrix.target }}/release/bundle"
+          update_smoke="target/desktop-release-smoke/${{ matrix.target }}"
+          test -s "$update_smoke/runtime/starweaver-runtime-${{ matrix.target }}.manifest.json.sig"
+          test -s "$update_smoke/desktop/desktop-update-${{ matrix.target }}.json"
+          test "$(find "$bundle_root" -type f -name '*.sig' | wc -l | tr -d ' ')" -ge 1
+          expected="target/${{ matrix.target }}/release/starweaver-rpc"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            expected="${expected}.exe"
+          fi
+          smoke_root="target/desktop-package-smoke/${{ matrix.target }}"
+          rm -rf "$smoke_root"
+          mkdir -p "$smoke_root"
+          case "${{ runner.os }}" in
+            Linux)
+              deb_package=$(find "$bundle_root/deb" -maxdepth 1 -name '*.deb' -print -quit)
+              appimage_package=$(find "$bundle_root/appimage" -maxdepth 1 -name '*.AppImage' -print -quit)
+              test -n "$deb_package"
+              test -n "$appimage_package"
+              dpkg-deb -x "$deb_package" "$smoke_root/deb"
+              appimage_package=$(realpath "$appimage_package")
+              mkdir -p "$smoke_root/appimage"
+              chmod +x "$appimage_package"
+              (cd "$smoke_root/appimage" && "$appimage_package" --appimage-extract >/dev/null)
+              node apps/starweaver-desktop/scripts/verify-packaged-sidecar.mjs \
+                "$smoke_root/deb" "$expected" >/dev/null
+              sidecar=$(node apps/starweaver-desktop/scripts/verify-packaged-sidecar.mjs \
+                "$smoke_root/appimage/squashfs-root" "$expected")
+              ;;
+            macOS)
+              app=$(find "$bundle_root/macos" -maxdepth 1 -name '*.app' -print -quit)
+              test -n "$app"
+              mkdir -p "$smoke_root/extracted"
+              cp -R "$app" "$smoke_root/extracted/"
+              sidecar=$(node apps/starweaver-desktop/scripts/verify-packaged-sidecar.mjs \
+                "$smoke_root/extracted" "$expected")
+              ;;
+            Windows)
+              package=$(find "$bundle_root/nsis" -maxdepth 1 -name '*setup.exe' -print -quit)
+              test -n "$package"
+              7z x -y "-o$smoke_root/extracted" "$package" >/dev/null
+              sidecar=$(node apps/starweaver-desktop/scripts/verify-packaged-sidecar.mjs \
+                "$smoke_root/extracted" "$expected")
+              ;;
+          esac
+          if [[ "${{ matrix.run_tests }}" == "true" ]]; then
+            python tests/protocol-client/client.py \
+              --rpc-binary "$sidecar" \
+              --bundle protocol/host/generated/starweaver-host.openrpc.json
+          fi
 
       - name: Smoke test macOS single-instance activation
         if: matrix.target == 'aarch64-apple-darwin'

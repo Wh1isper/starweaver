@@ -14,14 +14,23 @@ import { parseDesktopHostOperationDelivery } from "../generated/host/validators"
 import type {
   DesktopActivation,
   DesktopConversationWindow,
+  DesktopUpdateSnapshot,
   DesktopPreferencesSnapshot,
   DesktopPreferencesUpdate,
   DesktopStatus,
   DesktopWindowRoute,
+  RuntimeUpdateSnapshot,
 } from "./types";
 
 const GET_DESKTOP_STATUS_COMMAND = "get_desktop_status";
 const RETRY_MANAGED_RUNTIME_COMMAND = "retry_managed_runtime";
+const GET_RUNTIME_UPDATE_STATUS_COMMAND = "get_runtime_update_status";
+const CHECK_RUNTIME_UPDATE_COMMAND = "check_runtime_update";
+const INSTALL_RUNTIME_UPDATE_COMMAND = "install_runtime_update";
+const ROLLBACK_RUNTIME_UPDATE_COMMAND = "rollback_runtime_update";
+const GET_DESKTOP_UPDATE_STATUS_COMMAND = "get_desktop_update_status";
+const CHECK_DESKTOP_UPDATE_COMMAND = "check_desktop_update";
+const INSTALL_DESKTOP_UPDATE_COMMAND = "install_desktop_update";
 const GET_DESKTOP_PREFERENCES_COMMAND = "get_desktop_preferences";
 const UPDATE_DESKTOP_PREFERENCES_COMMAND = "update_desktop_preferences";
 const RELOAD_DESKTOP_PREFERENCES_COMMAND = "reload_desktop_preferences";
@@ -41,6 +50,34 @@ export function getDesktopStatus(): Promise<DesktopStatus> {
 
 export function retryManagedRuntime(): Promise<void> {
   return invoke<void>(RETRY_MANAGED_RUNTIME_COMMAND);
+}
+
+export function getRuntimeUpdateStatus(): Promise<RuntimeUpdateSnapshot> {
+  return invoke<RuntimeUpdateSnapshot>(GET_RUNTIME_UPDATE_STATUS_COMMAND);
+}
+
+export function checkRuntimeUpdate(): Promise<RuntimeUpdateSnapshot> {
+  return invoke<RuntimeUpdateSnapshot>(CHECK_RUNTIME_UPDATE_COMMAND);
+}
+
+export function installRuntimeUpdate(candidateId: string): Promise<RuntimeUpdateSnapshot> {
+  return invoke<RuntimeUpdateSnapshot>(INSTALL_RUNTIME_UPDATE_COMMAND, { candidateId });
+}
+
+export function rollbackRuntimeUpdate(): Promise<RuntimeUpdateSnapshot> {
+  return invoke<RuntimeUpdateSnapshot>(ROLLBACK_RUNTIME_UPDATE_COMMAND);
+}
+
+export function getDesktopUpdateStatus(): Promise<DesktopUpdateSnapshot> {
+  return invoke<DesktopUpdateSnapshot>(GET_DESKTOP_UPDATE_STATUS_COMMAND);
+}
+
+export function checkDesktopUpdate(): Promise<DesktopUpdateSnapshot> {
+  return invoke<DesktopUpdateSnapshot>(CHECK_DESKTOP_UPDATE_COMMAND);
+}
+
+export function installDesktopUpdate(version: string): Promise<void> {
+  return invoke<void>(INSTALL_DESKTOP_UPDATE_COMMAND, { version });
 }
 
 export function getDesktopPreferences(): Promise<DesktopPreferencesSnapshot> {

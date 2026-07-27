@@ -2,16 +2,20 @@
 
 mod app_state;
 mod commands;
+mod desktop_updates;
 /// Generated renderer-safe host protocol bindings.
 pub mod generated;
 mod managed_runtime;
 mod platform;
 mod preferences;
+mod runtime_updates;
 mod single_instance;
 pub mod supervisor;
 
 use app_state::DesktopState;
+use desktop_updates::DesktopUpdateManager;
 use preferences::{DesktopPreferencesStore, WindowCloseBehavior};
+use runtime_updates::RuntimeUpdateManager;
 use tauri::Manager as _;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,13 +52,17 @@ fn begin_coordinated_exit(app_handle: tauri::AppHandle) {
 /// # Errors
 ///
 /// Returns a Tauri error when setup or the native event loop cannot start or complete.
+#[allow(clippy::too_many_lines)]
 pub fn run() -> tauri::Result<()> {
     let app = tauri::Builder::default()
         // The single-instance plugin must remain the first registered plugin.
         .plugin(single_instance::plugin())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .manage(DesktopState::default())
         .manage(DesktopPreferencesStore::default())
+        .manage(RuntimeUpdateManager::default())
+        .manage(DesktopUpdateManager::default())
         .setup(|app| {
             let app_data_root = app.path().app_local_data_dir()?;
             std::fs::create_dir_all(&app_data_root)?;
@@ -74,6 +82,9 @@ pub fn run() -> tauri::Result<()> {
             app.state::<DesktopPreferencesStore>()
                 .configure(&app_data_root.join("preferences"))
                 .map_err(|error| std::io::Error::other(error.message))?;
+            app.state::<RuntimeUpdateManager>()
+                .configure(app_data_root.join("runtime"))
+                .map_err(|error| std::io::Error::other(error.message))?;
             app.state::<DesktopState>()
                 .configure_supervisor_storage(app_data_root.join("supervisor"))
                 .map_err(|error| std::io::Error::other(error.message))?;
@@ -92,6 +103,13 @@ pub fn run() -> tauri::Result<()> {
         .invoke_handler(tauri::generate_handler![
             commands::get_desktop_status,
             commands::retry_managed_runtime,
+            commands::get_runtime_update_status,
+            commands::check_runtime_update,
+            commands::install_runtime_update,
+            commands::rollback_runtime_update,
+            commands::get_desktop_update_status,
+            commands::check_desktop_update,
+            commands::install_desktop_update,
             commands::get_desktop_preferences,
             commands::update_desktop_preferences,
             commands::reload_desktop_preferences,

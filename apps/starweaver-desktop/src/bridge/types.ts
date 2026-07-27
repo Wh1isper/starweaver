@@ -42,6 +42,55 @@ export type DesktopStatus = {
   runtimeIssue?: RuntimeIssue;
 };
 
+export type RuntimeSelectionSource = "bundled" | "managed";
+
+export type RuntimeUpdateCandidate = {
+  candidateId: string;
+  version: string;
+  buildRevision: string;
+  target: string;
+  size: number;
+};
+
+export type RuntimeUpdateSnapshot = {
+  configured: boolean;
+  activeVersion?: string;
+  activeSource?: RuntimeSelectionSource;
+  selectedVersion: string;
+  selectedSource: RuntimeSelectionSource;
+  candidate?: RuntimeUpdateCandidate;
+  restartRequired: boolean;
+};
+
+export type RuntimeUpdateError = {
+  code: "unavailable" | "network" | "verification" | "storage" | "stale_candidate" | "probe";
+  message: string;
+};
+
+export type DesktopUpdateCandidate = {
+  version: string;
+  notes?: string;
+  publishedAt?: string;
+  platformPublisherSigned: false;
+};
+
+export type DesktopUpdateSnapshot = {
+  currentVersion: string;
+  configured: boolean;
+  candidate?: DesktopUpdateCandidate;
+};
+
+export type DesktopUpdateError = {
+  code:
+    | "unavailable"
+    | "network"
+    | "verification"
+    | "stale_candidate"
+    | "installation"
+    | "cancelled";
+  message: string;
+};
+
 export type DesktopActivation = {
   kind: "secondary_launch";
   generation: number;

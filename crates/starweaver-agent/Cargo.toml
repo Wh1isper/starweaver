@@ -33,6 +33,7 @@ yaml_serde.workspace = true
 thiserror.workspace = true
 reqwest.workspace = true
 rmcp = { version = "1.7.0", default-features = false, features = ["client", "server", "transport-child-process", "transport-io", "transport-streamable-http-client-reqwest"] }
+rustls.workspace = true
 uuid.workspace = true
 starweaver-context.workspace = true
 starweaver-core.workspace = true

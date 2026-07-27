@@ -1,5 +1,18 @@
 //! Verified local stdio host supervision owned by the privileged Desktop backend.
 
+mod diagnostics;
+mod events;
+mod framing;
+mod pagination;
+mod process_env;
+
+pub(crate) use events::{BackendHostEvent, RunEventTail, backend_event_from_notification};
+
+use diagnostics::{BoundedDiagnostics, StreamingSecretRedactor};
+use framing::{read_frame, write_frame};
+use pagination::continuation as pagination_continuation;
+use process_env::{allowed_credential_environment, credential_bytes, safe_environment_names};
+
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
     ffi::OsString,
@@ -27,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use starweaver_rpc_core::generated as host;
 use tokio::{
-    io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader},
+    io::{AsyncReadExt as _, BufReader},
     process::{ChildStdin, ChildStdout, Command},
     sync::{Mutex as AsyncMutex, broadcast, mpsc, oneshot},
     time::{Instant, sleep_until, timeout},
@@ -36,6 +49,8 @@ use tokio::{
 use crate::generated::host as bridge;
 
 const MAX_HOST_FRAME_BYTES: usize = 8 * 1024 * 1024;
+const MAX_LAUNCH_ENVELOPE_BYTES: u64 = 1024 * 1024;
+const MAX_RUNTIME_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 64 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -109,6 +124,22 @@ const DESKTOP_EVENT_CLASSES: &[host::EventClass] = &[
     host::EventClass::RunChanged,
 ];
 
+/// Origin of an immutable runtime launch selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeLaunchSource {
+    /// Exact sidecar shipped in the active Desktop installation.
+    Bundled,
+    /// Independently installed project-signed runtime.
+    Managed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ReadyRuntimeIdentity {
+    pub(crate) version: String,
+    pub(crate) source: RuntimeLaunchSource,
+    pub(crate) digest: String,
+}
+
 /// Immutable verified runtime and launch selection supplied by the Desktop update/config owner.
 #[derive(Clone, Debug)]
 pub struct LocalLaunchSpec {
@@ -116,6 +147,10 @@ pub struct LocalLaunchSpec {
     pub runtime_path: PathBuf,
     /// Expected lowercase SHA-256 digest prefixed by `sha256:`.
     pub runtime_digest: String,
+    /// Exact signed or bundled executable size.
+    pub runtime_size: u64,
+    /// Origin of this exact launch selection.
+    pub runtime_source: RuntimeLaunchSource,
     /// Exact runtime package version expected during initialize.
     pub runtime_version: String,
     /// Exact immutable build revision expected during initialize.
@@ -276,6 +311,7 @@ impl SupervisorError {
 struct VerifiedLaunch {
     runtime_path: PathBuf,
     runtime_digest: String,
+    runtime_size: u64,
     launch_envelope_path: PathBuf,
     envelope: host::LaunchEnvelope,
     envelope_digest: String,
@@ -331,26 +367,6 @@ impl Default for SupervisorState {
             generation: 0,
             execution_domain: None,
         }
-    }
-}
-
-#[derive(Default)]
-struct BoundedDiagnostics {
-    bytes: VecDeque<u8>,
-}
-
-impl BoundedDiagnostics {
-    fn append(&mut self, chunk: &[u8]) {
-        for byte in chunk {
-            if self.bytes.len() == MAX_STDERR_BYTES {
-                self.bytes.pop_front();
-            }
-            self.bytes.push_back(*byte);
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
     }
 }
 
@@ -571,6 +587,22 @@ impl Shared {
 
     fn recovery_spec(&self) -> Option<LocalLaunchSpec> {
         self.recovery_spec.lock().ok().and_then(|spec| spec.clone())
+    }
+
+    fn prepare_bundled_fallback_start(&self) -> Result<(), SupervisorError> {
+        let mut state = self.state.lock().map_err(|_| {
+            SupervisorError::new(SupervisorErrorCode::Internal, "host state unavailable")
+        })?;
+        if !matches!(
+            state.state,
+            HostChildState::Failed | HostChildState::Incompatible
+        ) {
+            return Err(SupervisorError::not_ready());
+        }
+        state.state = HostChildState::Stopped;
+        state.execution_domain = None;
+        drop(state);
+        Ok(())
     }
 
     fn begin_recovery_start(&self) -> Result<u64, SupervisorError> {
@@ -1352,26 +1384,6 @@ const fn valid_transition(current: HostChildState, next: HostChildState) -> bool
     )
 }
 
-pub(crate) struct RunEventTail {
-    pub(crate) subscription_id: host::SubscriptionId,
-    pub(crate) generation: u64,
-    pub(crate) execution_domain: String,
-}
-
-pub(crate) struct BackendHostEvent {
-    pub(crate) event: bridge::SafeHostEvent,
-    pub(crate) cursor: String,
-    pub(crate) event_id: String,
-}
-
-pub(crate) struct BackendHostEventPage {
-    pub(crate) deliveries: Vec<BackendHostEvent>,
-    pub(crate) next_cursor: String,
-    pub(crate) has_more: bool,
-    pub(crate) generation: u64,
-    pub(crate) execution_domain: String,
-}
-
 struct PendingRequest {
     method: host::Method,
     expected_unsubscribe_subscription_id: Option<host::SubscriptionId>,
@@ -1442,9 +1454,31 @@ impl LocalHostSupervisor {
         self.shared.status()
     }
 
+    pub(crate) fn ready_runtime_identity(&self) -> Option<ReadyRuntimeIdentity> {
+        (self.shared.status().state == HostChildState::Ready)
+            .then(|| {
+                self.shared
+                    .recovery_spec()
+                    .map(|spec| ReadyRuntimeIdentity {
+                        version: spec.runtime_version,
+                        source: spec.runtime_source,
+                        digest: spec.runtime_digest,
+                    })
+            })
+            .flatten()
+    }
+
     /// Subscribe to typed host notifications. Transport-owned recovery remains in this backend.
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<host::HostNotification> {
         self.notifications.subscribe()
+    }
+
+    pub(crate) async fn start_bundled_fallback_after_failure(
+        &self,
+        spec: LocalLaunchSpec,
+    ) -> Result<(), SupervisorError> {
+        self.shared.prepare_bundled_fallback_start()?;
+        self.start(spec).await
     }
 
     /// Verify, spawn, initialize, and compatibility-gate one exact managed runtime.
@@ -1985,140 +2019,6 @@ impl LocalHostSupervisor {
         }
     }
 
-    pub(crate) fn event_origin(&self) -> Result<String, SupervisorError> {
-        self.shared.ready_domain().map(|(_, domain)| domain)
-    }
-
-    pub(crate) async fn session_workspace_id(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<String>, SupervisorError> {
-        let (generation, execution_domain) = self.shared.ready_domain()?;
-        let request = host::HostRequest {
-            id: host::RequestId::new(self.next_request_id(generation))
-                .map_err(|_| SupervisorError::transport())?,
-            call: host::HostCall::SessionGet(host::SessionGetParams {
-                run_limit: 1,
-                session_id: host::SessionId::new(session_id)
-                    .map_err(|_| SupervisorError::invalid_configuration("session ID is invalid"))?,
-            }),
-        };
-        let result = self
-            .execute_fenced(request, generation, &execution_domain)
-            .await?;
-        match result {
-            host::HostResult::SessionGet(result) => Ok(result
-                .session
-                .workspace_id
-                .map(|workspace_id| workspace_id.as_str().to_string())),
-            _ => Err(SupervisorError::transport()),
-        }
-    }
-
-    pub(crate) async fn replay_run_event_page(
-        &self,
-        scope: &bridge::DesktopHostEventScope,
-        cursor: Option<String>,
-    ) -> Result<BackendHostEventPage, SupervisorError> {
-        let (generation, execution_domain) = self.shared.ready_domain()?;
-        let view = desktop_event_view(scope)?;
-        let wire_cursor = cursor
-            .as_deref()
-            .map(host::HostEventCursor::new)
-            .transpose()
-            .map_err(|_| SupervisorError::invalid_configuration("event cursor is invalid"))?;
-        let request = host::HostRequest {
-            id: host::RequestId::new(self.next_request_id(generation)).map_err(|_| {
-                SupervisorError::new(SupervisorErrorCode::Internal, "request identity failed")
-            })?,
-            call: host::HostCall::EventsReplay(host::EventsReplayParams {
-                cursor: wire_cursor,
-                limit: 500,
-                view,
-            }),
-        };
-        let host::HostResult::EventsReplay(result) = self
-            .send_actor_fenced(request, generation, &execution_domain)
-            .await?
-        else {
-            return Err(SupervisorError::transport());
-        };
-        if result.has_more && cursor.as_deref() == Some(result.next_cursor.as_str()) {
-            return Err(SupervisorError::transport());
-        }
-        let mut deliveries = Vec::with_capacity(result.deliveries.len());
-        for (index, delivery) in result.deliveries.into_iter().enumerate() {
-            let sequence = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
-            deliveries.push(backend_event_from_delivery(delivery, sequence)?);
-        }
-        Ok(BackendHostEventPage {
-            deliveries,
-            next_cursor: result.next_cursor.as_str().to_string(),
-            has_more: result.has_more,
-            generation,
-            execution_domain,
-        })
-    }
-
-    pub(crate) async fn open_run_event_tail(
-        &self,
-        scope: &bridge::DesktopHostEventScope,
-        cursor: Option<String>,
-    ) -> Result<RunEventTail, SupervisorError> {
-        let (generation, execution_domain) = self.shared.ready_domain()?;
-        let wire_cursor = cursor
-            .as_deref()
-            .map(host::HostEventCursor::new)
-            .transpose()
-            .map_err(|_| SupervisorError::invalid_configuration("event cursor is invalid"))?;
-        let request = host::HostRequest {
-            id: host::RequestId::new(self.next_request_id(generation)).map_err(|_| {
-                SupervisorError::new(SupervisorErrorCode::Internal, "request identity failed")
-            })?,
-            call: host::HostCall::EventsSubscribe(host::EventsSubscribeParams {
-                cursor: wire_cursor,
-                view: desktop_event_view(scope)?,
-            }),
-        };
-        let host::HostResult::EventsSubscribe(result) = self
-            .send_actor_fenced(request, generation, &execution_domain)
-            .await?
-        else {
-            return Err(SupervisorError::transport());
-        };
-        Ok(RunEventTail {
-            subscription_id: result.subscription_id,
-            generation,
-            execution_domain,
-        })
-    }
-
-    pub(crate) async fn close_event_tail(
-        &self,
-        subscription_id: host::SubscriptionId,
-        generation: u64,
-        execution_domain: &str,
-    ) -> Result<(), SupervisorError> {
-        if self.status().state != HostChildState::Ready {
-            return Ok(());
-        }
-        let request = host::HostRequest {
-            id: host::RequestId::new(self.next_request_id(generation)).map_err(|_| {
-                SupervisorError::new(SupervisorErrorCode::Internal, "request identity failed")
-            })?,
-            call: host::HostCall::EventsUnsubscribe(host::EventsUnsubscribeParams {
-                subscription_id,
-            }),
-        };
-        let host::HostResult::EventsUnsubscribe(_) = self
-            .send_actor_fenced(request, generation, execution_domain)
-            .await?
-        else {
-            return Err(SupervisorError::transport());
-        };
-        Ok(())
-    }
-
     /// Send a coordinated generated shutdown request and wait for the actor barrier.
     ///
     /// # Errors
@@ -2257,74 +2157,6 @@ impl LocalHostSupervisor {
         let sequence = self.next_request.fetch_add(1, Ordering::Relaxed);
         format!("desktop-{generation}-{sequence}")
     }
-}
-
-fn desktop_event_view(
-    scope: &bridge::DesktopHostEventScope,
-) -> Result<host::EventViewRequest, SupervisorError> {
-    let session_id = host::SessionId::new(scope.session_id.0.clone()).map_err(|_| {
-        SupervisorError::new(
-            SupervisorErrorCode::InvalidConfiguration,
-            "invalid event scope",
-        )
-    })?;
-    let run_id = host::RunId::new(scope.run_id.0.clone()).map_err(|_| {
-        SupervisorError::new(
-            SupervisorErrorCode::InvalidConfiguration,
-            "invalid event scope",
-        )
-    })?;
-    Ok(host::EventViewRequest {
-        optional_features: vec![
-            "clarifications".to_string(),
-            "hitl".to_string(),
-            "runs".to_string(),
-        ],
-        profile: host::EventProfile::DesktopConversationV1,
-        scope: host::ResourceScope::RunResourceScope(host::RunResourceScope {
-            kind: host::RunResourceScopeKind::Value,
-            run_id,
-            session_id,
-        }),
-    })
-}
-
-fn backend_event_from_delivery(
-    delivery: host::EventDelivery,
-    sequence: u64,
-) -> Result<BackendHostEvent, SupervisorError> {
-    let cursor = delivery.cursor.as_str().to_string();
-    let event_id = delivery.record.event_id.as_str().to_string();
-    let notification = host::HostNotification {
-        params: host::HostNotificationParams::HostEvent(Box::new(
-            host::HostEventNotificationParams {
-                delivery,
-                delivery_sequence: host::DecimalU64::new(sequence),
-                subscription_id: host::SubscriptionId::new("desktop-projection")
-                    .map_err(|_| SupervisorError::transport())?,
-            },
-        )),
-    };
-    let event = bridge::project_host_notification(notification).map_err(|_| {
-        SupervisorError::new(
-            SupervisorErrorCode::Internal,
-            "host event projection failed",
-        )
-    })?;
-    Ok(BackendHostEvent {
-        event,
-        cursor,
-        event_id,
-    })
-}
-
-pub(crate) fn backend_event_from_notification(
-    notification: host::HostNotification,
-) -> Result<BackendHostEvent, SupervisorError> {
-    let host::HostNotificationParams::HostEvent(params) = notification.params else {
-        return Err(SupervisorError::transport());
-    };
-    backend_event_from_delivery(params.delivery, params.delivery_sequence.get())
 }
 
 fn validate_operation_id(operation_id: &str) -> Result<uuid::Uuid, SupervisorError> {
@@ -2878,41 +2710,6 @@ fn operation_fingerprint(
     Ok(format!("sha256:{:x}", digest.finalize()))
 }
 
-fn pagination_continuation(result: &host::HostResult) -> Result<Option<String>, SupervisorError> {
-    match result {
-        host::HostResult::ApprovalList(value) => pagination_from_value(value),
-        host::HostResult::ClarificationList(value) => pagination_from_value(value),
-        host::HostResult::DeferredList(value) => pagination_from_value(value),
-        host::HostResult::EnvironmentList(value) => pagination_from_value(value),
-        host::HostResult::RunList(value) => pagination_from_value(value),
-        host::HostResult::SessionList(value) => pagination_from_value(value),
-        host::HostResult::SessionSearch(value) => pagination_from_value(value),
-        host::HostResult::WorkspaceList(value) => pagination_from_value(value),
-        _ => Ok(None),
-    }
-}
-
-fn pagination_from_value<T: Serialize>(value: &T) -> Result<Option<String>, SupervisorError> {
-    let value = serde_json::to_value(value).map_err(|_| SupervisorError::transport())?;
-    let page = value
-        .get("page")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(SupervisorError::transport)?;
-    let has_more = page
-        .get("hasMore")
-        .and_then(serde_json::Value::as_bool)
-        .ok_or_else(SupervisorError::transport)?;
-    let cursor = page
-        .get("nextCursor")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    match (has_more, cursor) {
-        (false, _) => Ok(None),
-        (true, Some(cursor)) => Ok(Some(cursor)),
-        (true, None) => Err(SupervisorError::transport()),
-    }
-}
-
 struct ChildProcess {
     child: Box<dyn ChildWrapper>,
     stdin: ChildStdin,
@@ -2933,7 +2730,7 @@ fn verify_launch(spec: LocalLaunchSpec) -> Result<VerifiedLaunch, SupervisorErro
             "managed runtime is unavailable",
         )
     })?;
-    if !runtime_path.is_file() || sha256_file(&runtime_path)? != spec.runtime_digest {
+    if sha256_file_exact(&runtime_path, spec.runtime_size)? != spec.runtime_digest {
         return Err(SupervisorError::incompatible());
     }
     let runtime_identity = file_identity(&runtime_path)?;
@@ -2943,18 +2740,11 @@ fn verify_launch(spec: LocalLaunchSpec) -> Result<VerifiedLaunch, SupervisorErro
             "managed launch envelope is unavailable",
         )
     })?;
-    let bytes = std::fs::read(&launch_envelope_path).map_err(|_| {
-        SupervisorError::new(
-            SupervisorErrorCode::InvalidConfiguration,
-            "managed launch envelope is unavailable",
-        )
-    })?;
-    if bytes.len() > 1024 * 1024 {
-        return Err(SupervisorError::new(
-            SupervisorErrorCode::InvalidConfiguration,
-            "managed launch envelope is too large",
-        ));
-    }
+    let bytes = read_file_bounded(
+        &launch_envelope_path,
+        MAX_LAUNCH_ENVELOPE_BYTES,
+        "managed launch envelope is unavailable",
+    )?;
     let envelope_digest = sha256_bytes(&bytes);
     if envelope_digest != spec.launch_envelope_digest {
         return Err(SupervisorError::incompatible());
@@ -2999,6 +2789,7 @@ fn verify_launch(spec: LocalLaunchSpec) -> Result<VerifiedLaunch, SupervisorErro
     Ok(VerifiedLaunch {
         runtime_path,
         runtime_digest: spec.runtime_digest,
+        runtime_size: spec.runtime_size,
         launch_envelope_path,
         envelope,
         envelope_digest,
@@ -3064,22 +2855,33 @@ fn file_identity(path: &Path) -> Result<FileIdentity, SupervisorError> {
     }
 }
 
-fn sha256_file(path: &Path) -> Result<String, SupervisorError> {
+fn sha256_file_exact(path: &Path, expected_size: u64) -> Result<String, SupervisorError> {
+    if expected_size == 0 || expected_size > MAX_RUNTIME_BYTES {
+        return Err(SupervisorError::incompatible());
+    }
     let mut file = File::open(path).map_err(|_| {
         SupervisorError::new(
             SupervisorErrorCode::InvalidConfiguration,
             "managed runtime is unavailable",
         )
     })?;
-    sha256_open_file(&mut file)
+    let metadata = file
+        .metadata()
+        .map_err(|_| SupervisorError::incompatible())?;
+    if !metadata.is_file() || metadata.len() != expected_size {
+        return Err(SupervisorError::incompatible());
+    }
+    sha256_open_file_exact(&mut file, expected_size)
 }
 
-fn sha256_open_file(file: &mut File) -> Result<String, SupervisorError> {
+fn sha256_open_file_exact(file: &mut File, expected_size: u64) -> Result<String, SupervisorError> {
     file.rewind().map_err(|_| SupervisorError::incompatible())?;
     let mut digest = Sha256::new();
+    let mut received = 0_u64;
+    let mut reader = file.take(expected_size.saturating_add(1));
     let mut buffer = vec![0_u8; 64 * 1024];
     loop {
-        let read = file.read(&mut buffer).map_err(|_| {
+        let read = reader.read(&mut buffer).map_err(|_| {
             SupervisorError::new(
                 SupervisorErrorCode::InvalidConfiguration,
                 "managed runtime could not be verified",
@@ -3088,10 +2890,45 @@ fn sha256_open_file(file: &mut File) -> Result<String, SupervisorError> {
         if read == 0 {
             break;
         }
+        received = received
+            .checked_add(u64::try_from(read).map_err(|_| SupervisorError::incompatible())?)
+            .ok_or_else(SupervisorError::incompatible)?;
         digest.update(&buffer[..read]);
+    }
+    if received != expected_size {
+        return Err(SupervisorError::incompatible());
     }
     file.rewind().map_err(|_| SupervisorError::incompatible())?;
     Ok(format!("sha256:{:x}", digest.finalize()))
+}
+
+fn read_file_bounded(
+    path: &Path,
+    maximum: u64,
+    unavailable_message: &'static str,
+) -> Result<Vec<u8>, SupervisorError> {
+    let file = File::open(path).map_err(|_| {
+        SupervisorError::new(
+            SupervisorErrorCode::InvalidConfiguration,
+            unavailable_message,
+        )
+    })?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| SupervisorError::incompatible())?;
+    if !metadata.is_file() || metadata.len() > maximum {
+        return Err(SupervisorError::incompatible());
+    }
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(metadata.len()).map_err(|_| SupervisorError::incompatible())?,
+    );
+    file.take(maximum.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| SupervisorError::incompatible())?;
+    if u64::try_from(bytes.len()).map_or(true, |length| length > maximum) {
+        return Err(SupervisorError::incompatible());
+    }
+    Ok(bytes)
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
@@ -3158,9 +2995,14 @@ fn stage_verified_launch(
         std::fs::set_permissions(&envelope_path, std::fs::Permissions::from_mode(0o400))
             .map_err(|_| SupervisorError::transport())?;
     }
-    if sha256_file(&runtime_path)? != verified.runtime_digest
-        || std::fs::read(&envelope_path).map_or(true, |bytes| {
-            bytes.len() > 1024 * 1024 || sha256_bytes(&bytes) != verified.envelope_digest
+    if sha256_file_exact(&runtime_path, verified.runtime_size)? != verified.runtime_digest
+        || read_file_bounded(
+            &envelope_path,
+            MAX_LAUNCH_ENVELOPE_BYTES,
+            "managed launch envelope is unavailable",
+        )
+        .map_or(true, |bytes| {
+            sha256_bytes(&bytes) != verified.envelope_digest
         })
     {
         return Err(SupervisorError::incompatible());
@@ -3187,14 +3029,17 @@ fn prepare_verified_launch(
     storage_root: &Path,
 ) -> Result<StagedLaunch, SupervisorError> {
     if file_identity(&verified.runtime_path)? != verified.runtime_identity
-        || sha256_file(&verified.runtime_path)? != verified.runtime_digest
+        || sha256_file_exact(&verified.runtime_path, verified.runtime_size)?
+            != verified.runtime_digest
     {
         return Err(SupervisorError::incompatible());
     }
-    let envelope_bytes = std::fs::read(&verified.launch_envelope_path)
-        .map_err(|_| SupervisorError::incompatible())?;
+    let envelope_bytes = read_file_bounded(
+        &verified.launch_envelope_path,
+        MAX_LAUNCH_ENVELOPE_BYTES,
+        "managed launch envelope is unavailable",
+    )?;
     if file_identity(&verified.launch_envelope_path)? != verified.envelope_identity
-        || envelope_bytes.len() > 1024 * 1024
         || sha256_bytes(&envelope_bytes) != verified.envelope_digest
     {
         return Err(SupervisorError::incompatible());
@@ -3296,101 +3141,6 @@ async fn terminate_wrapped_child(child: &mut dyn ChildWrapper) {
 
 async fn terminate_and_reap(process: &mut ChildProcess) {
     terminate_wrapped_child(process.child.as_mut()).await;
-}
-
-struct StreamingSecretRedactor {
-    pending: Vec<u8>,
-    secrets: Vec<Vec<u8>>,
-    overlap: usize,
-}
-
-impl StreamingSecretRedactor {
-    fn new(mut secrets: Vec<Vec<u8>>) -> Self {
-        secrets.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
-        secrets.dedup();
-        let overlap = secrets
-            .iter()
-            .map(Vec::len)
-            .max()
-            .unwrap_or(1)
-            .saturating_sub(1);
-        Self {
-            pending: Vec::new(),
-            secrets,
-            overlap,
-        }
-    }
-
-    fn push(&mut self, chunk: &[u8]) -> Vec<u8> {
-        self.pending.extend_from_slice(chunk);
-        redact_diagnostic_bytes(&mut self.pending, &self.secrets);
-        let emit = self.pending.len().saturating_sub(self.overlap);
-        self.pending.drain(..emit).collect()
-    }
-
-    fn finish(mut self) -> Vec<u8> {
-        redact_diagnostic_bytes(&mut self.pending, &self.secrets);
-        self.pending
-    }
-}
-
-fn redact_diagnostic_bytes(output: &mut [u8], secrets: &[Vec<u8>]) {
-    for secret in secrets {
-        if secret.is_empty() || secret.len() > output.len() {
-            continue;
-        }
-        let mut offset = 0;
-        while let Some(index) = output[offset..]
-            .windows(secret.len())
-            .position(|window| window == secret)
-        {
-            let start = offset + index;
-            output[start..start + secret.len()].fill(b'*');
-            offset = start + secret.len();
-        }
-    }
-}
-
-#[cfg(unix)]
-fn credential_bytes(value: &std::ffi::OsStr) -> Vec<u8> {
-    use std::os::unix::ffi::OsStrExt as _;
-    value.as_bytes().to_vec()
-}
-
-#[cfg(not(unix))]
-fn credential_bytes(value: &std::ffi::OsStr) -> Vec<u8> {
-    value.to_string_lossy().into_owned().into_bytes()
-}
-
-fn allowed_credential_environment(name: &str) -> bool {
-    let canonical = name.to_ascii_uppercase();
-    !canonical.starts_with("LD_")
-        && !canonical.starts_with("DYLD_")
-        && !canonical.starts_with("STARWEAVER_")
-        && !matches!(canonical.as_str(), "PATH" | "COMSPEC")
-}
-
-fn safe_environment_names(credentials: &[String]) -> Vec<OsString> {
-    let mut names = BTreeSet::<OsString>::new();
-    for name in [
-        "HOME",
-        "USERPROFILE",
-        "TMPDIR",
-        "TEMP",
-        "TMP",
-        "SYSTEMROOT",
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-    ] {
-        names.insert(OsString::from(name));
-    }
-    names.extend(
-        credentials
-            .iter()
-            .filter(|name| allowed_credential_environment(name))
-            .map(OsString::from),
-    );
-    names.into_iter().collect()
 }
 
 async fn initialize_child(
@@ -3833,44 +3583,6 @@ async fn recover_local_host(
         )));
         return;
     }
-}
-
-async fn write_frame(stdin: &mut ChildStdin, frame: &[u8]) -> Result<(), SupervisorError> {
-    if frame.len() > MAX_HOST_FRAME_BYTES {
-        return Err(SupervisorError::transport());
-    }
-    stdin
-        .write_all(frame)
-        .await
-        .map_err(|_| SupervisorError::transport())?;
-    stdin
-        .write_all(b"\n")
-        .await
-        .map_err(|_| SupervisorError::transport())?;
-    stdin
-        .flush()
-        .await
-        .map_err(|_| SupervisorError::transport())
-}
-
-async fn read_frame(stdout: &mut BufReader<ChildStdout>) -> Result<Vec<u8>, SupervisorError> {
-    let mut frame = Vec::new();
-    let read = stdout
-        .take(u64::try_from(MAX_HOST_FRAME_BYTES).unwrap_or(u64::MAX) + 2)
-        .read_until(b'\n', &mut frame)
-        .await
-        .map_err(|_| SupervisorError::transport())?;
-    if read == 0 || frame.len() > MAX_HOST_FRAME_BYTES + 1 || frame.last() != Some(&b'\n') {
-        return Err(SupervisorError::transport());
-    }
-    frame.pop();
-    if frame.last() == Some(&b'\r') {
-        frame.pop();
-    }
-    if frame.is_empty() || frame.len() > MAX_HOST_FRAME_BYTES {
-        return Err(SupervisorError::transport());
-    }
-    Ok(frame)
 }
 
 #[cfg(test)]
@@ -5045,7 +4757,8 @@ mod tests {
             .permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&runtime, permissions).expect("fixture executable");
-        let runtime_digest = sha256_file(&runtime).expect("fixture digest");
+        let runtime_size = std::fs::metadata(&runtime).expect("fixture metadata").len();
+        let runtime_digest = sha256_file_exact(&runtime, runtime_size).expect("fixture digest");
         let supervisor = LocalHostSupervisor::default();
         supervisor
             .configure_storage_root(temp.path().join("desktop-supervisor"))
@@ -5054,6 +4767,8 @@ mod tests {
             .start(LocalLaunchSpec {
                 runtime_path: runtime,
                 runtime_digest,
+                runtime_size,
+                runtime_source: RuntimeLaunchSource::Bundled,
                 runtime_version: "fixture-version".to_string(),
                 build_revision: "fixture".to_string(),
                 target: "fixture-target".to_string(),

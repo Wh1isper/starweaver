@@ -3191,7 +3191,7 @@ impl RpcConnection {
                 build_revision: option_env!("STARWEAVER_BUILD_REVISION")
                     .unwrap_or("source")
                     .to_string(),
-                target: format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
+                target: env!("STARWEAVER_TARGET_TRIPLE").to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
             runtime_status: "ready".to_string(),

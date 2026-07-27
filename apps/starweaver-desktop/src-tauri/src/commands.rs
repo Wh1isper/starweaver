@@ -11,6 +11,7 @@ use tauri_plugin_dialog::{DialogExt as _, MessageDialogButtons};
 
 use crate::{
     app_state::{DesktopActivation, DesktopState, DesktopWindowRoute, EventViewKey},
+    desktop_updates::{DesktopUpdateError, DesktopUpdateManager, DesktopUpdateSnapshot},
     generated::host::{
         DesktopHostEventAcknowledgementToken, DesktopHostEventDelivery, DesktopHostInvocation,
         DesktopHostOperation, DesktopHostOperationAcknowledgementToken,
@@ -22,6 +23,7 @@ use crate::{
         DesktopPreferencesError, DesktopPreferencesSnapshot, DesktopPreferencesStore,
         DesktopPreferencesUpdate,
     },
+    runtime_updates::{RuntimeUpdateError, RuntimeUpdateManager, RuntimeUpdateSnapshot},
     supervisor::{
         BackendHostEvent, HostChildState, HostSupervisorStatus, LocalHostSupervisor, RunEventTail,
         SupervisorError, SupervisorErrorCode, backend_event_from_notification,
@@ -77,6 +79,149 @@ pub async fn retry_managed_runtime(
     state
         .prepare_and_start_managed_runtime(move || managed_runtime::prepare(&app))
         .await
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn get_runtime_update_status(
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+    updates: State<'_, RuntimeUpdateManager>,
+) -> RuntimeUpdateSnapshot {
+    updates
+        .snapshot(&app.package_info().version.to_string())
+        .with_active_runtime(state.active_runtime_identity())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub async fn check_runtime_update(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    updates: State<'_, RuntimeUpdateManager>,
+) -> Result<RuntimeUpdateSnapshot, RuntimeUpdateError> {
+    require_main_window(&window)?;
+    Ok(updates
+        .check(&app.package_info().version.to_string())
+        .await?
+        .with_active_runtime(state.active_runtime_identity()))
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub async fn install_runtime_update(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    updates: State<'_, RuntimeUpdateManager>,
+    candidate_id: String,
+) -> Result<RuntimeUpdateSnapshot, RuntimeUpdateError> {
+    require_main_window(&window)?;
+    Ok(updates
+        .install(&candidate_id, &app.package_info().version.to_string())
+        .await?
+        .with_active_runtime(state.active_runtime_identity()))
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub async fn rollback_runtime_update(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    updates: State<'_, RuntimeUpdateManager>,
+) -> Result<RuntimeUpdateSnapshot, RuntimeUpdateError> {
+    require_main_window(&window)?;
+    Ok(updates
+        .rollback(&app.package_info().version.to_string())
+        .await?
+        .with_active_runtime(state.active_runtime_identity()))
+}
+
+fn require_main_window(window: &WebviewWindow) -> Result<(), RuntimeUpdateError> {
+    if window.label() == "main" {
+        Ok(())
+    } else {
+        Err(RuntimeUpdateError {
+            code: crate::runtime_updates::RuntimeUpdateErrorCode::Unavailable,
+            message: "runtime updates are available only in the primary window".to_string(),
+        })
+    }
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub async fn get_desktop_update_status(
+    app: AppHandle,
+    updates: State<'_, DesktopUpdateManager>,
+) -> Result<DesktopUpdateSnapshot, DesktopUpdateError> {
+    Ok(updates
+        .snapshot(&app.package_info().version.to_string())
+        .await)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub async fn check_desktop_update(
+    app: AppHandle,
+    window: WebviewWindow,
+    updates: State<'_, DesktopUpdateManager>,
+) -> Result<DesktopUpdateSnapshot, DesktopUpdateError> {
+    require_main_window_for_desktop_update(&window)?;
+    updates.check(&app).await
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub async fn install_desktop_update(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, DesktopState>,
+    updates: State<'_, DesktopUpdateManager>,
+    version: String,
+) -> Result<(), DesktopUpdateError> {
+    require_main_window_for_desktop_update(&window)?;
+    let (candidate, bytes) = updates.download(&version).await?;
+    let accepted = {
+        let app = app.clone();
+        tokio::task::spawn_blocking(move || {
+            app.dialog()
+                .message(
+                    "The downloaded update was cryptographically verified by Starweaver, but this release is not signed by Apple or Microsoft. Install it now and restart Starweaver?",
+                )
+                .title("Install Starweaver update")
+                .buttons(MessageDialogButtons::OkCancel)
+                .blocking_show()
+        })
+        .await
+        .map_err(|_| DesktopUpdateError::installation())?
+    };
+    if !accepted {
+        return Err(DesktopUpdateError::cancelled());
+    }
+    state
+        .shutdown_managed_runtime()
+        .await
+        .map_err(|_| DesktopUpdateError::installation())?;
+    if let Err(error) = DesktopUpdateManager::install(&candidate, &bytes) {
+        let app_for_prepare = app.clone();
+        let _ = state
+            .prepare_and_start_managed_runtime(move || managed_runtime::prepare(&app_for_prepare))
+            .await;
+        return Err(error);
+    }
+    app.restart();
+}
+
+fn require_main_window_for_desktop_update(
+    window: &WebviewWindow,
+) -> Result<(), DesktopUpdateError> {
+    if window.label() == "main" {
+        Ok(())
+    } else {
+        Err(DesktopUpdateError::unavailable())
+    }
 }
 
 #[tauri::command]
