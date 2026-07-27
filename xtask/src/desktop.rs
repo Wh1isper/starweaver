@@ -204,6 +204,11 @@ fn check_workflow_matrix(registry: &TargetRegistry, workflow: &str) -> Result<()
         "NO_STRIP",
         "1",
     )?;
+    require_appimage_finalization_after_build(
+        &document,
+        "native",
+        "Build updater-ready native installers with exact RPC sidecar",
+    )?;
     check_windows_only_stdio_proof(&document)?;
 
     let workflow_targets = parse_workflow_targets(workflow)?;
@@ -275,6 +280,11 @@ fn check_release_workflow(registry: &TargetRegistry, workflow: &str) -> Result<(
         "Build updater-ready Desktop packages",
         "NO_STRIP",
         "1",
+    )?;
+    require_appimage_finalization_after_build(
+        &document,
+        "build-desktop-artifacts",
+        "Build updater-ready Desktop packages",
     )?;
 
     let runtime_manifest_path = concat!(
@@ -379,6 +389,32 @@ fn require_step_env(
     if actual != Some(expected) {
         return Err(format!(
             "workflow step {job_name}/{step_name} must set {variable}={expected}"
+        ));
+    }
+    Ok(())
+}
+
+fn require_appimage_finalization_after_build(
+    document: &Value,
+    job_name: &str,
+    step_name: &str,
+) -> Result<(), String> {
+    let step = workflow_step(document, job_name, step_name)?;
+    let run = step
+        .get("run")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("workflow step {job_name}/{step_name} must define a script"))?;
+    let build = run
+        .find("tauri build")
+        .ok_or_else(|| format!("workflow step {job_name}/{step_name} must build with Tauri"))?;
+    let finalize = run
+        .find("scripts/finalize-linux-appimage.mjs")
+        .ok_or_else(|| {
+            format!("workflow step {job_name}/{step_name} must finalize the Linux AppImage sidecar")
+        })?;
+    if finalize <= build {
+        return Err(format!(
+            "workflow step {job_name}/{step_name} must finalize the Linux AppImage after Tauri build"
         ));
     }
     Ok(())

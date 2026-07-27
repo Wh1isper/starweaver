@@ -75,10 +75,12 @@ line tools.
 Run commands from the repository root:
 
 ```bash
+make rpc
 make desktop
 ```
 
-The shortcut installs the locked frontend dependencies and launches the Tauri development application.
+`make rpc` runs the standalone RPC host over stdio by default; pass `ARGS="http --port 8765"` for an HTTP development host. `make desktop` installs the locked frontend dependencies, builds the current development RPC binary, and launches Tauri with that exact absolute binary selected through a debug-only override. Set `DESKTOP_RPC_BINARY=/absolute/path/to/starweaver-rpc` to test another development build; release binaries ignore this override and retain verified bundled/managed selection.
+
 Run the full validation gate separately when needed:
 
 ```bash
@@ -96,8 +98,9 @@ production build. The Rust gate runs check, Clippy with warnings denied, and uni
 
 ## Native Packaging and Update Keys
 
-Build unsigned current-platform installers with their exact RPC sidecar. The Make targets disable
-`linuxdeploy` stripping so AppImage packaging cannot mutate the verified sidecar bytes:
+Build unsigned current-platform installers with their exact RPC sidecar. Linux packaging disables
+`linuxdeploy` stripping, then restores the exact target RPC into the generated AppDir and repacks the
+AppImage with a digest-pinned output plugin. Updater builds sign only the final repacked bytes:
 
 ```bash
 make desktop-package
@@ -122,8 +125,9 @@ or copy the private key into an issue, log, build artifact, or repository variab
 - repository secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the password, when one was chosen.
 
 The public key is embedded into release Desktop binaries and verifies both Tauri updater artifacts
-and detached runtime manifests. Development builds without it intentionally report updates as
-unconfigured and continue using the bundled sidecar. For a local updater-artifact build, expose the
+and detached runtime manifests. Development builds without it do not register the native updater
+plugin, intentionally report both update channels as unconfigured, and continue using the bundled
+sidecar. For a local updater-artifact build, expose the
 same values only to the build process and run:
 
 ```bash

@@ -62,6 +62,12 @@ pub fn prepare(app: &AppHandle) -> Result<RuntimeLaunchPlan, SupervisorError> {
 }
 
 fn bundled_runtime_path(current_executable: &Path) -> Result<PathBuf, SupervisorError> {
+    #[cfg(debug_assertions)]
+    if let Some(path) =
+        development_runtime_override(std::env::var_os("STARWEAVER_DESKTOP_RPC_BINARY"))?
+    {
+        return Ok(path);
+    }
     let directory = current_executable.parent().ok_or_else(|| {
         SupervisorError::invalid_configuration("Desktop executable location is unavailable")
     })?;
@@ -71,6 +77,22 @@ fn bundled_runtime_path(current_executable: &Path) -> Result<PathBuf, Supervisor
         "starweaver-rpc"
     };
     Ok(directory.join(name))
+}
+
+#[cfg(debug_assertions)]
+fn development_runtime_override(
+    value: Option<std::ffi::OsString>,
+) -> Result<Option<PathBuf>, SupervisorError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err(SupervisorError::invalid_configuration(
+            "the development RPC binary override must be absolute",
+        ));
+    }
+    Ok(Some(path))
 }
 
 fn prepare_from_paths(
@@ -356,6 +378,25 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn development_runtime_override_requires_an_absolute_path() {
+        assert!(
+            development_runtime_override(None)
+                .expect("missing override")
+                .is_none()
+        );
+        assert!(
+            development_runtime_override(Some(std::ffi::OsString::from("relative-rpc"))).is_err()
+        );
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let runtime = temp.path().join("starweaver-rpc");
+        assert_eq!(
+            development_runtime_override(Some(runtime.clone().into_os_string()))
+                .expect("absolute override"),
+            Some(runtime)
+        );
+    }
 
     #[test]
     fn prepares_a_closed_local_launch_without_shell_authority() {

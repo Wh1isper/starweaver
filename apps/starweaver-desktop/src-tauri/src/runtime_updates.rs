@@ -574,24 +574,14 @@ fn candidate_projection(candidate: &VerifiedRuntimeCandidate) -> RuntimeUpdateCa
 }
 
 fn update_public_key() -> Result<PublicKey, RuntimeUpdateError> {
-    let configured = option_env!("STARWEAVER_UPDATE_PUBLIC_KEY")
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(RuntimeUpdateError::unavailable)?;
+    let configured =
+        crate::update_trust::embedded_public_key().ok_or_else(RuntimeUpdateError::unavailable)?;
     parse_public_key(configured)
 }
 
 fn parse_public_key(configured: &str) -> Result<PublicKey, RuntimeUpdateError> {
-    let configured = configured.trim();
-    if configured.starts_with("untrusted comment:") {
-        return PublicKey::decode(configured).map_err(|_| RuntimeUpdateError::unavailable());
-    }
-    if let Ok(decoded) = BASE64.decode(configured)
-        && let Ok(text) = std::str::from_utf8(&decoded)
-    {
-        return PublicKey::decode(text).map_err(|_| RuntimeUpdateError::unavailable());
-    }
-    PublicKey::from_base64(configured).map_err(|_| RuntimeUpdateError::unavailable())
+    crate::update_trust::parse_public_key(configured)
+        .map_err(|()| RuntimeUpdateError::unavailable())
 }
 
 fn fixed_manifest_url(target: &str) -> Result<Url, RuntimeUpdateError> {

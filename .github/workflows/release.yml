@@ -246,6 +246,10 @@ jobs:
             --bundles ${{ matrix.bundles }} \
             --config src-tauri/tauri.updater.conf.json \
             --config "$updater_config"
+          node apps/starweaver-desktop/scripts/finalize-linux-appimage.mjs \
+            --target "${{ matrix.target }}" \
+            --bundle-root "target/${{ matrix.target }}/release/bundle" \
+            --binary "target/${{ matrix.target }}/release/starweaver-rpc"
 
       - name: Collect and verify canonical Desktop update assets
         env:

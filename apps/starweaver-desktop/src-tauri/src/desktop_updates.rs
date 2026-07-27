@@ -140,7 +140,7 @@ impl DesktopUpdateManager {
             .map(candidate_projection);
         DesktopUpdateSnapshot {
             current_version: current_version.to_string(),
-            configured: update_public_key().is_ok(),
+            configured: is_configured(),
             candidate,
         }
     }
@@ -213,10 +213,12 @@ impl DesktopUpdateManager {
     }
 }
 
+pub fn is_configured() -> bool {
+    update_public_key().is_ok()
+}
+
 fn update_public_key() -> Result<String, DesktopUpdateError> {
-    option_env!("STARWEAVER_UPDATE_PUBLIC_KEY")
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    crate::update_trust::embedded_public_key()
         .map(str::to_string)
         .ok_or_else(DesktopUpdateError::unavailable)
 }
@@ -327,16 +329,8 @@ async fn download_and_verify_candidate(
 }
 
 fn parse_public_key(configured: &str) -> Result<PublicKey, DesktopUpdateError> {
-    let configured = configured.trim();
-    if configured.starts_with("untrusted comment:") {
-        return PublicKey::decode(configured).map_err(|_| DesktopUpdateError::unavailable());
-    }
-    if let Ok(decoded) = BASE64.decode(configured)
-        && let Ok(text) = std::str::from_utf8(&decoded)
-    {
-        return PublicKey::decode(text).map_err(|_| DesktopUpdateError::unavailable());
-    }
-    PublicKey::from_base64(configured).map_err(|_| DesktopUpdateError::unavailable())
+    crate::update_trust::parse_public_key(configured)
+        .map_err(|()| DesktopUpdateError::unavailable())
 }
 
 fn parse_signature(signature: &str) -> Result<Signature, DesktopUpdateError> {

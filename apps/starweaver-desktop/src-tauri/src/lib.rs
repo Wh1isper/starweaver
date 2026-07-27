@@ -11,6 +11,7 @@ mod preferences;
 mod runtime_updates;
 mod single_instance;
 pub mod supervisor;
+mod update_trust;
 
 use app_state::DesktopState;
 use desktop_updates::DesktopUpdateManager;
@@ -54,10 +55,12 @@ fn begin_coordinated_exit(app_handle: tauri::AppHandle) {
 /// Returns a Tauri error when setup or the native event loop cannot start or complete.
 #[allow(clippy::too_many_lines)]
 pub fn run() -> tauri::Result<()> {
-    let app = tauri::Builder::default()
-        // The single-instance plugin must remain the first registered plugin.
-        .plugin(single_instance::plugin())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+    // The single-instance plugin must remain the first registered plugin.
+    let mut builder = tauri::Builder::default().plugin(single_instance::plugin());
+    if desktop_updates::is_configured() {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+    let app = builder
         .plugin(tauri_plugin_dialog::init())
         .manage(DesktopState::default())
         .manage(DesktopPreferencesStore::default())
