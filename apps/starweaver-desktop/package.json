@@ -35,5 +35,5 @@
     "typecheck": "tsc --noEmit --pretty false -p tsconfig.json && tsc --noEmit --pretty false -p tsconfig.node.json"
   },
   "type": "module",
-  "version": "0.10.0"
+  "version": "0.11.0"
 }
