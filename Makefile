@@ -155,13 +155,13 @@ desktop-build: desktop-sync ## Build the current-platform Desktop shell without 
 
 .PHONY: desktop-package
 desktop-package: desktop-sync ## Build unsigned current-platform Desktop installers with the bundled RPC sidecar
-	@$(PNPM) --filter @starweaver/desktop tauri build --ci --config src-tauri/tauri.bundle.conf.json
+	@NO_STRIP=1 $(PNPM) --filter @starweaver/desktop tauri build --ci --config src-tauri/tauri.bundle.conf.json
 
 .PHONY: desktop-package-updater
 desktop-package-updater: desktop-sync ## Build Tauri-signed updater artifacts; requires STARWEAVER_UPDATE_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY
 	@test -n "$$STARWEAVER_UPDATE_PUBLIC_KEY" || { echo "STARWEAVER_UPDATE_PUBLIC_KEY is required"; exit 1; }
 	@test -n "$$TAURI_SIGNING_PRIVATE_KEY" || { echo "TAURI_SIGNING_PRIVATE_KEY is required"; exit 1; }
-	@$(PNPM) --filter @starweaver/desktop tauri build --ci \
+	@NO_STRIP=1 $(PNPM) --filter @starweaver/desktop tauri build --ci \
 		--config src-tauri/tauri.updater.conf.json \
 		--config "$$(node apps/starweaver-desktop/scripts/tauri-updater-config.mjs)"
 

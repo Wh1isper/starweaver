@@ -413,6 +413,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rpc-binary", type=Path, required=True)
     parser.add_argument("--bundle", type=Path, required=True)
+    parser.add_argument("--stdio-only", action="store_true")
     args = parser.parse_args()
     rpc = args.rpc_binary.resolve(strict=True)
     _, protocol = load_bundle(args.bundle.resolve(strict=True))
@@ -442,9 +443,13 @@ def main() -> int:
             encoding="utf-8",
         )
         run_stdio(rpc, protocol, config_dir, workspace, root / "stdio.sqlite")
-        run_http(rpc, protocol, config_dir, workspace, root / "http.sqlite")
+        if not args.stdio_only:
+            run_http(rpc, protocol, config_dir, workspace, root / "http.sqlite")
 
-    print("independent bundle-only client passed stdio, replay/live, typed-error, and HTTP proof")
+    proof = "stdio, replay/live, and typed-error proof"
+    if not args.stdio_only:
+        proof = f"{proof} plus HTTP proof"
+    print(f"independent bundle-only client passed {proof}")
     return 0
 
 

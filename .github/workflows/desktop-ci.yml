@@ -74,11 +74,11 @@ jobs:
             run_tests: true
           - os: macos-latest
             target: x86_64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
             run_tests: false
           - os: macos-latest
             target: aarch64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
             run_tests: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -125,6 +125,7 @@ jobs:
 
       - name: Build updater-ready native installers with exact RPC sidecar
         env:
+          NO_STRIP: "1"
           STARWEAVER_BUILD_REVISION: ${{ github.sha }}
           STARWEAVER_DESKTOP_TARGET: ${{ matrix.target }}
         run: |
@@ -222,9 +223,12 @@ jobs:
               ;;
           esac
           if [[ "${{ matrix.run_tests }}" == "true" ]]; then
-            python tests/protocol-client/client.py \
-              --rpc-binary "$sidecar" \
+            client_args=(
+              --rpc-binary "$sidecar"
               --bundle protocol/host/generated/starweaver-host.openrpc.json
+            )
+            if [[ "${{ runner.os }}" == "Windows" ]]; then client_args+=(--stdio-only); fi
+            python tests/protocol-client/client.py "${client_args[@]}"
           fi
 
       - name: Smoke test macOS single-instance activation

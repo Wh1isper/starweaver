@@ -61,7 +61,7 @@ const EXPECTED_TARGETS: &[ExpectedTarget] = &[
         architecture: "x86_64",
         rust_target: "x86_64-apple-darwin",
         runner: "macos-latest",
-        bundles: &["dmg"],
+        bundles: &["app", "dmg"],
         runtime_archive: "tar.gz",
         native_test: false,
     },
@@ -71,7 +71,7 @@ const EXPECTED_TARGETS: &[ExpectedTarget] = &[
         architecture: "aarch64",
         rust_target: "aarch64-apple-darwin",
         runner: "macos-latest",
-        bundles: &["dmg"],
+        bundles: &["app", "dmg"],
         runtime_archive: "tar.gz",
         native_test: true,
     },
@@ -196,6 +196,16 @@ fn check_workflow_matrix(registry: &TargetRegistry, workflow: &str) -> Result<()
             ));
         }
     }
+    let document = parse_workflow_document(workflow)?;
+    require_step_env(
+        &document,
+        "native",
+        "Build updater-ready native installers with exact RPC sidecar",
+        "NO_STRIP",
+        "1",
+    )?;
+    check_windows_only_stdio_proof(&document)?;
+
     let workflow_targets = parse_workflow_targets(workflow)?;
     let registry_targets = registry
         .targets
@@ -258,6 +268,15 @@ fn check_release_workflow(registry: &TargetRegistry, workflow: &str) -> Result<(
             ));
         }
     }
+    let document = parse_workflow_document(workflow)?;
+    require_step_env(
+        &document,
+        "build-desktop-artifacts",
+        "Build updater-ready Desktop packages",
+        "NO_STRIP",
+        "1",
+    )?;
+
     let runtime_manifest_path = concat!(
         "manifest=\"$GITHUB_WORKSPACE/dist/runtime/starweaver-runtime-$",
         "{target}.manifest.json\""
@@ -312,6 +331,76 @@ fn check_release_workflow(registry: &TargetRegistry, workflow: &str) -> Result<(
                 target.rust_target
             ));
         }
+    }
+    Ok(())
+}
+
+fn parse_workflow_document(workflow: &str) -> Result<Value, String> {
+    let mut documents = yaml_serde::Deserializer::from_str(workflow);
+    let document = documents
+        .next()
+        .ok_or_else(|| "workflow is empty".to_string())?;
+    let value = Value::deserialize(document)
+        .map_err(|error| format!("workflow is not valid YAML: {error}"))?;
+    if documents.next().is_some() {
+        return Err("workflow must contain exactly one YAML document".to_string());
+    }
+    Ok(value)
+}
+
+fn workflow_step<'a>(
+    document: &'a Value,
+    job_name: &str,
+    step_name: &str,
+) -> Result<&'a Value, String> {
+    document
+        .get("jobs")
+        .and_then(|jobs| jobs.get(job_name))
+        .and_then(|job| job.get("steps"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("workflow job {job_name} must define steps"))?
+        .iter()
+        .find(|step| step.get("name").and_then(Value::as_str) == Some(step_name))
+        .ok_or_else(|| format!("workflow job {job_name} must retain step {step_name}"))
+}
+
+fn require_step_env(
+    document: &Value,
+    job_name: &str,
+    step_name: &str,
+    variable: &str,
+    expected: &str,
+) -> Result<(), String> {
+    let step = workflow_step(document, job_name, step_name)?;
+    let actual = step
+        .get("env")
+        .and_then(|env| env.get(variable))
+        .and_then(Value::as_str);
+    if actual != Some(expected) {
+        return Err(format!(
+            "workflow step {job_name}/{step_name} must set {variable}={expected}"
+        ));
+    }
+    Ok(())
+}
+
+fn check_windows_only_stdio_proof(document: &Value) -> Result<(), String> {
+    let step = workflow_step(
+        document,
+        "native",
+        "Verify packaged sidecar and public handshake",
+    )?;
+    let run = step
+        .get("run")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "packaged sidecar proof step must define a script".to_string())?;
+    let windows_only =
+        r#"if [[ "${{ runner.os }}" == "Windows" ]]; then client_args+=(--stdio-only); fi"#;
+    if run.matches("--stdio-only").count() != 1 || !run.contains(windows_only) {
+        return Err(
+            "packaged sidecar proof may use --stdio-only only under the Windows runner condition"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -1020,6 +1109,77 @@ mod tests {
         let workflow = "- os: ubuntu-latest\n  target: x86_64-unknown-linux-gnu\n";
 
         assert!(parse_workflow_targets(workflow).is_err());
+    }
+
+    #[test]
+    fn requires_no_strip_on_the_actual_desktop_build_step() {
+        let workflow = r#"
+jobs:
+  native:
+    steps:
+      - name: Build updater-ready native installers with exact RPC sidecar
+        env:
+          NO_STRIP: "1"
+        run: tauri build
+"#;
+        let Ok(document) = parse_workflow_document(workflow) else {
+            panic!("reviewed workflow must parse");
+        };
+        assert!(
+            require_step_env(
+                &document,
+                "native",
+                "Build updater-ready native installers with exact RPC sidecar",
+                "NO_STRIP",
+                "1",
+            )
+            .is_ok()
+        );
+
+        let misplaced = workflow.replace(
+            "          NO_STRIP: \"1\"\n        run: tauri build",
+            "          OTHER: \"1\"\n        run: tauri build\n      - name: Unrelated\n        env:\n          NO_STRIP: \"1\"",
+        );
+        let Ok(document) = parse_workflow_document(&misplaced) else {
+            panic!("misplaced environment workflow must parse");
+        };
+        assert!(
+            require_step_env(
+                &document,
+                "native",
+                "Build updater-ready native installers with exact RPC sidecar",
+                "NO_STRIP",
+                "1",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn allows_stdio_only_only_for_the_windows_packaged_proof() {
+        let workflow = r#"
+jobs:
+  native:
+    steps:
+      - name: Verify packaged sidecar and public handshake
+        run: |
+          client_args=(--rpc-binary "$sidecar")
+          if [[ "${{ runner.os }}" == "Windows" ]]; then client_args+=(--stdio-only); fi
+          python tests/protocol-client/client.py "${client_args[@]}"
+"#;
+        let Ok(document) = parse_workflow_document(workflow) else {
+            panic!("reviewed workflow must parse");
+        };
+        assert!(check_windows_only_stdio_proof(&document).is_ok());
+
+        let unconditional = workflow.replace(
+            "if [[ \"${{ runner.os }}\" == \"Windows\" ]]; then client_args+=(--stdio-only); fi",
+            "client_args+=(--stdio-only)",
+        );
+        let Ok(document) = parse_workflow_document(&unconditional) else {
+            panic!("unconditional workflow must parse");
+        };
+        assert!(check_windows_only_stdio_proof(&document).is_err());
     }
 
     #[test]

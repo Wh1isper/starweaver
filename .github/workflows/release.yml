@@ -192,10 +192,10 @@ jobs:
             bundles: appimage,deb
           - os: macos-latest
             target: x86_64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
           - os: macos-latest
             target: aarch64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bundles: nsis
@@ -233,6 +233,7 @@ jobs:
 
       - name: Build updater-ready Desktop packages
         env:
+          NO_STRIP: "1"
           STARWEAVER_BUILD_REVISION: ${{ github.sha }}
           STARWEAVER_DESKTOP_TARGET: ${{ matrix.target }}
           STARWEAVER_UPDATE_PUBLIC_KEY: ${{ vars.STARWEAVER_UPDATE_PUBLIC_KEY }}

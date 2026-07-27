@@ -96,7 +96,8 @@ production build. The Rust gate runs check, Clippy with warnings denied, and uni
 
 ## Native Packaging and Update Keys
 
-Build unsigned current-platform installers with their exact RPC sidecar:
+Build unsigned current-platform installers with their exact RPC sidecar. The Make targets disable
+`linuxdeploy` stripping so AppImage packaging cannot mutate the verified sidecar bytes:
 
 ```bash
 make desktop-package
