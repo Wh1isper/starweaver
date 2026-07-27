@@ -15,7 +15,8 @@ RPC_MAKE_ARGS = $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 CLI_ARGS ?= $(if $(ARGS),$(ARGS),$(CLI_MAKE_ARGS))
 SW_ARGS ?= $(if $(ARGS),$(ARGS),$(SW_MAKE_ARGS))
 RPC_ARGS ?= $(if $(ARGS),$(ARGS),$(if $(RPC_MAKE_ARGS),$(RPC_MAKE_ARGS),stdio))
-DESKTOP_RPC_BINARY ?= $(CURDIR)/target/debug/starweaver-rpc
+DESKTOP_RPC_EXE_SUFFIX = $(if $(filter Windows_NT,$(OS)),.exe,)
+DESKTOP_RPC_BINARY ?= $(CURDIR)/target/debug/starweaver-rpc$(DESKTOP_RPC_EXE_SUFFIX)
 
 ifneq ($(filter cli sw rpc,$(firstword $(MAKECMDGOALS))),)
 %:
@@ -162,7 +163,8 @@ desktop-build: desktop-sync ## Build the current-platform Desktop shell without 
 
 .PHONY: desktop-package
 desktop-package: desktop-sync ## Build unsigned current-platform Desktop installers with the bundled RPC sidecar
-	@target="$$(rustc --print host-tuple)"; \
+	@set -eu; \
+		target="$$(rustc --print host-tuple)"; \
 		NO_STRIP=1 $(PNPM) --filter @starweaver/desktop tauri build --ci --config src-tauri/tauri.bundle.conf.json; \
 		node apps/starweaver-desktop/scripts/finalize-linux-appimage.mjs \
 			--target "$$target" \
@@ -173,7 +175,8 @@ desktop-package: desktop-sync ## Build unsigned current-platform Desktop install
 desktop-package-updater: desktop-sync ## Build Tauri-signed updater artifacts; requires STARWEAVER_UPDATE_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY
 	@test -n "$$STARWEAVER_UPDATE_PUBLIC_KEY" || { echo "STARWEAVER_UPDATE_PUBLIC_KEY is required"; exit 1; }
 	@test -n "$$TAURI_SIGNING_PRIVATE_KEY" || { echo "TAURI_SIGNING_PRIVATE_KEY is required"; exit 1; }
-	@target="$$(rustc --print host-tuple)"; \
+	@set -eu; \
+		target="$$(rustc --print host-tuple)"; \
 		NO_STRIP=1 $(PNPM) --filter @starweaver/desktop tauri build --ci \
 			--config src-tauri/tauri.updater.conf.json \
 			--config "$$(node apps/starweaver-desktop/scripts/tauri-updater-config.mjs)"; \

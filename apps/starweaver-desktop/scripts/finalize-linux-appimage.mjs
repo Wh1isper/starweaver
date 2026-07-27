@@ -100,6 +100,13 @@ function filesBelow(root) {
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(scriptDirectory, "../..");
 const target = argument("--target");
+const supportedTargets = new Set([
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+]);
+if (!supportedTargets.has(target)) fail(`unsupported Desktop target: ${target}`);
 if (target !== "x86_64-unknown-linux-gnu") process.exit(0);
 
 const bundleRoot = resolve(argument("--bundle-root"));

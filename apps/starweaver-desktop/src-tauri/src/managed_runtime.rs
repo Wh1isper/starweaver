@@ -25,10 +25,6 @@ const DEFAULT_MODEL_ID: &str = "oauth@codex:gpt-5.6-sol";
 
 /// Resolve the managed runtime with the bundled runtime retained as a startup fallback.
 pub fn prepare(app: &AppHandle) -> Result<RuntimeLaunchPlan, SupervisorError> {
-    let current_executable = std::env::current_exe().map_err(|_| {
-        SupervisorError::invalid_configuration("Desktop executable location is unavailable")
-    })?;
-    let bundled_runtime = bundled_runtime_path(&current_executable)?;
     let home = app.path().home_dir().map_err(|_| {
         SupervisorError::invalid_configuration("user home directory is unavailable")
     })?;
@@ -36,6 +32,18 @@ pub fn prepare(app: &AppHandle) -> Result<RuntimeLaunchPlan, SupervisorError> {
         SupervisorError::invalid_configuration("Desktop application data is unavailable")
     })?;
     let supervisor_root = app_data_root.join("supervisor");
+    #[cfg(debug_assertions)]
+    if let Some(plan) = development_launch_plan(
+        std::env::var_os("STARWEAVER_DESKTOP_RPC_BINARY"),
+        &home,
+        &supervisor_root,
+    )? {
+        return Ok(plan);
+    }
+    let current_executable = std::env::current_exe().map_err(|_| {
+        SupervisorError::invalid_configuration("Desktop executable location is unavailable")
+    })?;
+    let bundled_runtime = bundled_runtime_path(&current_executable)?;
     let bundled = prepare_from_paths(&bundled_runtime, &home, &supervisor_root)?;
     if let Ok(Some(selection)) = crate::runtime_updates::resolve_managed_runtime(
         &app_data_root.join("runtime"),
@@ -62,12 +70,6 @@ pub fn prepare(app: &AppHandle) -> Result<RuntimeLaunchPlan, SupervisorError> {
 }
 
 fn bundled_runtime_path(current_executable: &Path) -> Result<PathBuf, SupervisorError> {
-    #[cfg(debug_assertions)]
-    if let Some(path) =
-        development_runtime_override(std::env::var_os("STARWEAVER_DESKTOP_RPC_BINARY"))?
-    {
-        return Ok(path);
-    }
     let directory = current_executable.parent().ok_or_else(|| {
         SupervisorError::invalid_configuration("Desktop executable location is unavailable")
     })?;
@@ -77,6 +79,20 @@ fn bundled_runtime_path(current_executable: &Path) -> Result<PathBuf, Supervisor
         "starweaver-rpc"
     };
     Ok(directory.join(name))
+}
+
+#[cfg(debug_assertions)]
+fn development_launch_plan(
+    value: Option<std::ffi::OsString>,
+    home: &Path,
+    supervisor_root: &Path,
+) -> Result<Option<RuntimeLaunchPlan>, SupervisorError> {
+    let Some(runtime_path) = development_runtime_override(value)? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        prepare_from_paths(&runtime_path, home, supervisor_root)?.into(),
+    ))
 }
 
 #[cfg(debug_assertions)]
@@ -396,6 +412,28 @@ mod tests {
                 .expect("absolute override"),
             Some(runtime)
         );
+    }
+
+    #[test]
+    fn development_runtime_override_is_an_exclusive_launch_plan() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let runtime = temp.path().join("starweaver-rpc");
+        fs::write(&runtime, b"development runtime").expect("runtime fixture");
+
+        let plan = development_launch_plan(
+            Some(runtime.clone().into_os_string()),
+            temp.path(),
+            &temp.path().join("desktop"),
+        )
+        .expect("development launch plan")
+        .expect("configured override");
+
+        assert_eq!(
+            plan.primary.runtime_path,
+            fs::canonicalize(runtime).expect("canonical runtime")
+        );
+        assert_eq!(plan.primary.runtime_source, RuntimeLaunchSource::Bundled);
+        assert!(plan.bundled_fallback.is_none());
     }
 
     #[test]
