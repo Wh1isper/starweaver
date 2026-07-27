@@ -7,7 +7,7 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::common::{read_json, root, run_capture, run_command, write_json};
+use crate::common::{root, run_capture, run_command};
 
 const WORKSPACE_DEPENDENCIES: [&str; 18] = [
     "starweaver-agent",
@@ -108,14 +108,43 @@ fn update_desktop_package_versions(root: &std::path::Path, version: &str) -> Res
         if !path.exists() {
             continue;
         }
-        let mut value = read_json(&path)?;
-        let object = value
-            .as_object_mut()
-            .ok_or_else(|| format!("{} root must be a JSON object", path.display()))?;
-        object.insert("version".to_string(), version.into());
-        write_json(&path, &value, false)?;
+        let text = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+        let updated = replace_json_top_level_version(&text, version)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        fs::write(&path, updated).map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn replace_json_top_level_version(text: &str, version: &str) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|error| format!("invalid JSON: {error}"))?;
+    let current = value
+        .as_object()
+        .and_then(|object| object.get("version"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "root version must be a string".to_string())?;
+    let current = serde_json::to_string(current).map_err(|error| error.to_string())?;
+    let needle = format!("  \"version\": {current}");
+    if text.matches(&needle).count() != 1 {
+        return Err("root version must use the repository JSON formatting".to_string());
+    }
+    let replacement = format!(
+        "  \"version\": {}",
+        serde_json::to_string(version).map_err(|error| error.to_string())?
+    );
+    let updated = text.replacen(&needle, &replacement, 1);
+    let updated_value: serde_json::Value = serde_json::from_str(&updated)
+        .map_err(|error| format!("updated JSON is invalid: {error}"))?;
+    if updated_value
+        .as_object()
+        .and_then(|object| object.get("version"))
+        .and_then(serde_json::Value::as_str)
+        != Some(version)
+    {
+        return Err("updated root version did not match the requested version".to_string());
+    }
+    Ok(updated)
 }
 
 fn update_python_package_versions(root: &std::path::Path, version: &str) -> Result<(), String> {
@@ -740,6 +769,24 @@ version = "9.9.9"
         };
         assert!(updated.contains("version = \"2.0.0\""));
         assert!(updated.contains("version = \"9.9.9\""));
+    }
+
+    #[test]
+    fn json_version_replacer_preserves_desktop_formatting() {
+        let text = r#"{
+  "app": {
+    "security": {
+      "capabilities": ["main", "conversation", "generated-host"]
+    }
+  },
+  "version": "0.10.0"
+}
+"#;
+        let updated = match replace_json_top_level_version(text, "0.11.0") {
+            Ok(updated) => updated,
+            Err(error) => panic!("Desktop JSON version should update: {error}"),
+        };
+        assert_eq!(updated, text.replace("0.10.0", "0.11.0"));
     }
 
     #[test]
