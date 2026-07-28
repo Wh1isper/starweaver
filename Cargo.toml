@@ -22,6 +22,7 @@ members = [
     "crates/starweaver-usage",
     "xtask",
 ]
+default-members = ["crates/*", "xtask"]
 exclude = ["packages/starweaver-py"]
 resolver = "2"
 

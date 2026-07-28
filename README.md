@@ -5,6 +5,11 @@ It gives you a typed agent loop, provider-neutral model protocol, function tools
 output, durable session primitives, first-party environment tools, and a CLI product surface in
 one workspace.
 
+> [!WARNING]
+> **Desktop is work in progress.** `apps/starweaver-desktop` is experimental, is not a
+> supported product, and is currently excluded from CI, release packaging, and active
+> maintenance. Use the CLI, Rust/Python SDKs, or standalone RPC host for supported workflows.
+
 ## Why Starweaver
 
 - Rust-native agent construction with `AgentBuilder`, `AgentApp`, and `AgentSession`.
@@ -15,7 +20,7 @@ one workspace.
 - Durable execution foundations: context export/restore, checkpoints, session records, replay streams, and SQLite storage adapters.
 - First-party SDK bundles for filesystem, shell, skills, task tracking, host search/scrape/media adapters, MCP, and subagents.
 - A CLI launcher with profile-based local runs, install/update flow, display messages, local storage, and release artifacts.
-- A three-platform Tauri 2 Desktop foundation with generated least-authority host bindings, a verified local RPC supervisor, single-instance lifecycle, and native CI matrix.
+- An experimental, maintenance-paused Tauri 2 Desktop foundation retained as WIP source code.
 
 ## Install
 
@@ -62,7 +67,6 @@ make cli -- -p "hello" --output text
 make sw -- --help
 make sw -- -p "hello" --output text
 make sw -- version
-make desktop
 ```
 
 ## SDK Quickstart
@@ -153,14 +157,16 @@ Starweaver is organized as focused crates:
 - `starweaver-cli`: local CLI product surface, launcher dispatch, profiles, TUI, storage, install, and update workflows.
 - `starweaver-rpc-core`: generated IDL-first `starweaver.host` major-1 wire boundary, strict server/client codecs, typed errors/events/cursors, launch-envelope contracts, and narrow framing/projection helpers; the generated contract atomically replaces handwritten DTO authority.
 - `starweaver-rpc`: standalone JSON-RPC host process for local and external integrations and implementer of the generated single-contract server boundary; HTTP exposes only `POST /rpc`.
-- `apps/starweaver-desktop`: Tauri 2 shell for Linux, macOS, and Windows with a manifest-filtered renderer bridge, verified local stdio RPC supervisor, compatibility-gated independent RPC selection/rollback, and Rust-owned Tauri Desktop updates.
+- `apps/starweaver-desktop`: experimental WIP Tauri 2 shell; CI, release packaging, and active maintenance are paused.
 - `packages/starweaver-py`: in-process Python SDK bindings, Python tool injection, live run control, message bus facades, typed HITL helpers, deterministic test models, sessions, and Python distribution artifacts.
 
-The canonical host protocol lives under `protocol/host/`. Default generation writes the bundled OpenRPC artifact, Rust server bindings, and Desktop's manifest-filtered safe bindings:
+The canonical host protocol lives under `protocol/host/`. Maintained generation writes the bundled OpenRPC artifact, core manifest, and Rust server bindings without changing frozen Desktop projections:
 
 ```bash
-make rpc-idl-generate
+make rpc-idl-core-generate
 ```
+
+The historical full `make rpc-idl-generate` target is retained for a future Desktop reactivation and must not be used while the maintenance freeze is active.
 
 External TypeScript consumers can generate complete bindings into a directory they own. Starweaver does not maintain or publish a separate TypeScript protocol package:
 
@@ -168,6 +174,7 @@ External TypeScript consumers can generate complete bindings into a directory th
 cargo run -p xtask -- generate-rpc-typescript --output path/to/generated-host
 # or
 make rpc-typescript-generate OUTPUT=path/to/generated-host
+make rpc-typescript-check
 ```
 
 ## Validation
@@ -178,14 +185,9 @@ make check
 make test
 make docs-check
 make docs-build
-make desktop-check
 ```
 
-Build the current-platform Desktop shell without an installer:
-
-```bash
-make desktop-build
-```
+Desktop-specific validation and build targets are intentionally outside the maintained gate while the Desktop project is paused.
 
 Full local gate:
 
@@ -201,7 +203,7 @@ Prepare a release:
 gh workflow run prepare-release.yml -f version=X.Y.Z
 ```
 
-The workflow pushes `release/vX.Y.Z` for review. After that release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release. The published Release event runs independent core, signed RPC runtime, and Desktop publication lanes with channel-specific checksums; Desktop packaging failure remains visible without blocking CLI/protocol assets, crates.io, PyPI, or RPC runtime assets.
+The workflow pushes `release/vX.Y.Z` for review. After that release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release. The published Release event packages the maintained CLI/protocol, Rust crates, and Python distribution. Desktop installers and Desktop-managed runtime update assets are not published while Desktop remains WIP.
 
 ## Acknowledgements
 

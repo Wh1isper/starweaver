@@ -19,9 +19,12 @@ defaults:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Desktop is WIP and its automated maintenance is paused. Keep the job definitions
+# available for an explicit future reactivation, but do not allocate runners.
 jobs:
   frontend:
     name: Desktop frontend
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -45,6 +48,7 @@ jobs:
 
   boundaries:
     name: Desktop boundaries and target registry
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -62,6 +66,7 @@ jobs:
 
   native:
     name: Desktop native (${{ matrix.target }})
+    if: ${{ false }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:

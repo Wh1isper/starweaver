@@ -1,5 +1,10 @@
 # Install and Update Starweaver Desktop
 
+> [!WARNING]
+> Starweaver Desktop is WIP. CI, active maintenance, release packaging, and updater publication are
+> paused. No current Desktop package is supported or published; the remaining page is retained as
+> historical verification guidance for previously produced prerelease artifacts.
+
 Starweaver Desktop release packages are currently **not signed with platform publisher
 certificates**. macOS Gatekeeper and Windows SmartScreen can therefore warn even when an official
 package is unchanged. Verify the download before choosing any platform bypass.

@@ -37,6 +37,7 @@ jobs:
             protocol/host/generated/manifest.json
           if-no-files-found: error
 
+  # Keep core bundle/Rust drift coverage without regenerating frozen Desktop projections.
   generated-drift:
     name: Generated drift (${{ matrix.os }})
     needs: idl-source
@@ -52,13 +53,7 @@ jobs:
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: make rpc-idl-drift-check
+      - run: make rpc-idl-core-drift-check
       - name: Prove check mode is read-only
         run: git diff --exit-code && test -z "$(git status --short)"
 
@@ -91,11 +86,13 @@ jobs:
         with:
           node-version-file: .node-version
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: make rpc-idl-fixtures-check
+      - run: pnpm install --filter starweaver-workspace --frozen-lockfile
+      - run: make rpc-typescript-check
 
+  # The aggregate cross-language check currently invokes Desktop generation and is paused.
   cross-language:
     name: Cross-language fixtures
+    if: ${{ false }}
     needs: [rust-protocol, typescript-protocol]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -113,7 +110,7 @@ jobs:
 
   host-contracts:
     name: Host contracts and transports
-    needs: [rust-protocol, cross-language]
+    needs: [rust-protocol, typescript-protocol]
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -122,8 +119,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: make rpc-contracts-check
 
+  # Desktop is WIP and its automated maintenance is paused.
   desktop-protocol:
     name: Desktop generated boundary
+    if: ${{ false }}
     needs: [generated-drift, cross-language]
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -164,9 +163,7 @@ jobs:
       - generated-drift
       - rust-protocol
       - typescript-protocol
-      - cross-language
       - host-contracts
-      - desktop-protocol
       - independent-client
     runs-on: ubuntu-latest
     steps:
