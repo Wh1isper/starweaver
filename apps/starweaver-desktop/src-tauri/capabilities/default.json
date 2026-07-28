@@ -7,6 +7,13 @@
   "permissions": [
     "allow-get-desktop-status",
     "allow-retry-managed-runtime",
+    "allow-get-runtime-update-status",
+    "allow-check-runtime-update",
+    "allow-install-runtime-update",
+    "allow-rollback-runtime-update",
+    "allow-get-desktop-update-status",
+    "allow-check-desktop-update",
+    "allow-install-desktop-update",
     "allow-get-desktop-preferences",
     "allow-update-desktop-preferences",
     "allow-reload-desktop-preferences",

@@ -241,6 +241,12 @@ async fn connect_streamable_http_client(
     url: &str,
     headers: &Map<String, Value>,
 ) -> Result<RmcpRunningService, LiveMcpError> {
+    // rmcp uses reqwest 0.13 without choosing a TLS provider. Install Starweaver's existing
+    // ring provider when no process-level choice exists so downstream feature unification cannot
+    // make HTTP client construction panic before an MCP connection attempt.
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
     let config = StreamableHttpClientTransportConfig::with_uri(url.to_string())
         .custom_headers(http_headers(headers)?)
         .reinit_on_expired_session(true);

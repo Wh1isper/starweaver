@@ -1,6 +1,6 @@
 # Interaction, Authorization, and Transport Security
 
-Status: accepted local-only architecture; renderer, stdio child, workspace authority, host-local OAuth, and durable interaction controls implemented; updater and enforceable sandbox controls planned; SSH removed from Desktop scope
+Status: accepted local-only architecture; renderer, stdio child, workspace authority, host-local OAuth, durable interaction controls, and privileged update channels implemented; enforceable sandbox controls planned; SSH removed from Desktop scope
 
 Desktop introduces a privileged local UI around filesystem, shell, model, and durable-control capabilities. Its security boundary is the Desktop backend plus the execution-domain RPC host and its typed workspace registry, not the renderer.
 

@@ -1,323 +1,220 @@
 # Desktop Runtime Updates and Release
 
-Status: accepted architecture baseline; implementation planned
+Status: first-release independent RPC updates, Tauri Desktop updates, native packaging, and release automation implemented; storage-changing runtime updates deferred
 
-The Desktop shell and the Starweaver RPC runtime have separate lifecycles. The Desktop backend supervisor owns a runtime update channel so execution can receive compatible fixes without requiring every renderer or shell change to ship in the same transaction.
+Starweaver Desktop ships one exact target-specific `starweaver-rpc` sidecar in every native package and may also install a newer compatible RPC runtime independently. The bundled sidecar is the immutable bootstrap and recovery fallback. Desktop itself updates through Tauri 2's native updater.
 
-This design extends the existing GitHub Release path. For the local managed runtime it does not invoke `starweaver update`, execute a downloaded shell installer, or replace a running binary in place. SSH targets use the public non-interactive RPC component-management contract defined in `07-ssh-remote-workspaces.md`; that remote provisioning exception does not expose CLI-private configuration or coordination to Desktop.
+The initial release channel intentionally does not use Apple Developer ID/notarization or Windows Authenticode publisher signing. Those platform trust identities are separate from, and not replaced by, the mandatory free Tauri/minisign project signatures used for automatic updates. Users receive verification and single-application warning-bypass guidance in `docs/desktop-install.md`.
 
-## Version Identities
+## Accepted First-Release Model
 
-Desktop tracks these identities separately:
+The shell and runtime are separate update transactions:
 
-| Identity                   | Meaning                                                                                                                  |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Desktop shell version      | Native application/backend UI release                                                                                    |
-| Runtime version            | Exact `starweaver-rpc` build supervised by Desktop                                                                       |
-| Host protocol identity     | Protocol name, major, non-ordered revision, and features over the selected local stdio or SSH private-endpoint transport |
-| Display contract identity  | Display/replay payload compatibility                                                                                     |
-| Storage schema generation  | SQLite durable schema current/read/write range                                                                           |
-| Update manifest generation | Versioned updater metadata schema                                                                                        |
+- every package contains the exact same-release RPC sidecar;
+- a managed RPC candidate is accepted only when it has the exact current host protocol identity, exact Rust target triple, launch schema 1, storage generation 1, and a compatible Desktop semantic-version range;
+- independent RPC updates cannot change storage schema or require a migration;
+- installing an RPC candidate changes the selection for the next Desktop process start and never interrupts the current host;
+- rollback selects the previous verified managed runtime, or the bundled sidecar when no previous managed version exists, for the next start;
+- the Desktop shell uses `tauri-plugin-updater` with a fixed GitHub `latest.json` endpoint, an embedded project public key, native confirmation, coordinated RPC shutdown, installation, and restart;
+- renderer IPC exposes only typed check/install/rollback intents and safe projections. It cannot provide a URL, target, path, signature, header, proxy, executable, RPC payload, or installer bytes.
 
-A shared workspace release version may still build CLI, RPC, SDK, and Desktop artifacts together. Runtime compatibility is nevertheless checked explicitly so the shell can stage a newer or pinned RPC build safely.
+```mermaid
+flowchart LR
+    release[Fixed GitHub release assets]
+    backend[Tauri privileged backend]
+    bundled[Bundled exact RPC fallback]
+    managed[Private managed RPC version]
+    rpc[One supervised RPC host]
+    shell[Tauri Desktop updater]
 
-## Existing Release Baseline
-
-Current GitHub Release archives already:
-
-- build `starweaver-rpc` for supported CLI targets;
-- package it with `starweaver`, `starweaver-cli`, and `sw`;
-- publish `checksums.txt` with SHA-256 hashes;
-- allow a pinned `STARWEAVER_VERSION` and an explicit rollback through the CLI installer.
-
-This is useful bootstrap evidence but is not the final Desktop updater contract:
-
-- the CLI installer treats `rpc` as the whole CLI component;
-- checksum download/entry presence is currently optional;
-- binaries in one archive are replaced one by one;
-- there is no Desktop/runtime compatibility manifest;
-- there is no quiesced shared-database migration transaction;
-- there is no versioned runtime directory or tested Desktop rollback state machine.
-
-Desktop therefore gets a dedicated runtime component channel even when the bytes originate from the same workspace release. The download, manifest verification, locking, versioned installation, activation, and rollback mechanics should have one product-neutral implementation shared by the local Desktop updater and the hardened `starweaver`/`sw` component updater.
-
-## Runtime Bundle
-
-The target release artifact is platform-specific and contains only the files needed by the Desktop execution host, for example:
-
-```text
-starweaver-runtime-vX.Y.Z-<target>.tar.gz
-starweaver-runtime-vX.Y.Z-<target>.zip
+    release -->|signed runtime manifest and raw binary| backend
+    release -->|latest.json and signed updater artifact| shell
+    backend -->|verify, probe, select for next start| managed
+    bundled -->|fallback| rpc
+    managed -->|preferred when fully reverified| rpc
+    shell -->|confirm, shutdown, install, restart| backend
 ```
 
-A bundle contains:
+## Trust and Signing Boundaries
 
-- `starweaver-rpc` or `starweaver-rpc.exe`;
-- an embedded `runtime-identity.json` that identifies and hashes the executable/files inside the extracted bundle;
-- license/notices required for redistribution;
-- platform signing metadata where applicable.
+These mechanisms have distinct meanings:
 
-A detached, signed update manifest is published beside the archive. It is not embedded in the archive it hashes. The detached update manifest includes at least:
+| Mechanism                           | Required in the initial channel | Purpose                                                                                                   |
+| ----------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Tauri/minisign project signature    | Yes                             | Authorizes Desktop updater artifacts and detached RPC manifests with the project key embedded in Desktop. |
+| SHA-256 and exact byte size         | Yes                             | Binds each downloaded asset to signed metadata and release checksums.                                     |
+| GitHub build provenance             | Yes                             | Attests that published package/runtime assets were produced by the repository release workflow.           |
+| Apple Developer ID and notarization | No                              | Would establish an Apple-recognized publisher and remove normal unsigned Gatekeeper friction.             |
+| Windows Authenticode                | No                              | Would establish a Windows-recognized publisher and improve SmartScreen reputation.                        |
 
-- update-manifest schema version;
-- runtime semantic version and immutable build/revision identity;
-- target OS/architecture/ABI;
-- exact archive asset name, byte size, and SHA-256 digest;
-- expected embedded identity-manifest digest;
-- host protocol name, major, non-ordered revision, and feature set;
-- accepted public RPC launch-envelope schema identities/ranges;
-- display contract range;
-- storage current/min-readable/max-readable/min-writable/max-writable generations;
-- whether startup may migrate storage;
-- database maintenance-barrier protocol generation;
-- whether the previous supported runtime can read/write the post-migration schema;
-- minimum/maximum compatible Desktop shell versions;
-- release channel and publication timestamp;
-- signing/provenance identity.
+A checksum or GitHub attestation never substitutes for an update signature or OS publisher identity. Automatic update signature verification cannot be disabled or bypassed by the renderer or user. Platform warning bypass is documented only for an initially downloaded or manual-fallback artifact whose checksum and provenance have already been verified.
 
-The embedded identity manifest contains the executable/file digests and the binary’s build, protocol, launch-schema, display, storage, and barrier identities, but never claims to hash its containing archive. Both manifests are generated from the release commit and validated against the built binary during packaging.
+The same long-lived project key currently signs both Tauri updater artifacts and detached RPC manifests. The private key exists only in release secrets. Desktop embeds only its public key through `STARWEAVER_UPDATE_PUBLIC_KEY`. Development builds without a valid embedded key do not register the native updater plugin, remain functional with the explicitly selected development RPC or bundled RPC, and report both update channels as unconfigured.
 
-## Update Channels
+## Version and Compatibility Identities
 
-Desktop supports a small explicit channel model:
+Desktop keeps these identities separate:
 
-- `stable`: published stable releases, default;
-- `preview`: opted-in prereleases;
-- `pinned`: an administrator or user-selected exact runtime version, with no automatic version change.
+| Identity               | Current rule                                                         |
+| ---------------------- | -------------------------------------------------------------------- |
+| Desktop version        | Workspace semantic version used by Tauri and the updater feed.       |
+| RPC runtime version    | Independently selectable semantic version.                           |
+| Runtime build revision | Full lowercase release commit digest.                                |
+| Rust target            | Exact full target triple, not an abbreviated architecture/OS label.  |
+| Host protocol          | Exact name, major, non-ordered revision, and schema digest.          |
+| Launch envelope        | Exact schema version 1.                                              |
+| Storage                | Exact generation 1; no migration in the independent updater.         |
+| Runtime manifest       | Strict schema version 1 with unknown fields rejected.                |
+| Runtime pointer        | Strict schema version 1 with an installation ID and manifest digest. |
 
-A channel is Desktop-local state. It does not change CLI update settings. Channel metadata may initially be hosted as GitHub Release assets, but the client consumes a versioned manifest rather than scraping HTML.
+The release packager currently derives a runtime candidate's Desktop range as the same minor line: `>=MAJOR.MINOR.0, <MAJOR.(MINOR+1).0`. Runtime selection also requires the candidate version to be newer than the currently selected bundled or managed version. Desktop reports the ready runtime and next-start selection by version and source (`bundled` or `managed`); managed identities additionally bind the signed digest. Therefore a same-version source change or managed-binary replacement still correctly requires restart.
 
-A feed entry becomes selectable only after every referenced manifest, asset, checksum, and signature is uploaded and the entry is atomically marked ready. GitHub's `published` or `/releases/latest` state alone is not an update commit point because the current workflow can expose a tag before packaging completes.
+## Independent RPC Runtime Channel
 
-Candidate discovery resolves one exact version, build ID, manifest digest, asset URL, asset size, and asset digest. Download, verification, and activation retain that immutable candidate record and never resolve `latest` a second time. This prevents discovery/install time-of-check-to-time-of-use drift.
+### Fixed release assets
 
-Downgrades require explicit user or managed-policy intent. Automatic update selection never chooses a lower semantic version or an artifact from a different repository/trust identity.
+For each reviewed target, the release publishes:
 
-## Installation Layout
+```text
+starweaver-runtime-<target>.manifest.json
+starweaver-runtime-<target>.manifest.json.sig
+starweaver-rpc-v<version>-<target>[.exe]
+```
 
-Runtime binaries live in versioned Desktop application-support directories, not beside a currently running executable:
+The signed manifest contains:
+
+- schema version;
+- runtime semantic version and immutable build revision;
+- exact Rust target triple;
+- compatible Desktop semantic-version range;
+- exact host protocol identity;
+- launch schema version;
+- storage generation;
+- fixed asset name and HTTPS release URL;
+- exact byte size and SHA-256 digest.
+
+The runtime is a raw executable rather than an archive. This avoids an extraction surface and unexpected-file/link/path-traversal classes. Asset and manifest URLs must remain under the fixed `Wh1isper/starweaver` GitHub release path.
+
+### Check, install, and probe
+
+The privileged runtime manager:
+
+01. fetches the one target-specific manifest and `.sig` from the fixed latest-release URLs with HTTPS, redirect, timeout, and response-size bounds;
+02. verifies the detached project signature before parsing the strict manifest;
+03. validates every compatibility identity and rejects downgrade/equal-version candidates;
+04. retains the exact verified manifest bytes as an opaque backend-owned candidate;
+05. downloads only its exact raw executable with a 256 MiB bound while checking declared size and SHA-256;
+06. writes into a new owner-private staging directory and applies executable/read-only permissions where supported;
+07. performs a bounded initialize/shutdown probe against an isolated temporary launch envelope and database;
+08. atomically moves the candidate into a private content-addressed directory and persists the signed manifest;
+09. atomically replaces one `selection.json` record containing the current and previous verified pointers;
+10. reports that application restart is required.
+
+The probe never opens the canonical user database. Installation does not restart, replace, or terminate the active domain host. A normal next Desktop start resolves and fully re-verifies the pointer, signature, compatibility manifest, executable exact size, digest, and permissions before preferring the managed runtime. Local manifest, signature, selection, launch-envelope, and runtime reads are bounded from an already opened handle; runtime hashing requires the exact signed size and a 256 MiB hard maximum. The manifest's signed executable size and digest remain the supervisor's expectations through staging and the pre-spawn recheck; they are not replaced by trust derived from the resolved path. Any missing, malformed, incompatible, or unverifiable managed selection fails closed to the bundled sidecar. If a selected managed runtime still fails startup or initialize after resolution, Desktop makes one fresh-generation attempt with the bundled sidecar from the same installation.
+
+The private layout is conceptually:
 
 ```text
 <desktop-data>/runtime/
+  staging/
   versions/
-    <version>-<build-id>/
-      update-manifest.json
-      runtime-identity.json
-      starweaver-rpc
-  staged.json
-  current.json
-  previous.json
-  update-transaction.json
+    <manifest-id>/
+      starweaver-rpc[.exe]
+      manifest.json
+      manifest.sig
+  selection.json
 ```
 
-`current.json` is a small atomic pointer/record, not a mutable executable. Existing domain hosts continue using the binary path from their launch record even after a new version is staged. Pointer, manifest, and transaction writes use a platform-specific durable atomic replace: write a same-directory temporary file, flush file contents, atomically replace the destination, and sync the parent directory where supported. Recovery never trusts a partially written JSON record.
+`selection.json` is one bounded, path-free, schema-versioned record, so current/previous state cannot be torn across two pointer-file replacements. A rollback swaps the current and previous verified pointers in one atomic replacement when both exist. Without a previous managed pointer it clears the current pointer in that same record, making the bundled sidecar the next-start selection while retaining the former managed pointer as the next rollback choice. Rollback does not claim to revert durable data because this channel forbids storage changes.
 
-Versioned directories avoid Windows replacement failures and make rollback deterministic. Garbage collection retains the current version, previous rollback candidate, any version used by a live domain host, and a bounded number of recent verified versions.
+## Desktop Shell Update Channel
 
-## Update State Machine
+Desktop uses the Rust `tauri-plugin-updater` API only. The backend builds an updater with:
 
-```mermaid
-stateDiagram-v2
-    [*] --> Idle
-    Idle --> Checking: policy permits check
-    Checking --> Idle: no compatible update
-    Checking --> Downloading: candidate selected
-    Downloading --> Verifying: asset complete
-    Verifying --> Staged: digest, manifest, signature, smoke pass
-    Verifying --> Failed: verification error
-    Staged --> WaitingForDrain: activation requested
-    WaitingForDrain --> PreparingStorage: the affected domain host and foreign admissions quiesced
-    PreparingStorage --> Activating: backup/preflight/migration pass
-    PreparingStorage --> Failed: preflight or migration failure
-    Activating --> Active: pointer committed and domain host initialized
-    Activating --> RollingBack: startup/health failure
-    RollingBack --> Active: prior compatible version restored
-    RollingBack --> Failed: safe rollback unavailable
-    Failed --> Idle: acknowledged or retried
-```
+- fixed endpoint `https://github.com/Wh1isper/starweaver/releases/latest/download/latest.json`;
+- the project public key embedded at build time;
+- a 30-second metadata timeout;
+- no renderer-supplied updater configuration.
 
-Every transition is recorded in Desktop-owned update state with the candidate, current, and previous build identities. A crash at any point resumes or rolls back from this record rather than inferring state from partial files.
+Before invoking Tauri's parser, the backend fetches the fixed metadata endpoint through its bounded HTTPS client, accepts at most 256 KiB and 16 platform entries, and limits every signature string to 16 KiB. Tauri then performs its normal check, and any retained candidate must carry raw metadata exactly equal to that bounded preflight document. A successful check retains Tauri's exact candidate object in process-owned state and exposes only bounded version, release-note, timestamp, and signing-state fields. Install requires the exact retained version. The backend downloads only the candidate's canonical target/version GitHub asset through a fixed HTTPS client with limited redirects, a 30-second request and outer operation timeout, and a 1 GiB content/chunk hard bound. On Linux, the canonical asset is selected from the installed Tauri bundle type, so an AppImage accepts only the AppImage entry and a deb installation accepts only the deb entry. The backend then verifies the mandatory Tauri project signature with the embedded key before presenting a native warning that Apple/Microsoft publisher signing is absent. Only after that verification and confirmation does Desktop coordinate RPC shutdown, install the already verified bytes through Tauri, and restart the application.
 
-One owner-only update lock serializes check-to-activation transactions for a Desktop data root. A concurrent shell instance or recovery helper may observe status but cannot stage, migrate, switch pointers, or garbage-collect versions until it acquires the same authenticated ownership lock.
+If download, signature verification, native confirmation, coordinated shutdown, or installation fails, Desktop returns a stable sanitized category. It does not expose response bodies, URLs, signatures, paths, installer bytes, or raw platform failures to the renderer. Manual verified installation remains the recovery path when the updater is unavailable.
 
-## Download and Verification
+A newly installed shell still carries its exact bundled sidecar. On startup it uses an existing managed runtime only if that runtime remains fully compatible with and verifiable by the new shell; otherwise it safely falls back to its bundle.
 
-Before staging:
+## Packaging and Release Automation
 
-01. resolve one exact detached update-manifest URL and expected manifest digest from channel metadata over HTTPS;
-02. download and verify the detached manifest signature, digest, schema, and trust identity;
-03. validate target, host-protocol major/features, launch-envelope range, and shell compatibility before archive download when possible;
-04. download the exact named archive to a newly created staging directory with byte limits and timeout;
-05. require and verify the detached archive size/SHA-256 entry; a missing digest is a hard failure;
-06. reject path traversal, links, unexpected files, and duplicate entries during extraction;
-07. verify the embedded identity-manifest digest and every declared executable/file digest;
-08. validate executable build/protocol/launch identity against both manifests;
-09. validate platform code signature/notarization where required;
-10. run a bounded smoke initialize with a mutually supported launch envelope against an isolated temporary config/database;
-11. atomically move the verified directory and detached manifest into `versions/`.
+`apps/starweaver-desktop/targets.toml` defines the supported matrix:
 
-Staging directories are created with secure random names and owner-only permissions. Archive inspection happens before extraction and rejects absolute paths, parent traversal, links, duplicate entries, unexpected files, and configured compressed/uncompressed size limits.
+| Target                     | Native packages                   |
+| -------------------------- | --------------------------------- |
+| `x86_64-unknown-linux-gnu` | AppImage and deb                  |
+| `x86_64-apple-darwin`      | DMG and Tauri app updater archive |
+| `aarch64-apple-darwin`     | DMG and Tauri app updater archive |
+| `x86_64-pc-windows-msvc`   | NSIS installer/updater executable |
 
-A checksum fetched from the same GitHub Release protects transfer integrity but is not an independent signature. Public release readiness additionally requires platform code signing and a signed update manifest/provenance chain rooted in the signed Desktop updater or release service.
+`make desktop-package` builds unsigned current-platform installers with the exact external sidecar. `make desktop-package-updater` additionally requires `STARWEAVER_UPDATE_PUBLIC_KEY` and `TAURI_SIGNING_PRIVATE_KEY` and creates Tauri updater artifacts.
 
-The renderer cannot bypass a verification failure.
+The bundle-only Tauri overlay:
 
-## Compatibility Selection
+- builds the exact target RPC before the frontend;
+- copies it to the target-qualified `externalBin` name Tauri requires;
+- packages exactly one RPC sidecar;
+- uses macOS ad-hoc signing (`-`) rather than a Developer ID identity;
+- keeps ordinary development and `--no-bundle` builds independent of generated sidecar files.
 
-The supervisor selects a runtime only when all are true:
+Premerge Desktop CI generates a throwaway project key per target and builds the same updater-ready package configuration used by release, including updater signatures, a signed runtime manifest, canonical artifact collection, and dynamic bundler public-key injection. It verifies both runtime and Desktop artifact signatures with the corresponding public key, proving that the configured private/public pair matches. It extracts package contents, verifies there is exactly one sidecar with the expected digest (after the deterministic macOS ad-hoc hardened-runtime signing transform) and Unix execute bit, and runs the independent Python host-protocol client where the target is executable on the runner. Linux packaging sets `NO_STRIP=1`, then restores the exact target RPC into the generated AppDir, repacks with a fixed digest-verified AppImage output plugin, and regenerates any updater signature over the final AppImage bytes; `linuxdeploy` otherwise patches the ELF RPATH even when stripping is disabled. CI checks both deb and updater-selected AppImage contents and runs the handshake against the AppImage sidecar. macOS builds both the Tauri `app` updater target and the user-facing DMG; Intel package contents are checked without pretending that an ARM runner executed the Intel binary. Windows executes the packaged sidecar's full stdio/replay/live/typed-error proof while the independent Windows workspace gates cover standalone HTTP authentication, request handling, and shutdown, avoiding a redundant packaged-process loopback probe that is vulnerable to transient local socket aborts.
 
-- shell version is in the detached update-manifest range;
-- host protocol name/major matches and required features are present; the revision is an identity, not an ordered minor version;
-- the public launch-envelope schema ranges intersect;
-- display contract ranges intersect;
-- the selected database schema is readable and writable by the candidate;
-- the candidate migration path is supported;
-- the channel and trust identity match policy;
-- the target matches the host platform;
-- no known-bad or revoked build policy rejects it.
+The release-event workflow is packaging-only and has three independent publication lanes:
 
-Initialize rechecks the binary’s self-reported identities. Detached update manifest, embedded identity manifest, and binary disagreement quarantines the bundle.
+1. the core lane builds CLI/RPC archives, protocol artifacts, and Python distributions, uploads them with `checksums.txt`, and gates crates.io/PyPI publication;
+2. the runtime lane consumes the raw RPC binaries retained by the binary matrix, creates and project-signs all four target-specific runtime manifests, verifies them against `STARWEAVER_UPDATE_PUBLIC_KEY`, attests the runtime assets, and uploads them with `runtime-checksums.txt`;
+3. the Desktop lane builds updater-ready native packages with exact bundled sidecars, collects and verifies canonical installer/updater signatures, attests the Desktop assets, combines exactly four native-target records into five installer-specific Tauri `latest.json` entries (separate Linux AppImage and deb entries, two macOS architectures, and Windows NSIS), and uploads them with `desktop-checksums.txt`.
 
-## Pending Runtime Config and Binary Activation
+A failed Desktop target, Tauri signature, or metadata finalization keeps the Desktop lane failed but has no dependency path to core uploads, crates.io, PyPI, or the independently signed RPC runtime lane. Runtime and Desktop release assets have disjoint canonical filenames. Every lane refuses to replace an existing release asset, uploads payloads before checksum/updater metadata, and requires explicit operator cleanup or a new version after any partial upload. No lane suppresses its own failure with `continue-on-error`.
 
-Runtime config staging and binary updates are separate transactions. A staged restart-required runtime config is not activated by an ordinary crash or binary update. `config.activate` creates an explicit activation ID; the supervisor includes it with the target runtime-config revision in a higher-generation launch envelope. The new host promotes that revision only after validation and health admission. `config.discard` removes a staged candidate, while failed startup uses the previous active revision and a fenced rollback record.
+No Apple or Microsoft signing credential is required. Release maintainers must provision the free Tauri project key pair once, store the public key as the `STARWEAVER_UPDATE_PUBLIC_KEY` GitHub variable, and store the private key and optional password as `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets. Key rotation requires an explicit trust-transition release; silently replacing the embedded public key would strand existing clients.
 
-When a binary update and config activation are intentionally combined, one supervisor transaction names both exact targets and previous versions. Failure rolls both selectors back consistently; it never leaves the new binary with an unintended desired config or the old binary with an incompatible active config. Details are in `08-configuration-and-reload.md`.
+## Storage Migration Boundary
 
-## Activation and Active Runs
+Independent RPC candidates are deliberately restricted to `storageGeneration = 1`. They cannot request startup migration, claim a wider schema range, or use the canonical database during the isolated probe. A schema-changing Desktop or managed-runtime release must not be published until storage owns both:
 
-Downloading and verification may occur while runs are active. Activation may not replace or terminate an active domain host implicitly.
+- atomic supervised database open/create that removes the current preflight/check-open race; and
+- a product-neutral coordinated maintenance barrier honored by Desktop, standalone RPC, CLI, background owners, and durable effect claims.
 
-- New candidate state becomes `Staged`.
-- Because Desktop runs one local domain host, a binary candidate is never activated for only some workspaces. Activation drains and replaces the whole local host generation.
-- If a candidate may migrate shared storage, its no-run maintenance process may access the real database only to publish and observe the fenced `draining` barrier. The Desktop-owned domain host must drain and all eligible owners/effect claims must be gone before the process promotes the barrier to `exclusive`, creates the migration backup, migrates, or performs any other exclusive-phase write.
-- An explicit “restart now” action explains which active runs would be interrupted and uses coordinated shutdown; otherwise activation waits.
-- Closing a window is not consent to restart a runtime.
+The later migration transaction must drain admissions, fence active owners, create and verify a consistent backup, preflight the candidate against a disposable copy, migrate under exclusive ownership, check integrity, and keep pointer commit within the barrier lifetime. Desktop must coordinate that operation through a bounded RPC/storage maintenance interface rather than linking storage or editing SQLite directly.
 
-Desktop does not run mixed RPC binary versions inside one execution domain. Independent CLI or external RPC processes may temporarily differ only when detached manifests and N/N-1 tests declare their protocol, schema, and durable writes mutually compatible. Runtime configuration hot reload is a separate snapshot operation defined in `08-configuration-and-reload.md` and does not activate a new binary.
+Until that contract exists:
 
-## Shared Storage Migration Transaction
+- the supervised host rejects an existing out-of-date database before ordinary open;
+- independent runtime manifests with any other storage generation fail verification;
+- release automation must classify storage/schema changes as blocking both runtime and Desktop publication;
+- rollback is binary selection only and is valid precisely because accepted candidates cannot change storage.
 
-A storage-changing activation is serialized across the Desktop supervisor and all supported local products through a product-neutral two-phase database maintenance barrier.
+## Security and Recovery Invariants
 
-Desktop coordinates the operation through a dedicated `starweaver-rpc` maintenance mode that admits no runs and owns the drain intent, exclusive migration ownership, backup, migration, and integrity-check calls. The Desktop backend does not link `starweaver-storage` or manipulate SQLite/sidecar locks directly. Standalone CLI/RPC paths may use the same storage-owned primitive inside their own processes.
-
-The barrier has two fenced phases:
-
-- `draining`: atomically records owner, generation, target schema, expiry, and admission cutoff. Supported products reject new run/background/effect admission and unrelated mutations, while owners admitted before the cutoff may continue heartbeat, checkpoint, terminal commit, and lease release needed to drain safely.
-- `exclusive`: entered only after all pre-cutoff owners and effect claims are gone. It rejects all ordinary writes and is held across backup, migration, integrity checks, and runtime pointer commit.
-
-Every product path that can apply a pending schema migration, including ordinary CLI/RPC startup, must use these phases; migration is never a hidden side effect under an ordinary writer path. The barrier is derived from the canonical database identity and lives outside Desktop-private state so independent products can honor it without depending on Desktop. Expiry/recovery is fenced so a stale maintenance process cannot resume after a replacement owner.
-
-01. start the candidate maintenance process and atomically publish the `draining` intent/cutoff;
-02. stop new Desktop run admission and ask the Desktop-owned domain host to drain;
-03. allow pre-cutoff owners to persist heartbeat/checkpoint/terminal/release evidence;
-04. inspect run admissions, background-subagent/delivery claims, and other durable effect leases, then wait while a live foreign CLI/RPC owner is active;
-05. reject or require shutdown of an older local product version that does not support the maintenance barrier;
-06. after every eligible owner is gone, atomically promote the fenced barrier to `exclusive`;
-07. create an owner-only, integrity-checked, quota-bounded consistent SQLite backup through a storage API;
-08. run candidate migration preflight against a disposable backup/snapshot;
-09. let the candidate maintenance process apply/check the real database while quiesced;
-10. verify migration status, integrity, and candidate self-reported compatibility;
-11. atomically commit the current runtime pointer while the maintenance process still owns the exclusive barrier;
-12. release the maintenance barrier and stop the maintenance process;
-13. start the ordinary candidate domain host, complete initialize/health checks, and reconcile its workspace registry and desired/active configuration revisions;
-14. resume normal admission for all registered workspaces;
-15. retain the backup until the rollback window expires, then delete it through an explicit retention policy.
-
-Opening an ordinary host and hoping startup migration succeeds is not a sufficient updater API. RPC/storage must provide a bounded maintenance process with structured check/apply outcomes, no ordinary run admission, and a barrier lifetime that spans pointer commit. The ordinary domain host starts only after that exclusive barrier is released.
-
-Desktop cannot force a CLI process to stop. If foreign admission, a non-participating older process, or a database/maintenance lock prevents safe migration, activation waits and presents actionable status. Checking admission leases without first publishing the fenced drain cutoff is insufficient because a CLI could otherwise admit a new run between the check and exclusive migration. Acquiring exclusivity before existing owners finalize is also prohibited because it would block their heartbeat and terminal evidence.
-
-## Rollback Classes
-
-Rollback depends on storage compatibility.
-
-### No schema change
-
-The supervisor drains the candidate domain host, points `current.json` to the previous verified runtime, initializes the previous host generation, reconciles config/workspace state, and resumes. No database restore is needed.
-
-### Backward-compatible schema change
-
-Pointer rollback is allowed only when the previous detached update manifest and compatibility tests declare the current schema readable and writable.
-
-### Incompatible schema change
-
-Automatic binary-only rollback is prohibited. Options are:
-
-- keep the new compatible runtime and report the shell/runtime failure;
-- install a fixed forward runtime;
-- restore the pre-migration backup only after all writers are stopped and the user confirms that post-migration writes, if any, will be discarded.
-
-The updater must never launch an older binary against a schema outside its declared range.
-
-## Shell Updates
-
-The Tauri 2 updater, backed by platform code signing and the reviewed release feed, manages Desktop shell updates. A shell release can include a bootstrap runtime, but installation does not automatically replace a newer compatible managed runtime.
-
-After a shell update:
-
-1. read the existing runtime transaction and current pointer;
-2. validate the managed runtime against the new shell;
-3. use it when compatible;
-4. otherwise activate the signed bootstrap runtime or fetch a compatible channel runtime;
-5. never open storage with an incompatible bootstrap binary merely to discover the error.
-
-Shell and runtime updates may be offered together, but remain two compatibility-checked transactions.
-
-## CLI and Installer Relationship
-
-CLI continues to use its launcher/install path. Desktop does not call `starweaver update` for its local managed runtime and does not replace binaries in the local CLI install directory.
-
-SSH provisioning is deliberately different: Desktop may invoke a fixed, public, versioned, non-interactive RPC component ensure/update operation on the remote account. This is an external process/install protocol, not a crate dependency on CLI handlers, CLI configuration, TUI state, or run coordination. Its machine-readable schema, exact-version behavior, trust verification, lock, and versioned layout are release contracts.
-
-If CLI/launcher and Desktop need the same updater mechanics, those mechanics move to a product-neutral owner. Desktop must not copy the current shell installer or parse human CLI output into a second implementation.
-
-CLI, local Desktop, and remote Desktop targets may install the same RPC version in different locations. Shared durable compatibility is governed by protocol/storage ranges and CI, not by requiring products or execution domains to use one filesystem binary or database.
-
-The release process may derive CLI, local Desktop, and remote-managed runtime bundles from the same `starweaver-rpc` build to avoid drift.
-
-## Managed SSH Targets
-
-A managed SSH target has its own runtime channel/pin, versioned user-owned installation, update lock, current/previous pointers, and remote transaction state. It does not reuse the local Desktop runtime pointer.
-
-Desktop probes the remote target without opening its real database, resolves one exact signed candidate for that target, and performs install/update on a separate SSH provisioning channel. The remote component manager emits bounded typed output. An existing remote domain host continues using its exact build until drained; installer output never shares the RPC transport.
-
-A remote binary candidate activates only by draining and replacing that target's one domain host. Candidates that can migrate storage require the same drain-to-exclusive maintenance barrier against the remote canonical database, including foreign remote CLI/RPC owner detection, release of the database-level execution-host lock, backup, integrity validation, and rollback classification. A partitioned old host holding its OS lock blocks replacement and exclusive migration even if the local OpenSSH process is gone. Database rename, restore, or atomic replacement updates the stable database UUID-to-file binding in the platform-canonical coordination registry while the maintenance barrier is exclusive; it never changes the database host-lock key. Network loss is a transaction failure/recovery event, never evidence of successful activation.
-
-The initial automatic bootstrap uses a locally verified signed bootstrap asset sent over SSH, not an unpinned network shell pipeline. `scripts/install.sh` remains a manual/recovery route only after it supports a hardened exact-version `rpc` component.
-
-## Release and CI Changes
-
-When implementation begins, release automation must add:
-
-- dedicated runtime artifacts for supported Desktop targets;
-- mandatory checksum entries;
-- generated compatibility manifests;
-- manifest/binary identity validation;
-- platform signing/notarization and provenance publication;
-- immutable update-channel metadata;
-- current/previous runtime fixture retention;
-- Desktop package artifacts and native updater metadata;
-- a signed non-interactive RPC component bootstrap/update contract for supported SSH target triples;
-- installer JSON-schema fixtures, exact-version tests, lock/activation/rollback fault injection, and remote target compatibility fixtures.
-
-Release-event workflows remain packaging-only. Compatibility, migration, updater fault injection, and smoke validation run before the release commit is merged.
-
-The update feed advertises only targets that the release workflow actually builds and validates. Target detection and the release matrix are generated from or checked against one registry; for example, Linux ARM64 cannot be advertised until its runtime artifact exists. Desktop launch uses the verified absolute runtime path and never falls back to `PATH`.
+- The bundled exact sidecar is always retained as fallback and is never replaced by the runtime updater.
+- Managed candidates activate only on the next Desktop process start.
+- The active host is never interrupted by runtime download, install, or rollback.
+- Every managed selection is fully reverified on every process start.
+- URLs, target, compatibility metadata, digest, signature, executable path, and pointer state remain backend-owned.
+- The renderer has no generic updater plugin, HTTP client, filesystem API, shell/process API, or arbitrary RPC surface.
+- Desktop shell installation requires native user confirmation and coordinated RPC shutdown.
+- Tauri/runtime signature failures are not OS-warning cases and are never bypassable.
+- Manual fallback packages must be checked against both `desktop-checksums.txt` and GitHub provenance before a per-application OS warning bypass.
+- Desktop never calls `starweaver update`, replaces CLI-installed binaries, reads CLI-private config, or searches `PATH` for an RPC host.
 
 ## Acceptance Gates
 
-- Check, download, timeout, partial download, digest mismatch, missing digest, malformed archive, wrong target, and wrong manifest all fail safely.
-- Staging never modifies the current runtime or live domain-host executable.
-- Active runs continue during download and are not interrupted by automatic activation.
-- Crash injection at every update state resumes to one valid current runtime.
-- Concurrent updater attempts serialize through one owner-only transaction lock and cannot corrupt staging or pointers.
-- Candidate initialize failure restores the prior runtime when schema rules permit.
-- Migration preflight, consistent backup, drain-to-exclusive barrier fencing, existing-owner finalization, foreign-writer blocking, admission races, interrupted migration, and integrity validation are tested.
-- Older runtimes are never launched outside their declared storage range.
-- Windows versioned-directory activation works without replacing an executing file.
-- Stable, preview, pin, explicit downgrade, revoked build, and offline behavior have deterministic tests.
-- CLI current/previous, local Desktop runtime current/previous, and managed remote runtime current/previous interoperability matrices pass before release.
-- Remote probe, bootstrap, update, concurrent-install, disconnect, drain, migration, and rollback fault-injection tests preserve one valid current runtime and classify uncertain outcomes.
-- Public macOS/Windows bundles pass signing/notarization verification; Linux bundles pass required digest/provenance verification.
+- `make desktop` launches the complete development application with a same-build bundled RPC.
+- All four native targets build real packages with exactly one verified sidecar.
+- Native executable targets complete the independent protocol handshake smoke against the extracted sidecar.
+- Runtime manifest signature, target, protocol, launch schema, storage generation, Desktop range, asset URL, size, digest, stale candidate, and probe failures are tested to fail closed.
+- A valid RPC candidate is installed privately, selected only for the next start, and can be rolled back to previous or bundled runtime.
+- Managed runtime pointer and files are reverified before every launch; invalid state falls back to bundled RPC.
+- Desktop update checks use only the fixed endpoint and retain exact candidates in Rust.
+- Desktop installation requires Tauri signature verification, native confirmation, coordinated shutdown, and restart.
+- Release artifacts include `latest.json` with five installer-specific entries from four native targets, target-specific signed runtime manifests, raw runtime binaries, updater signatures, canonical installers, channel-specific checksums, and provenance attestations.
+- Desktop publication failure does not block core assets, crates.io, PyPI, or independently signed RPC runtime assets.
+- Release pages and installation docs state that macOS/Windows packages lack OS publisher signatures and explain bounded per-application handling without recommending global security disablement.
+- Any schema-changing release remains blocked until the coordinated storage maintenance contract is implemented and tested.

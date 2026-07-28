@@ -1,6 +1,6 @@
 # Starweaver Desktop
 
-Status: local-only product implementation in progress; Local Alpha, durable interaction, and typed settings implemented
+Status: local-only product implementation in progress; durable interaction, typed settings, native packaging, and update channels implemented
 
 Starweaver Desktop is a native local client for one standalone Starweaver RPC host. It provides a Codex App-like graphical experience without embedding another agent runtime, copying durable history, or turning the CLI into a backend service.
 
@@ -21,13 +21,13 @@ SSH is not part of the Desktop product roadmap. Remote access may later be deliv
 - Existing CLI history remains in the canonical local database. Copy/import is reserved for an explicitly selected non-canonical legacy or custom database; Desktop does not merge stores.
 - Model/provider credentials remain host-local configuration. Desktop needs only capability negotiation and safe provider-unavailable errors.
 - Native local shell remains disabled until an enforceable sandbox exists. Folder selection is not a shell sandbox.
-- The Desktop supervisor owns compatibility-gated updates for `starweaver-rpc`; update activation must pass protocol and storage compatibility gates.
+- Every Desktop package ships an exact `starweaver-rpc` sidecar as its immutable bootstrap/fallback. The first release also supports project-signed, exact-contract independent RPC updates that activate on the next application start, previous/bundled runtime rollback, and Tauri-signed Desktop installation with native confirmation and coordinated RPC shutdown.
 - The host OpenRPC/JSON Schema IDL is the only wire-structure source. Generated Rust and filtered TypeScript surfaces must not become competing definitions.
 - RPC gaps discovered while implementing Desktop are fixed in the owning IDL, RPC, or product-neutral layer rather than patched around in the UI.
 
 ## Current Readiness
 
-The repository provides the foundation for a local internal alpha:
+The repository provides the foundation for the local product release:
 
 - CLI and RPC resolve the same canonical database by default;
 - both products use `starweaver-storage` migrations and session/stream adapters;
@@ -46,9 +46,9 @@ The repository provides the foundation for a local internal alpha:
 - the main window opens backend-routed conversation windows with a separate least-authority role; same-window subscriptions replace safely while different windows can replay the same run independently; interaction IDs and workspace projections remain bound to the routed session; and
 - session history loads incrementally from opaque page tokens, unavailable workspace sessions remain visible as history-only, current-host run controllability is projected separately from durable active status, and hydration epochs prevent stale same-session snapshots from reopening run submission;
 - `session.get` now performs storage-bounded recent-run reads and `run.list` supplies opaque-cursor keyset pages for explicit older-history loading without exposing host cursors to the renderer; and
-- the dogfood shell now has follow-at-bottom semantics, an explicit jump-to-latest control, modal focus containment and restoration, visibility-aware polling/subscriptions, operation-specific progress, safe diagnostic categories, responsive minimum-window layouts, and dark-theme foreground tokens.
+- the local product shell now has follow-at-bottom semantics, an explicit jump-to-latest control, modal focus containment and restoration, visibility-aware polling/subscriptions, operation-specific progress, safe diagnostic categories, responsive minimum-window layouts, and dark-theme foreground tokens.
 
-Public release still requires user-guided D9 visual acceptance, update activation and rollback, local installer sidecar bundling, cross-version compatibility tests, and platform release hardening.
+The first public release still requires user-guided D9 visual acceptance and final native package/release validation. Exact-sidecar packaging, compatibility-gated independent RPC updates, Tauri Desktop updates, unsigned-platform guidance, and four-target release automation are implemented. Storage-changing updates remain blocked on the storage-owned atomic supervised open/create and coordinated maintenance barrier.
 
 ## Implemented Shell and Supervisor Evidence
 
@@ -60,7 +60,7 @@ The repository contains the following under `apps/starweaver-desktop/`:
 - fixed-data, current-user single-instance activation transports on Linux, macOS, and Windows;
 - process-owned activation generation that survives renderer reloads;
 - generated least-authority command permissions and application-owned typed IPC channels;
-- production CSP, frozen IPC prototype, no broad filesystem, shell, process, opener, HTTP, storage, credential, or updater plugin;
+- production CSP, frozen IPC prototype, no broad filesystem, shell, process, opener, HTTP, storage, credential, or renderer updater plugin; privileged Rust owns the fixed Tauri and RPC update channels;
 - architecture checks preventing Desktop from linking CLI, RPC host, agent, runtime, or storage implementations;
 - generated strict client codecs, exhaustive typed results/errors/notifications, and launch-envelope codecs;
 - a manifest-filtered renderer operation surface that keeps lifecycle, transport, routing, idempotency, cursor, subscription, configuration authorization, and diagnostics in Rust;
@@ -71,24 +71,27 @@ The repository contains the following under `apps/starweaver-desktop/`:
 - safe `transcript_changed` assistant-text events committed atomically with canonical replay evidence, excluding reasoning, native payloads, arbitrary metadata, and provider message IDs; fresh renderer views replay each visible run from origin while internal host-tail recovery resumes from acknowledged cursors;
 - prepare-once renderer recovery for workspace registration, session creation, run start, steering, interruption, approval decisions, clarification answers, deferred completion/failure, and run resumption, including startup reconciliation and an explicit user retry for unresolved execution or acknowledgement;
 - durable paginated interaction discovery with approval authority and storage-side kind/state filtering before keyset limits, plus live reduction, typed one-to-four-question answers, bounded complete approval/deferred detail projection, and explicit recovery of the decision-to-resume crash gap;
-- host-catalog profile readiness and new-run default selection, typed safe runtime-config validation/update/source reload, and honest restart-required staging that does not claim D10 activation;
+- host-catalog profile readiness and new-run default selection, typed safe runtime-config validation/update/source reload, and honest restart-required config staging kept separate from managed binary selection;
 - backend-owned versioned Desktop preferences for theme, density, and close/background behavior, persisted with private atomic revision-fenced exact mutation semantics rather than renderer local storage; and
-- frontend, Rust, target-registry, generated-protocol, security-boundary, build, and subprocess-supervisor validation.
+- project-signed runtime manifests, exact-target raw RPC assets, private versioned installation, isolated initialize probes, next-start selection, previous/bundled rollback, and full launch-time revalidation;
+- Rust-only Tauri updater integration with a fixed release endpoint, backend-retained candidates, native unsigned-platform confirmation, coordinated host shutdown, installation, and restart; and
+- frontend, Rust, target-registry, generated-protocol, security-boundary, native package, extracted-sidecar, build, and subprocess-supervisor validation.
 
-The adjacent sidecar is an intentional Local Alpha bootstrap, not the final updater. It inherits origin trust from the developer build boundary; its runtime-computed digest protects immutable staging and time-of-check/time-of-use consistency but is not an independent trust root. Installer bundling is completed with release packaging. A build-produced signed identity, transactional version selection, activation, and rollback remain owned by the update and release milestones, before this branch is release-ready.
+The adjacent sidecar is the source-tree bootstrap and packaged fallback. It inherits origin trust from the developer/build boundary; its runtime-computed digest protects immutable staging and time-of-check/time-of-use consistency but is not an independent trust root. Native packages embed and validate that exact target sidecar. A separately published RPC becomes eligible only after project-signature, exact target/protocol/launch/storage/Desktop-range, size, digest, and isolated initialize checks; it is selected for the next Desktop process start while the bundle remains available for rollback.
 
 ## Target Product Shape
 
 The start surface offers **Open folder**, **Create workspace**, and **Start without a folder**. Every choice grants and registers a concrete root with the already-running local host before creating a session. The no-folder path uses an empty retained managed workspace; it is not another execution mode.
 
-One RPC host owns all registered workspaces, agents, sessions, concurrent runs, tools, durable evidence, and runtime configuration. Desktop owns graphical interaction, native folder grants, safe host lifecycle, local application preferences, event projection, and runtime updates.
+One RPC host owns all registered workspaces, agents, sessions, concurrent runs, tools, durable evidence, and runtime configuration. Desktop owns graphical interaction, native folder grants, safe host lifecycle, local application preferences, event projection, project-signed independent runtime selection/rollback, and Tauri shell updates.
 
 ```mermaid
 flowchart TD
     user[Desktop user]
     renderer[React renderer]
     backend[Tauri privileged backend]
-    updater[Desktop runtime manager]
+    release[Fixed Starweaver release source]
+    package[Shell plus exact RPC sidecar]
     rpc[One local starweaver-rpc host]
     idl[Host OpenRPC and JSON Schema IDL]
     bridge[Generated filtered bridge]
@@ -100,8 +103,9 @@ flowchart TD
     idl --> bridge
     bridge --> renderer
     renderer -->|typed intents only| backend
+    release -->|signed shell and runtime metadata/assets| backend
+    package -->|verified bundled fallback| backend
     backend -->|verified stdio JSON-RPC| rpc
-    updater -->|verified runtime selection| backend
     rpc --> store
     rpc --> runtime
     cli --> store
@@ -109,19 +113,20 @@ flowchart TD
 
 ## Ownership Map
 
-| Concern                                                         | Owner                                        |
-| --------------------------------------------------------------- | -------------------------------------------- |
-| Windows, navigation, renderer state, notifications, shortcuts   | Desktop shell                                |
-| Local host lifecycle, native grants, routing, recovery          | Desktop privileged backend                   |
-| Runtime download, verification, selection, activation, rollback | Desktop runtime manager                      |
-| Host wire structure and generated bindings                      | Host OpenRPC/JSON Schema IDL and generators  |
-| RPC behavior, workspace registry, config reload, subscriptions  | `starweaver-rpc` and `starweaver-rpc-core`   |
-| Agent/model/tool execution                                      | `starweaver-agent` and `starweaver-runtime`  |
-| Session/run/replay and safe transcript contracts                | `starweaver-session` and `starweaver-stream` |
-| SQLite schema, migrations, atomic evidence                      | `starweaver-storage`                         |
-| Provider credential storage and construction                    | RPC execution domain and provider crates     |
-| Workspace authority and environments                            | `starweaver-environment` and envd crates     |
-| CLI commands and TUI coordination                               | `starweaver-cli` only                        |
+| Concern                                                        | Owner                                        |
+| -------------------------------------------------------------- | -------------------------------------------- |
+| Windows, navigation, renderer state, notifications, shortcuts  | Desktop shell                                |
+| Local host lifecycle, native grants, routing, recovery         | Desktop privileged backend                   |
+| Fixed Desktop check/download/install/restart flow              | Desktop privileged backend and Tauri updater |
+| Independent RPC verification, probe, selection, and rollback   | Desktop runtime manager                      |
+| Host wire structure and generated bindings                     | Host OpenRPC/JSON Schema IDL and generators  |
+| RPC behavior, workspace registry, config reload, subscriptions | `starweaver-rpc` and `starweaver-rpc-core`   |
+| Agent/model/tool execution                                     | `starweaver-agent` and `starweaver-runtime`  |
+| Session/run/replay and safe transcript contracts               | `starweaver-session` and `starweaver-stream` |
+| SQLite schema, migrations, atomic evidence                     | `starweaver-storage`                         |
+| Provider credential storage and construction                   | RPC execution domain and provider crates     |
+| Workspace authority and environments                           | `starweaver-environment` and envd crates     |
+| CLI commands and TUI coordination                              | `starweaver-cli` only                        |
 
 No Desktop crate becomes a shared protocol, runtime, or storage owner.
 
@@ -132,7 +137,7 @@ No Desktop crate becomes a shared protocol, runtime, or storage owner.
 - `03-cli-migration-and-compatibility.md` — shared local history, custom database discovery, profile compatibility, continuation preflight, and version skew.
 - `04-workspaces-sessions-and-runs.md` — workspace routing, session presentation, active-run ownership, and multi-window behavior.
 - `05-auth-interaction-and-security.md` — renderer isolation, provider boundaries, approvals, clarifications, capabilities, and local transport security. Remote sections are superseded.
-- `06-runtime-updates-and-release.md` — local runtime bundles, compatibility manifests, transactional activation, and rollback. Managed-SSH sections are superseded.
+- `06-runtime-updates-and-release.md` — exact-sidecar packaging, independent project-signed RPC selection/rollback, Tauri Desktop updates, four-target release automation, and the deferred storage-migration boundary.
 - `07-ssh-remote-workspaces.md` — superseded design history; not part of Desktop scope.
 - `08-configuration-and-reload.md` — local Desktop/bootstrap/runtime configuration ownership, typed editing, atomic reload, and immutable run snapshots. SSH sections are superseded.
 
@@ -143,13 +148,13 @@ No Desktop crate becomes a shared protocol, runtime, or storage owner.
 03. **Sessions and history** — create, select, paginate, restore, and surface unavailable-workspace history safely.
 04. **Conversation loop** — prompt, streaming output, steer, interrupt, retry, and real provider E2E while retaining deterministic tests.
 05. **Human interaction** — approvals, clarifying questions, deferred work, and clear authority presentation.
-06. **Dogfood UX** — multi-workspace navigation, loading/empty/error states, keyboard and accessibility polish.
+06. **Local product UX** — multi-workspace navigation, loading/empty/error states, keyboard and accessibility polish.
 07. **Configuration** — typed safe local runtime settings with validation, activation, and restart-required presentation.
 08. **Recovery** — renderer/host/application restart replay, pending mutation recovery, and active-run reconciliation.
 09. **Quality** — observability, bounded diagnostics, performance, cross-platform behavior, and user-guided visual review.
-10. **Updates** — verified versioned runtime selection, transactional activation, rollback, and compatibility gates.
+10. **Updates** — project-signed independent RPC updates for next-start activation/rollback and Tauri-signed Desktop install/restart, with schema-changing candidates rejected.
 11. **Safe tools** — user-friendly filesystem/HITL experience; native shell remains disabled without a sandbox.
-12. **Packaging and release** — installer sidecar bundling, signing/notarization hooks, release checks, and recovery documentation.
+12. **Packaging and release** — native exact-sidecar packages, free project update signatures, checksums/provenance, unsigned-platform disclosure, release metadata, and recovery documentation.
 
 The sequence favors one complete, understandable local product over speculative infrastructure. Each milestone may refine the host protocol, but changes belong to the correct architectural owner and require generated-contract and boundary validation.
 
@@ -163,6 +168,6 @@ A public local Desktop release requires:
 - local native shell disabled unless an enforceable sandbox is active;
 - bidirectional CLI/Desktop history and continuation tests;
 - current/previous runtime and storage compatibility tests;
-- updater download, verification, activation, crash, and rollback tests;
-- platform packaging and code-signing checks;
+- independent RPC and Tauri updater compatibility, verification, stale-candidate, probe, rollback, shutdown, and installation fault tests;
+- native package extraction, exact-sidecar handshake, Tauri project-signature, checksum, provenance, and explicit OS publisher-signing-state checks;
 - user-facing data-location, update, recovery, and migration documentation.

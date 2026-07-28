@@ -10,31 +10,63 @@ use sha2::{Digest as _, Sha256};
 use starweaver_rpc_core::generated as host;
 use tauri::{AppHandle, Manager as _};
 
-use crate::supervisor::{LocalLaunchSpec, SupervisorError};
+use crate::{
+    app_state::RuntimeLaunchPlan,
+    supervisor::{LocalLaunchSpec, RuntimeLaunchSource, SupervisorError},
+};
 
 const LOCAL_EXECUTION_DOMAIN_ID: &str = "local-default";
 const LOCAL_DATABASE_IDENTITY: &str = "canonical-local";
 const CONFIGURATION_GENERATION: u64 = 1;
+const MAX_LAUNCH_ENVELOPE_BYTES: u64 = 1024 * 1024;
+const MAX_RUNTIME_BYTES: u64 = 256 * 1024 * 1024;
 const DEFAULT_PROFILE: &str = "default";
 const DEFAULT_MODEL_ID: &str = "oauth@codex:gpt-5.6-sol";
 
-/// Resolve the bundled runtime and materialize its immutable public launch selection.
-pub fn prepare(app: &AppHandle) -> Result<LocalLaunchSpec, SupervisorError> {
-    let current_executable = std::env::current_exe().map_err(|_| {
-        SupervisorError::invalid_configuration("Desktop executable location is unavailable")
-    })?;
-    let runtime_path = bundled_runtime_path(&current_executable)?;
+/// Resolve the managed runtime with the bundled runtime retained as a startup fallback.
+pub fn prepare(app: &AppHandle) -> Result<RuntimeLaunchPlan, SupervisorError> {
     let home = app.path().home_dir().map_err(|_| {
         SupervisorError::invalid_configuration("user home directory is unavailable")
     })?;
-    let root = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|_| {
-            SupervisorError::invalid_configuration("Desktop application data is unavailable")
-        })?
-        .join("supervisor");
-    prepare_from_paths(&runtime_path, &home, &root)
+    let app_data_root = app.path().app_local_data_dir().map_err(|_| {
+        SupervisorError::invalid_configuration("Desktop application data is unavailable")
+    })?;
+    let supervisor_root = app_data_root.join("supervisor");
+    #[cfg(debug_assertions)]
+    if let Some(plan) = development_launch_plan(
+        std::env::var_os("STARWEAVER_DESKTOP_RPC_BINARY"),
+        &home,
+        &supervisor_root,
+    )? {
+        return Ok(plan);
+    }
+    let current_executable = std::env::current_exe().map_err(|_| {
+        SupervisorError::invalid_configuration("Desktop executable location is unavailable")
+    })?;
+    let bundled_runtime = bundled_runtime_path(&current_executable)?;
+    let bundled = prepare_from_paths(&bundled_runtime, &home, &supervisor_root)?;
+    if let Ok(Some(selection)) = crate::runtime_updates::resolve_managed_runtime(
+        &app_data_root.join("runtime"),
+        env!("CARGO_PKG_VERSION"),
+    ) && let Ok(primary) = prepare_candidate_from_paths(
+        &selection.path,
+        &home,
+        &supervisor_root,
+        RuntimeCandidateIdentity {
+            version: &selection.version,
+            build_revision: &selection.build_revision,
+            target: &selection.target,
+            digest: &selection.runtime_digest,
+            size: selection.runtime_size,
+            source: RuntimeLaunchSource::Managed,
+        },
+    ) {
+        return Ok(RuntimeLaunchPlan {
+            primary,
+            bundled_fallback: Some(bundled),
+        });
+    }
+    Ok(bundled.into())
 }
 
 fn bundled_runtime_path(current_executable: &Path) -> Result<PathBuf, SupervisorError> {
@@ -49,14 +81,82 @@ fn bundled_runtime_path(current_executable: &Path) -> Result<PathBuf, Supervisor
     Ok(directory.join(name))
 }
 
+#[cfg(debug_assertions)]
+fn development_launch_plan(
+    value: Option<std::ffi::OsString>,
+    home: &Path,
+    supervisor_root: &Path,
+) -> Result<Option<RuntimeLaunchPlan>, SupervisorError> {
+    let Some(runtime_path) = development_runtime_override(value)? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        prepare_from_paths(&runtime_path, home, supervisor_root)?.into(),
+    ))
+}
+
+#[cfg(debug_assertions)]
+fn development_runtime_override(
+    value: Option<std::ffi::OsString>,
+) -> Result<Option<PathBuf>, SupervisorError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err(SupervisorError::invalid_configuration(
+            "the development RPC binary override must be absolute",
+        ));
+    }
+    Ok(Some(path))
+}
+
 fn prepare_from_paths(
     runtime_path: &Path,
     home: &Path,
     supervisor_root: &Path,
 ) -> Result<LocalLaunchSpec, SupervisorError> {
-    if !runtime_path.is_absolute() || !home.is_absolute() || !supervisor_root.is_absolute() {
+    let (runtime_digest, runtime_size) = sha256_file(runtime_path)?;
+    prepare_candidate_from_paths(
+        runtime_path,
+        home,
+        supervisor_root,
+        RuntimeCandidateIdentity {
+            version: env!("CARGO_PKG_VERSION"),
+            build_revision: option_env!("STARWEAVER_BUILD_REVISION").unwrap_or("source"),
+            target: env!("STARWEAVER_TARGET_TRIPLE"),
+            digest: &runtime_digest,
+            size: runtime_size,
+            source: RuntimeLaunchSource::Bundled,
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+pub struct RuntimeCandidateIdentity<'a> {
+    pub version: &'a str,
+    pub build_revision: &'a str,
+    pub target: &'a str,
+    pub digest: &'a str,
+    pub size: u64,
+    pub source: RuntimeLaunchSource,
+}
+
+pub fn prepare_candidate_from_paths(
+    runtime_path: &Path,
+    home: &Path,
+    supervisor_root: &Path,
+    identity: RuntimeCandidateIdentity<'_>,
+) -> Result<LocalLaunchSpec, SupervisorError> {
+    if !runtime_path.is_absolute()
+        || !home.is_absolute()
+        || !supervisor_root.is_absolute()
+        || !valid_sha256(identity.digest)
+        || identity.size == 0
+        || identity.size > MAX_RUNTIME_BYTES
+    {
         return Err(SupervisorError::invalid_configuration(
-            "managed runtime locations must be absolute",
+            "managed runtime locations or signed digest are invalid",
         ));
     }
     let runtime_path = fs::canonicalize(runtime_path).map_err(|_| {
@@ -85,13 +185,13 @@ fn prepare_from_paths(
     persist_if_changed(&launch_envelope_path, &envelope_bytes)?;
 
     Ok(LocalLaunchSpec {
-        runtime_digest: sha256_file(&runtime_path)?,
+        runtime_digest: identity.digest.to_string(),
+        runtime_size: identity.size,
+        runtime_source: identity.source,
         runtime_path,
-        runtime_version: env!("CARGO_PKG_VERSION").to_string(),
-        build_revision: option_env!("STARWEAVER_BUILD_REVISION")
-            .unwrap_or("source")
-            .to_string(),
-        target: format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
+        runtime_version: identity.version.to_string(),
+        build_revision: identity.build_revision.to_string(),
+        target: identity.target.to_string(),
         launch_envelope_digest: sha256_bytes(&envelope_bytes),
         launch_envelope_path,
         configuration_generation: CONFIGURATION_GENERATION,
@@ -160,7 +260,15 @@ fn create_private_directory(path: &Path) -> Result<(), SupervisorError> {
 }
 
 fn persist_if_changed(path: &Path, bytes: &[u8]) -> Result<(), SupervisorError> {
-    if fs::read(path).is_ok_and(|current| current == bytes) {
+    let expected_size = u64::try_from(bytes.len()).map_err(|_| {
+        SupervisorError::invalid_configuration("managed launch envelope is invalid")
+    })?;
+    if expected_size == 0 || expected_size > MAX_LAUNCH_ENVELOPE_BYTES {
+        return Err(SupervisorError::invalid_configuration(
+            "managed launch envelope is invalid",
+        ));
+    }
+    if existing_file_matches(path, bytes).unwrap_or(false) {
         return Ok(());
     }
     let parent = path.parent().ok_or_else(|| {
@@ -191,6 +299,23 @@ fn persist_if_changed(path: &Path, bytes: &[u8]) -> Result<(), SupervisorError> 
     })
 }
 
+fn existing_file_matches(path: &Path, expected: &[u8]) -> std::io::Result<bool> {
+    let file = File::open(path)?;
+    let metadata = file.metadata()?;
+    let expected_size = u64::try_from(expected.len()).unwrap_or(u64::MAX);
+    if !metadata.is_file()
+        || expected_size == 0
+        || expected_size > MAX_LAUNCH_ENVELOPE_BYTES
+        || metadata.len() != expected_size
+    {
+        return Ok(false);
+    }
+    let mut current = Vec::with_capacity(expected.len().saturating_add(1));
+    file.take(expected_size.saturating_add(1))
+        .read_to_end(&mut current)?;
+    Ok(current == expected)
+}
+
 #[cfg(windows)]
 fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
     atomicwrites::replace_atomic(source, destination)
@@ -211,22 +336,53 @@ fn sync_parent(_parent: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn sha256_file(path: &Path) -> Result<String, SupervisorError> {
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn sha256_file(path: &Path) -> Result<(String, u64), SupervisorError> {
     let mut file = File::open(path).map_err(|_| {
         SupervisorError::invalid_configuration("bundled Starweaver runtime is unavailable")
     })?;
+    let metadata = file.metadata().map_err(|_| {
+        SupervisorError::invalid_configuration("bundled Starweaver runtime is unavailable")
+    })?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_RUNTIME_BYTES {
+        return Err(SupervisorError::invalid_configuration(
+            "bundled Starweaver runtime size is invalid",
+        ));
+    }
+    let expected_size = metadata.len();
+    let mut received = 0_u64;
     let mut hasher = Sha256::new();
+    let mut reader = (&mut file).take(expected_size.saturating_add(1));
     let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
     loop {
-        let read = file.read(&mut buffer).map_err(|_| {
+        let read = reader.read(&mut buffer).map_err(|_| {
             SupervisorError::invalid_configuration("bundled Starweaver runtime is unreadable")
         })?;
         if read == 0 {
             break;
         }
+        received = received
+            .checked_add(u64::try_from(read).map_err(|_| {
+                SupervisorError::invalid_configuration("bundled Starweaver runtime size is invalid")
+            })?)
+            .ok_or_else(|| {
+                SupervisorError::invalid_configuration("bundled Starweaver runtime size is invalid")
+            })?;
         hasher.update(&buffer[..read]);
     }
-    Ok(format!("sha256:{:x}", hasher.finalize()))
+    if received != expected_size {
+        return Err(SupervisorError::invalid_configuration(
+            "bundled Starweaver runtime size is invalid",
+        ));
+    }
+    Ok((format!("sha256:{:x}", hasher.finalize()), received))
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
@@ -238,6 +394,47 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn development_runtime_override_requires_an_absolute_path() {
+        assert!(
+            development_runtime_override(None)
+                .expect("missing override")
+                .is_none()
+        );
+        assert!(
+            development_runtime_override(Some(std::ffi::OsString::from("relative-rpc"))).is_err()
+        );
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let runtime = temp.path().join("starweaver-rpc");
+        assert_eq!(
+            development_runtime_override(Some(runtime.clone().into_os_string()))
+                .expect("absolute override"),
+            Some(runtime)
+        );
+    }
+
+    #[test]
+    fn development_runtime_override_is_an_exclusive_launch_plan() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let runtime = temp.path().join("starweaver-rpc");
+        fs::write(&runtime, b"development runtime").expect("runtime fixture");
+
+        let plan = development_launch_plan(
+            Some(runtime.clone().into_os_string()),
+            temp.path(),
+            &temp.path().join("desktop"),
+        )
+        .expect("development launch plan")
+        .expect("configured override");
+
+        assert_eq!(
+            plan.primary.runtime_path,
+            fs::canonicalize(runtime).expect("canonical runtime")
+        );
+        assert_eq!(plan.primary.runtime_source, RuntimeLaunchSource::Bundled);
+        assert!(plan.bundled_fallback.is_none());
+    }
 
     #[test]
     fn prepares_a_closed_local_launch_without_shell_authority() {
@@ -272,7 +469,37 @@ mod tests {
         assert_eq!(envelope.providers[0].name, "codex");
         assert!(envelope.providers[0].credential_env.is_none());
         assert_eq!(spec.runtime_digest, sha256_bytes(b"runtime fixture"));
+        assert_eq!(spec.runtime_size, 15);
+        assert_eq!(spec.runtime_source, RuntimeLaunchSource::Bundled);
         assert_eq!(spec.launch_envelope_digest, sha256_bytes(&envelope_bytes));
+    }
+
+    #[test]
+    fn managed_candidate_preserves_the_signed_digest_for_supervisor_verification() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let runtime = temp.path().join("starweaver-rpc");
+        fs::write(&runtime, b"runtime fixture").expect("runtime fixture");
+        let signed_digest = format!("sha256:{}", "b".repeat(64));
+
+        let spec = prepare_candidate_from_paths(
+            &runtime,
+            temp.path(),
+            &temp.path().join("desktop"),
+            RuntimeCandidateIdentity {
+                version: "1.2.4",
+                build_revision: "0123456789abcdef0123456789abcdef01234567",
+                target: env!("STARWEAVER_TARGET_TRIPLE"),
+                digest: &signed_digest,
+                size: 15,
+                source: RuntimeLaunchSource::Managed,
+            },
+        )
+        .expect("managed candidate launch");
+
+        assert_eq!(spec.runtime_digest, signed_digest);
+        assert_eq!(spec.runtime_size, 15);
+        assert_eq!(spec.runtime_source, RuntimeLaunchSource::Managed);
+        assert_ne!(spec.runtime_digest, sha256_bytes(b"runtime fixture"));
     }
 
     #[test]
@@ -311,6 +538,21 @@ mod tests {
             error.message,
             "managed runtime locations cannot be represented exactly"
         );
+    }
+
+    #[test]
+    fn oversized_existing_launch_envelope_is_replaced_without_unbounded_comparison() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let path = temp.path().join("launch.json");
+        fs::write(
+            &path,
+            vec![b'x'; usize::try_from(MAX_LAUNCH_ENVELOPE_BYTES + 1).expect("fixture size")],
+        )
+        .expect("oversized launch envelope");
+        assert!(!existing_file_matches(&path, b"replacement").expect("bounded comparison"));
+
+        persist_if_changed(&path, b"replacement").expect("replace launch envelope");
+        assert_eq!(fs::read(path).expect("replacement"), b"replacement");
     }
 
     #[test]

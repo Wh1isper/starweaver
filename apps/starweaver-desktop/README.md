@@ -2,13 +2,13 @@
 
 Starweaver Desktop is the Tauri 2 native shell for Starweaver. The current implementation provides
 the cross-platform shell foundation, a generated least-authority host bridge, and a consistency-
-verified local `starweaver-rpc` supervisor. A normal source-tree application launch selects the
-adjacent same-build
-`starweaver-rpc` sidecar, creates a private public launch envelope, and starts one long-lived local
-host. The later runtime updater will replace this initial bundled selection with versioned,
-transactional activation and rollback. Installer sidecar placement and an independent signed runtime
-identity are release milestones; the Local Alpha bootstrap inherits trust from the developer build
-boundary and uses the digest for immutable staging and time-of-check/time-of-use protection.
+verified local `starweaver-rpc` supervisor. A normal source-tree application launch selects the adjacent same-build `starweaver-rpc` sidecar,
+creates a private public launch envelope, and starts one long-lived local host. Every native package
+contains that exact target sidecar as an immutable bootstrap/fallback. Release builds also support
+project-signed independent RPC updates that activate on the next Desktop process start, previous or
+bundled runtime rollback, and Tauri-signed whole-Desktop installation with native confirmation,
+coordinated RPC shutdown, and restart. The source-tree bootstrap inherits trust from the developer
+build boundary and uses the digest for immutable staging and time-of-check/time-of-use protection.
 
 The implemented local topology is one long-lived RPC host per execution domain managing multiple
 registered workspaces, sessions, and concurrent runs. Supervised launch is domain-only; explicit
@@ -36,6 +36,9 @@ integrate through the public host boundary without adding SSH authority to the r
 
 Linux ARM64 and Windows ARM64 are not advertised until both the Desktop shell and managed RPC
 runtime are built and validated for those targets.
+
+For release-package verification, unsigned platform warnings, installation, updates, and recovery,
+see [Install and Update Starweaver Desktop](../../docs/desktop-install.md).
 
 ## Toolchain
 
@@ -72,9 +75,16 @@ line tools.
 Run commands from the repository root:
 
 ```bash
-make desktop-sync
+make rpc
+make desktop
+```
+
+`make rpc` runs the standalone RPC host over stdio by default; pass `ARGS="http --port 8765"` for an HTTP development host. `make desktop` installs the locked frontend dependencies, builds the current development RPC binary, and launches Tauri with that exact absolute binary selected through a debug-only override. Set `DESKTOP_RPC_BINARY=/absolute/path/to/starweaver-rpc` to test another development build; release binaries ignore this override and retain verified bundled/managed selection.
+
+Run the full validation gate separately when needed:
+
+```bash
 make desktop-check
-corepack pnpm desktop:dev
 ```
 
 Build the current platform without producing an installer:
@@ -85,6 +95,49 @@ make desktop-build
 
 The complete frontend gate runs Biome formatting and linting, TypeScript checks, Vitest, and a Vite
 production build. The Rust gate runs check, Clippy with warnings denied, and unit tests.
+
+## Native Packaging and Update Keys
+
+Build unsigned current-platform installers with their exact RPC sidecar. Linux packaging disables
+`linuxdeploy` stripping, then restores the exact target RPC into the generated AppDir and repacks the
+AppImage with a digest-pinned output plugin. Updater builds sign only the final repacked bytes:
+
+```bash
+make desktop-package
+```
+
+Automatic Desktop and independent RPC updates still require a free Tauri/minisign project key. This
+is not Apple Developer ID, notarization, or Windows Authenticode signing. Generate the long-lived key
+once on a trusted maintainer machine, outside the repository:
+
+```bash
+mkdir -p "$HOME/.config/starweaver-release"
+corepack pnpm --filter @starweaver/desktop tauri signer generate \
+  --write-keys "$HOME/.config/starweaver-release/updater.key"
+```
+
+The command writes the private key to `updater.key` and the public key to `updater.key.pub`. Read the
+public value with `cat "$HOME/.config/starweaver-release/updater.key.pub"`. Do not commit either file
+or copy the private key into an issue, log, build artifact, or repository variable. Configure GitHub:
+
+- repository variable `STARWEAVER_UPDATE_PUBLIC_KEY`: the complete `updater.key.pub` contents;
+- repository secret `TAURI_SIGNING_PRIVATE_KEY`: the complete private-key file contents;
+- repository secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the password, when one was chosen.
+
+The public key is embedded into release Desktop binaries and verifies both Tauri updater artifacts
+and detached runtime manifests. Development builds without it do not register the native updater
+plugin, intentionally report both update channels as unconfigured, and continue using the bundled
+sidecar. For a local updater-artifact build, expose the
+same values only to the build process and run:
+
+```bash
+make desktop-package-updater
+```
+
+Key rotation is a release trust migration: existing clients trust the old embedded public key, so do
+not replace the configured key without a reviewed transition plan and recovery release. OS publisher
+signing remains deliberately unconfigured; user verification and per-application warning handling are
+documented in [Install and Update Starweaver Desktop](../../docs/desktop-install.md).
 
 ## Branding Assets
 
@@ -105,7 +158,8 @@ corepack pnpm --filter @starweaver/desktop icons
 - The main window can invoke only the reviewed shell commands and the generated host capability:
   status, fixed managed-runtime retry, typed activation subscribe/unsubscribe, backend-owned
   conversation-window opening, manifest-filtered host-operation execute, acknowledgement and
-  pending-handle discovery, and typed run-event subscribe/unsubscribe.
+  pending-handle discovery, typed run-event subscribe/unsubscribe, fixed runtime-update
+  status/check/install/rollback, and fixed Desktop-update status/check/install.
 - A conversation window receives a separate wildcard shell capability. Rust mints its native label
   and fixed application URL, retains `label -> sessionId`, focuses an existing window for the same
   session, and rechecks every host operation and event subscription against that route. ID-based
@@ -121,7 +175,7 @@ corepack pnpm --filter @starweaver/desktop icons
 - `run.start` accepts text input only. The manifest excludes public host resource URI variants from
   both generated bridge languages until a privileged backend grant flow can issue opaque resource
   handles, so renderer-provided file paths and URIs cannot reach the host.
-- No filesystem, shell, process, opener, HTTP, storage, provider-credential, or updater plugin is installed.
+- No renderer filesystem, shell, process, opener, HTTP, storage, provider-credential, or generic updater plugin is installed. Privileged Rust alone owns the fixed Tauri and RPC update clients.
 - The renderer receives no secondary-launch arguments or working directory. The process-to-process
   activation protocol also carries only a fixed versioned signal: Linux uses the authenticated
   session D-Bus, macOS uses a current-user peer-checked socket in a private directory, and Windows
@@ -147,7 +201,8 @@ processes to smoke-test fixed-signal single-instance routing.
 
 ## Current Runtime State
 
-At startup, the privileged backend resolves only an adjacent `starweaver-rpc` sidecar; it never
+At startup, the privileged backend fully revalidates and prefers a compatible managed
+`starweaver-rpc` pointer when present, otherwise it resolves the adjacent bundled sidecar; it never
 searches `PATH`. It materializes a deterministic private launch envelope for the canonical local
 Starweaver database and the host-local `oauth@codex:gpt-5.6-sol` provider with the reviewed
 `openai_responses_high` and `gpt5_350k` presets, keeps provider tokens outside Desktop, keeps native
@@ -161,9 +216,9 @@ from the renderer.
 
 The implemented backend supervisor accepts only an absolute managed executable with an exact SHA-256
 digest and an absolute public launch envelope. Supervised startup preflights an existing canonical
-database and refuses one observed to be out of date before storage open. The update milestone must
-replace this path-level guard with a storage-owned atomic open/create and coordinated maintenance
-barrier to remove the remaining check/open race. It verifies source identity and permissions, copies
+database and refuses one observed to be out of date before storage open. A schema-changing RPC or Desktop update cannot be published until a storage-owned atomic open/create
+and coordinated maintenance barrier replaces this path-level guard and removes the remaining
+check/open race. Independent runtime manifests therefore require exact storage generation 1. It verifies source identity and permissions, copies
 the exact bytes into a private immutable
 per-child staging directory, re-verifies the staged identity/digest, clears the child environment,
 uses a fixed allowlist, invokes the staged executable directly
@@ -216,9 +271,8 @@ The Settings drawer reads catalog/profile readiness from the safe host projectio
 profile only for new runs, and edits only typed runtime profile/provider fields. It validates before
 update, recovers the exact `model.select` or `config.*` invocation after an uncertain outcome, and
 keeps active runs pinned to their admitted snapshots. Provider credential and network readiness stay
-host-local and are checked when a run starts. Source reload is previewed and candidate-bound;
-restart-required activation remains staged for the managed runtime update milestone rather than being
-simulated by the renderer. `run.status` separately projects
+host-local and are checked when a run starts. Source reload is previewed and candidate-bound. Restart-required runtime-config activation remains a
+separate host-owned transaction and is never conflated with managed RPC binary selection. `run.status` separately projects
 `controllableByCurrentHost` from the current coordinator's process-local active registry; Desktop
 keeps foreign durable active runs readable but disables steer and interrupt instead of treating an
 active status as proof of ownership.
@@ -230,7 +284,7 @@ renderer receives only closed typed get/update/reload commands and never a path 
 API. Closing with `keep_running` hides the window without stopping the supervised host; a secondary
 launch restores it. The explicit `quit` preference follows coordinated runtime shutdown.
 
-## Local Dogfood Visual Checklist
+## Local Release Visual Checklist
 
 Before accepting a Desktop visual change, review the ready conversation, start center, Settings, and
 Interaction Inbox in light and dark themes at a normal window and at `760 × 560`; also inspect the

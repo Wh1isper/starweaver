@@ -40,6 +40,20 @@ const MAX_EVENT_CURSOR_VIEWS: usize = 256;
 const MAX_RECENT_EVENT_IDS: usize = 1_024;
 const MAX_PENDING_EVENT_ACKNOWLEDGEMENTS: usize = 32;
 
+pub struct RuntimeLaunchPlan {
+    pub primary: LocalLaunchSpec,
+    pub bundled_fallback: Option<LocalLaunchSpec>,
+}
+
+impl From<LocalLaunchSpec> for RuntimeLaunchPlan {
+    fn from(primary: LocalLaunchSpec) -> Self {
+        Self {
+            primary,
+            bundled_fallback: None,
+        }
+    }
+}
+
 struct HostSubscriptionControl {
     key: EventViewKey,
     cancel: watch::Sender<bool>,
@@ -237,6 +251,12 @@ impl DesktopState {
         }
     }
 
+    pub(crate) fn active_runtime_identity(
+        &self,
+    ) -> Option<crate::supervisor::ReadyRuntimeIdentity> {
+        self.supervisor.ready_runtime_identity()
+    }
+
     pub fn runtime_issue(&self) -> Option<SupervisorError> {
         self.runtime_issue
             .lock()
@@ -251,12 +271,13 @@ impl DesktopState {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(issue);
     }
 
-    pub async fn prepare_and_start_managed_runtime<F>(
+    pub async fn prepare_and_start_managed_runtime<F, P>(
         &self,
         prepare: F,
     ) -> Result<(), SupervisorError>
     where
-        F: FnOnce() -> Result<LocalLaunchSpec, SupervisorError> + Send + 'static,
+        F: FnOnce() -> Result<P, SupervisorError> + Send + 'static,
+        P: Into<RuntimeLaunchPlan> + Send + 'static,
     {
         let _attempt = self.runtime_start_gate.lock().await;
         if self.exit_shutdown_started.load(Ordering::Acquire) {
@@ -279,7 +300,20 @@ impl DesktopState {
             Ok(Ok(_)) if self.exit_shutdown_started.load(Ordering::Acquire) => {
                 return Err(SupervisorError::not_ready());
             }
-            Ok(Ok(spec)) => self.supervisor.start(spec).await,
+            Ok(Ok(plan)) => {
+                let plan = plan.into();
+                match self.supervisor.start(plan.primary).await {
+                    Ok(()) => Ok(()),
+                    Err(primary_issue) => match plan.bundled_fallback {
+                        Some(fallback) if !self.exit_shutdown_started.load(Ordering::Acquire) => {
+                            self.supervisor
+                                .start_bundled_fallback_after_failure(fallback)
+                                .await
+                        }
+                        _ => Err(primary_issue),
+                    },
+                }
+            }
             Ok(Err(issue)) => Err(issue),
             Err(_) => Err(SupervisorError::transport()),
         };
@@ -761,7 +795,7 @@ mod tests {
                         maximum.fetch_max(current, AtomicOrdering::AcqRel);
                         std::thread::sleep(Duration::from_millis(25));
                         active.fetch_sub(1, AtomicOrdering::AcqRel);
-                        Err(SupervisorError::invalid_configuration(message))
+                        Err::<LocalLaunchSpec, _>(SupervisorError::invalid_configuration(message))
                     })
                     .await
             })
@@ -783,6 +817,45 @@ mod tests {
         let _ = second.await.expect("second task");
         assert_eq!(maximum.load(AtomicOrdering::Acquire), 1);
         assert!(state.runtime_issue().is_some());
+    }
+
+    #[tokio::test]
+    async fn failed_managed_start_attempts_the_bundled_fallback_as_a_new_generation() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let state = DesktopState::default();
+        state
+            .configure_supervisor_storage(temp.path().join("supervisor"))
+            .expect("configure supervisor storage");
+        let invalid_spec = |name: &str, version: &str| LocalLaunchSpec {
+            runtime_path: temp.path().join(name),
+            runtime_digest: format!("sha256:{}", "a".repeat(64)),
+            runtime_size: 1,
+            runtime_source: crate::supervisor::RuntimeLaunchSource::Managed,
+            runtime_version: version.to_string(),
+            build_revision: "0123456789abcdef0123456789abcdef01234567".to_string(),
+            target: env!("STARWEAVER_TARGET_TRIPLE").to_string(),
+            launch_envelope_path: temp.path().join(format!("{name}.json")),
+            launch_envelope_digest: format!("sha256:{}", "b".repeat(64)),
+            configuration_generation: 1,
+            execution_domain_id: "local-default".to_string(),
+        };
+        let plan = RuntimeLaunchPlan {
+            primary: invalid_spec("missing-managed-runtime", "1.2.4"),
+            bundled_fallback: Some(invalid_spec("missing-bundled-runtime", "1.2.3")),
+        };
+
+        let error = state
+            .prepare_and_start_managed_runtime(move || Ok(plan))
+            .await
+            .expect_err("both invalid launch choices must fail");
+
+        assert_eq!(
+            error.code,
+            crate::supervisor::SupervisorErrorCode::InvalidConfiguration
+        );
+        assert_eq!(state.supervisor().status().generation, 2);
+        assert_eq!(state.supervisor().status().state, HostChildState::Failed);
+        assert_eq!(state.runtime_issue(), Some(error));
     }
 
     #[tokio::test]
@@ -808,6 +881,8 @@ mod tests {
                     Ok(LocalLaunchSpec {
                         runtime_path: PathBuf::from("/unused/runtime"),
                         runtime_digest: "sha256:unused".to_string(),
+                        runtime_size: 1,
+                        runtime_source: crate::supervisor::RuntimeLaunchSource::Bundled,
                         runtime_version: "unused".to_string(),
                         build_revision: "unused".to_string(),
                         target: "unused".to_string(),

@@ -99,19 +99,31 @@ gh release create vX.Y.Z --target "$(git rev-parse HEAD)" --title "Starweaver vX
 
 Publishing the GitHub Release triggers `.github/workflows/release.yml`:
 
-1. build CLI launcher binaries from the release tag,
-2. package the self-contained public host OpenRPC bundle, generated manifest, and canonical source schemas,
-3. build Python source and wheel distributions for `packages/starweaver-py`,
-4. upload binary archives, protocol artifacts, Python distributions, and `checksums.txt` to the GitHub Release,
-5. publish all workspace crates in dependency order through the `Release` environment,
-6. publish the Python package to PyPI through the `Release` environment.
+1. build CLI launcher archives and retain each raw RPC binary as an internal workflow artifact,
+2. independently create, project-sign, verify, attest, and upload target-specific raw RPC runtime assets,
+3. build, verify, attest, and upload native Desktop packages for Linux x86_64, macOS Intel/Apple Silicon, and Windows x64 with each target's exact bundled RPC sidecar,
+4. combine four Desktop native-target records into five installer-specific `latest.json` entries,
+5. package the self-contained public host OpenRPC bundle, generated manifest, and canonical source schemas,
+6. build Python source and wheel distributions for `packages/starweaver-py`,
+7. upload core, RPC runtime, and Desktop assets through separate release jobs with channel-specific checksum files,
+8. publish all workspace crates in dependency order through the `Release` environment, and
+9. publish the Python package to PyPI through the `Release` environment.
 
-The Desktop shell version participates in unified preparation, but the current shell foundation is
-not uploaded by this workflow. Desktop installers, signing/notarization, native updater metadata,
-and managed runtime artifacts remain gated by `spec/desktop/06-runtime-updates-and-release.md`.
+Desktop packages intentionally use no Apple Developer ID/notarization or Windows Authenticode
+identity. Automatic Desktop and RPC updates still require the free Tauri/minisign project signature;
+checksums and GitHub provenance do not replace either update signatures or OS publisher signing. The
+runtime channel rejects storage-generation changes. See `spec/desktop/06-runtime-updates-and-release.md`
+and `docs/desktop-install.md`.
 
 Release-event publishing is packaging-only. Run validation before merging the release pull request,
-not inside `.github/workflows/release.yml`.
+not inside `.github/workflows/release.yml`. The core, independent RPC runtime, and Desktop publication
+lanes deliberately fail independently. In particular, a Desktop target, updater-signing, or metadata
+failure remains visible but does not block CLI/protocol assets, crates.io, PyPI, or RPC runtime assets.
+Published asset names are immutable: release jobs refuse to replace an existing asset and publish
+payloads before checksum or updater metadata. A transient failure before any upload may be rerun. If
+an upload stops after creating only part of a lane, maintainers must inspect and explicitly remove the
+partial assets before retrying, or publish a new version; automation never deletes a previously
+published asset on its own.
 
 CLI archives are built for:
 
@@ -140,10 +152,17 @@ starweaver-rpc.exe
 
 The release also includes:
 
+- canonical AppImage/deb, two architecture-specific DMGs, and NSIS Desktop packages;
+- Tauri updater artifacts and signatures plus `latest.json` with separate Linux AppImage/deb, macOS Intel/Apple Silicon, and Windows NSIS entries;
+- `starweaver-rpc-vX.Y.Z-<target>[.exe]`, the raw independently updatable RPC asset;
+- `starweaver-runtime-<target>.manifest.json` and `.sig`, its strict compatibility manifest and project signature;
+- GitHub build-provenance attestations for the Desktop/runtime assets;
 - `starweaver-host-X.Y.Z.openrpc.json`, the self-contained public OpenRPC bundle;
 - `starweaver-host-X.Y.Z.manifest.json`, the generated protocol identity and inventory manifest;
-- `starweaver-host-X.Y.Z-schemas.tar.gz`, the canonical split source schemas and pinned tooling profile; and
-- `checksums.txt` with SHA-256 checksums for all binary, protocol, and Python artifacts.
+- `starweaver-host-X.Y.Z-schemas.tar.gz`, the canonical split source schemas and pinned tooling profile;
+- `checksums.txt` for core CLI, protocol, and Python release assets;
+- `runtime-checksums.txt` for independently updatable RPC assets; and
+- `desktop-checksums.txt` for Desktop installers, updater artifacts, and `latest.json`.
 
 External TypeScript consumers generate complete bindings from the public contract with
 `make rpc-typescript-generate OUTPUT=<empty-or-generator-owned-directory>`. Starweaver does not
@@ -195,6 +214,10 @@ GitHub Release tag during recovery; do not move, delete, or recreate it.
 
 - `CARGO_REGISTRY_TOKEN` secret is configured.
 - `PYPI_API_TOKEN` secret is configured with a PyPI API token for the `starweaver` package.
+- Generate one long-lived Tauri signer key on a trusted maintainer machine as documented in `apps/starweaver-desktop/README.md`.
+- Repository variable `STARWEAVER_UPDATE_PUBLIC_KEY` contains that key's public value.
+- Repository secret `TAURI_SIGNING_PRIVATE_KEY` contains the complete private-key value.
+- Repository secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` contains its password when configured.
 - The `Release` environment exists and requires the intended approval policy.
 - Before the initial GitHub Release is created, the target tag, such as `vX.Y.Z`, does not already
   exist. Recovery publishing reuses the existing release tag without changing it.

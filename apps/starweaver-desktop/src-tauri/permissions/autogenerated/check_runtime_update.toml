@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-check-runtime-update"
+description = "Enables the check_runtime_update command without any pre-configured scope."
+commands.allow = ["check_runtime_update"]
+
+[[permission]]
+identifier = "deny-check-runtime-update"
+description = "Denies the check_runtime_update command without any pre-configured scope."
+commands.deny = ["check_runtime_update"]

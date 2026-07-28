@@ -5,6 +5,7 @@
 # Getting Started
 
 - [Install](install.md)
+- [Starweaver Desktop](desktop-install.md)
 - [Quickstart](quickstart.md)
 - [Testing](testing.md)
 - [CLI](cli.md)

@@ -19,6 +19,9 @@ tauri-build = { version = "2.6.3", features = [] }
 [dependencies]
 base64.workspace = true
 hmac.workspace = true
+minisign-verify.workspace = true
+reqwest.workspace = true
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -26,6 +29,7 @@ process-wrap = { version = "9.1.0", default-features = false, features = ["job-o
 starweaver-rpc-core.workspace = true
 tauri = { version = "2.11.5", features = [] }
 tauri-plugin-dialog = "2.6.0"
+tauri-plugin-updater = "2.10.1"
 tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "process"] }
 uuid.workspace = true

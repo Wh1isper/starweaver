@@ -1,0 +1,11 @@
+{
+  "build": {
+    "beforeBuildCommand": "node scripts/prepare-rpc-sidecar.mjs --release && corepack pnpm build"
+  },
+  "bundle": {
+    "externalBin": ["binaries/starweaver-rpc"],
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  }
+}

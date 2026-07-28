@@ -21,6 +21,7 @@ mod rpc_idl;
 mod rpc_integration;
 mod rpc_interop_e2e;
 mod smoke;
+mod update_signatures;
 
 fn main() -> ExitCode {
     match run() {
@@ -64,6 +65,7 @@ fn run() -> Result<(), String> {
         "scrub-model-cassette" => fixtures::scrub_model_cassette(&args),
         "summarize-model-fixtures" => fixtures::summarize_model_fixtures(&args),
         "upversion" => release::upversion(&args),
+        "verify-update-signature" => update_signatures::verify(&args),
         "workspace-version" => release::workspace_version(&args),
         _ => Err(usage()),
     }

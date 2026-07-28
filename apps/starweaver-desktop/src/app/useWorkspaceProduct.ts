@@ -9,347 +9,80 @@ import {
   DesktopHostExecutionError,
 } from "../generated/host/client";
 import type {
-  ApprovalListResult,
-  ApprovalShowResult,
-  CatalogListResult,
-  ClarificationListResult,
-  ClarificationResolveIntent,
-  ConfigGetResult,
-  ConfigValidateResult,
-  DeferredListResult,
-  DeferredShowResult,
   DesktopHostInvocation,
-  DesktopHostOperationKind,
   DesktopHostResultMap,
   DesktopPageToken,
-  ProfileGetResult,
   RunListResult,
   RunResumeResult,
   RunStartResult,
-  SafeHostEvent,
   SessionGetResult,
-  SessionListResult,
-  WorkspaceListResult,
 } from "../generated/host/types";
+import {
+  ACTIVE_RUN_STATES,
+  applyRunHostEvent,
+  applyTranscriptHostEvent,
+  replaceById,
+  replaceRun,
+  transcriptText,
+} from "./workspaceProductEvents";
+import {
+  listAllApprovals,
+  listAllClarifications,
+  listAllDeferred,
+  listAllWorkspaces,
+  listResolvedInteractionsForWaitingRuns,
+} from "./workspaceProductQueries";
+import {
+  executePendingProductOperation,
+  isRecoverableInvocation,
+  pendingProductOperationFromFailure,
+} from "./workspaceProductRecovery";
+import { deriveProfileReadiness } from "./workspaceProductSettings";
+import type {
+  ApprovalDetail,
+  ApprovalSummary,
+  ClarificationAnswer,
+  ClarificationSummary,
+  DeferredDetail,
+  DeferredSummary,
+  ModelSelection,
+  OwnedSubscription,
+  PendingProductOperation,
+  ProductPhase,
+  ProfileDetail,
+  ProfileSummary,
+  RecoverableInvocation,
+  RecoverableOperationKind,
+  RecoverableResult,
+  RunSummary,
+  RunTranscripts,
+  RuntimeConfigDocument,
+  RuntimeConfigStatus,
+  RuntimeConfigValidation,
+  SessionLoadState,
+  SessionSummary,
+  WorkspaceSummary,
+} from "./workspaceProductTypes";
 
-export type WorkspaceSummary = WorkspaceListResult["workspaces"][number];
-export type SessionSummary = SessionListResult["sessions"][number];
-export type RunSummary = SessionGetResult["runs"][number];
-export type ApprovalSummary = ApprovalListResult["approvals"][number];
-export type ClarificationSummary = ClarificationListResult["clarifications"][number];
-export type DeferredSummary = DeferredListResult["deferred"][number];
-export type ApprovalDetail = ApprovalShowResult["approval"];
-export type DeferredDetail = DeferredShowResult["deferred"];
-export type ClarificationAnswer = ClarificationResolveIntent["answers"][number];
-export type ProfileSummary = CatalogListResult["profiles"][number];
-export type ModelSelection = CatalogListResult["selection"];
-export type ProfileDetail = ProfileGetResult["profile"];
-export type RuntimeConfigDocument = ConfigGetResult["config"];
-export type RuntimeConfigStatus = ConfigGetResult["status"];
-export type RuntimeConfigValidation = ConfigValidateResult["validation"];
-
-type ProductPhase = "loading" | "ready" | "error";
-type SessionLoadState =
-  | { readonly kind: "idle" }
-  | { readonly kind: "loading"; readonly sessionId: string }
-  | { readonly kind: "ready"; readonly sessionId: string }
-  | { readonly kind: "error"; readonly sessionId: string };
-type HostSubscription = Awaited<ReturnType<DesktopHostClient["subscribe"]>>;
-type TranscriptLifecycle = "streaming" | "finished";
-
-type TranscriptMessage = {
-  readonly messageId: string;
-  readonly text: string;
-  readonly lifecycle: TranscriptLifecycle;
-  readonly lastSequence: string;
-};
-
-type RunTranscript = {
-  readonly lastSequence: string;
-  readonly messageOrder: readonly string[];
-  readonly messages: Readonly<Record<string, TranscriptMessage>>;
-};
-
-type RunTranscripts = Readonly<Record<string, RunTranscript>>;
-
-type OwnedSubscription = {
-  readonly generation: number;
-  readonly ownership: number;
-  readonly value: HostSubscription;
-};
+export type {
+  ApprovalDetail,
+  ApprovalSummary,
+  ClarificationAnswer,
+  ClarificationSummary,
+  DeferredDetail,
+  DeferredSummary,
+  ModelSelection,
+  ProfileDetail,
+  ProfileSummary,
+  RunSummary,
+  RuntimeConfigDocument,
+  RuntimeConfigStatus,
+  RuntimeConfigValidation,
+  SessionSummary,
+  WorkspaceSummary,
+} from "./workspaceProductTypes";
 
 const TRANSCRIPT_HYDRATION_CONCURRENCY = 4;
-
-type RecoverableOperationKind =
-  | "workspace.register"
-  | "session.create"
-  | "run.start"
-  | "run.resume"
-  | "run.steer"
-  | "run.interrupt"
-  | "approval.decide"
-  | "clarification.resolve"
-  | "deferred.complete"
-  | "deferred.fail"
-  | "model.select"
-  | "config.update"
-  | "config.reload"
-  | "config.activate"
-  | "config.discard";
-
-type RecoverableInvocation = DesktopHostInvocation<RecoverableOperationKind>;
-type RecoverableResult = DesktopHostResultMap[RecoverableOperationKind];
-
-type PendingProductOperation =
-  | {
-      readonly recovery: "execute";
-      readonly invocation: RecoverableInvocation;
-      readonly workspaceIntent?: DesktopWorkspaceIntent;
-    }
-  | {
-      readonly recovery: "acknowledge";
-      readonly invocation: RecoverableInvocation;
-      readonly failure: DesktopHostAcknowledgementError<RecoverableOperationKind>;
-      readonly workspaceIntent?: DesktopWorkspaceIntent;
-    };
-
-const RECOVERABLE_OPERATION_KINDS = new Set<DesktopHostOperationKind>([
-  "workspace.register",
-  "session.create",
-  "run.start",
-  "run.resume",
-  "run.steer",
-  "run.interrupt",
-  "approval.decide",
-  "clarification.resolve",
-  "deferred.complete",
-  "deferred.fail",
-  "model.select",
-  "config.update",
-  "config.reload",
-  "config.activate",
-  "config.discard",
-]);
-
-function isRecoverableInvocation(
-  invocation: DesktopHostInvocation,
-): invocation is RecoverableInvocation {
-  return RECOVERABLE_OPERATION_KINDS.has(invocation.operation.kind);
-}
-
-const ACTIVE_RUN_STATES = new Set<RunSummary["status"]>([
-  "queued",
-  "starting",
-  "running",
-  "waiting",
-]);
-const MAX_CATALOG_PAGES = 20;
-
-async function listAllWorkspaces(host: DesktopHostClient): Promise<readonly WorkspaceSummary[]> {
-  const workspaces: WorkspaceSummary[] = [];
-  let pageToken: DesktopPageToken | undefined;
-  for (let page = 0; page < MAX_CATALOG_PAGES; page += 1) {
-    const result = await host.workspaceList(pageToken === undefined ? {} : { pageToken });
-    workspaces.push(...result.workspaces);
-    if (!result.page.hasMore || result.page.nextPageToken === undefined) break;
-    pageToken = result.page.nextPageToken;
-  }
-  return workspaces;
-}
-
-async function listAllApprovals(
-  host: DesktopHostClient,
-  sessionId?: string,
-): Promise<readonly ApprovalSummary[]> {
-  const approvals: ApprovalSummary[] = [];
-  let pageToken: DesktopPageToken | undefined;
-  for (let page = 0; page < MAX_CATALOG_PAGES; page += 1) {
-    const result = await host.approvalList({
-      state: "unresolved",
-      ...(sessionId === undefined ? {} : { sessionId }),
-      ...(pageToken === undefined ? {} : { pageToken }),
-    });
-    approvals.push(...result.approvals);
-    if (!result.page.hasMore || result.page.nextPageToken === undefined) return approvals;
-    pageToken = result.page.nextPageToken;
-  }
-  throw new Error("approval discovery exceeds the bounded Desktop page budget");
-}
-
-async function listAllClarifications(
-  host: DesktopHostClient,
-  sessionId?: string,
-): Promise<readonly ClarificationSummary[]> {
-  const clarifications: ClarificationSummary[] = [];
-  let pageToken: DesktopPageToken | undefined;
-  for (let page = 0; page < MAX_CATALOG_PAGES; page += 1) {
-    const result = await host.clarificationList({
-      state: "unresolved",
-      ...(sessionId === undefined ? {} : { sessionId }),
-      ...(pageToken === undefined ? {} : { pageToken }),
-    });
-    clarifications.push(...result.clarifications);
-    if (!result.page.hasMore || result.page.nextPageToken === undefined) return clarifications;
-    pageToken = result.page.nextPageToken;
-  }
-  throw new Error("clarification discovery exceeds the bounded Desktop page budget");
-}
-
-async function listAllDeferred(
-  host: DesktopHostClient,
-  sessionId?: string,
-): Promise<readonly DeferredSummary[]> {
-  const deferred: DeferredSummary[] = [];
-  let pageToken: DesktopPageToken | undefined;
-  for (let page = 0; page < MAX_CATALOG_PAGES; page += 1) {
-    const result = await host.deferredList({
-      state: "unresolved",
-      ...(sessionId === undefined ? {} : { sessionId }),
-      ...(pageToken === undefined ? {} : { pageToken }),
-    });
-    deferred.push(...result.deferred);
-    if (!result.page.hasMore || result.page.nextPageToken === undefined) return deferred;
-    pageToken = result.page.nextPageToken;
-  }
-  throw new Error("deferred discovery exceeds the bounded Desktop page budget");
-}
-
-async function listResolvedInteractionsForWaitingRuns(
-  host: DesktopHostClient,
-  runs: readonly RunSummary[],
-): Promise<{
-  readonly approvals: readonly ApprovalSummary[];
-  readonly clarifications: readonly ClarificationSummary[];
-  readonly deferred: readonly DeferredSummary[];
-}> {
-  const waiting = runs.filter((run) => run.status === "waiting");
-  const pages = await Promise.all(
-    waiting.map(async (run) => {
-      const scope = { runId: run.runId, sessionId: run.sessionId, state: "resolved" as const };
-      const [approvals, clarifications, deferred] = await Promise.all([
-        host.approvalList(scope),
-        host.clarificationList(scope),
-        host.deferredList(scope),
-      ]);
-      return {
-        approvals: approvals.approvals,
-        clarifications: clarifications.clarifications,
-        deferred: deferred.deferred,
-      };
-    }),
-  );
-  return {
-    approvals: pages
-      .flatMap((page) => page.approvals)
-      .filter((approval) => approval.status !== "pending"),
-    clarifications: pages
-      .flatMap((page) => page.clarifications)
-      .filter((clarification) => clarification.status !== "pending"),
-    deferred: pages
-      .flatMap((page) => page.deferred)
-      .filter(
-        (record) =>
-          record.status !== "pending" && record.status !== "running" && record.status !== "waiting",
-      ),
-  };
-}
-
-function replaceById<T>(entries: readonly T[], next: T, id: (entry: T) => string): readonly T[] {
-  const index = entries.findIndex((entry) => id(entry) === id(next));
-  if (index === -1) return [next, ...entries];
-  return entries.map((entry, entryIndex) => (entryIndex === index ? next : entry));
-}
-
-function replaceRun(runs: readonly RunSummary[], run: RunSummary): readonly RunSummary[] {
-  const existing = runs.findIndex((candidate) => candidate.runId === run.runId);
-  if (existing === -1) return [...runs, run];
-  return runs.map((candidate, index) => {
-    if (index !== existing) return candidate;
-    return {
-      ...candidate,
-      ...run,
-      inputPreview: run.inputPreview ?? candidate.inputPreview,
-      outputPreview: run.outputPreview ?? candidate.outputPreview,
-    };
-  });
-}
-
-function applyRunHostEvent(
-  runs: readonly RunSummary[],
-  event: SafeHostEvent,
-): readonly RunSummary[] {
-  const payload = event.delivery.record.event;
-  if (payload.kind === "run_changed") return replaceRun(runs, payload.run);
-  if (payload.kind === "output_available") {
-    return runs.map((run) =>
-      run.runId === payload.runId ? { ...run, outputPreview: payload.preview } : run,
-    );
-  }
-  return runs;
-}
-
-function isNewerSequence(candidate: string, previous: string | undefined): boolean {
-  if (previous === undefined) return true;
-  try {
-    return BigInt(candidate) > BigInt(previous);
-  } catch {
-    return false;
-  }
-}
-
-function applyTranscriptHostEvent(
-  transcripts: RunTranscripts,
-  event: SafeHostEvent,
-): RunTranscripts {
-  const payload = event.delivery.record.event;
-  if (payload.kind !== "transcript_changed") return transcripts;
-  const current = transcripts[payload.runId];
-  if (!isNewerSequence(payload.transcriptSequence, current?.lastSequence)) return transcripts;
-
-  const update = payload.update;
-  const existingMessage = current?.messages[update.messageId];
-  const messageOrder =
-    existingMessage === undefined
-      ? [...(current?.messageOrder ?? []), update.messageId]
-      : (current?.messageOrder ?? []);
-  let message: TranscriptMessage;
-  if (update.kind === "text_appended") {
-    message = {
-      messageId: update.messageId,
-      text: `${existingMessage?.text ?? ""}${update.delta}`,
-      lifecycle: existingMessage?.lifecycle ?? "streaming",
-      lastSequence: payload.transcriptSequence,
-    };
-  } else if (update.kind === "message_finished") {
-    message = {
-      messageId: update.messageId,
-      text: existingMessage?.text ?? "",
-      lifecycle: "finished",
-      lastSequence: payload.transcriptSequence,
-    };
-  } else {
-    message = {
-      messageId: update.messageId,
-      text: existingMessage?.text ?? "",
-      lifecycle: existingMessage?.lifecycle ?? "streaming",
-      lastSequence: payload.transcriptSequence,
-    };
-  }
-  return {
-    ...transcripts,
-    [payload.runId]: {
-      lastSequence: payload.transcriptSequence,
-      messageOrder,
-      messages: { ...(current?.messages ?? {}), [update.messageId]: message },
-    },
-  };
-}
-
-function transcriptText(transcript: RunTranscript | undefined): string | undefined {
-  if (transcript === undefined) return undefined;
-  const text = transcript.messageOrder.map((id) => transcript.messages[id]?.text ?? "").join("");
-  return text.length > 0 ? text : undefined;
-}
 
 export function useWorkspaceProduct(options: { readonly conversationSessionId?: string } = {}) {
   const { conversationSessionId } = options;
@@ -442,31 +175,9 @@ export function useWorkspaceProduct(options: { readonly conversationSessionId?: 
       error: unknown,
       workspaceIntent?: DesktopWorkspaceIntent,
     ): boolean => {
-      if (error instanceof DesktopHostExecutionError) {
-        const unresolved = error.invocation;
-        if (isRecoverableInvocation(unresolved)) {
-          setPendingOperation(invocation.operationId, {
-            recovery: "execute",
-            invocation: unresolved,
-            workspaceIntent,
-          });
-          return true;
-        }
-      }
-      if (error instanceof DesktopHostAcknowledgementError) {
-        const unresolved = error.invocation;
-        if (isRecoverableInvocation(unresolved)) {
-          setPendingOperation(invocation.operationId, {
-            recovery: "acknowledge",
-            invocation: unresolved,
-            failure: error as DesktopHostAcknowledgementError<RecoverableOperationKind>,
-            workspaceIntent,
-          });
-          return true;
-        }
-      }
-      setPendingOperation(invocation.operationId, undefined);
-      return false;
+      const pending = pendingProductOperationFromFailure(error, workspaceIntent);
+      setPendingOperation(invocation.operationId, pending);
+      return pending !== undefined;
     },
     [setPendingOperation],
   );
@@ -493,15 +204,7 @@ export function useWorkspaceProduct(options: { readonly conversationSessionId?: 
     async (pending: PendingProductOperation): Promise<RecoverableResult> => {
       const { invocation } = pending;
       try {
-        const result =
-          pending.recovery === "acknowledge"
-            ? await host.retryAcknowledgement(pending.failure)
-            : invocation.operation.kind === "workspace.register"
-              ? await executeDesktopWorkspaceRegistration(
-                  invocation as DesktopHostInvocation<"workspace.register">,
-                  pending.workspaceIntent,
-                )
-              : await host.execute(invocation);
+        const result = await executePendingProductOperation(host, pending);
         setPendingOperation(invocation.operationId, undefined);
         return result;
       } catch (error: unknown) {
@@ -1747,26 +1450,11 @@ export function useWorkspaceProduct(options: { readonly conversationSessionId?: 
       ) as Readonly<Record<string, string>>,
     [transcripts],
   );
-  const selectedProfile = profiles.find(
-    (profile) => profile.name === modelSelection?.selectedProfile,
+  const { selectedProfile, profileReady, profileReadinessIssue } = deriveProfileReadiness(
+    profiles,
+    modelSelection,
+    profileDetail,
   );
-  const profileReady =
-    selectedProfile !== undefined &&
-    modelSelection?.modelId === selectedProfile.modelId &&
-    profileDetail?.name === selectedProfile.name &&
-    profileDetail.modelId === selectedProfile.modelId;
-  const profileReadinessIssue =
-    modelSelection === undefined
-      ? "Profile catalog is unavailable."
-      : selectedProfile === undefined
-        ? "The saved default profile is no longer in the active runtime catalog."
-        : modelSelection.modelId !== selectedProfile.modelId
-          ? "The saved profile selection is stale for the active runtime catalog."
-          : profileDetail === undefined
-            ? "The selected profile could not be materialized."
-            : profileDetail.modelId !== selectedProfile.modelId
-              ? "The selected profile changed while it was being materialized."
-              : undefined;
   const profileSelectionRecoveryPending = pendingOperationIds.some((operationId) => {
     const pending = pendingOperations.current.get(operationId);
     return pending?.invocation.operation.kind === "model.select";
