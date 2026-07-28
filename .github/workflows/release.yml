@@ -89,15 +89,10 @@ jobs:
           path: ${{ matrix.archive }}
           if-no-files-found: error
 
-      - name: Upload raw RPC workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: rpc-binary-${{ matrix.target }}
-          path: dist/starweaver-rpc*
-          if-no-files-found: error
-
+  # Desktop-managed runtime updates are paused while Desktop remains WIP.
   build-runtime-update-artifacts:
     name: Build independent RPC runtime update artifacts
+    if: ${{ false }}
     needs: build-binaries
     runs-on: ubuntu-latest
     permissions:
@@ -176,8 +171,10 @@ jobs:
           path: dist/runtime/*
           if-no-files-found: error
 
+  # Desktop packaging and publication are paused while Desktop remains WIP.
   build-desktop-artifacts:
     name: Build Desktop ${{ matrix.target }} packages
+    if: ${{ false }}
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -488,6 +485,7 @@ jobs:
 
   upload-runtime-assets:
     name: Upload independent RPC runtime update assets
+    if: ${{ false }}
     needs: build-runtime-update-artifacts
     runs-on: ubuntu-latest
     steps:
@@ -538,6 +536,7 @@ jobs:
 
   upload-desktop-assets:
     name: Upload Desktop release assets
+    if: ${{ false }}
     needs: build-desktop-artifacts
     runs-on: ubuntu-latest
     steps:

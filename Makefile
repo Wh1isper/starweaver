@@ -15,6 +15,13 @@ RPC_MAKE_ARGS = $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 CLI_ARGS ?= $(if $(ARGS),$(ARGS),$(CLI_MAKE_ARGS))
 SW_ARGS ?= $(if $(ARGS),$(ARGS),$(SW_MAKE_ARGS))
 RPC_ARGS ?= $(if $(ARGS),$(ARGS),$(if $(RPC_MAKE_ARGS),$(RPC_MAKE_ARGS),stdio))
+RUST_WORKSPACE_EXCLUDES = --exclude starweaver-desktop
+MAINTAINED_RUST_PACKAGES = starweaver-agent starweaver-cli starweaver-context starweaver-core \
+	starweaver-envd starweaver-envd-client starweaver-envd-core starweaver-environment \
+	starweaver-model starweaver-oauth starweaver-oauth-provider starweaver-rpc \
+	starweaver-rpc-core starweaver-runtime starweaver-session starweaver-storage \
+	starweaver-stream starweaver-tools starweaver-usage xtask
+MAINTAINED_RUST_FMT_ARGS = $(foreach package,$(MAINTAINED_RUST_PACKAGES),--package $(package))
 DESKTOP_RPC_EXE_SUFFIX = $(if $(filter Windows_NT,$(OS)),.exe,)
 DESKTOP_RPC_BINARY ?= $(CURDIR)/target/debug/starweaver-rpc$(DESKTOP_RPC_EXE_SUFFIX)
 
@@ -33,19 +40,19 @@ install: ## Install repository developer hooks
 	@pre-commit install
 
 .PHONY: fmt
-fmt: ## Format Rust code
-	@echo "Formatting Rust workspace"
-	@cargo fmt --all
+fmt: ## Format maintained Rust code
+	@echo "Formatting maintained Rust workspace packages"
+	@cargo fmt $(MAINTAINED_RUST_FMT_ARGS)
 
 .PHONY: fmt-check
-fmt-check: ## Check Rust formatting
-	@echo "Checking Rust formatting"
-	@cargo fmt --all -- --check
+fmt-check: ## Check maintained Rust formatting
+	@echo "Checking maintained Rust formatting"
+	@cargo fmt $(MAINTAINED_RUST_FMT_ARGS) -- --check
 
 .PHONY: clippy
-clippy: ## Run clippy for all targets and features
-	@echo "Running clippy"
-	@cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+clippy: ## Run clippy for maintained workspace targets and features
+	@echo "Running clippy for maintained workspace packages"
+	@cargo clippy --workspace $(RUST_WORKSPACE_EXCLUDES) --all-targets --all-features --locked -- -D warnings
 
 .PHONY: architecture-check
 architecture-check: ## Enforce product dependency and storage ownership boundaries
@@ -68,22 +75,22 @@ desktop-boundaries-check: ## Validate Desktop target, renderer, and Tauri securi
 	@$(XTASK) check-desktop
 
 .PHONY: check
-check: agent-api-check architecture-check capability-check desktop-boundaries-check ## Run repository quality checks
-	@echo "Checking Rust workspace"
-	@cargo check --workspace --all-targets --all-features --locked
-	@echo "Running clippy"
-	@cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+check: agent-api-check architecture-check capability-check ## Run maintained repository quality checks
+	@echo "Checking maintained Rust workspace packages"
+	@cargo check --workspace $(RUST_WORKSPACE_EXCLUDES) --all-targets --all-features --locked
+	@echo "Running clippy for maintained workspace packages"
+	@cargo clippy --workspace $(RUST_WORKSPACE_EXCLUDES) --all-targets --all-features --locked -- -D warnings
 
 .PHONY: test
-test: ## Run workspace tests
-	@echo "Running Rust tests"
-	@cargo test --workspace --all-targets --all-features --locked
+test: ## Run maintained workspace tests
+	@echo "Running maintained Rust workspace tests"
+	@cargo test --workspace $(RUST_WORKSPACE_EXCLUDES) --all-targets --all-features --locked
 
 .PHONY: coverage
 coverage: ## Collect workspace coverage and generate an LCOV report
 	@echo "Collecting workspace coverage"
 	@cargo llvm-cov clean --workspace
-	@cargo llvm-cov --workspace --all-features --locked --no-report
+	@cargo llvm-cov --workspace $(RUST_WORKSPACE_EXCLUDES) --all-features --locked --no-report
 	@$(MAKE) --no-print-directory coverage-report
 
 .PHONY: coverage-report
@@ -111,7 +118,7 @@ coverage-service: ## Run CLI/service 80% coverage gate
 coverage-ci: ## Collect coverage once and run all grouped CI gates
 	@echo "Collecting workspace coverage for grouped gates"
 	@cargo llvm-cov clean --workspace
-	@cargo llvm-cov --workspace --all-features --locked --no-report
+	@cargo llvm-cov --workspace $(RUST_WORKSPACE_EXCLUDES) --all-features --locked --no-report
 	@echo "Running core coverage gate ($(CORE_COVERAGE_MIN_LINES)% lines)"
 	@$(XTASK) coverage-gate core --threshold $(CORE_COVERAGE_MIN_LINES) --report-only
 	@echo "Running agent SDK coverage gate ($(AGENT_COVERAGE_MIN_LINES)% lines)"
@@ -120,9 +127,9 @@ coverage-ci: ## Collect coverage once and run all grouped CI gates
 	@$(XTASK) coverage-gate service --threshold $(SERVICE_COVERAGE_MIN_LINES) --report-only
 
 .PHONY: build
-build: ## Build the workspace
-	@echo "Building Rust workspace"
-	@cargo build --workspace --all-targets --all-features --locked
+build: ## Build maintained workspace packages
+	@echo "Building maintained Rust workspace packages"
+	@cargo build --workspace $(RUST_WORKSPACE_EXCLUDES) --all-targets --all-features --locked
 
 .PHONY: clean
 clean: ## Remove Rust build artifacts for the workspace and Python extension
@@ -294,6 +301,10 @@ install-script-check: ## Validate GitHub install and update script semantics
 rpc-idl-generate: ## Generate the bundled host IDL, Rust bindings, and Desktop safe surface
 	@$(XTASK) generate-rpc-idl
 
+.PHONY: rpc-typescript-check
+rpc-typescript-check: ## Compile and exercise complete external TypeScript bindings
+	@$(XTASK) check-rpc-typescript
+
 .PHONY: rpc-typescript-generate
 rpc-typescript-generate: ## Generate complete TypeScript host bindings into OUTPUT=<directory>
 	@$(XTASK) generate-rpc-typescript --output "$(OUTPUT)"
@@ -306,16 +317,24 @@ rpc-idl-source-check: ## Validate canonical OpenRPC source, extensions, referenc
 rpc-idl-fixtures-check: ## Validate canonical and invalid host protocol fixtures
 	@$(XTASK) check-rpc-idl-fixtures
 
+.PHONY: rpc-idl-core-generate
+rpc-idl-core-generate: ## Generate maintained protocol bundle, manifest, and Rust bindings without Desktop projections
+	@$(XTASK) generate-rpc-idl-core
+
+.PHONY: rpc-idl-core-drift-check
+rpc-idl-core-drift-check: ## Compare maintained protocol bundle, manifest, and Rust bindings without Desktop projections
+	@$(XTASK) check-rpc-idl-core
+
 .PHONY: rpc-idl-drift-check
 rpc-idl-drift-check: ## Regenerate in temporary state and compare all tracked outputs read-only
 	@$(XTASK) check-rpc-idl
 
 .PHONY: rpc-idl-boundaries-check
-rpc-idl-boundaries-check: architecture-check desktop-boundaries-check ## Validate generated authority and deleted handwritten boundary
+rpc-idl-boundaries-check: architecture-check ## Validate generated authority and deleted handwritten boundary
 	@cargo test -p starweaver-rpc-core --test generated_protocol --locked
 
 .PHONY: rpc-idl-check
-rpc-idl-check: rpc-idl-source-check rpc-idl-drift-check rpc-idl-fixtures-check rpc-idl-boundaries-check desktop-frontend-check ## Run IDL source, generation, boundaries, Rust/Desktop, and fixture checks
+rpc-idl-check: rpc-idl-source-check rpc-idl-drift-check rpc-idl-fixtures-check rpc-idl-boundaries-check ## Run IDL source, generation, boundaries, Rust, and fixture checks
 
 .PHONY: rpc-contracts-check
 rpc-contracts-check: ## Validate generated host bindings, typed service behavior, stdio, and loopback HTTP
@@ -347,7 +366,7 @@ rpc-ci-check: test ## Run ordered workspace and shared-binary RPC integration te
 	@$(MAKE) --no-print-directory rpc-integration-check
 
 .PHONY: scripts-check
-scripts-check: architecture-check capability-check desktop-boundaries-check rpc-idl-source-check rpc-idl-drift-check cli-examples-check install-script-check ## Validate repository automation scripts through xtask
+scripts-check: architecture-check capability-check rpc-idl-source-check rpc-idl-core-drift-check rpc-idl-fixtures-check cli-examples-check install-script-check ## Validate maintained repository automation scripts through xtask
 	@echo "Checking repository scripts"
 	@$(XTASK) check-repository-scripts
 
@@ -372,13 +391,13 @@ upversion: ## Update workspace version; pass VERSION=x.y.z
 	@if [ -z "$(VERSION)" ]; then echo "VERSION is required, for example: make upversion VERSION=0.0.1"; exit 1; fi
 	@$(XTASK) upversion $(VERSION)
 	@uv lock
-	@cargo check --workspace --all-targets --all-features --locked
+	@cargo check --workspace $(RUST_WORKSPACE_EXCLUDES) --all-targets --all-features --locked
 
 .PHONY: semver-check
 semver-check: ## Check Rust public API compatibility against the latest release
 	@command -v cargo-semver-checks >/dev/null || { echo "cargo-semver-checks is required"; exit 1; }
 	@# starweaver-storage has no published 0.6 baseline; include it after the first 0.7 release.
-	@cargo semver-checks check-release --workspace --exclude starweaver-storage
+	@cargo semver-checks check-release --workspace --exclude starweaver-storage --exclude starweaver-desktop
 
 .PHONY: release-api-check
 release-api-check: agent-api-check py-api-check semver-check py-wheel-smoke ## Validate reviewed Rust/Python APIs and the built wheel before release

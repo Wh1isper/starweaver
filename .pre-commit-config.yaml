@@ -1,3 +1,5 @@
+exclude: ^apps/starweaver-desktop/
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: "v6.0.0"
@@ -29,13 +31,13 @@ repos:
     hooks:
       - id: cargo-fmt
         name: cargo fmt
-        entry: cargo fmt --all -- --check
+        entry: make fmt-check
         language: system
         pass_filenames: false
         types: [rust]
       - id: cargo-clippy
         name: cargo clippy
-        entry: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        entry: cargo clippy --workspace --exclude starweaver-desktop --all-targets --all-features --locked -- -D warnings
         language: system
         pass_filenames: false
         types: [rust]

@@ -12,7 +12,7 @@ mod validate;
 #[cfg(test)]
 mod tests;
 
-pub use check::{check_all, check_source, generate};
+pub use check::{check_all, check_core, check_source, check_typescript, generate, generate_core};
 pub use generate_typescript::generate_to as generate_typescript;
 
 pub fn check_fixtures(args: &[String]) -> Result<(), String> {

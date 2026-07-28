@@ -5,7 +5,7 @@ use serde_json::json;
 use super::{
     bundle,
     check::GeneratedOutputs,
-    generate_desktop, generate_rust, generate_typescript, lint,
+    generate_rust, generate_typescript, lint,
     model::{ProtocolIr, SchemaKind},
     source,
 };
@@ -252,106 +252,6 @@ fn rust_generator_owns_decode_errors_notifications_and_error_eligibility() {
 }
 
 #[test]
-fn desktop_manifest_rejects_authority_confusion_and_unreviewed_surface() {
-    let Ok(repository) = crate::common::root() else {
-        panic!("repository root must resolve");
-    };
-    let Ok(bundled) = bundle::build(&repository.join("protocol/host")) else {
-        panic!("canonical protocol must bundle");
-    };
-    let Ok(ir) = ProtocolIr::from_bundle(&bundled.value) else {
-        panic!("canonical protocol must lower to IR");
-    };
-    let Ok(manifest) =
-        source::load_yaml(&repository.join("apps/starweaver-desktop/host-bridge/manifest.yaml"))
-    else {
-        panic!("Desktop surface manifest must load");
-    };
-    assert!(generate_desktop::validate_manifest_value(&ir, manifest.clone()).is_ok());
-    let Some(operations) = manifest["operations"].as_object() else {
-        panic!("Desktop operations object");
-    };
-    for backend_owned in [
-        "initialize",
-        "shutdown",
-        "events.replay",
-        "events.subscribe",
-        "events.unsubscribe",
-        "environment.attach",
-    ] {
-        assert!(!operations.contains_key(backend_owned));
-    }
-
-    let mut duplicate_authority = manifest.clone();
-    let Some(renderer_fields) = duplicate_authority
-        .pointer_mut("/operations/run.start/input/rendererProvided")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        panic!("run.start renderer authority list must exist");
-    };
-    renderer_fields.push(json!("idempotencyKey"));
-    assert!(generate_desktop::validate_manifest_value(&ir, duplicate_authority).is_err());
-
-    let mut unknown_operation = manifest.clone();
-    let Some(operations) = unknown_operation
-        .get_mut("operations")
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        panic!("Desktop operations must be an object");
-    };
-    let Some(catalog_operation) = operations.get("catalog.list").cloned() else {
-        panic!("catalog.list surface must exist");
-    };
-    operations.insert("diagnostics.get".to_string(), catalog_operation);
-    assert!(generate_desktop::validate_manifest_value(&ir, unknown_operation).is_err());
-
-    let mut unauthorized_profile = manifest.clone();
-    unauthorized_profile["notifications"]["host.event"]["profile"] =
-        json!("internal.everything.v1");
-    assert!(generate_desktop::validate_manifest_value(&ir, unauthorized_profile).is_err());
-
-    let mut raw_resource_authority = manifest.clone();
-    let Some(allowed) = raw_resource_authority
-        .pointer_mut("/rendererInputVariants/InputPart")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        panic!("InputPart renderer variant allowlist must exist");
-    };
-    allowed.push(json!("ResourceInputPart"));
-    assert!(generate_desktop::validate_manifest_value(&ir, raw_resource_authority).is_err());
-
-    let Ok(outputs) = generate_desktop::generate(&repository, &ir) else {
-        panic!("Desktop outputs must generate");
-    };
-    let Some(types) = outputs.get(std::path::Path::new(
-        "apps/starweaver-desktop/src/generated/host/types.ts",
-    )) else {
-        panic!("generated Desktop TypeScript types must exist");
-    };
-    let types = String::from_utf8_lossy(types);
-    assert!(!types.contains("readonly uri:"));
-    assert!(!types.contains("readonly kind: \"resource\""));
-    let Some(rust) = outputs.get(std::path::Path::new(
-        "apps/starweaver-desktop/src-tauri/src/generated/host/mod.rs",
-    )) else {
-        panic!("generated Desktop Rust bridge must exist");
-    };
-    let rust = String::from_utf8_lossy(rust);
-    assert!(!rust.contains("ResourceInputPart"));
-    assert!(!rust.contains("#[serde(rename = \"resource\")]"));
-
-    let mut incomplete = manifest;
-    let Some(input) = incomplete
-        .pointer_mut("/operations/session.get/input")
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        panic!("session.get input authority must exist");
-    };
-    input.remove("forbidden");
-    assert!(generate_desktop::validate_manifest_value(&ir, incomplete).is_err());
-}
-
-#[test]
 fn explicit_typescript_generation_is_isolated_and_repeatable() {
     let Ok(directory) = tempfile::tempdir() else {
         panic!("temporary directory must be available");
@@ -488,6 +388,83 @@ fn generated_output_check_rejects_stale_files_and_promotion_removes_only_owned_f
         fs::read(repository.path().join(current)),
         Ok(bytes) if bytes == b"current"
     ));
+}
+
+#[test]
+fn core_generation_manifest_excludes_frozen_desktop_outputs() {
+    let Ok(repository) = crate::common::root() else {
+        panic!("repository root must resolve");
+    };
+    let Ok(outputs) = GeneratedOutputs::build_core(&repository) else {
+        panic!("maintained protocol outputs must generate");
+    };
+    let Some(manifest) = outputs.files.get(std::path::Path::new(
+        "protocol/host/generated/manifest.json",
+    )) else {
+        panic!("maintained generation must include the public manifest");
+    };
+    let Ok(manifest): Result<serde_json::Value, _> = serde_json::from_slice(manifest) else {
+        panic!("maintained protocol manifest must be valid JSON");
+    };
+    let Some(inventory) = manifest
+        .get("outputs")
+        .and_then(serde_json::Value::as_object)
+    else {
+        panic!("maintained protocol manifest must inventory generated outputs");
+    };
+    assert!(
+        inventory
+            .keys()
+            .all(|path| !path.starts_with("apps/starweaver-desktop/"))
+    );
+    assert!(
+        inventory
+            .keys()
+            .any(|path| path.starts_with("crates/starweaver-rpc-core/"))
+    );
+}
+
+#[test]
+fn core_promotion_prunes_core_outputs_without_touching_frozen_desktop_files() {
+    let Ok(repository) = tempfile::tempdir() else {
+        panic!("temporary directory must be available");
+    };
+    let current = PathBuf::from("crates/starweaver-rpc-core/src/generated/current.rs");
+    let obsolete = PathBuf::from("crates/starweaver-rpc-core/src/generated/obsolete.rs");
+    let frozen_desktop = PathBuf::from("apps/starweaver-desktop/src/generated/host/frozen.ts");
+    for (relative, contents) in [
+        (&current, b"old".as_slice()),
+        (&obsolete, b"obsolete".as_slice()),
+        (&frozen_desktop, b"frozen".as_slice()),
+    ] {
+        let path = repository.path().join(relative);
+        let Some(parent) = path.parent() else {
+            panic!("generated fixture must have a parent");
+        };
+        assert!(fs::create_dir_all(parent).is_ok());
+        assert!(fs::write(path, contents).is_ok());
+    }
+
+    let outputs = GeneratedOutputs {
+        files: BTreeMap::from([(current.clone(), b"current".to_vec())]),
+    };
+    let Err(error) = outputs.check_core(repository.path()) else {
+        panic!("obsolete core output must fail the core drift check");
+    };
+    assert!(error.contains("obsolete maintained RPC IDL output"));
+
+    assert!(outputs.promote_core(repository.path()).is_ok());
+    assert_eq!(
+        fs::read(repository.path().join(current)).ok().as_deref(),
+        Some(b"current".as_slice())
+    );
+    assert!(!repository.path().join(obsolete).exists());
+    assert_eq!(
+        fs::read(repository.path().join(frozen_desktop))
+            .ok()
+            .as_deref(),
+        Some(b"frozen".as_slice())
+    );
 }
 
 #[test]

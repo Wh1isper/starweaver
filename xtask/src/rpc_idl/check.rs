@@ -12,6 +12,11 @@ use crate::common::{root, sort_value};
 
 use super::{bundle, generate_typescript, lint, model::ProtocolIr};
 
+const CORE_GENERATED_ROOT: &str = "crates/starweaver-rpc-core/src/generated";
+const CORE_GENERATED_FILES: &[&str] = &[
+    "protocol/host/generated/starweaver-host.openrpc.json",
+    "protocol/host/generated/manifest.json",
+];
 const EXCLUSIVE_GENERATED_ROOTS: &[&str] = &[
     "crates/starweaver-rpc-core/src/generated",
     "apps/starweaver-desktop/src/generated/host",
@@ -31,6 +36,31 @@ pub struct GeneratedOutputs {
 }
 
 impl GeneratedOutputs {
+    pub fn build_core(repository: &Path) -> Result<Self, String> {
+        let protocol_root = repository.join("protocol/host");
+        let bundled = bundle::build(&protocol_root)?;
+        let ir = ProtocolIr::from_bundle(&bundled.value)?;
+        lint::check(&ir)?;
+        if bundled.digest != ir.identity.schema_digest {
+            return Err(
+                "bundled digest does not match the normalized protocol identity".to_string(),
+            );
+        }
+
+        let mut files = BTreeMap::new();
+        files.insert(
+            PathBuf::from("protocol/host/generated/starweaver-host.openrpc.json"),
+            bundled.bytes,
+        );
+        files.extend(super::generate_rust::generate(&ir)?);
+        let manifest = render_manifest(&ir, &bundled.sources, &files)?;
+        files.insert(
+            PathBuf::from("protocol/host/generated/manifest.json"),
+            manifest,
+        );
+        Ok(Self { files })
+    }
+
     pub fn build(repository: &Path) -> Result<Self, String> {
         let protocol_root = repository.join("protocol/host");
         let bundled = bundle::build(&protocol_root)?;
@@ -48,14 +78,50 @@ impl GeneratedOutputs {
             bundled.bytes.clone(),
         );
         files.extend(super::generate_rust::generate(&ir)?);
+        let manifest = render_manifest(&ir, &bundled.sources, &files)?;
+        files.insert(
+            PathBuf::from("protocol/host/generated/manifest.json"),
+            manifest,
+        );
 
         files.extend(super::generate_desktop::generate(repository, &ir)?);
         format_desktop_outputs(repository, &mut files)?;
-
-        let manifest_path = PathBuf::from("protocol/host/generated/manifest.json");
-        let manifest = render_manifest(&ir, &bundled.sources, &files)?;
-        files.insert(manifest_path, manifest);
         Ok(Self { files })
+    }
+
+    pub fn check_core(&self, repository: &Path) -> Result<(), String> {
+        let expected = self.files.keys().cloned().collect::<BTreeSet<_>>();
+        let actual = core_generator_owned_files(repository)?;
+        let obsolete = actual.difference(&expected).collect::<Vec<_>>();
+        if !obsolete.is_empty() {
+            return Err(format!(
+                "obsolete maintained RPC IDL output(s): {}; run make rpc-idl-core-generate",
+                display_paths(&obsolete)
+            ));
+        }
+        let missing = expected.difference(&actual).collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(format!(
+                "missing maintained RPC IDL output(s): {}; run make rpc-idl-core-generate",
+                display_paths(&missing)
+            ));
+        }
+        for (relative, expected) in &self.files {
+            let path = repository.join(relative);
+            let actual = fs::read(&path).map_err(|error| {
+                format!(
+                    "read {}: {error}; run make rpc-idl-core-generate",
+                    path.display()
+                )
+            })?;
+            if actual != *expected {
+                return Err(format!(
+                    "{} is stale; run make rpc-idl-core-generate",
+                    path.display()
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub fn check(&self, repository: &Path) -> Result<(), String> {
@@ -94,13 +160,27 @@ impl GeneratedOutputs {
     }
 
     pub fn promote(&self, repository: &Path) -> Result<(), String> {
-        self.promote_with_failure_injection(repository, None)
+        self.promote_scoped(repository, None, false)
     }
 
+    pub fn promote_core(&self, repository: &Path) -> Result<(), String> {
+        self.promote_scoped(repository, None, true)
+    }
+
+    #[cfg(test)]
     pub(super) fn promote_with_failure_injection(
         &self,
         repository: &Path,
         fail_before_promotion: Option<usize>,
+    ) -> Result<(), String> {
+        self.promote_scoped(repository, fail_before_promotion, false)
+    }
+
+    fn promote_scoped(
+        &self,
+        repository: &Path,
+        fail_before_promotion: Option<usize>,
+        core_only: bool,
     ) -> Result<(), String> {
         let staging = tempfile::tempdir().map_err(|error| error.to_string())?;
         for (relative, bytes) in &self.files {
@@ -113,11 +193,12 @@ impl GeneratedOutputs {
         }
         let expected = self.files.keys().cloned().collect::<BTreeSet<_>>();
         let mut operations = expected.clone();
-        operations.extend(
+        let owned = if core_only {
+            core_generator_owned_files(repository)?
+        } else {
             generator_owned_files(repository)?
-                .difference(&expected)
-                .cloned(),
-        );
+        };
+        operations.extend(owned.difference(&expected).cloned());
 
         let mut journal = Vec::new();
         for (index, relative) in operations.iter().enumerate() {
@@ -175,10 +256,27 @@ impl GeneratedOutputs {
     }
 }
 
+pub fn generate_core(args: &[String]) -> Result<(), String> {
+    no_args(args, "generate-rpc-idl-core")?;
+    let repository = root()?;
+    GeneratedOutputs::build_core(&repository)?.promote_core(&repository)
+}
+
 pub fn generate(args: &[String]) -> Result<(), String> {
     no_args(args, "generate-rpc-idl")?;
     let repository = root()?;
     GeneratedOutputs::build(&repository)?.promote(&repository)
+}
+
+pub fn check_core(args: &[String]) -> Result<(), String> {
+    no_args(args, "check-rpc-idl-core")?;
+    let repository = root()?;
+    GeneratedOutputs::build_core(&repository)?.check_core(&repository)
+}
+
+pub fn check_typescript(args: &[String]) -> Result<(), String> {
+    no_args(args, "check-rpc-typescript")?;
+    check_complete_typescript_runtime(&root()?)
 }
 
 pub fn check_all(args: &[String]) -> Result<(), String> {
@@ -259,7 +357,7 @@ for (const value of [-1n, maximumU64 + 1n]) {{
         "{\"type\":\"module\"}\n",
     )
     .map_err(|error| format!("write TypeScript runtime package metadata: {error}"))?;
-    let type_roots = repository.join("apps/starweaver-desktop/node_modules/@types");
+    let type_roots = repository.join("node_modules/@types");
     let tsconfig = json!({
         "compilerOptions": {
             "lib": ["ES2022", "DOM", "DOM.Iterable"],
@@ -285,12 +383,13 @@ for (const value of [-1n, maximumU64 + 1n]) {{
     )
     .map_err(|error| format!("write TypeScript runtime tsconfig: {error}"))?;
 
-    let tsc = repository
-        .join("apps/starweaver-desktop/node_modules/.bin")
-        .join(if cfg!(windows) { "tsc.CMD" } else { "tsc" });
+    let tsc =
+        repository
+            .join("node_modules/.bin")
+            .join(if cfg!(windows) { "tsc.CMD" } else { "tsc" });
     if !tsc.is_file() {
         return Err(format!(
-            "pinned Desktop TypeScript compiler is unavailable at {}; run corepack pnpm install --frozen-lockfile",
+            "pinned protocol TypeScript compiler is unavailable at {}; run corepack pnpm install --frozen-lockfile",
             tsc.display()
         ));
     }
@@ -397,7 +496,7 @@ fn render_manifest(
         .collect::<serde_json::Map<_, _>>();
     let value = json!({
         "schema": "starweaver.host.generated-manifest",
-        "generatorVersion": 1,
+        "generatorVersion": 2,
         "protocol": {"name": ir.identity.name, "major": ir.identity.major, "revision": ir.identity.revision, "schemaDigest": ir.identity.schema_digest},
         "sources": sources,
         "outputs": hashes,
@@ -502,6 +601,23 @@ fn format_desktop_outputs(
         );
     }
     Ok(())
+}
+
+fn core_generator_owned_files(repository: &Path) -> Result<BTreeSet<PathBuf>, String> {
+    let mut files = BTreeSet::new();
+    collect_files(
+        repository,
+        Path::new(CORE_GENERATED_ROOT),
+        &mut files,
+        |_| Ok(true),
+    )?;
+    for relative in CORE_GENERATED_FILES {
+        let relative = PathBuf::from(relative);
+        if path_exists(&repository.join(&relative))? {
+            files.insert(relative);
+        }
+    }
+    Ok(files)
 }
 
 fn generator_owned_files(repository: &Path) -> Result<BTreeSet<PathBuf>, String> {

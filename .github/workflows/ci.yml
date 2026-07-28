@@ -44,9 +44,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install Tauri Linux dependencies
-        uses: ./.github/actions/setup-tauri-linux
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -65,9 +62,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Install Tauri Linux dependencies
-        uses: ./.github/actions/setup-tauri-linux
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -100,7 +94,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: cargo test --workspace --all-targets --all-features --locked
+        run: cargo test --workspace --exclude starweaver-desktop --all-targets --all-features --locked
 
       - name: Validate RPC transports and CLI interoperability
         run: make rpc-integration-check
@@ -118,18 +112,6 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Validate xtask automation
         run: make scripts-check

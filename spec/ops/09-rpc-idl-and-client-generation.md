@@ -4,6 +4,14 @@ Status: accepted normative architecture; atomic major-1 replacement implemented
 
 Revision: 2026-07-21
 
+> [!IMPORTANT]
+> Desktop is currently WIP and under a maintenance freeze. While that freeze is active,
+> `rpc-idl-core-generate` is the maintained checked-in path and owns the public bundle, core-only
+> generated manifest, and Rust bindings. Desktop projections, their full generator/check, and the
+> aggregate cross-language/Desktop CI jobs are suspended. Complete external TypeScript bindings
+> retain an independent compile/runtime gate. The broader Desktop generation and acceptance rules
+> below apply again only after the freeze is explicitly lifted.
+
 This specification defines the sole canonical Starweaver host protocol as an IDL-first JSON-RPC design. It atomically replaces the handwritten Rust-first wire contract in place. `06-json-rpc-host-protocol.md` remains behavioral inventory for the replacement, not an independently supported wire contract.
 
 ## Decision
