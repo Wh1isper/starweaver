@@ -295,11 +295,15 @@ Built-in and config-backed profiles attach the default first-party CLI tool cata
 
 ```toml
 [tools]
+# Direct namespaced MCP tools are the default; use "proxy" for the fixed pair.
+mcp_mode = "direct"
+# Each structured question is bounded so an unattended TUI can continue.
+user_input_timeout_seconds = 120
 need_approval = []
 # need_approval = ["shell", "write", "edit", "multi_edit", "delete", "move"]
 ```
 
-Filesystem and shell execution policy is resolved from `[environment]` in `config.toml`; `tools.toml` controls tool-level approval gates.
+Filesystem and shell execution policy is resolved from `[environment]` in `config.toml`; `tools.toml` controls model-facing MCP exposure, structured-question deadlines, and tool-level approval gates.
 
 Inspect the effective catalog and policy:
 
@@ -308,7 +312,7 @@ starweaver-cli tools list
 starweaver-cli tools doctor
 ```
 
-MCP servers are read from global and project `mcp.json`. Declared tools are exposed through `McpToolset`; calls defer to the host MCP runtime with server, transport, exposed tool name, and arguments recorded in the deferred-call metadata. Profiles can also validate MCP server names through `mcp_servers` in `AgentSpec`.
+MCP servers are read from global and project `mcp.json`. By default, each server's declared tools are exposed directly with namespaced `<server>_<tool>` names. Set `tools.mcp_mode = "proxy"` to expose only `mcp_search_tool` and `mcp_call_tool`, which keeps the model-facing tool surface stable when many MCP tools are configured. Servers that omit declared tools or cannot be materialized are tolerated in both modes. Calls defer to the host MCP runtime with server, transport, exposed tool name, and arguments recorded in the deferred-call metadata. Profiles can also validate MCP server names through `mcp_servers` in `AgentSpec`.
 
 ```json
 {
@@ -548,7 +552,7 @@ Interactive keys:
 | `Ctrl-D`                 | Exit only while idle with an empty composer                   |
 | `Ctrl-U`                 | Clear the composer                                            |
 
-When a run waits for approval, the TUI binds the panel to the persisted `ApprovalRecord` and displays approval details while keeping raw durable identifiers in debug-oriented output. Ordinary approvals accept only unmodified `A`/`Y` or `R`/`N`. An `ask_user_question` request with `request.kind = "clarifying_questions"` opens a typed question modal for one to four questions. `Up`/`Down` moves choices, Space toggles multi-select choices, Enter confirms and advances, Tab/Shift-Tab moves between questions, and `E` opens free-form editing with `Ctrl+O` for newlines. The modal renders headers, descriptions, and the selected option preview, then persists canonical question-keyed `ClarifyingQuestionAnswers`. `Esc` reloads the session and reconciles durable state; its refresh target remains available after a transient load failure, including deferred-only waits without an approval panel. The service always verifies the durable session's active run and restore lineage before accepting a prompt. An unresolved `Waiting` source or an active continuation from that source blocks ordinary admission. A prompt submitted during a state-change race remains queued: it starts after external reconciliation, or retries after a pre-start continuation failure. Resolving the final record acquires an exclusive preflight `HitlResumeClaim` before allocating the continuation run, marks it started before model or tool execution, and atomically consumes the waiting source run with continuation evidence before any retained prompt starts. This prevents another TUI or headless client from publishing or executing a competing continuation. Deferred-only waits remain visible until their durable results are completed.
+When a run waits for approval, the TUI binds the panel to the persisted `ApprovalRecord` and displays approval details while keeping raw durable identifiers in debug-oriented output. Ordinary approvals accept only unmodified `A`/`Y` or `R`/`N`. An `ask_user_question` request with `request.kind = "clarifying_questions"` opens a typed question modal for one to four questions. `Up`/`Down` moves choices, Space toggles multi-select choices, Enter confirms and advances, Tab/Shift-Tab moves between questions, and `E` opens free-form editing with `Ctrl+O` for newlines. Each question uses the positive `tools.user_input_timeout_seconds` deadline (120 seconds by default); moving to another question starts a fresh deadline, and timeout expires the pending approval with guidance for the agent to continue using its best judgment. The modal renders headers, descriptions, the selected option preview, and the configured timeout, then persists canonical question-keyed `ClarifyingQuestionAnswers`. `Esc` reloads the session and reconciles durable state; its refresh target remains available after a transient load failure, including deferred-only waits without an approval panel. The service always verifies the durable session's active run and restore lineage before accepting a prompt. An unresolved `Waiting` source or an active continuation from that source blocks ordinary admission. A prompt submitted during a state-change race remains queued: it starts after external reconciliation, or retries after a pre-start continuation failure. Resolving the final record acquires an exclusive preflight `HitlResumeClaim` before allocating the continuation run, marks it started before model or tool execution, and atomically consumes the waiting source run with continuation evidence before any retained prompt starts. This prevents another TUI or headless client from publishing or executing a competing continuation. Deferred-only waits remain visible until their durable results are completed.
 
 The retained snapshot renderer remains available for scripts, tests, and display-message replay. It uses the same replay source as headless JSONL and session replay. Interactive render-mode projection applies to live TUI sessions; snapshot output replays stored display messages directly.
 

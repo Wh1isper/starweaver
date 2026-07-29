@@ -41,6 +41,10 @@ pub fn init_config_file(config: &CliConfig, scope: ConfigScope, force: bool) -> 
 }
 
 pub const DEFAULT_TOOLS_TEMPLATE: &str = r#"[tools]
+# Expose namespaced MCP tools directly, or use the fixed proxy tool pair.
+mcp_mode = "direct"
+# Reject an unanswered structured question after this many seconds.
+user_input_timeout_seconds = 120
 # CLI tools execute without approval by default. Add explicit tool names,
 # toolset ids, or "*" here to opt back into approval gating.
 need_approval = []

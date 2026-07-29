@@ -2,7 +2,11 @@ use std::{collections::BTreeMap, fs, path::Path};
 
 use toml::Value;
 
-use crate::{CliError, CliResult, config::CliConfig, error::io_error};
+use crate::{
+    CliError, CliResult,
+    config::{CliConfig, McpExposureMode},
+    error::io_error,
+};
 
 /// Return tool policy entries requiring approval.
 #[must_use]
@@ -26,6 +30,33 @@ pub fn tool_need_approval(config: &CliConfig) -> Vec<String> {
 
 const fn default_need_approval() -> Vec<String> {
     Vec::new()
+}
+
+pub(super) fn resolve_mcp_mode(config: &serde_json::Value) -> CliResult<McpExposureMode> {
+    match config.get("tools").and_then(|tools| tools.get("mcp_mode")) {
+        None => Ok(McpExposureMode::Direct),
+        Some(serde_json::Value::String(mode)) if mode == "direct" => Ok(McpExposureMode::Direct),
+        Some(serde_json::Value::String(mode)) if mode == "proxy" => Ok(McpExposureMode::Proxy),
+        Some(_) => Err(CliError::Config(
+            "tools.mcp_mode must be either \"direct\" or \"proxy\"".to_string(),
+        )),
+    }
+}
+
+pub(super) fn resolve_user_input_timeout_seconds(config: &serde_json::Value) -> CliResult<u64> {
+    config
+        .get("tools")
+        .and_then(|tools| tools.get("user_input_timeout_seconds"))
+        .map_or(Ok(120), |value| {
+            value
+                .as_u64()
+                .filter(|seconds| *seconds > 0)
+                .ok_or_else(|| {
+                    CliError::Config(
+                        "tools.user_input_timeout_seconds must be a positive integer".to_string(),
+                    )
+                })
+        })
 }
 
 /// Return merged configured MCP server map.

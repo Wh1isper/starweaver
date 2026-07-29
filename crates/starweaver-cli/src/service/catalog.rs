@@ -89,10 +89,10 @@ impl CliService {
 
     pub(super) fn tools(&self, command: &ToolsCommand) -> CliResult<String> {
         match command {
-            ToolsCommand::List => render_json_lines(&list_default_tools(&self.config)),
+            ToolsCommand::List => render_json_lines(&list_default_tools(&self.config)?),
             ToolsCommand::Doctor => Ok(format!(
                 "tools={}\nneed_approval={}\nstatus=ok\n",
-                list_default_tools(&self.config).len(),
+                list_default_tools(&self.config)?.len(),
                 tool_need_approval(&self.config).join(",")
             )),
         }
@@ -136,6 +136,7 @@ impl CliService {
 
     #[allow(clippy::too_many_lines)]
     pub(super) fn diagnostics(&self) -> CliResult<String> {
+        let tool_count = list_default_tools(&self.config)?.len();
         Ok(format!(
             "sdk={}\nworkspace_version={}\ndatabase_path={}\nfile_store_path={}\nprofile={}\ndefault_model={}\nmodel_profiles={}\nenvd_profiles={}\noauth_refresh.enabled={}\noauth_refresh.interval_seconds={}\noauth_refresh.failure_retry_seconds={}\noauth_refresh.refresh_on_startup={}\nworkspace_root={}\nenvironment_provider={}\nfiles_policy={}\nshell_enabled={}\nskills={}\nsubagents={}\nmcp_servers={}\ntools={}\ntools.need_approval={}\nprovider.openai.ready={}\nprovider.openai.api_key_env={}\nprovider.openai.base_url={}\nprovider.codex.logged_in={}\nprovider.codex.base_url={}\nprovider.anthropic.ready={}\nprovider.anthropic.api_key_env={}\nprovider.anthropic.base_url={}\nprovider.gemini.ready={}\nprovider.gemini.api_key_env={}\nprovider.gemini.base_url={}\nprovider.google-cloud.ready={}\nprovider.google-cloud.api_key_env={}\nprovider.google-cloud.auth_token_env={}\nprovider.google-cloud.project={}\nprovider.google-cloud.location={}\nprovider.google-cloud.base_url={}\nwal=true\n",
             sdk_name(),
@@ -161,7 +162,7 @@ impl CliService {
             list_skills(&self.config).len(),
             list_subagents(&self.config).len(),
             mcp_servers(&self.config).len(),
-            list_default_tools(&self.config).len(),
+            tool_count,
             tool_need_approval(&self.config).join(","),
             provider_ready(&self.config, &self.config.providers.openai),
             self.config

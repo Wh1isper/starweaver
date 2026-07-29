@@ -7,12 +7,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use starweaver_agent::{
-    CLARIFYING_QUESTIONS_REQUEST_KIND, ClarifyingQuestion, ClarifyingQuestionAnswers,
-};
+use starweaver_agent::{CLARIFYING_QUESTIONS_REQUEST_KIND, ClarifyingQuestion};
 use starweaver_core::SessionId;
 use starweaver_model::{PartDelta, StreamDelta};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStreamEvent};
+use starweaver_session::ClarificationAnswer;
 use starweaver_usage::{Usage, UsageSnapshot};
 
 const DEFAULT_CONTEXT_WINDOW_TOKENS: u64 = 200_000;
@@ -201,10 +200,12 @@ pub(super) struct ClarifyingQuestionUiState {
     pub(super) selections: Vec<BTreeSet<usize>>,
     pub(super) free_form_answers: BTreeMap<usize, String>,
     pub(super) free_form_active: bool,
+    timeout: Duration,
+    deadline: Option<Instant>,
 }
 
 impl ClarifyingQuestionUiState {
-    fn from_request(request: &Value) -> Option<Self> {
+    fn from_request(request: &Value, timeout: Duration) -> Option<Self> {
         if request.get("kind").and_then(Value::as_str) != Some(CLARIFYING_QUESTIONS_REQUEST_KIND) {
             return None;
         }
@@ -215,6 +216,7 @@ impl ClarifyingQuestionUiState {
             return None;
         }
         let selections = vec![BTreeSet::new(); questions.len()];
+        let now = Instant::now();
         Some(Self {
             questions,
             question_index: 0,
@@ -222,37 +224,56 @@ impl ClarifyingQuestionUiState {
             selections,
             free_form_answers: BTreeMap::new(),
             free_form_active: false,
+            timeout,
+            deadline: now.checked_add(timeout),
         })
+    }
+
+    fn reset_timeout(&mut self) {
+        let now = Instant::now();
+        self.deadline = now.checked_add(self.timeout);
+    }
+
+    pub(super) fn timeout_expired(&self) -> bool {
+        self.deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+
+    pub(super) const fn timeout_seconds(&self) -> u64 {
+        self.timeout.as_secs()
     }
 
     pub(super) fn current_question(&self) -> Option<&ClarifyingQuestion> {
         self.questions.get(self.question_index)
     }
 
-    fn selected_answer(&self, index: usize) -> Option<String> {
-        if let Some(answer) = self.free_form_answers.get(&index) {
-            return Some(answer.clone());
-        }
+    fn answer(&self, index: usize) -> Option<ClarificationAnswer> {
         let question = self.questions.get(index)?;
-        let labels = self
+        if let Some(answer) = self.free_form_answers.get(&index) {
+            return Some(ClarificationAnswer {
+                question: question.question.clone(),
+                selected_options: Vec::new(),
+                free_text: Some(answer.clone()),
+            });
+        }
+        let selected_options = self
             .selections
             .get(index)?
             .iter()
             .filter_map(|option| question.options.get(*option))
             .map(|option| option.label.clone())
             .collect::<Vec<_>>();
-        (!labels.is_empty()).then(|| labels.join(", "))
+        (!selected_options.is_empty()).then(|| ClarificationAnswer {
+            question: question.question.clone(),
+            selected_options,
+            free_text: None,
+        })
     }
 
-    fn answers(&self) -> Option<ClarifyingQuestionAnswers> {
-        let mut answers = BTreeMap::new();
-        for (index, question) in self.questions.iter().enumerate() {
-            answers.insert(question.question.clone(), self.selected_answer(index)?);
-        }
-        Some(ClarifyingQuestionAnswers {
-            answers,
-            response: None,
-        })
+    fn answers(&self) -> Option<Vec<ClarificationAnswer>> {
+        (0..self.questions.len())
+            .map(|index| self.answer(index))
+            .collect()
     }
 }
 
@@ -347,6 +368,7 @@ pub struct InteractiveTuiState {
     tool_call_arguments: HashMap<String, Value>,
     pub(super) subagent_states: HashMap<String, SubagentDisplayState>,
     pending_hitl: Option<HitlPanelState>,
+    user_input_timeout: Duration,
     hitl_reload_session_id: Option<String>,
     task_panel_items: Vec<TaskPanelItem>,
     task_panel_open: bool,
@@ -443,6 +465,7 @@ impl InteractiveTuiState {
             tool_call_arguments: HashMap::new(),
             subagent_states: HashMap::new(),
             pending_hitl: None,
+            user_input_timeout: Duration::from_mins(2),
             hitl_reload_session_id: None,
             task_panel_items: Vec::new(),
             task_panel_open: false,
@@ -1027,6 +1050,20 @@ impl InteractiveTuiState {
             .and_then(|hitl| hitl.clarifying.as_ref())
     }
 
+    pub(crate) const fn set_user_input_timeout(&mut self, timeout: Duration) {
+        self.user_input_timeout = timeout;
+    }
+
+    pub(crate) fn clarifying_timeout_expired(&self) -> bool {
+        self.pending_hitl.as_ref().is_some_and(|hitl| {
+            hitl.approval_id.is_some()
+                && hitl
+                    .clarifying
+                    .as_ref()
+                    .is_some_and(ClarifyingQuestionUiState::timeout_expired)
+        })
+    }
+
     pub(super) fn clarifying_free_form_active(&self) -> bool {
         self.clarifying_question()
             .is_some_and(|question| question.free_form_active)
@@ -1076,6 +1113,7 @@ impl InteractiveTuiState {
             (clarifying.question_index + steps) % len
         };
         clarifying.option_index = 0;
+        clarifying.reset_timeout();
         clarifying.free_form_active = false;
         self.clear_composer_input();
         self.input_status = Some("question changed".to_string());
@@ -1144,7 +1182,7 @@ impl InteractiveTuiState {
         self.input_status = Some("question choices".to_string());
     }
 
-    pub(super) fn confirm_clarifying_answer(&mut self) -> Option<ClarifyingQuestionAnswers> {
+    pub(super) fn confirm_clarifying_answer(&mut self) -> Option<Vec<ClarificationAnswer>> {
         let draft = self.input.trim().to_string();
         let (answers, next_label) = {
             let clarifying = self
@@ -1177,6 +1215,7 @@ impl InteractiveTuiState {
             if index + 1 < clarifying.questions.len() {
                 clarifying.question_index += 1;
                 clarifying.option_index = 0;
+                clarifying.reset_timeout();
                 (
                     None,
                     Some(format!(
@@ -1232,7 +1271,7 @@ impl InteractiveTuiState {
                 .map(ToString::to_string)
         };
         let clarifying = if approval.action_name == starweaver_agent::ASK_USER_QUESTION_TOOL_NAME {
-            ClarifyingQuestionUiState::from_request(&approval.request)
+            ClarifyingQuestionUiState::from_request(&approval.request, self.user_input_timeout)
                 .or_else(|| existing.as_ref().and_then(|hitl| hitl.clarifying.clone()))
         } else {
             None

@@ -10,9 +10,10 @@ use starweaver_core::{ConversationId, RunId, SessionId};
 use starweaver_environment::EnvironmentState;
 use starweaver_runtime::AgentStreamRecord;
 use starweaver_session::{
-    AcquireRunAdmission, ApprovalRecord, ApprovalStatus, ContinuationPreparationMode,
-    DeferredToolRecord, EnvironmentStateRef, ExecutionStatus, InputPart, LOCAL_SESSION_NAMESPACE,
-    PreparedContinuation, RelatedRunUpdate, RunAdmissionLease, RunRecord, RunStatus,
+    AcquireRunAdmission, ApprovalRecord, ApprovalStatus, ClarificationAnswer,
+    ContinuationPreparationMode, DeferredToolRecord, EnvironmentStateRef, ExecutionStatus,
+    InputPart, InteractionMutationContext, LOCAL_SESSION_NAMESPACE, PreparedContinuation,
+    RelatedRunUpdate, ResolveClarification, RunAdmissionLease, RunRecord, RunStatus,
     RunTerminalError, SessionRecord, SessionSearchError, SessionSearchPage, SessionSearchProvider,
     SessionSearchQuery, SessionSearchScope, SessionStatus, SessionStore, SessionStoreError,
     StreamCursorRef, WorkspaceProvenanceRef,
@@ -817,6 +818,52 @@ impl LocalStore {
                 Some("starweaver-cli".to_string()),
                 reason,
             )
+            .map_err(storage_error)
+    }
+
+    /// Resolve a structured clarification through the typed atomic mutation path.
+    pub fn resolve_clarification(
+        &mut self,
+        clarification_id: &str,
+        answers: Vec<ClarificationAnswer>,
+        response: Option<String>,
+    ) -> CliResult<ApprovalRecord> {
+        let approval = self
+            .storage
+            .load_approval(clarification_id)
+            .map_err(storage_error)?;
+        let mutation_id = format!(
+            "cli-clarification-{}-revision-{}",
+            approval.approval_id, approval.revision
+        );
+        let command_fingerprint = serde_json::to_string(&serde_json::json!({
+            "operation": "clarification.resolve",
+            "session_id": approval.session_id.as_str(),
+            "run_id": approval.run_id.as_str(),
+            "clarification_id": approval.approval_id.as_str(),
+            "expected_revision": approval.revision,
+            "answers": &answers,
+            "response": &response,
+            "resolved_by": "starweaver-cli",
+        }))?;
+        self.storage
+            .resolve_clarification_atomic(ResolveClarification {
+                context: InteractionMutationContext {
+                    authority_binding: "starweaver-cli".to_string(),
+                    expected_revision: approval.revision,
+                    idempotency_key: mutation_id,
+                    command_fingerprint,
+                    occurred_at: Utc::now(),
+                    host_event_publication: None,
+                },
+                session_id: approval.session_id,
+                run_id: approval.run_id,
+                clarification_id: approval.approval_id,
+                answers,
+                response,
+                resolved_by: Some("starweaver-cli".to_string()),
+            })
+            .map(|result| result.approval)
             .map_err(storage_error)
     }
 

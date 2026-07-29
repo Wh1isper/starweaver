@@ -1059,9 +1059,11 @@ impl SqliteStorage {
             "approval_id",
             approval_id,
         )?;
-        if approval.action_name == starweaver_session::ASK_USER_QUESTION_ACTION {
+        if approval.action_name == starweaver_session::ASK_USER_QUESTION_ACTION
+            && status == ApprovalStatus::Approved
+        {
             return Err(SessionStoreError::Failed(
-                "clarification records require typed clarification resolution".to_string(),
+                "approved clarification records require typed clarification resolution".to_string(),
             ));
         }
         if approval.status != ApprovalStatus::Pending {

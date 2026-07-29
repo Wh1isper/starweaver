@@ -187,11 +187,11 @@ class OutputValidator:
     def __init__(self, func: Callable[..., Any]) -> None:
         self.func = func
 
-    async def _callback(self, ctx: OutputContext, output: Any) -> None | bool:
+    async def _callback(self, ctx: OutputContext, output: Any) -> bool | None:
         result = self.func(ctx, output) if _accepts_context(self.func) else self.func(output)
         if inspect.isawaitable(result):
             result = await result
-        return cast(None | bool, result)
+        return cast(bool | None, result)
 
     def to_native(self) -> _native.OutputValidator:
         return _native.OutputValidator(self._callback, asyncio.get_running_loop())

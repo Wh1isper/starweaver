@@ -49,7 +49,7 @@ pub use catalog::{
 #[cfg(test)]
 use local_runtime::capture_subagent_inheritance_model;
 use local_runtime::{control_flow_toolset, local_echo_model, scripted_tool_model};
-use mcp::{configured_mcp_proxy_toolset, configured_mcp_server_specs, mcp_transport_error};
+use mcp::{configured_mcp_server_specs, configured_mcp_toolsets, mcp_transport_error};
 use media::{CliMediaUnderstandingCapability, configured_media_client};
 
 /// Resolved CLI profile ready to build an agent session.
@@ -368,7 +368,7 @@ fn default_registry(config: &CliConfig, spec: &AgentSpec) -> CliResult<AgentSpec
         );
     let mut environment_filesystem = None;
     let mut environment_shell = None;
-    for toolset in default_toolsets(config) {
+    for toolset in default_toolsets(config)? {
         let name = toolset.name().to_string();
         registry = registry.with_toolset(toolset.clone());
         match name.as_str() {
@@ -420,7 +420,7 @@ fn default_registry(config: &CliConfig, spec: &AgentSpec) -> CliResult<AgentSpec
     Ok(registry)
 }
 
-fn default_toolsets(config: &CliConfig) -> Vec<DynToolset> {
+fn default_toolsets(config: &CliConfig) -> CliResult<Vec<DynToolset>> {
     let approval = tool_need_approval(config);
     let shell_review_approval = shell_review_adjusted_approval(config, &approval);
     let mut toolsets = vec![
@@ -439,10 +439,23 @@ fn default_toolsets(config: &CliConfig) -> Vec<DynToolset> {
     if let Some(skill_toolset) = configured_skill_toolset(config) {
         toolsets.push(policy_toolset(skill_toolset, &approval));
     }
-    if let Some(mcp_proxy) = configured_mcp_proxy_toolset(config) {
-        toolsets.push(policy_toolset(mcp_proxy, &approval));
+    let mut exposed_names = toolsets
+        .iter()
+        .flat_map(|toolset| toolset.get_tools())
+        .map(|tool| tool.name().to_string())
+        .collect::<BTreeSet<_>>();
+    for mcp_toolset in configured_mcp_toolsets(config) {
+        for tool in mcp_toolset.get_tools() {
+            let name = tool.name().to_string();
+            if !exposed_names.insert(name.clone()) {
+                return Err(CliError::Config(format!(
+                    "configured MCP tool name {name:?} conflicts with another exposed tool"
+                )));
+            }
+        }
+        toolsets.push(policy_toolset(mcp_toolset, &approval));
     }
-    toolsets
+    Ok(toolsets)
 }
 
 fn configured_shell_review(config: &CliConfig) -> CliResult<Option<ShellReviewHandle>> {
