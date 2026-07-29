@@ -44,6 +44,87 @@ fn default_registry_uses_scoped_context_and_host_io_toolset_names() {
 }
 
 #[test]
+fn configured_mcp_tools_are_namespaced_directly_by_default() {
+    let mut config = test_config();
+    config.mcp_config = json!({
+        "servers": {
+            "docs": {
+                "transport": "stdio",
+                "command": "docs-mcp",
+                "tools": [{"name": "lookup", "parameters": {"type": "object"}}]
+            }
+        }
+    });
+
+    let names = default_toolsets(&config)
+        .unwrap()
+        .into_iter()
+        .flat_map(|toolset| toolset.get_tools())
+        .map(|tool| tool.name().to_string())
+        .collect::<BTreeSet<_>>();
+
+    assert!(names.contains("docs_lookup"));
+    assert!(!names.contains("lookup"));
+    assert!(!names.contains("mcp_search_tool"));
+    assert!(!names.contains("mcp_call_tool"));
+}
+
+#[test]
+fn configured_mcp_proxy_mode_keeps_fixed_tool_surface() {
+    let mut config = test_config();
+    config.mcp_mode = crate::config::McpExposureMode::Proxy;
+    config.mcp_config = json!({
+        "servers": {
+            "docs": {
+                "transport": "stdio",
+                "command": "docs-mcp",
+                "tools": [{"name": "lookup", "parameters": {"type": "object"}}]
+            }
+        }
+    });
+
+    let names = default_toolsets(&config)
+        .unwrap()
+        .into_iter()
+        .flat_map(|toolset| toolset.get_tools())
+        .map(|tool| tool.name().to_string())
+        .collect::<BTreeSet<_>>();
+
+    assert!(names.contains("mcp_search_tool"));
+    assert!(names.contains("mcp_call_tool"));
+    assert!(!names.contains("docs_lookup"));
+}
+
+#[test]
+fn configured_mcp_tools_reject_exposed_name_collisions() {
+    let mut config = test_config();
+    config.mcp_config = json!({
+        "servers": {
+            "a": {
+                "transport": "stdio",
+                "command": "a-mcp",
+                "tools": [{"name": "b_c", "parameters": {"type": "object"}}]
+            },
+            "a_b": {
+                "transport": "stdio",
+                "command": "a-b-mcp",
+                "tools": [{"name": "c", "parameters": {"type": "object"}}]
+            }
+        }
+    });
+
+    let Err(error) = default_toolsets(&config) else {
+        panic!("colliding MCP tools must fail closed");
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("configured MCP tool name \"a_b_c\" conflicts")
+    );
+}
+
+#[test]
 fn resolve_profile_builds_configured_shell_review_handle() {
     let mut config = test_config();
     config.shell_review.enabled = true;
@@ -310,6 +391,7 @@ async fn configured_subagent_delegate_inherits_parent_model_settings_and_config(
 fn cli_model_catalog_exposes_query_only_session_tools() {
     let config = test_config();
     let names = list_default_tools(&config)
+        .unwrap()
         .into_iter()
         .map(|tool| tool.name)
         .collect::<BTreeSet<_>>();

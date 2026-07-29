@@ -21,7 +21,9 @@ use starweaver_model::{
 use starweaver_runtime::{
     AgentExecutionNode, AgentStreamEvent, AgentStreamRecord, AgentStreamSource, RunStatus,
 };
-use starweaver_session::{ApprovalRecord, DeferredToolRecord, ExecutionStatus};
+use starweaver_session::{
+    ApprovalRecord, ClarificationAnswer, DeferredToolRecord, ExecutionStatus,
+};
 use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 use starweaver_usage::{PricingEstimate, Usage, UsageAgentTotal, UsageSnapshot};
 
@@ -2074,25 +2076,79 @@ fn clarifying_question_accepts_composer_answer() {
     assert!(footer.contains("Use PostgreSQL"));
     assert!(footer.contains("SQLite"));
 
-    let mut expected = BTreeMap::new();
-    expected.insert(
-        "Which database should I use?".to_string(),
-        "PostgreSQL".to_string(),
-    );
     assert_eq!(
         handle_key_event(&mut state, key_code(KeyCode::Enter)),
         Some(InteractiveTuiEvent::ApprovalDecision(
-            super::terminal::TuiApprovalDecision::Answer(
-                starweaver_agent::ClarifyingQuestionAnswers {
-                    answers: expected,
-                    response: None,
-                }
-            )
+            super::terminal::TuiApprovalDecision::Answer(vec![ClarificationAnswer {
+                question: "Which database should I use?".to_string(),
+                selected_options: vec!["PostgreSQL".to_string()],
+                free_text: None,
+            }])
         ))
     );
     assert!(state.input.is_empty());
     state.commit_clarifying_answer();
     assert!(state.input.is_empty());
+}
+
+#[test]
+fn clarifying_question_timeout_starts_when_durable_request_is_bound() {
+    let mut state = test_tui_state();
+    state.set_user_input_timeout(Duration::ZERO);
+    let mut approval = ApprovalRecord::new(
+        "approval_question_timeout",
+        SessionId::from_string("session_question_timeout"),
+        RunId::from_string("run_question_timeout"),
+        "question_timeout_call",
+        starweaver_agent::ASK_USER_QUESTION_TOOL_NAME,
+    );
+    approval.request = json!({
+        "kind": starweaver_agent::CLARIFYING_QUESTIONS_REQUEST_KIND,
+        "questions": [{
+            "question": "Continue with defaults?",
+            "header": "Defaults",
+            "options": [
+                {"label": "Yes", "description": "Use defaults"},
+                {"label": "No", "description": "Stop"}
+            ],
+            "multiSelect": false
+        }]
+    });
+
+    state.bind_pending_approval(&approval);
+
+    assert!(state.clarifying_timeout_expired());
+    assert!(
+        line_texts(&render_footer_lines(&state, 140))
+            .join("\n")
+            .contains("Timeout: 0s")
+    );
+}
+
+#[test]
+fn clarifying_question_large_timeout_does_not_expire_immediately() {
+    let mut state = test_tui_state();
+    state.set_user_input_timeout(Duration::MAX);
+    let mut approval = ApprovalRecord::new(
+        "approval_question_large_timeout",
+        SessionId::from_string("session_question_large_timeout"),
+        RunId::from_string("run_question_large_timeout"),
+        "question_large_timeout_call",
+        starweaver_agent::ASK_USER_QUESTION_TOOL_NAME,
+    );
+    approval.request = json!({
+        "kind": starweaver_agent::CLARIFYING_QUESTIONS_REQUEST_KIND,
+        "questions": [{
+            "question": "Continue?",
+            "header": "Continue",
+            "options": [{"label": "Yes", "description": "Continue"}],
+            "multiSelect": false
+        }]
+    });
+
+    state.bind_pending_approval(&approval);
+
+    assert!(!state.clarifying_timeout_expired());
 }
 
 #[test]
@@ -2112,7 +2168,7 @@ fn clarifying_question_supports_multiple_multi_select_and_free_form_answers() {
                 "question": "Which features should be enabled?",
                 "header": "Features",
                 "options": [
-                    {"label": "Search", "description": "Enable search", "preview": "Search preview"},
+                    {"label": "Search, web", "description": "Enable search", "preview": "Search preview"},
                     {"label": "Media", "description": "Enable media"}
                 ],
                 "multiSelect": true
@@ -2150,17 +2206,19 @@ fn clarifying_question_supports_multiple_multi_select_and_free_form_answers() {
         panic!("expected structured clarifying answers");
     };
     assert_eq!(
-        answers.answers,
-        BTreeMap::from([
-            (
-                "Which features should be enabled?".to_string(),
-                "Search, Media".to_string(),
-            ),
-            (
-                "What deployment note should be recorded?".to_string(),
-                "Deploy after review".to_string(),
-            ),
-        ])
+        answers,
+        vec![
+            ClarificationAnswer {
+                question: "Which features should be enabled?".to_string(),
+                selected_options: vec!["Search, web".to_string(), "Media".to_string()],
+                free_text: None,
+            },
+            ClarificationAnswer {
+                question: "What deployment note should be recorded?".to_string(),
+                selected_options: Vec::new(),
+                free_text: Some("Deploy after review".to_string()),
+            },
+        ]
     );
 
     assert!(state.clarifying_answer_ready());

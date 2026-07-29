@@ -105,6 +105,7 @@ const TUI_BACKGROUND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const TUI_SHELL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const TUI_STREAM_DRAIN_BUDGET: usize = 256;
 const TUI_STREAM_DRAIN_TIME_BUDGET: Duration = Duration::from_millis(4);
+const USER_INPUT_TIMEOUT_PROMPT: &str = "No answer was received before the structured question timed out. Continue using your best judgment.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MainAgentInterruptAction {
@@ -341,6 +342,7 @@ impl CliService {
     fn interactive_tui(&mut self, command: &TuiCommand) -> CliResult<()> {
         let mut state = crate::tui::InteractiveTuiState::welcome(&self.config.tui_state_dir);
         state.set_goal_max_iterations(self.config.max_goal_iterations);
+        state.set_user_input_timeout(Duration::from_secs(self.config.user_input_timeout_seconds));
         let initial_render_mode = command
             .render_mode
             .or(read_tui_render_mode(&self.config)?)
@@ -673,7 +675,13 @@ impl CliService {
             } else {
                 TUI_IDLE_POLL_INTERVAL
             };
-            let event = crate::tui::InteractiveTui::poll_event(&mut state, poll_timeout)?;
+            let event = if state.clarifying_timeout_expired() {
+                Some(crate::tui::InteractiveTuiEvent::ApprovalDecision(
+                    crate::tui::TuiApprovalDecision::Timeout,
+                ))
+            } else {
+                crate::tui::InteractiveTui::poll_event(&mut state, poll_timeout)?
+            };
             match event {
                 Some(crate::tui::InteractiveTuiEvent::Quit)
                     if active_run.is_none() && active_shell.is_none() =>
@@ -889,46 +897,46 @@ impl CliService {
                             (
                                 hitl.session_id.clone(),
                                 hitl.source_run_id.clone(),
-                                approval.approval_id.clone(),
+                                approval.clone(),
                             )
                         })
                     });
-                    let Some((session_id, source_run_id, approval_id)) = identity else {
+                    let Some((session_id, source_run_id, approval)) = identity else {
                         state.push_transcript_notice(
                             "[SYS] No durable pending approval is available.".to_string(),
                         );
                         dirty = true;
                         continue;
                     };
-                    let answer_draft = match &decision {
-                        crate::tui::TuiApprovalDecision::Answer(answer) => Some(answer.clone()),
-                        _ => None,
-                    };
-                    let (status, reason) = match decision {
+                    let answered = matches!(&decision, crate::tui::TuiApprovalDecision::Answer(_));
+                    let approval_id = approval.approval_id.clone();
+                    let decided = match decision {
                         crate::tui::TuiApprovalDecision::Approve => {
-                            (ApprovalStatus::Approved, None)
+                            self.store().and_then(|store| {
+                                store.decide_approval(&approval_id, ApprovalStatus::Approved, None)
+                            })
                         }
-                        crate::tui::TuiApprovalDecision::Reject => (ApprovalStatus::Denied, None),
-                        crate::tui::TuiApprovalDecision::Answer(answer) => {
-                            let encoded = match serde_json::to_string(&answer) {
-                                Ok(encoded) => encoded,
-                                Err(error) => {
-                                    state.push_transcript_notice(format!(
-                                        "[SYS] Could not encode clarifying answers: {error}"
-                                    ));
-                                    dirty = true;
-                                    continue;
-                                }
-                            };
-                            (ApprovalStatus::Approved, Some(encoded))
+                        crate::tui::TuiApprovalDecision::Reject => self.store().and_then(|store| {
+                            store.decide_approval(&approval_id, ApprovalStatus::Denied, None)
+                        }),
+                        crate::tui::TuiApprovalDecision::Timeout => {
+                            self.store().and_then(|store| {
+                                store.decide_approval(
+                                    &approval_id,
+                                    ApprovalStatus::Expired,
+                                    Some(USER_INPUT_TIMEOUT_PROMPT.to_string()),
+                                )
+                            })
+                        }
+                        crate::tui::TuiApprovalDecision::Answer(answers) => {
+                            self.store().and_then(|store| {
+                                store.resolve_clarification(&approval_id, answers, None)
+                            })
                         }
                     };
-                    let decided = self
-                        .store()
-                        .and_then(|store| store.decide_approval(&approval_id, status, reason));
                     match decided {
                         Ok(record) => {
-                            if answer_draft.is_some() {
+                            if answered {
                                 state.commit_clarifying_answer();
                             }
                             state.push_transcript_notice(format!(
@@ -1717,6 +1725,7 @@ mod tests {
             MainAgentInterruptAction::AlreadyPending
         );
     }
+
     use starweaver_session::RunStatus;
     use starweaver_stream::{DisplayMessage, DisplayMessageKind, ReplaySnapshot};
 

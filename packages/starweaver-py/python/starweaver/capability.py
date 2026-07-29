@@ -65,7 +65,7 @@ class PythonCapability:
         self,
         id: str,  # noqa: A002
         *,
-        on_run_start: Callable[[dict[str, Any]], dict[str, Any] | None | Any],
+        on_run_start: Callable[[dict[str, Any]], dict[str, Any] | Any | None],
     ) -> None:
         self.id = id
         self.on_run_start = on_run_start

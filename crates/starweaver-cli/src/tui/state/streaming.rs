@@ -777,7 +777,9 @@ impl InteractiveTuiState {
         self.status = "WAITING".to_string();
         self.phase = "hitl approval".to_string();
         let clarifying = if tool_return.name == starweaver_agent::ASK_USER_QUESTION_TOOL_NAME {
-            approval.and_then(super::ClarifyingQuestionUiState::from_request)
+            approval.and_then(|request| {
+                super::ClarifyingQuestionUiState::from_request(request, self.user_input_timeout)
+            })
         } else {
             None
         };

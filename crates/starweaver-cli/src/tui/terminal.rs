@@ -19,7 +19,7 @@ use crossterm::event::{
 };
 
 use crate::{CliResult, prompt_input::PromptInput};
-use starweaver_agent::ClarifyingQuestionAnswers;
+use starweaver_session::ClarificationAnswer;
 
 use super::{
     render::{
@@ -37,7 +37,8 @@ use super::{
 pub enum TuiApprovalDecision {
     Approve,
     Reject,
-    Answer(ClarifyingQuestionAnswers),
+    Answer(Vec<ClarificationAnswer>),
+    Timeout,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

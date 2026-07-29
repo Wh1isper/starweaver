@@ -1667,6 +1667,84 @@ fn hitl_transitions_are_idempotent_and_conflict_safe() {
     );
 }
 
+#[test]
+fn clarification_can_expire_but_cannot_bypass_typed_approval() {
+    let storage = SqliteStorage::in_memory().expect("storage");
+    let mut run = begun_run(&storage, "clarification-expiry");
+    let mut approval = ApprovalRecord::new(
+        "clarification-expiry",
+        run.session_id.clone(),
+        run.run_id.clone(),
+        "question-call",
+        ASK_USER_QUESTION_ACTION,
+    );
+    approval.request = serde_json::json!({
+        "kind": "clarifying_questions",
+        "questions": [{
+            "question": "Continue?",
+            "header": "Continue",
+            "options": [
+                {"label": "Yes", "description": "Continue"},
+                {"label": "No", "description": "Stop"}
+            ]
+        }]
+    });
+    run.status = RunStatus::Waiting;
+    let state = evidence_state(&run);
+    let mut commit = RunEvidenceCommit::new(run, state);
+    commit.approvals = vec![approval];
+    storage
+        .commit_run_evidence(commit)
+        .expect("commit clarification evidence");
+
+    let expired = storage
+        .decide_approval(
+            "clarification-expiry",
+            ApprovalStatus::Expired,
+            Some("starweaver-cli".to_string()),
+            Some("question timed out".to_string()),
+        )
+        .expect("expire clarification");
+
+    assert_eq!(expired.status, ApprovalStatus::Expired);
+    assert_eq!(
+        expired
+            .decision
+            .as_ref()
+            .and_then(|decision| decision.reason.as_deref()),
+        Some("question timed out")
+    );
+
+    let storage = SqliteStorage::in_memory().expect("storage");
+    let mut run = begun_run(&storage, "clarification-approval");
+    let approval = ApprovalRecord::new(
+        "clarification-approval",
+        run.session_id.clone(),
+        run.run_id.clone(),
+        "question-call",
+        ASK_USER_QUESTION_ACTION,
+    );
+    run.status = RunStatus::Waiting;
+    let state = evidence_state(&run);
+    let mut commit = RunEvidenceCommit::new(run, state);
+    commit.approvals = vec![approval];
+    storage
+        .commit_run_evidence(commit)
+        .expect("commit clarification evidence");
+    assert!(
+        storage
+            .decide_approval(
+                "clarification-approval",
+                ApprovalStatus::Approved,
+                Some("starweaver-cli".to_string()),
+                None,
+            )
+            .expect_err("typed clarification resolution is required")
+            .to_string()
+            .contains("typed clarification resolution")
+    );
+}
+
 const EVIDENCE_TABLES: &[&str] = &[
     "session_records",
     "run_records",

@@ -230,11 +230,11 @@ pub fn doctor_mcp_servers(config: &CliConfig) -> Vec<McpDoctorFinding> {
 }
 
 /// List default first-party CLI tools.
-pub fn list_default_tools(config: &CliConfig) -> Vec<ToolSummary> {
+pub fn list_default_tools(config: &CliConfig) -> CliResult<Vec<ToolSummary>> {
     let approval = tool_need_approval(config)
         .into_iter()
         .collect::<BTreeSet<_>>();
-    default_toolsets(config)
+    Ok(default_toolsets(config)?
         .into_iter()
         .flat_map(|toolset| {
             let toolset_name = toolset
@@ -260,5 +260,5 @@ pub fn list_default_tools(config: &CliConfig) -> Vec<ToolSummary> {
                 }
             })
         })
-        .collect()
+        .collect())
 }

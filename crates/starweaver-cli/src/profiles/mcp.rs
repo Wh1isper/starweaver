@@ -6,7 +6,7 @@ use starweaver_agent::{
     ToolProxyToolset,
 };
 
-use crate::config::{CliConfig, mcp_servers};
+use crate::config::{CliConfig, McpExposureMode, mcp_servers};
 
 pub(super) fn configured_mcp_server_specs(config: &CliConfig) -> Vec<McpServerSpec> {
     mcp_servers(config)
@@ -23,20 +23,26 @@ pub(super) fn configured_mcp_server_specs(config: &CliConfig) -> Vec<McpServerSp
         .collect()
 }
 
-pub(super) fn configured_mcp_proxy_toolset(config: &CliConfig) -> Option<DynToolset> {
+pub(super) fn configured_mcp_toolsets(config: &CliConfig) -> Vec<DynToolset> {
     let mut descriptions = BTreeMap::new();
-    let toolsets = configured_mcp_toolsets(config, &mut descriptions);
-    if toolsets.is_empty() {
-        return None;
+    let toolsets = configured_mcp_toolsets_with_descriptions(config, &mut descriptions);
+    match config.mcp_mode {
+        McpExposureMode::Direct => toolsets,
+        McpExposureMode::Proxy if toolsets.is_empty() => Vec::new(),
+        McpExposureMode::Proxy => {
+            let Some(proxy) = ToolProxyToolset::new(toolsets)
+                .try_with_name_prefix("mcp")
+                .ok()
+                .map(|proxy| proxy.with_namespace_descriptions(descriptions))
+            else {
+                return Vec::new();
+            };
+            vec![Arc::new(proxy)]
+        }
     }
-    let proxy = ToolProxyToolset::new(toolsets)
-        .try_with_name_prefix("mcp")
-        .ok()?
-        .with_namespace_descriptions(descriptions);
-    Some(Arc::new(proxy))
 }
 
-fn configured_mcp_toolsets(
+fn configured_mcp_toolsets_with_descriptions(
     config: &CliConfig,
     descriptions: &mut BTreeMap<String, String>,
 ) -> Vec<DynToolset> {
@@ -48,6 +54,8 @@ fn configured_mcp_toolsets(
             let mut toolset_config = McpToolsetConfig::new(toolset_id.clone(), transport);
             if let Some(prefix) = value.get("tool_prefix").and_then(serde_json::Value::as_str) {
                 toolset_config = toolset_config.with_tool_prefix(prefix);
+            } else if config.mcp_mode == McpExposureMode::Direct {
+                toolset_config = toolset_config.with_tool_prefix(&name);
             }
             if value
                 .get("include_instructions")

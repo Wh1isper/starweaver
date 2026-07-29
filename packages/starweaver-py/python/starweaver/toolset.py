@@ -22,7 +22,7 @@ InstructionCallback = Callable[
 ]
 PreparedCallback = Callable[
     [ToolsetContext, list[dict[str, Any]]],
-    list[dict[str, Any]] | None | Awaitable[list[dict[str, Any]] | None],
+    list[dict[str, Any]] | Awaitable[list[dict[str, Any]] | None] | None,
 ]
 ToolDefinitionPredicate = Callable[[dict[str, Any]], bool]
 

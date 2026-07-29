@@ -304,16 +304,16 @@ fn render_clarifying_question_panel(
         );
     }
     rows.push(Vec::new());
+    let timeout = clarifying.timeout_seconds();
     rows.push(vec![StyledSegment {
         text: if hitl.approval_id.is_none() {
             "Persisting question request…    Esc: Refresh".to_string()
         } else if clarifying.free_form_active {
-            "Type a custom answer below · Enter: Confirm · Esc: Choices".to_string()
+            format!("Type a custom answer below · Enter: Confirm · Esc: Choices · Timeout: {timeout}s")
         } else if question.multi_select {
-            "↑/↓: Move · Space: Toggle · Enter: Continue · E: Custom · Tab: Next question"
-                .to_string()
+            format!("↑/↓: Move · Space: Toggle · Enter: Continue · E: Custom · Tab: Next · Timeout: {timeout}s")
         } else {
-            "↑/↓: Select · Enter: Continue · E: Custom · Tab: Next question".to_string()
+            format!("↑/↓: Select · Enter: Continue · E: Custom · Tab: Next · Timeout: {timeout}s")
         },
         style: SegmentStyle::dim(),
     }]);

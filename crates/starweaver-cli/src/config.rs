@@ -30,7 +30,10 @@ mod values;
 
 use env_overrides::{apply_cli_overrides, apply_env, parse_hitl_policy, parse_output_mode};
 pub use metadata::{mcp_servers, tool_need_approval};
-use metadata::{merge_json_value, read_mcp_config, read_tools_config};
+use metadata::{
+    merge_json_value, read_mcp_config, read_tools_config, resolve_mcp_mode,
+    resolve_user_input_timeout_seconds,
+};
 pub use state::{
     clear_current_session, ensure_config_dirs, read_current_session,
     read_last_retention_maintenance, remove_project_state, remove_project_state_if_current_session,
@@ -42,6 +45,17 @@ pub use templates::{
     DEFAULT_TOOLS_TEMPLATE, init_config_file, write_default_subagent_presets,
 };
 pub use values::{ConfigScope, get_config_value, set_config_value};
+
+/// Model-facing MCP tool exposure mode.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpExposureMode {
+    /// Expose every configured server's declared tools with a server namespace.
+    #[default]
+    Direct,
+    /// Expose the fixed `mcp_search_tool` and `mcp_call_tool` proxy surface.
+    Proxy,
+}
 
 /// Resolved CLI configuration.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -98,6 +112,10 @@ pub struct CliConfig {
     pub providers: ProviderConfigs,
     /// Tool config metadata loaded from tools.toml.
     pub tools_config: serde_json::Value,
+    /// Model-facing MCP tool exposure mode.
+    pub mcp_mode: McpExposureMode,
+    /// Positive structured-question timeout in seconds.
+    pub user_input_timeout_seconds: u64,
     /// MCP config metadata loaded from mcp.json.
     pub mcp_config: serde_json::Value,
     /// Unmapped config metadata preserved for configuration audits.
@@ -551,6 +569,8 @@ impl ConfigResolver {
             env_vars: BTreeMap::new(),
             providers: default_provider_configs(),
             tools_config: serde_json::Value::Null,
+            mcp_mode: McpExposureMode::Direct,
+            user_input_timeout_seconds: 120,
             mcp_config: serde_json::Value::Null,
             unmapped_metadata: serde_json::json!({}),
             slash_commands: BTreeMap::new(),
@@ -564,6 +584,9 @@ impl ConfigResolver {
         apply_file_config(&mut config, &global_dir.join("config.toml"))?;
         apply_file_config(&mut config, &project_dir.join("config.toml"))?;
         config.tools_config = read_tools_config(&global_dir, &project_dir)?;
+        config.mcp_mode = resolve_mcp_mode(&config.tools_config)?;
+        config.user_input_timeout_seconds =
+            resolve_user_input_timeout_seconds(&config.tools_config)?;
         config.mcp_config = read_mcp_config(&global_dir, &project_dir)?;
         apply_env(&mut config);
         apply_cli_overrides(&mut config, cli, &project_dir);

@@ -12,6 +12,69 @@ fn resolver_with_current_dir(root: &Path, current_dir: &Path) -> ConfigResolver 
 }
 
 #[test]
+fn tools_config_defaults_to_direct_mcp_and_bounded_user_input() {
+    let temp = tempfile::tempdir().unwrap();
+    let cli =
+        crate::args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+
+    let config = ConfigResolver::for_tests(temp.path())
+        .resolve(&cli)
+        .unwrap();
+
+    assert_eq!(config.mcp_mode, McpExposureMode::Direct);
+    assert_eq!(config.user_input_timeout_seconds, 120);
+}
+
+#[test]
+fn tools_config_parses_proxy_mcp_and_user_input_timeout() {
+    let temp = tempfile::tempdir().unwrap();
+    let project_dir = temp.path().join("project");
+    fs::create_dir_all(&project_dir).unwrap();
+    fs::write(
+        project_dir.join("tools.toml"),
+        "[tools]\nmcp_mode = \"proxy\"\nuser_input_timeout_seconds = 45\n",
+    )
+    .unwrap();
+    let cli =
+        crate::args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+    let resolver = ConfigResolver {
+        global_dir: Some(temp.path().join("global")),
+        project_dir: Some(project_dir),
+        shared_agents_dir: Some(temp.path().join("shared-agents")),
+        current_dir: Some(temp.path().to_path_buf()),
+    };
+
+    let config = resolver.resolve(&cli).unwrap();
+
+    assert_eq!(config.mcp_mode, McpExposureMode::Proxy);
+    assert_eq!(config.user_input_timeout_seconds, 45);
+}
+
+#[test]
+fn tools_config_rejects_invalid_mcp_mode_and_timeout() {
+    for body in [
+        "[tools]\nmcp_mode = \"invalid\"\n",
+        "[tools]\nuser_input_timeout_seconds = 0\n",
+        "[tools]\nuser_input_timeout_seconds = 1.5\n",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let project_dir = temp.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(project_dir.join("tools.toml"), body).unwrap();
+        let cli =
+            crate::args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+        let resolver = ConfigResolver {
+            global_dir: Some(temp.path().join("global")),
+            project_dir: Some(project_dir),
+            shared_agents_dir: Some(temp.path().join("shared-agents")),
+            current_dir: Some(temp.path().to_path_buf()),
+        };
+
+        assert!(matches!(resolver.resolve(&cli), Err(CliError::Config(_))));
+    }
+}
+
+#[test]
 fn default_workspace_root_uses_invocation_cwd_without_project_config() {
     let temp = tempfile::tempdir().unwrap();
     let workspace = temp.path().join("workspace");
