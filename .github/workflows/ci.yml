@@ -105,7 +105,7 @@ jobs:
             --features mcp-server \
             --bin starweaver-computer-use-mcp
           version_output="$(target/release/starweaver-computer-use-mcp --version)"
-          printf '%s\n' "$version_output" | grep -Fqx "features mcp-server,observe-only"
+          printf '%s\n' "$version_output" | grep -Fqx "features mcp-server,observe,pointer,keyboard"
           printf '%s\n' "$version_output" | grep -Eq '^target (x86_64|aarch64)-apple-darwin$'
 
       - name: Validate RPC transports and CLI interoperability

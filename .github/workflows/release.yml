@@ -112,7 +112,7 @@ jobs:
         with:
           shared-key: computer-use-mcp-${{ matrix.target }}
 
-      - name: Build observe-only MCP binary
+      - name: Build Computer Use MCP binary
         run: |
           set -euo pipefail
           cargo build --release --locked \
