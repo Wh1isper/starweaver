@@ -1921,6 +1921,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-application-services"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69282c2b5bc58fba07cb9de2113619532eb551e98efe3d8d695509ef45fbd53b"
+dependencies = [
+ "bitflags 2.13.1",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+]
+
+[[package]]
 name = "objc2-av-foundation"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3167,6 +3178,8 @@ dependencies = [
  "async-trait",
  "image",
  "nix 0.31.3",
+ "objc2-application-services",
+ "objc2-core-foundation",
  "objc2-core-graphics",
  "schemars",
  "serde",
