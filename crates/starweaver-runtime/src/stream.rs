@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::AgentResult;
 
+#[cfg(test)]
+mod tests;
+
 pub use starweaver_stream::{
     AgentSidebandEvent, AgentSidebandEventCategory, AgentStreamEvent, AgentStreamRecord,
     AgentStreamSink, AgentStreamSource, AgentStreamSourceKind,
@@ -16,6 +19,23 @@ pub struct AgentStreamResult {
     pub result: AgentResult,
     /// Events captured while the run progressed.
     pub events: Vec<AgentStreamRecord>,
+}
+
+/// Project raw live records into the evidence-safe representation used by durable stores.
+///
+/// The returned records are a clone. Process-local Computer Use screenshot bytes are removed from
+/// geometry-marked tool returns while the caller's live stream remains byte-for-byte unchanged.
+#[must_use]
+pub fn project_stream_records_for_durable_evidence(
+    records: &[AgentStreamRecord],
+) -> Vec<AgentStreamRecord> {
+    let mut projected = records.to_vec();
+    for record in &mut projected {
+        if let AgentStreamEvent::ToolReturn { tool_return, .. } = &mut record.event {
+            starweaver_context::project_tool_return_for_durable_evidence(tool_return);
+        }
+    }
+    projected
 }
 
 impl AgentStreamResult {

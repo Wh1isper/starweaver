@@ -121,7 +121,7 @@ fn launcher_update_is_builtin() {
     assert!(update.status.success());
     let stdout = String::from_utf8(update.stdout).unwrap();
     assert!(stdout.contains("update=github-release"));
-    assert!(stdout.contains("target=cli"));
+    assert!(stdout.contains("target=all"));
     assert!(stdout.contains("status=dry-run"));
 }
 
@@ -139,7 +139,8 @@ fn launcher_update_accepts_dry_run_and_force_flags() {
         String::from_utf8_lossy(&update.stderr)
     );
     let stdout = String::from_utf8(update.stdout).unwrap();
-    assert!(stdout.contains("target=cli"));
+    assert!(stdout.contains("target=all"));
+    assert!(!stdout.contains("STARWEAVER_COMPONENTS="));
     assert!(stdout.contains("force=true"));
     assert!(stdout.contains("status=dry-run"));
 }

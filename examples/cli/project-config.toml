@@ -16,6 +16,12 @@ files_policy = "read_write"
 shell_enabled = true
 workspace_root = ".."
 
+# Opt into macOS observe-only Computer Use for every selected CLI profile.
+# visible_desktop captures all displays in the current visible desktop layout.
+[computer_use]
+enabled = true
+desktop_scope = "visible_desktop"
+
 [trim]
 auto_after_run = true
 current_session_keep_recent_runs = 20

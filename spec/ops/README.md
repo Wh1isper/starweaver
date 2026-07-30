@@ -79,13 +79,13 @@ flowchart TD
 
 ## Spec Map
 
-- `00-product-boundaries.md` — normative independence and shared-library boundaries for CLI/TUI, standalone RPC, and envd
+- `00-product-boundaries.md` — normative independence and shared-library boundaries for CLI/TUI, standalone RPC, envd, and shared in-process Computer Use composition
 - `01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
 - `02-shared-execution-components.md` — shared session storage and stream protocol contracts
 - `03-durable-service-runtime.md` — durable sessions, `SessionStore`, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
-- `04-cli-product.md` — independent CLI/TUI product surface with headless stdio display streams, session restore, direct envd connectivity, launcher dispatch, install/update flow, and the planned hardened public RPC component contract
+- `04-cli-product.md` — independent CLI/TUI product surface with headless stdio display streams, session restore, direct envd and opt-in in-process Computer Use composition, launcher dispatch, install/update flow, and the planned hardened public RPC component contract
 - `05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
-- `06-json-rpc-host-protocol.md` — independent standalone RPC product protocol, transport profiles, typed method/event/error contracts, stream replay/subscription semantics, projections, idempotency, and acceptance gates
+- `06-json-rpc-host-protocol.md` — independent standalone RPC product protocol, transports, typed method/event/error contracts, replay, idempotency, opt-in in-process Computer Use composition, and acceptance gates
 - `07-session-search.md` — optional product-neutral session search contract, local SQLite/filesystem provider, external index ingestion, and independent CLI/RPC integration
 - `08-agent-session-management.md` — agent-facing query/control bundles, composite identity and ownership, query-only CLI policy, grant-gated RPC CRUD/run control, and lifecycle prerequisites
 - `09-rpc-idl-and-client-generation.md` — single IDL-first JSON-RPC major-1 contract, unversioned protocol source tree, generated Rust and safe Desktop TypeScript boundaries, on-demand external TypeScript generation, exact revision/digest admission, atomic replacement, and validation gates

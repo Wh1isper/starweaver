@@ -19,7 +19,7 @@ use starweaver_model::{ModelAdapter, ModelRequestParameters, ModelSettings};
 use starweaver_runtime::{
     AgentCapability, AgentError, AgentExecutorError, AgentResult, AgentRuntimePolicy,
     AgentStreamEvent, AgentStreamRecord, AgentStreamResult, OutputFunction, OutputPolicy,
-    OutputSchema, OutputValidator, RunStatus,
+    OutputSchema, OutputValidator, RunStatus, project_stream_records_for_durable_evidence,
 };
 use starweaver_session::{
     AcquireRunAdmission, EnvironmentStateRef, HitlResumeAbortOutcome, HitlResumeClaim, InputPart,
@@ -1800,7 +1800,7 @@ impl AgentRuntime {
         );
         let mut commit = RunEvidenceCommit::new(run, context_state);
         commit.environment_state = environment_state.map(|state| state.to_json());
-        commit.stream_records.clone_from(&stream.events);
+        commit.stream_records = project_stream_records_for_durable_evidence(&stream.events);
         commit.checkpoints = load_existing_checkpoints(&durability, &result.state.run_id)
             .await
             .map_err(|error| agent_error_from_session_store(&error))?;
@@ -1924,7 +1924,7 @@ impl AgentRuntime {
         );
         let mut commit = RunEvidenceCommit::new(run, context_state);
         commit.environment_state = environment_state.map(|state| state.to_json());
-        commit.stream_records.clone_from(&durable_events);
+        commit.stream_records = project_stream_records_for_durable_evidence(&durable_events);
         commit.checkpoints = load_existing_checkpoints(&durability, &run_id).await?;
         let (approvals, deferred_tools) =
             pending_hitl_records_from_context(&durability, self.session.context(), &run_id);

@@ -27,6 +27,16 @@ SDK layer:
 - `sdk/06-async-subagent-execution.md` — async-only model-visible delegation, steering, cancellation, bounded fan-in, host continuation, durability, and product lifetime policy
 - `sdk/python/README.md` - Python SDK product contract, in-process tools, sessions, streams, active control, ecosystem integration, and validation
 
+Native current-desktop Computer Use:
+
+- `computer-use/README.md` — current-active-desktop scope, implemented macOS observe-only subset, package shape, reading order, and fixed exclusions
+- `computer-use/01-product-boundaries-and-ownership.md` — CLI/RPC in-process and external-harness MCP topology, crate ownership, dependency direction, and lifecycle
+- `computer-use/02-service-contract-and-state-machine.md` — typed service API, observations, geometry, actions, receipts, cancellation, and state machine
+- `computer-use/03-toolset-and-library-integration.md` — canonical tool catalog/router, shared CLI/RPC Toolset adapter, grants, media projection, and schema parity
+- `computer-use/04-native-active-desktop-backends.md` — macOS, Windows, Wayland, and explicit X11 active-session backend architecture
+- `computer-use/05-mcp-binary-and-process-lifecycle.md` — feature-gated stdio MCP boundary for non-Starweaver harnesses, protocol mapping, lifecycle, diagnostics, and packaging
+- `computer-use/06-security-testing-and-delivery.md` — attended-use threat model, user-presence controls, tests, phases, and release gates
+
 Agent SDK environment layer:
 
 - `environment/README.md` — Starweaver Agent SDK environment layer, ownership rules, provider families, and envd relationship
@@ -54,6 +64,10 @@ Readiness review:
 - `alignment/07-cli-concise-mode-ux.md` — CLI/TUI concise-mode semantic compression and rendering plan
 - `alignment/08-starweaver-claw-sdk-additions.md` — Starweaver Claw layering map and non-blocking Rust/Python SDK additions
 - `alignment/09-architecture-review.md` — cross-workspace architecture, security, durability, API, and improvement review baseline
+- `alignment/10-session-search-evidence.md` — session-search implementation and boundary evidence
+- `alignment/11-tui-ui-ux-completion.md` — completed TUI interaction and validation evidence
+- `alignment/12-rpc-host-readiness.md` — RPC host durability, recovery, and interoperability evidence
+- `alignment/13-computer-use-macos-evidence.md` — macOS observe-only Computer Use implementation and release evidence
 
 Claw product specs:
 
@@ -65,13 +79,13 @@ Claw product specs:
 Operations and products:
 
 - `ops/README.md` — operational layer scope and readiness model
-- `ops/00-product-boundaries.md` — normative independence and shared-library boundaries for CLI/TUI, standalone RPC, and envd
+- `ops/00-product-boundaries.md` — normative independence and shared-library boundaries for CLI/TUI, standalone RPC, envd, and shared in-process Computer Use composition
 - `ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
 - `ops/02-shared-execution-components.md` — shared session/stream contracts, durable workspace provenance versus live grants, and run config snapshot references
 - `ops/03-durable-service-runtime.md` — durable sessions with workspace/config provenance, stream archive, resume, interruption, service transports, replay, and storage contracts
-- `ops/04-cli-product.md` — CLI-first product surface, display-message rendering, launcher dispatch, GitHub install/update flow, and the planned hardened RPC component contract
+- `ops/04-cli-product.md` — CLI-first product surface, display-message rendering, direct envd and opt-in in-process Computer Use composition, launcher dispatch, install/update flow, and the planned hardened RPC component contract
 - `ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
-- `ops/06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP transport profiles, typed method/event/error contracts, replay subscriptions, projections, and idempotency
+- `ops/06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP transports, typed method/event/error contracts, replay, idempotency, and RPC-owned opt-in in-process Computer Use composition
 - `ops/07-session-search.md` — optional product-neutral session search, local SQLite/filesystem discovery, external index ingestion, and independent CLI/RPC integration
 - `ops/08-agent-session-management.md` — agent-facing session query/control tools, query-only CLI policy, grant-gated RPC mutations, and lifecycle-safe run creation/steering/interruption
 - `ops/09-rpc-idl-and-client-generation.md` — single IDL-first JSON-RPC major-1 contract, `protocol/host/` source, generated Rust and safe Desktop TypeScript boundaries, on-demand external TypeScript generation, exact revision/digest admission, atomic replacement, and planned domain-host workspace/config methods
@@ -106,6 +120,8 @@ flowchart TD
     runtime[starweaver-runtime]
     agent[starweaver-agent]
     env[starweaver-environment]
+    computer_use[starweaver-computer-use library]
+    computer_mcp[feature-gated Computer Use MCP binary]
     env_specs[environment SDK specs]
     envd_specs[envd service specs]
     envd_core[starweaver-envd-core]
@@ -140,6 +156,10 @@ flowchart TD
     context --> runtime
     runtime --> agent
     env --> agent
+    computer_use --> agent
+    computer_use -->|process coordinator| cli
+    computer_use -->|process coordinator| rpc
+    computer_use -->|same package optional binary target| computer_mcp
     env_specs --> env
     envd_specs --> envd_core
     envd_core --> envd_client
@@ -174,6 +194,7 @@ flowchart TD
 - `starweaver-usage` is a leaf accounting crate; usage data and optional pricing are not owned by `starweaver-core` or `starweaver-runtime`.
 - Runtime contracts expose stable stream records, checkpoints, usage snapshot events, traces, and capability hooks.
 - SDK ergonomics live in `starweaver-agent`; concrete environment resources live in `starweaver-environment`.
+- `starweaver-computer-use` owns one process-local, OS-native current-active-desktop service and canonical tool router. The implemented release subset is macOS observation only; Windows/Linux observation and all production input remain planned and fail closed. `starweaver-agent` owns the first-party Toolset adapter; CLI and RPC directly construct their own process coordinator and have no MCP loopback; the same package's optional stdio MCP binary target is the boundary for non-Starweaver harnesses. The library has no reverse dependency on environment, model-native tools, browser/CDP, RPC, CLI, graphical products, remote sessions, or unattended execution.
 - `starweaver-environment` owns the Agent SDK environment provider contracts,
   provider registry, SDK state snapshots, and adapters.
 - Envd is a standalone environment service/protocol; Starweaver can consume it

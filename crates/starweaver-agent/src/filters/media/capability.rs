@@ -5,7 +5,7 @@ use starweaver_context::{AgentContext, ModelCapability};
 use starweaver_model::{ContentPart, ModelMessage, ModelRequestPart};
 use starweaver_runtime::AgentRunState;
 
-use crate::filters::message::request_metadata_mut;
+use crate::filters::{media::policy::geometry_bound_media, message::request_metadata_mut};
 
 pub(in crate::filters) fn capability_filter(
     _state: &AgentRunState,
@@ -22,10 +22,22 @@ pub(in crate::filters) fn capability_filter(
         if let ModelMessage::Request(request) = message {
             for part in &mut request.parts {
                 match part {
-                    ModelRequestPart::UserPrompt { content, .. } => {
-                        removed += filter_content_parts(content, support);
+                    ModelRequestPart::UserPrompt {
+                        content, metadata, ..
+                    } => {
+                        if !geometry_bound_media(metadata) {
+                            removed += filter_content_parts(content, support);
+                        }
                     }
                     ModelRequestPart::ToolReturn(tool_return) => {
+                        if tool_return
+                            .private_metadata
+                            .get("starweaver_geometry_bound_immutable_media")
+                            .and_then(Value::as_bool)
+                            == Some(true)
+                        {
+                            continue;
+                        }
                         let outcome = filter_tool_value(&mut tool_return.content, support);
                         removed += outcome.removed_count();
                         if let Some(user_content) = &mut tool_return.user_content {

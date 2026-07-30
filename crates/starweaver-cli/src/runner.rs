@@ -28,6 +28,7 @@ use starweaver_model::{
 use starweaver_runtime::{
     AgentCapability, AgentRunState, AgentStreamEvent, CapabilityResult, GoalCapability,
     GoalRunOptions, ModelResponseStreamEvent, OutputPolicy,
+    project_stream_records_for_durable_evidence,
 };
 use starweaver_session::{
     ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, PreparedContinuation,
@@ -507,10 +508,13 @@ pub fn execute_agent_session_with_host(
         )),
         _ => None,
     };
+    // Display projection and observer delivery above consume the exact live records. Only the
+    // cloned durable evidence drops process-local geometry-bound screenshot bytes.
+    let durable_raw_records = project_stream_records_for_durable_evidence(&raw_records);
     let artifacts = RunArtifacts {
         state,
         environment_state,
-        raw_records,
+        raw_records: durable_raw_records,
         checkpoints,
         display_messages: projection.messages,
         display_snapshot: projection.snapshot,

@@ -257,7 +257,7 @@ impl AgentContext {
     #[must_use]
     #[allow(clippy::too_many_lines)]
     pub fn export_state_with_options(&self, options: ResumableExportOptions) -> ResumableState {
-        ResumableState {
+        let mut state = ResumableState {
             agent_id: self.agent_id.clone(),
             run_id: options
                 .include_starweaver_extensions()
@@ -361,7 +361,9 @@ impl AgentContext {
                 Metadata::default()
             },
             extra: BTreeMap::new(),
-        }
+        };
+        crate::durable_projection::project_resumable_state(&mut state);
+        state
     }
 
     /// Replace context with serialized state.

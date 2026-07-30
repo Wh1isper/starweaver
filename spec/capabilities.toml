@@ -254,6 +254,15 @@ implementation = ["crates/starweaver-cli/src/service.rs", "crates/starweaver-cli
 contract_tests = ["crates/starweaver-cli/tests/cli.rs"]
 
 [[capability]]
+id = "computer_use.macos_observe"
+owner = "starweaver-computer-use"
+stability = "provisional"
+status = "implemented"
+normative_spec = "spec/computer-use/06-security-testing-and-delivery.md"
+implementation = ["crates/starweaver-computer-use/src/service.rs", "crates/starweaver-computer-use/src/router.rs", "crates/starweaver-computer-use/src/platform/macos.rs", "crates/starweaver-computer-use/src/mcp_server.rs", "crates/starweaver-agent/src/bundles/computer_use/mod.rs", "crates/starweaver-cli/src/computer_use.rs", "crates/starweaver-rpc/src/computer_use.rs"]
+contract_tests = ["crates/starweaver-computer-use/tests/service_contract.rs", "crates/starweaver-computer-use/tests/catalog_contract.rs", "crates/starweaver-agent/src/bundles/computer_use/tests.rs", "crates/starweaver-cli/src/profiles/tests.rs", "crates/starweaver-rpc/src/computer_use.rs"]
+
+[[capability]]
 id = "platform.external_protocols"
 owner = "starweaver-platform"
 stability = "planned"

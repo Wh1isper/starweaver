@@ -112,10 +112,6 @@ pub struct CliConfig {
     pub providers: ProviderConfigs,
     /// Tool config metadata loaded from tools.toml.
     pub tools_config: serde_json::Value,
-    /// Model-facing MCP tool exposure mode.
-    pub mcp_mode: McpExposureMode,
-    /// Positive structured-question timeout in seconds.
-    pub user_input_timeout_seconds: u64,
     /// MCP config metadata loaded from mcp.json.
     pub mcp_config: serde_json::Value,
     /// Unmapped config metadata preserved for configuration audits.
@@ -135,6 +131,35 @@ pub struct CliConfig {
 }
 
 impl CliConfig {
+    /// Return the model-facing MCP tool exposure mode.
+    #[must_use]
+    pub fn mcp_mode(&self) -> McpExposureMode {
+        resolve_mcp_mode(&self.tools_config).unwrap_or_default()
+    }
+
+    /// Return the positive structured-question timeout in seconds.
+    #[must_use]
+    pub fn user_input_timeout_seconds(&self) -> u64 {
+        resolve_user_input_timeout_seconds(&self.tools_config).unwrap_or(120)
+    }
+
+    /// Return the opt-in current-active-desktop Computer Use configuration.
+    #[must_use]
+    pub fn computer_use(&self) -> CliComputerUseConfig {
+        self.unmapped_metadata
+            .get("computer_use")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn set_computer_use(&mut self, computer_use: &CliComputerUseConfig) {
+        merge_json_value(
+            &mut self.unmapped_metadata,
+            serde_json::json!({"computer_use": computer_use}),
+        );
+    }
+
     /// Reads a process environment variable with `[env]` config as a fallback.
     #[must_use]
     pub fn env_value(&self, name: &str) -> Option<String> {
@@ -175,6 +200,7 @@ struct FileConfig {
     general: Option<GeneralConfig>,
     storage: Option<StorageConfig>,
     environment: Option<EnvironmentConfig>,
+    computer_use: Option<FileComputerUseConfig>,
     security: Option<FileSecurityConfig>,
     update: Option<UpdateConfig>,
     providers: Option<FileProviderConfigs>,
@@ -286,6 +312,47 @@ struct SubagentsConfig {
 struct StorageConfig {
     database_path: Option<String>,
     file_store_path: Option<String>,
+}
+
+/// CLI-owned opt-in Computer Use configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CliComputerUseConfig {
+    /// Install the observe-only current-desktop toolset.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Capture either the primary active display or complete visible desktop.
+    #[serde(default = "default_computer_use_desktop_scope")]
+    pub desktop_scope: String,
+}
+
+impl Default for CliComputerUseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            desktop_scope: default_computer_use_desktop_scope(),
+        }
+    }
+}
+
+fn default_computer_use_desktop_scope() -> String {
+    "primary_display".to_owned()
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct FileComputerUseConfig {
+    enabled: Option<bool>,
+    desktop_scope: Option<String>,
+}
+
+impl FileComputerUseConfig {
+    fn merge_into(self, config: &mut CliComputerUseConfig) {
+        if let Some(enabled) = self.enabled {
+            config.enabled = enabled;
+        }
+        if let Some(desktop_scope) = self.desktop_scope {
+            config.desktop_scope = desktop_scope;
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -569,8 +636,6 @@ impl ConfigResolver {
             env_vars: BTreeMap::new(),
             providers: default_provider_configs(),
             tools_config: serde_json::Value::Null,
-            mcp_mode: McpExposureMode::Direct,
-            user_input_timeout_seconds: 120,
             mcp_config: serde_json::Value::Null,
             unmapped_metadata: serde_json::json!({}),
             slash_commands: BTreeMap::new(),
@@ -584,9 +649,8 @@ impl ConfigResolver {
         apply_file_config(&mut config, &global_dir.join("config.toml"))?;
         apply_file_config(&mut config, &project_dir.join("config.toml"))?;
         config.tools_config = read_tools_config(&global_dir, &project_dir)?;
-        config.mcp_mode = resolve_mcp_mode(&config.tools_config)?;
-        config.user_input_timeout_seconds =
-            resolve_user_input_timeout_seconds(&config.tools_config)?;
+        resolve_mcp_mode(&config.tools_config)?;
+        resolve_user_input_timeout_seconds(&config.tools_config)?;
         config.mcp_config = read_mcp_config(&global_dir, &project_dir)?;
         apply_env(&mut config);
         apply_cli_overrides(&mut config, cli, &project_dir);
@@ -817,6 +881,11 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
         if let Some(shell_enabled) = environment.shell_enabled {
             config.shell_enabled = shell_enabled;
         }
+    }
+    if let Some(computer_use) = parsed.computer_use {
+        let mut effective = config.computer_use();
+        computer_use.merge_into(&mut effective);
+        config.set_computer_use(&effective);
     }
     if let Some(security) = parsed.security
         && let Some(shell_review) = security.shell_review

@@ -20,7 +20,10 @@ use starweaver_model::{
 };
 use starweaver_oauth::{CODEX_BASE_URL, OAuthStore, create_codex_token_source};
 
-use crate::{RpcConfig, RpcHostError, RpcHostResult, RpcProfileConfig, RpcProviderConfig};
+use crate::{
+    RpcConfig, RpcHostError, RpcHostResult, RpcProfileConfig, RpcProviderConfig,
+    computer_use::RpcComputerUseCoordinator,
+};
 
 #[cfg(test)]
 pub type TestRuntimeFactory =
@@ -56,7 +59,15 @@ impl RpcAgentCatalog {
     ///
     /// Returns an error when the default profile is missing or a profile contains an unsupported
     /// model id or toolset.
-    pub fn new(config: RpcConfig) -> RpcHostResult<Self> {
+    pub fn new(mut config: RpcConfig) -> RpcHostResult<Self> {
+        if config.computer_use.enabled {
+            for profile in config.profiles.values_mut() {
+                profile.toolsets.retain(|key| {
+                    key != "computer_use" && key != starweaver_computer_use::COMPUTER_USE_TOOLSET_ID
+                });
+                profile.toolsets.push("computer_use".to_string());
+            }
+        }
         let catalog = Self {
             config,
             #[cfg(test)]
@@ -219,7 +230,11 @@ impl RpcAgentCatalog {
         let mut registry = AgentSpecRegistry::new().with_model(&profile.model_id, model);
         let mut toolsets = core_toolsets()
             .into_iter()
-            .chain([agent_session_query_tools(), agent_session_control_tools()])
+            .chain([
+                agent_session_query_tools(),
+                agent_session_control_tools(),
+                RpcComputerUseCoordinator::toolset(),
+            ])
             .collect::<Vec<_>>();
         if self.clarifying_questions_enabled() {
             toolsets.push(user_input_tools());
@@ -294,7 +309,7 @@ impl RpcAgentCatalog {
         .map_err(|error| RpcHostError::Invalid(error.to_string()))
     }
 
-    /// Return whether a profile explicitly grants one toolset.
+    /// Return whether the effective host-materialized profile grants one toolset.
     #[must_use]
     pub(crate) fn grants_toolset(&self, profile: &str, toolset: &str) -> bool {
         self.config
@@ -316,7 +331,11 @@ impl RpcAgentCatalog {
         }
         let available_toolsets = core_toolsets()
             .into_iter()
-            .chain([agent_session_query_tools(), agent_session_control_tools()])
+            .chain([
+                agent_session_query_tools(),
+                agent_session_control_tools(),
+                RpcComputerUseCoordinator::toolset(),
+            ])
             .chain(self.clarifying_questions_enabled().then(user_input_tools))
             .flat_map(|toolset| {
                 let mut keys = vec![toolset.name().to_string()];
@@ -829,6 +848,77 @@ mod tests {
         let catalog = RpcAgentCatalog::new(config).unwrap();
         assert_eq!(catalog.profiles()[0].source, "builtin");
         assert!(catalog.runtime_builder("default").is_ok());
+    }
+
+    #[test]
+    fn enabled_computer_use_auto_injects_every_effective_profile_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = RpcConfig::for_tests(temp.path());
+        config.profiles.insert(
+            "secondary".to_string(),
+            RpcProfileConfig {
+                model_id: "test:secondary".to_string(),
+                test_response: Some("secondary".to_string()),
+                ..RpcProfileConfig::default()
+            },
+        );
+
+        let disabled = RpcAgentCatalog::new(config.clone()).unwrap();
+        assert!(!disabled.grants_toolset("default", "computer_use"));
+        assert!(
+            !disabled
+                .materialization("default", "local:read_write", "sha256:workspace")
+                .unwrap()
+                .toolset_ids
+                .iter()
+                .any(|id| id == starweaver_computer_use::COMPUTER_USE_TOOLSET_ID)
+        );
+
+        config.computer_use.enabled = true;
+        config
+            .profiles
+            .get_mut("default")
+            .unwrap()
+            .toolsets
+            .push("computer_use".to_string());
+        config
+            .profiles
+            .get_mut("secondary")
+            .unwrap()
+            .toolsets
+            .push(starweaver_computer_use::COMPUTER_USE_TOOLSET_ID.to_string());
+        let enabled = RpcAgentCatalog::new(config).unwrap();
+        for profile_name in ["default", "secondary"] {
+            assert!(enabled.grants_toolset(profile_name, "computer_use"));
+            assert_eq!(
+                enabled
+                    .profile(profile_name)
+                    .unwrap()
+                    .toolsets
+                    .iter()
+                    .filter(|name| name.as_str() == "computer_use")
+                    .count(),
+                1
+            );
+            assert!(
+                enabled
+                    .materialization(profile_name, "local:read_write", "sha256:workspace")
+                    .unwrap()
+                    .toolset_ids
+                    .iter()
+                    .any(|id| id == starweaver_computer_use::COMPUTER_USE_TOOLSET_ID)
+            );
+        }
+
+        let runtime = enabled.runtime_builder("default").unwrap().build();
+        assert_eq!(
+            runtime.app().agent().tools().contains("computer_status"),
+            cfg!(target_os = "macos")
+        );
+        assert_eq!(
+            runtime.app().agent().tools().contains("computer_observe"),
+            cfg!(target_os = "macos")
+        );
     }
 
     #[test]

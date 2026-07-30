@@ -24,6 +24,7 @@ Current workspace members:
 - `crates/starweaver-tools` — function tool schema, prefixed tools/toolsets, MCP toolset foundations, tool metadata, retry budget metadata, approval/deferred control-flow metadata, tool registries, toolset combinators, and execution primitives
 - `crates/starweaver-agent` — ergonomic SDK facade, `AgentBuilder`, `AgentApp`, SDK-level subagent registry, first-party tool bundles, spec presets, session helpers, media/filter helpers, and application-facing helpers
 - `crates/starweaver-environment` — `EnvironmentProvider`, virtual and local provider foundations, file and shell policies, resource references, environment state snapshots, and envd-backed provider adapters
+- `crates/starweaver-computer-use` — typed current-active-desktop service/state machine, canonical tool schemas/router, deterministic fake, macOS observe-only backend, explicit unsupported backends, and optional feature-gated `starweaver-computer-use-mcp` stdio binary
 - `crates/starweaver-envd-core` — runtime-neutral envd service trait, DTOs, protocol identity, JSON-RPC frame helpers, state descriptors, and error mapping
 - `crates/starweaver-envd-client` — stdio/http `EnvdRpcClient` over the shared envd service interface
 - `crates/starweaver-envd` — `LocalEnvd`, local ephemeral envd state, JSON-RPC dispatcher, stdio/http server transports, and standalone `starweaver-envd` binary
@@ -54,6 +55,7 @@ Planned areas live in `spec/` until their responsibilities, integration points, 
 - `ask_user_question` is main-agent-only. Subagent inheritance must reject it when required, strip it from optional/inherit-all paths, and deny it again after each child agent's final static, dynamic, and capability tool preparation.
 - First-party tool bundles use Filtered dependency requirements. Strict tools receive only requested authority intersected with the host-installed per-tool `ToolCapabilityGrant`; named `HostCapabilities`, shell projection, and capability-specific mutable handles are deny-by-default. Never add a new broad mutable context handle when a narrow grant can own the operation.
 - `starweaver-environment`: environment provider contracts, file/shell policy, resource references, resumable environment state snapshots, and `EnvdEnvironmentProvider`.
+- `starweaver-computer-use`: one process-local typed service, canonical tool schemas/router, deterministic fake, macOS observe-only backend, and explicit unsupported backends for the current active interactive desktop. `starweaver-cli` and `starweaver-rpc` are the only maintained Starweaver composition roots; both use the `starweaver-agent` opt-in first-party Toolset and library in-process, never through MCP. In either product, `[computer_use].enabled = true` automatically injects the Toolset into every effective profile; profile declarations do not repeat that product-level selection. RPC transport-principal observe capabilities remain separate, default-denied authority and are not widened by automatic Toolset injection. RPC uses one process-level coordinator shared across authorized runs and always controls the RPC host's local active desktop. Generic RPC `run` authority grants no Computer Use: default-denied principal capabilities are intersected into an expiring, revocable process-local run admission, and resume/continuation derives a fresh grant. The same package's optional `mcp-server` feature builds the local stdio `starweaver-computer-use-mcp` binary for non-Starweaver harnesses. The adapter uses grant-intersected Filtered dependency assembly, excludes ambient product dependencies, and dynamically cancels calls when a run grant is revoked. Native calls are owned supervisor tasks behind one serialized backend gate; cancellation/timeout gets a bounded cleanup grace, while direct future abandonment synchronously triggers poison-on-drop. A still-running task permanently poisons that process-local lifecycle before reuse, forbids all backend reentry/close, and preserves a pre-handoff idempotent uncertain action receipt. Only `NotRequired` and `Complete` confirm native cleanup. Production pointer and keyboard capability remain statically unavailable until the input-specific user-presence, emergency-stop, signing, and release gates are satisfied. No Starweaver graphical Desktop product is assumed or required. The library does not extend `EnvironmentProvider` or depend on model-native tools, browser/CDP, runtime, RPC, CLI, graphical products, remote sessions, or unattended execution.
 - Each environment provider owns one scratch area shared by ordinary file operations and its shell. Local providers use fallible creation plus last-owner RAII cleanup, never persist the physical scratch root as configured authority, and return absolute provider-visible paths without a workspace alias. They prefer an exclusive child of the OS temp directory; if that creation fails, they safely initialize `.starweaver/tmp/.gitignore` and use an exclusive `<workspace>/.starweaver/tmp/<instance-id>` child while leaving the shared fallback root in place. Construction never scans or removes sibling fallback instances; stale cleanup requires a separate ownership/liveness contract. Virtual providers use `.starweaver/scratch`. Composite providers prefer the default shell mount and reject ambiguous absolute-path routing. CLI/TUI and RPC normally use OS temp; a separate CLI grant for the temp root is ordinary file authority, not ownership of that root.
 - `starweaver-envd-core`: runtime-neutral envd service protocol, DTOs, state descriptors, JSON-RPC frame helpers, and error mapping.
 - `starweaver-envd-client`: stdio/http envd client implementing the shared envd service interface.
@@ -105,6 +107,7 @@ Current docs:
 - `docs/sdk-app.md` — `AgentApp` usage
 - `docs/subagents.md` — SDK-level subagent delegation
 - `docs/mcp.md` — MCP foundations and official `rmcp` direction
+- `docs/computer-use.md` — macOS observe-only support, CLI/RPC opt-in, permissions, external MCP use, and platform limits
 - `docs/testing.md` — deterministic testing, request guard, scripts, and coverage
 - `docs/release.md` — release, upversion, crate publishing, and binary artifact workflow
 - `docs/session-stream.md` — shared session, display stream, replay, and storage contracts
@@ -134,6 +137,13 @@ Current specs:
 - `spec/sdk/04-subagents-skills.md` — serializable subagent specs, delegation lifecycle, inherited tools, skills, and nested coordination
 - `spec/sdk/05-sdk-integration-map.md` — SDK integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
 - `spec/sdk/06-async-subagent-execution.md` — async-only model-visible delegation, steering, cancellation, bounded fan-in, host continuation, durability, and product lifetime policy
+- `spec/computer-use/README.md` — current-active-desktop Computer Use boundary, implemented macOS observe-only subset, fixed exclusions, package shape, and reading order
+- `spec/computer-use/01-product-boundaries-and-ownership.md` — CLI/RPC in-process and external-harness MCP topology, ownership, dependency direction, lifecycle, and non-goals
+- `spec/computer-use/02-service-contract-and-state-machine.md` — typed service, observation/geometry/action contracts, receipts, errors, cancellation, and state machine
+- `spec/computer-use/03-toolset-and-library-integration.md` — canonical tool catalog/router, first-party Toolset adapter, capability grants, media mapping, and schema parity
+- `spec/computer-use/04-native-active-desktop-backends.md` — macOS, Windows, Wayland, and explicit X11 active-session backends
+- `spec/computer-use/05-mcp-binary-and-process-lifecycle.md` — feature-gated local stdio MCP binary, lifecycle, protocol mapping, diagnostics, and packaging
+- `spec/computer-use/06-security-testing-and-delivery.md` — attended-use security, user presence, test matrix, delivery phases, and release gates
 - `spec/environment/README.md` — Starweaver Agent SDK environment layer, ownership rules, provider families, and envd relationship
 - `spec/environment/01-sdk-provider-contract.md` — `EnvironmentProvider`, process/shell extension traits, descriptors, capabilities, snapshots, and restore boundary
 - `spec/environment/02-tool-binding-and-envd-adapter.md` — environment-backed tool binding, `EnvdEnvironmentProvider`, CLI direct mode, host RPC attachments, and boundary rules
@@ -144,13 +154,13 @@ Current specs:
 - `spec/envd/04-provider-and-host-integration.md` — reference Starweaver provider adapter, host RPC, session metadata, approval, and dependency boundaries
 - `spec/envd/05-api-backlog.md` — unfinished envd API work that should wait for a concrete implementation or call site
 - `spec/ops/README.md` — operational layer scope and readiness model
-- `spec/ops/00-product-boundaries.md` — normative independence and shared-library boundaries for CLI/TUI, standalone RPC, and envd
+- `spec/ops/00-product-boundaries.md` — normative independence and shared-library boundaries for CLI/TUI, standalone RPC, envd, and shared in-process Computer Use composition
 - `spec/ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
 - `spec/ops/02-shared-execution-components.md` — shared session storage/stream contracts, durable workspace provenance versus live grants, and run config snapshot references
 - `spec/ops/03-durable-service-runtime.md` — durable sessions, workspace/config provenance, `SessionStore`, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
-- `spec/ops/04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, DisplayMessage rendering with AGUI display adapters, launcher dispatch, GitHub install/update flow, and the planned hardened public RPC component contract
+- `spec/ops/04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore, direct envd and opt-in in-process Computer Use composition, launcher dispatch, install/update flow, and the planned hardened public RPC component contract
 - `spec/ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
-- `spec/ops/06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP transport profiles, typed method/event/error contracts, replay subscriptions, projections, and idempotency
+- `spec/ops/06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP transports, typed method/event/error contracts, replay, idempotency, and RPC-owned opt-in in-process Computer Use composition
 - `spec/ops/07-session-search.md` — optional product-neutral session search, local SQLite/filesystem discovery, external index ingestion, and independent CLI/RPC integration
 - `spec/ops/08-agent-session-management.md` — agent-facing session query/control tools, query-only CLI policy, grant-gated RPC mutations, and lifecycle-safe run creation/steering/interruption
 - `spec/ops/09-rpc-idl-and-client-generation.md` — single IDL-first JSON-RPC major-1 contract, unversioned `protocol/host/` source, generated Rust and safe Desktop TypeScript boundaries, exact revision/digest admission, atomic replacement, validation, and planned domain-host workspace/config methods
@@ -158,6 +168,7 @@ Current specs:
 - `spec/alignment/10-session-search-evidence.md` — Phase 1 session-search implementation, conformance, and boundary evidence
 - `spec/alignment/11-tui-ui-ux-completion.md` — complete TUI interaction, status, task, history, and validation evidence
 - `spec/alignment/12-rpc-host-readiness.md` — RPC host contract, durability, recovery, and interoperability readiness
+- `spec/alignment/13-computer-use-macos-evidence.md` — macOS observe-only Computer Use implementation, security boundary, release integration, and validation evidence
 - `spec/desktop/README.md` — Desktop architecture baseline, ownership map, prerequisites, and delivery phases
 - `spec/desktop/01-product-and-process-boundaries.md` — Desktop shell/supervisor boundary, one local stdio RPC host, workspace registry, and lifetime rules; SSH sections are superseded by the local-only baseline
 - `spec/desktop/02-rpc-client-and-lifecycle.md` — Desktop RPC handshake, replay/recovery, run/HITL control, and required host protocol additions

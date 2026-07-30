@@ -9,9 +9,10 @@ use serde::Deserialize;
 
 use crate::common::{root, run_capture, run_command};
 
-const WORKSPACE_DEPENDENCIES: [&str; 18] = [
+const WORKSPACE_DEPENDENCIES: [&str; 19] = [
     "starweaver-agent",
     "starweaver-cli",
+    "starweaver-computer-use",
     "starweaver-context",
     "starweaver-core",
     "starweaver-environment",
@@ -31,8 +32,9 @@ const WORKSPACE_DEPENDENCIES: [&str; 18] = [
 ];
 const NON_PUBLISH_WORKSPACE_CRATES: [&str; 1] = ["starweaver-rpc"];
 const DRY_RUN_PACKAGES: [&str; 3] = ["starweaver-core", "starweaver-usage", "starweaver-oauth"];
-const PUBLISH_PACKAGES: [&str; 18] = [
+const PUBLISH_PACKAGES: [&str; 19] = [
     "starweaver-core",
+    "starweaver-computer-use",
     "starweaver-usage",
     "starweaver-oauth",
     "starweaver-model",

@@ -21,8 +21,8 @@ fn tools_config_defaults_to_direct_mcp_and_bounded_user_input() {
         .resolve(&cli)
         .unwrap();
 
-    assert_eq!(config.mcp_mode, McpExposureMode::Direct);
-    assert_eq!(config.user_input_timeout_seconds, 120);
+    assert_eq!(config.mcp_mode(), McpExposureMode::Direct);
+    assert_eq!(config.user_input_timeout_seconds(), 120);
 }
 
 #[test]
@@ -46,8 +46,8 @@ fn tools_config_parses_proxy_mcp_and_user_input_timeout() {
 
     let config = resolver.resolve(&cli).unwrap();
 
-    assert_eq!(config.mcp_mode, McpExposureMode::Proxy);
-    assert_eq!(config.user_input_timeout_seconds, 45);
+    assert_eq!(config.mcp_mode(), McpExposureMode::Proxy);
+    assert_eq!(config.user_input_timeout_seconds(), 45);
 }
 
 #[test]
@@ -198,6 +198,96 @@ system_prompt = "Review safely."
         get_config_value(&config, "security.shell_review.risk_threshold").unwrap(),
         "extra_high\n"
     );
+}
+
+#[test]
+fn computer_use_config_parses_without_extending_cli_config_fields() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("project");
+    let project_config = workspace.join(".starweaver");
+    fs::create_dir_all(&project_config).unwrap();
+    fs::write(
+        project_config.join("config.toml"),
+        "[computer_use]\nenabled = true\ndesktop_scope = \"visible_desktop\"\n",
+    )
+    .unwrap();
+    let cli =
+        crate::args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+    let resolver = ConfigResolver {
+        global_dir: Some(temp.path().join("global")),
+        project_dir: Some(project_config),
+        shared_agents_dir: Some(temp.path().join("shared-agents")),
+        current_dir: Some(workspace),
+    };
+
+    let computer_use = resolver.resolve(&cli).unwrap().computer_use();
+
+    assert!(computer_use.enabled);
+    assert_eq!(computer_use.desktop_scope, "visible_desktop");
+}
+
+#[test]
+fn project_computer_use_enabled_override_preserves_global_desktop_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let global_dir = temp.path().join("global");
+    let project_dir = temp.path().join("project");
+    fs::create_dir_all(&global_dir).unwrap();
+    fs::create_dir_all(&project_dir).unwrap();
+    fs::write(
+        global_dir.join("config.toml"),
+        "[computer_use]\ndesktop_scope = \"visible_desktop\"\n",
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("config.toml"),
+        "[computer_use]\nenabled = true\n",
+    )
+    .unwrap();
+    let cli =
+        crate::args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+    let resolver = ConfigResolver {
+        global_dir: Some(global_dir),
+        project_dir: Some(project_dir),
+        shared_agents_dir: Some(temp.path().join("shared-agents")),
+        current_dir: Some(temp.path().to_path_buf()),
+    };
+
+    let computer_use = resolver.resolve(&cli).unwrap().computer_use();
+
+    assert!(computer_use.enabled);
+    assert_eq!(computer_use.desktop_scope, "visible_desktop");
+}
+
+#[test]
+fn project_computer_use_desktop_scope_override_preserves_global_enabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let global_dir = temp.path().join("global");
+    let project_dir = temp.path().join("project");
+    fs::create_dir_all(&global_dir).unwrap();
+    fs::create_dir_all(&project_dir).unwrap();
+    fs::write(
+        global_dir.join("config.toml"),
+        "[computer_use]\nenabled = true\n",
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("config.toml"),
+        "[computer_use]\ndesktop_scope = \"visible_desktop\"\n",
+    )
+    .unwrap();
+    let cli =
+        crate::args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+    let resolver = ConfigResolver {
+        global_dir: Some(global_dir),
+        project_dir: Some(project_dir),
+        shared_agents_dir: Some(temp.path().join("shared-agents")),
+        current_dir: Some(temp.path().to_path_buf()),
+    };
+
+    let computer_use = resolver.resolve(&cli).unwrap().computer_use();
+
+    assert!(computer_use.enabled);
+    assert_eq!(computer_use.desktop_scope, "visible_desktop");
 }
 
 #[test]

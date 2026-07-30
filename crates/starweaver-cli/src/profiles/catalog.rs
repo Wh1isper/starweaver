@@ -234,7 +234,11 @@ pub fn list_default_tools(config: &CliConfig) -> CliResult<Vec<ToolSummary>> {
     let approval = tool_need_approval(config)
         .into_iter()
         .collect::<BTreeSet<_>>();
-    Ok(default_toolsets(config)?
+    let computer_use =
+        crate::computer_use::CliComputerUseCoordinator::from_config(&config.computer_use())
+            .ok()
+            .flatten();
+    Ok(default_toolsets(config, computer_use.as_ref())?
         .into_iter()
         .flat_map(|toolset| {
             let toolset_name = toolset

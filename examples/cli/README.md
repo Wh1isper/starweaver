@@ -65,6 +65,23 @@ additional_dirs = ["~/.starweaver/subagents"]
 disabled = []
 ```
 
+Computer Use is disabled by default. The example project config enables observe-only capture across all visible displays:
+
+```toml
+[computer_use]
+enabled = true
+desktop_scope = "visible_desktop"
+```
+
+Enabling the section automatically injects the `computer_use` Toolset into every selected CLI profile; profiles do not need to list it themselves. On an attended macOS host with Screen Recording permission, run any suitable image-capable profile, for example:
+
+```bash
+starweaver-cli run --profile examples/profiles/computer-use-macos.yaml \
+  -p "Describe the current desktop"
+```
+
+See [Computer Use](../../docs/computer-use.md).
+
 Update checks run through a short background GitHub release lookup with a local cache. Disable checks for scripted environments:
 
 ```bash

@@ -28,6 +28,7 @@ use starweaver_model::{
 
 use crate::{
     CliError, CliResult,
+    computer_use::CliComputerUseCoordinator,
     config::{CliConfig, ProviderConfig, tool_need_approval},
     error::io_error,
     oauth::{CODEX_BASE_URL, OAuthStore, create_codex_token_source},
@@ -70,6 +71,8 @@ pub struct ResolvedProfile {
     pub skills: SkillRegistry,
     /// Query-only session capability. CLI never stores a control handle.
     pub session_query: AgentSessionQueryHandle,
+    /// Optional process-local current-desktop coordinator.
+    pub(crate) computer_use: Option<CliComputerUseCoordinator>,
 }
 
 /// Source of a resolved profile.
@@ -161,6 +164,10 @@ impl ResolvedProfile {
             ),
         );
         attach_agent_session_query(context, self.session_query.clone());
+        if let Some(computer_use) = self.computer_use.as_ref() {
+            let result = computer_use.configure_context(context);
+            debug_assert!(result.is_ok());
+        }
     }
 }
 
@@ -261,11 +268,22 @@ pub struct ToolSummary {
 }
 
 /// Resolve an `AgentSpec` by name or YAML path.
+#[allow(dead_code)]
 pub fn resolve_profile(config: &CliConfig, requested: Option<&str>) -> CliResult<ResolvedProfile> {
+    let computer_use = CliComputerUseCoordinator::from_config(&config.computer_use())?;
+    resolve_profile_with_computer_use(config, requested, computer_use)
+}
+
+pub(crate) fn resolve_profile_with_computer_use(
+    config: &CliConfig,
+    requested: Option<&str>,
+    computer_use: Option<CliComputerUseCoordinator>,
+) -> CliResult<ResolvedProfile> {
     let requested = requested.unwrap_or(&config.default_profile);
-    let (spec, source) = load_profile_spec(config, requested)?;
+    let (mut spec, source) = load_profile_spec(config, requested)?;
+    inject_computer_use_toolset(&mut spec, computer_use.is_some());
     let name = spec.name.clone();
-    let registry = default_registry(config, &spec)?;
+    let registry = default_registry(config, &spec, computer_use.as_ref())?;
     let skills = configured_skill_registry(config);
     let media_client = configured_media_client(config)?;
     let shell_review = configured_shell_review(config)?;
@@ -300,7 +318,20 @@ pub fn resolve_profile(config: &CliConfig, requested: Option<&str>) -> CliResult
         shell_review,
         skills,
         session_query,
+        computer_use,
     })
+}
+
+fn inject_computer_use_toolset(spec: &mut AgentSpec, enabled: bool) {
+    if !enabled || spec.all_toolsets {
+        return;
+    }
+    let already_selected = spec.toolsets.iter().any(|key| {
+        key == "computer_use" || key == starweaver_computer_use::COMPUTER_USE_TOOLSET_ID
+    });
+    if !already_selected {
+        spec.toolsets.push("computer_use".to_string());
+    }
 }
 
 fn load_profile_spec(config: &CliConfig, requested: &str) -> CliResult<(AgentSpec, ProfileSource)> {
@@ -355,7 +386,11 @@ fn find_profile_path(config: &CliConfig, requested: &str) -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.exists())
 }
 
-fn default_registry(config: &CliConfig, spec: &AgentSpec) -> CliResult<AgentSpecRegistry> {
+fn default_registry(
+    config: &CliConfig,
+    spec: &AgentSpec,
+    computer_use: Option<&CliComputerUseCoordinator>,
+) -> CliResult<AgentSpecRegistry> {
     let mut registry = AgentSpecRegistry::new()
         .with_model("local_echo", Arc::new(local_echo_model()))
         .with_model(
@@ -368,7 +403,7 @@ fn default_registry(config: &CliConfig, spec: &AgentSpec) -> CliResult<AgentSpec
         );
     let mut environment_filesystem = None;
     let mut environment_shell = None;
-    for toolset in default_toolsets(config)? {
+    for toolset in default_toolsets(config, computer_use)? {
         let name = toolset.name().to_string();
         registry = registry.with_toolset(toolset.clone());
         match name.as_str() {
@@ -420,7 +455,10 @@ fn default_registry(config: &CliConfig, spec: &AgentSpec) -> CliResult<AgentSpec
     Ok(registry)
 }
 
-fn default_toolsets(config: &CliConfig) -> CliResult<Vec<DynToolset>> {
+fn default_toolsets(
+    config: &CliConfig,
+    computer_use: Option<&CliComputerUseCoordinator>,
+) -> CliResult<Vec<DynToolset>> {
     let approval = tool_need_approval(config);
     let shell_review_approval = shell_review_adjusted_approval(config, &approval);
     let mut toolsets = vec![
@@ -435,6 +473,9 @@ fn default_toolsets(config: &CliConfig) -> CliResult<Vec<DynToolset>> {
             &approval
         };
         toolsets.push(policy_toolset(toolset, selected_approval));
+    }
+    if let Some(computer_use) = computer_use {
+        toolsets.push(policy_toolset(computer_use.toolset(), &approval));
     }
     if let Some(skill_toolset) = configured_skill_toolset(config) {
         toolsets.push(policy_toolset(skill_toolset, &approval));

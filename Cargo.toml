@@ -2,6 +2,7 @@
 members = [
     "apps/starweaver-desktop/src-tauri",
     "crates/starweaver-cli",
+    "crates/starweaver-computer-use",
     "crates/starweaver-rpc",
     "crates/starweaver-rpc-core",
     "crates/starweaver-agent",
@@ -67,6 +68,7 @@ starweaver-session = { path = "crates/starweaver-session", version = "0.11.0" }
 starweaver-stream = { path = "crates/starweaver-stream", version = "0.11.0" }
 starweaver-storage = { path = "crates/starweaver-storage", version = "0.11.0" }
 starweaver-cli = { path = "crates/starweaver-cli", version = "0.11.0" }
+starweaver-computer-use = { path = "crates/starweaver-computer-use", version = "0.11.0", default-features = false }
 starweaver-rpc-core = { path = "crates/starweaver-rpc-core", version = "0.11.0" }
 async-trait = "0.1.89"
 command-group = "5.0.1"

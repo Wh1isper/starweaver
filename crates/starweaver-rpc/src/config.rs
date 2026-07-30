@@ -297,6 +297,63 @@ impl RpcClientCapabilitiesConfig {
     }
 }
 
+/// Current active-desktop surface admitted by RPC Computer Use.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RpcComputerUseDesktopScope {
+    /// Observe only the operating system's primary display.
+    #[default]
+    PrimaryDisplay,
+    /// Observe the complete visible desktop display topology.
+    VisibleDesktop,
+}
+
+/// RPC-owned process-local Computer Use policy and principal capabilities.
+///
+/// These capabilities are intentionally independent from generic host method scopes. A `run`
+/// scope never implies active-desktop observation authority.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RpcComputerUseConfig {
+    /// Install the process-local Computer Use coordinator.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Current active-desktop capture scope.
+    #[serde(default)]
+    pub desktop_scope: RpcComputerUseDesktopScope,
+    /// Maximum lifetime of one fresh run-local admission in milliseconds.
+    #[serde(default = "default_computer_use_grant_ttl_ms")]
+    pub grant_ttl_ms: u64,
+    /// Grant observation capability to the trusted local stdio principal.
+    #[serde(default)]
+    pub stdio_observe: bool,
+    /// Grant observation capability to the configured HTTP credential principal.
+    #[serde(default)]
+    pub http_observe: bool,
+}
+
+impl Default for RpcComputerUseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            desktop_scope: RpcComputerUseDesktopScope::PrimaryDisplay,
+            grant_ttl_ms: default_computer_use_grant_ttl_ms(),
+            stdio_observe: false,
+            http_observe: false,
+        }
+    }
+}
+
+impl RpcComputerUseConfig {
+    fn validate(&self) -> RpcHostResult<()> {
+        if self.grant_ttl_ms == 0 || self.grant_ttl_ms > 15 * 60 * 1_000 {
+            return Err(RpcHostError::Invalid(
+                "computer_use.grant_ttl_ms must be between 1 and 900000".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Session-search backend selected by RPC-owned configuration.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -385,6 +442,8 @@ pub struct RpcConfig {
     pub client_capabilities: RpcClientCapabilitiesConfig,
     /// HTTP transport authentication and request-origin policy.
     pub http_auth: RpcHttpAuthConfig,
+    /// Process-local, separately authorized Computer Use policy.
+    pub computer_use: RpcComputerUseConfig,
     /// Optional RPC-owned session-search provider configuration.
     pub session_search: RpcSessionSearchConfig,
 }
@@ -550,6 +609,7 @@ struct FileConfig {
     environments: Option<BTreeMap<String, RpcEnvironmentConfig>>,
     subagents: Option<BTreeMap<String, RpcSubagentConfig>>,
     client_capabilities: Option<RpcClientCapabilitiesConfig>,
+    computer_use: Option<RpcComputerUseConfig>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -671,6 +731,8 @@ impl RpcConfig {
         let subagents = file.subagents.unwrap_or_default();
         let client_capabilities = file.client_capabilities.unwrap_or_default();
         client_capabilities.validate()?;
+        let computer_use = file.computer_use.unwrap_or_default();
+        computer_use.validate()?;
         Ok(Self {
             launch: standalone_launch_evidence(&config_path, &database_path),
             config_path,
@@ -686,6 +748,7 @@ impl RpcConfig {
             mcp_servers,
             client_capabilities,
             http_auth,
+            computer_use,
             session_search,
         })
     }
@@ -813,6 +876,7 @@ impl RpcConfig {
                 clarifying_questions: envelope.capability_caps.clarifying_questions,
             },
             http_auth: RpcHttpAuthConfig::default(),
+            computer_use: RpcComputerUseConfig::default(),
             session_search: RpcSessionSearchConfig::default(),
         })
     }
@@ -845,6 +909,7 @@ impl RpcConfig {
             mcp_servers: BTreeMap::new(),
             client_capabilities: RpcClientCapabilitiesConfig::default(),
             http_auth: RpcHttpAuthConfig::default(),
+            computer_use: RpcComputerUseConfig::default(),
             session_search: RpcSessionSearchConfig::default(),
         }
     }
@@ -1399,6 +1464,10 @@ const fn default_true() -> bool {
     true
 }
 
+const fn default_computer_use_grant_ttl_ms() -> u64 {
+    5 * 60 * 1_000
+}
+
 const fn default_search_query_bytes() -> usize {
     4 * 1024
 }
@@ -1449,6 +1518,13 @@ workspace_root = "workspace"
 hitl = true
 clarifying_questions = true
 
+[computer_use]
+enabled = true
+desktop_scope = "visible_desktop"
+grant_ttl_ms = 45000
+stdio_observe = true
+http_observe = false
+
 [server.http_auth]
 token_env = "RPC_TEST_TOKEN"
 token_file = "secrets/http-token"
@@ -1474,6 +1550,16 @@ base_url = "https://models.example.test/v1"
                 clarifying_questions: true,
             })
         );
+        assert_eq!(
+            file.computer_use,
+            Some(RpcComputerUseConfig {
+                enabled: true,
+                desktop_scope: RpcComputerUseDesktopScope::VisibleDesktop,
+                grant_ttl_ms: 45_000,
+                stdio_observe: true,
+                http_observe: false,
+            })
+        );
         let server = file.server.unwrap();
         assert_eq!(server.default_profile.as_deref(), Some("gateway"));
         let http_auth = server.http_auth.unwrap();
@@ -1493,6 +1579,27 @@ base_url = "https://models.example.test/v1"
         assert_eq!(
             file.providers.unwrap()["homelab"].api_key_env.as_deref(),
             Some("HOMELAB_API_KEY")
+        );
+    }
+
+    #[test]
+    fn computer_use_grant_ttl_is_bounded_and_default_denied() {
+        assert!(!RpcComputerUseConfig::default().enabled);
+        assert!(
+            RpcComputerUseConfig {
+                grant_ttl_ms: 0,
+                ..RpcComputerUseConfig::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            RpcComputerUseConfig {
+                grant_ttl_ms: 900_001,
+                ..RpcComputerUseConfig::default()
+            }
+            .validate()
+            .is_err()
         );
     }
 
@@ -1573,6 +1680,7 @@ base_url = "https://models.example.test/v1"
         assert_eq!(config.launch.mode, "workspace_execution");
         assert_eq!(config.default_profile, "desktop");
         assert!(config.client_capabilities.clarifying_questions);
+        assert_eq!(config.computer_use, RpcComputerUseConfig::default());
         assert!(config.launch.envelope_digest.starts_with("sha256:"));
 
         let mut open = envelope.clone();

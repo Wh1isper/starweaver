@@ -50,7 +50,8 @@ use starweaver_rpc_core::generated as host;
 
 use crate::{
     RpcAgentCatalog, RpcConfig, RpcHitlResumeRequest, RpcHostError, RpcHostResult, RpcRunRequest,
-    RpcRuntimeCoordinator,
+    RpcRuntimeCoordinator, RpcTransport,
+    computer_use::{RpcComputerUseCoordinator, RpcComputerUsePrincipal},
     config_authorization::ConfigAuthorizationManager,
     environment_contract::{EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef},
     environment_manager::EnvironmentAttachmentManager,
@@ -211,6 +212,7 @@ struct RpcConnectionState {
     negotiated_features: Mutex<BTreeSet<String>>,
     environment_manager: EnvironmentAttachmentManager,
     storage: SqliteStorage,
+    coordinator: Arc<RpcRuntimeCoordinator>,
 }
 
 struct ConnectionSubscription {
@@ -308,6 +310,8 @@ struct HostEventTail {
 impl RpcConnectionState {
     fn close(&self) -> RpcHostResult<()> {
         self.closed.store(true, Ordering::Release);
+        self.coordinator
+            .revoke_computer_use_connection(&self.authority_identity, &self.connection_id);
         let mut subscriptions = self
             .subscriptions
             .lock()
@@ -448,6 +452,19 @@ impl RpcConnection {
             response: Some(encoded_response_value(response)),
             shutdown: requested_shutdown && succeeded,
         }
+    }
+
+    fn computer_use_principal(&self) -> RpcComputerUsePrincipal {
+        let transport = match self.state.transport {
+            host::Transport::Stdio => RpcTransport::Stdio,
+            host::Transport::Http => RpcTransport::Http,
+        };
+        self.service.coordinator.computer_use_principal(
+            transport,
+            &self.state.authority_identity,
+            &self.state.connection_id,
+            self.service.config.launch.configuration_generation,
+        )
     }
 
     fn admit_method(&self, method: host::Method) -> Result<(), host::HostError> {
@@ -2335,10 +2352,11 @@ impl RpcConnection {
         };
         request.install_session_management =
             self.service.notifications == RpcNotificationMode::Live;
+        let computer_use_principal = self.computer_use_principal();
         let started = self
             .service
             .coordinator
-            .start(request)
+            .start_for_principal(request, computer_use_principal)
             .await
             .map_err(rpc_host_to_generated_error)?;
         let run = self
@@ -2438,19 +2456,24 @@ impl RpcConnection {
                 Some(&source_run_id),
             )
             .await?;
+        let computer_use_principal = self.computer_use_principal();
         let started = self
             .service
             .coordinator
-            .resume_waiting(RpcHitlResumeRequest {
-                session_id: session_id.clone(),
-                source_run_id: source_run_id.clone(),
-                profile,
-                environment_attachments,
-                idempotency_key: storage_idempotency_key,
-                command_fingerprint: fingerprint.clone(),
-                continuation_mode: generated_continuation_mode(params.continuation_mode),
-                install_session_management: self.service.notifications == RpcNotificationMode::Live,
-            })
+            .resume_waiting_for_principal(
+                RpcHitlResumeRequest {
+                    session_id: session_id.clone(),
+                    source_run_id: source_run_id.clone(),
+                    profile,
+                    environment_attachments,
+                    idempotency_key: storage_idempotency_key,
+                    command_fingerprint: fingerprint.clone(),
+                    continuation_mode: generated_continuation_mode(params.continuation_mode),
+                    install_session_management: self.service.notifications
+                        == RpcNotificationMode::Live,
+                },
+                computer_use_principal,
+            )
             .await
             .map_err(rpc_host_to_generated_error)?;
         let run = store
@@ -5334,11 +5357,16 @@ impl RpcService {
         let runtime_config =
             RuntimeConfigManager::load_or_create(&config.state_dir, config.clone(), catalog)?;
         let environment_manager = EnvironmentAttachmentManager::new();
+        let computer_use = RpcComputerUseCoordinator::from_config(
+            config.computer_use.clone(),
+            config.launch.configuration_generation,
+        );
         let coordinator = Arc::new(RpcRuntimeCoordinator::new_with_workspace_registry(
             storage.clone(),
             environment_manager,
             workspace_registry.clone(),
             runtime_config.clone(),
+            computer_use,
             execution_domain_owner.host_instance_id().to_string(),
             execution_domain_owner.generation(),
         ));
@@ -5506,6 +5534,7 @@ impl RpcService {
                 negotiated_features: Mutex::new(BTreeSet::new()),
                 environment_manager: self.environment_manager,
                 storage: self.storage.clone(),
+                coordinator: Arc::clone(&self.coordinator),
             }),
         }
     }

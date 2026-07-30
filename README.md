@@ -18,7 +18,7 @@ one workspace.
 - Structured output through JSON Schema, typed parsing, output functions, and validation retry.
 - Runtime extension hooks for prompt preparation, request shaping, tool policy, output validation, usage, and trace recording.
 - Durable execution foundations: context export/restore, checkpoints, session records, replay streams, and SQLite storage adapters.
-- First-party SDK bundles for filesystem, shell, skills, task tracking, host search/scrape/media adapters, MCP, and subagents.
+- First-party SDK bundles for filesystem, shell, skills, task tracking, host search/scrape/media adapters, MCP, subagents, and opt-in macOS Computer Use observation.
 - A CLI launcher with profile-based local runs, install/update flow, display messages, local storage, and release artifacts.
 - An experimental, maintenance-paused Tauri 2 Desktop foundation retained as WIP source code.
 
@@ -30,10 +30,11 @@ Install the latest public release:
 curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
 ```
 
-The installer downloads the matching `starweaver-cli` archive, verifies `checksums.txt` when
-available, and installs `starweaver`, `starweaver-cli`, `sw`, and `starweaver-rpc`. It installs into
-`$HOME/.local/bin` for normal users and `/usr/local/bin` for root. Override the location when
-needed:
+The installer downloads all components available for the current platform and verifies
+`checksums.txt` when available. It installs `starweaver`, `starweaver-cli`, `sw`, and
+`starweaver-rpc`; on macOS it also installs the observe-only external-harness
+`starweaver-computer-use-mcp` binary. It installs into `$HOME/.local/bin` for normal users and
+`/usr/local/bin` for root. Override the location when needed:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh \
@@ -50,7 +51,20 @@ curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/in
 The default `latest` channel uses GitHub's latest stable release first and falls back to the
 newest public prerelease when no stable release exists yet.
 
-Update an installed CLI from GitHub release artifacts:
+To omit the separate Computer Use MCP binary from a macOS install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh \
+  | STARWEAVER_EXCLUDE_COMPONENTS=computer-use sh
+```
+
+Installing the binary does not enable Computer Use in CLI or RPC. Both products keep the Toolset
+default-disabled and use the Computer Use library in-process instead of this MCP binary. Unsigned and
+not-notarized macOS capture executables remain provisional observe-only components rather than
+production-ready identities. See [Computer Use](docs/computer-use.md) for opt-in configuration and
+security boundaries.
+
+Update all installed components available for the current platform from GitHub release artifacts:
 
 ```bash
 starweaver update
@@ -138,6 +152,7 @@ Start here:
 - [Tools](docs/tools.md)
 - [Structured Output](docs/output.md)
 - [CLI](docs/cli.md)
+- [Computer Use](docs/computer-use.md)
 - [Testing](docs/testing.md)
 - [Release](docs/release.md)
 
@@ -153,6 +168,7 @@ Starweaver is organized as focused crates:
 - `starweaver-tools`: function tools, toolsets, metadata, lifecycle, MCP foundations, approval, and deferred execution.
 - `starweaver-context`: `AgentContext`, typed dependencies, state, event/message buses, notes, usage, and resumable state.
 - `starweaver-environment`: local and virtual filesystem/shell providers, policies, resources, and environment snapshots.
+- `starweaver-computer-use`: typed current-active-desktop service, canonical tool router, deterministic fake, macOS observe-only backend, and feature-gated stdio MCP binary.
 - `starweaver-session`, `starweaver-stream`, `starweaver-storage`: durable session, replay, display stream, and SQLite storage contracts.
 - `starweaver-cli`: local CLI product surface, launcher dispatch, profiles, TUI, storage, install, and update workflows.
 - `starweaver-rpc-core`: generated IDL-first `starweaver.host` major-1 wire boundary, strict server/client codecs, typed errors/events/cursors, launch-envelope contracts, and narrow framing/projection helpers; the generated contract atomically replaces handwritten DTO authority.
@@ -203,7 +219,7 @@ Prepare a release:
 gh workflow run prepare-release.yml -f version=X.Y.Z
 ```
 
-The workflow pushes `release/vX.Y.Z` for review. After that release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release. The published Release event packages the maintained CLI/protocol, Rust crates, and Python distribution. Desktop installers and Desktop-managed runtime update assets are not published while Desktop remains WIP.
+The workflow pushes `release/vX.Y.Z` for review. After that release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release. The published Release event packages the maintained CLI/protocol, Rust crates, Python distribution, and separate macOS Computer Use MCP archives. Desktop installers and Desktop-managed runtime update assets are not published while Desktop remains WIP.
 
 ## Acknowledgements
 

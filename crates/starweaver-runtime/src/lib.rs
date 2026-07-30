@@ -59,6 +59,7 @@ pub use starweaver_model::{ModelResponseStreamEvent, PartDelta, PartEnd, PartSta
 pub use stream::{
     AgentSidebandEvent, AgentSidebandEventCategory, AgentStreamEvent, AgentStreamRecord,
     AgentStreamResult, AgentStreamSink, AgentStreamSource, AgentStreamSourceKind,
+    project_stream_records_for_durable_evidence,
 };
 pub use trace::{
     AdapterTraceRecorder, DynTraceRecorder, InMemoryTraceRecorder, NoopTraceRecorder,

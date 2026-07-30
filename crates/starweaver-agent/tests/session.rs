@@ -15,10 +15,11 @@ use starweaver_agent::{
     DeferredToolResults, DynToolset, FunctionModel, FunctionModelInfo, FunctionTool,
     HITL_DECISION_DIAGNOSTIC_EVENT_KIND, InMemoryReplayEventLog, InMemorySessionStore,
     InMemoryStreamArchive, ManagedRunTarget, ModelConfig, ModelRequestParameters, ModelSettings,
-    OutputPolicy, PerThousandRatio, ReplayEventKind, ReplayEventLog, ReplayScope, ResumableState,
-    RunRecord, RunStatus, SessionRecord, SessionRunStatus, SessionStore, StaticToolset,
-    StreamArchive, TestModel, ToolApprovalDecision, ToolApprovalState, ToolContext, ToolError,
-    ToolResult, ToolUserInputPreprocessResult, TraceContext,
+    OutputPolicy, PerThousandRatio, ReplayEvent, ReplayEventKind, ReplayEventLog, ReplayScope,
+    ReplaySnapshot, ReplaySubscription, ResumableState, RunRecord, RunStatus, SessionRecord,
+    SessionRunStatus, SessionStore, StaticToolset, StreamArchive, TestModel, ToolApprovalDecision,
+    ToolApprovalState, ToolContext, ToolError, ToolResult, ToolUserInputPreprocessResult,
+    TraceContext,
 };
 use starweaver_agent::{
     LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot, McpToolSpec, McpTransport,
@@ -35,7 +36,9 @@ use starweaver_model::{
     TOOL_RETURN_APPROVAL_ARGUMENTS_METADATA_KEY, ToolArguments, ToolCallPart, tool_call_response,
 };
 use starweaver_session::HitlResumeClaim;
-use starweaver_stream::{InMemoryReplayTransport, ReplayCursor, ReplayEnvelope, ReplayTransport};
+use starweaver_stream::{
+    InMemoryReplayTransport, ReplayCursor, ReplayEnvelope, ReplayError, ReplayTransport,
+};
 use starweaver_tools::{
     DynTool, TOOL_METADATA_DEPENDENCIES_KEY, ToolDependencyRequirements, Toolset,
     ToolsetLifecycleError, ToolsetLifecyclePolicy, ToolsetLifecycleReport, ToolsetLifecycleState,
@@ -128,6 +131,164 @@ fn high_volume_stream_model(text: &'static str, chunks: usize) -> FunctionModel 
         )));
         Ok(events)
     })
+}
+
+const GEOMETRY_SCREENSHOT_SENTINEL: &str = concat!(
+    "data:image/png;base64,",
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nAAAAABJRU5ErkJggg=="
+);
+
+#[derive(Clone, Copy)]
+enum GeometryRunOutcome {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+fn geometry_screenshot_model(outcome: GeometryRunOutcome) -> FunctionModel {
+    let calls = Arc::new(AtomicUsize::new(0));
+    FunctionModel::streaming(move |_messages, _settings, _info| {
+        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Ok(vec![ModelResponseStreamEvent::FinalResult(Box::new(
+                tool_call_response(
+                    "call_geometry_screenshot",
+                    "geometry_screenshot",
+                    serde_json::json!({}),
+                ),
+            ))]);
+        }
+        match outcome {
+            GeometryRunOutcome::Completed => Ok(vec![ModelResponseStreamEvent::FinalResult(
+                Box::new(ModelResponse::text("geometry completed")),
+            )]),
+            GeometryRunOutcome::Failed => Err(ModelError::Transport(
+                "expected geometry sentinel failure".to_string(),
+            )),
+            GeometryRunOutcome::Cancelled => {
+                let mut events = vec![ModelResponseStreamEvent::PartStart(PartStart {
+                    index: 0,
+                    part_kind: "text".to_string(),
+                })];
+                for index in 0..64 {
+                    events.push(ModelResponseStreamEvent::PartDelta(PartDelta::text(
+                        0,
+                        format!("{index};"),
+                    )));
+                }
+                events.push(ModelResponseStreamEvent::PartEnd(PartEnd::with_kind(
+                    0, "text",
+                )));
+                events.push(ModelResponseStreamEvent::FinalResult(Box::new(
+                    ModelResponse::text("must be interrupted"),
+                )));
+                Ok(events)
+            }
+        }
+    })
+}
+
+fn geometry_screenshot_toolset() -> DynToolset {
+    let tool = FunctionTool::new(
+        "geometry_screenshot",
+        Some("Return geometry-bound screenshot evidence".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_context: ToolContext, _args: serde_json::Value| async move {
+            Ok(ToolResult::new(serde_json::json!({
+                "observation_id": "geometry-observation"
+            }))
+            .with_private_metadata(Metadata::from_iter([
+                (
+                    "starweaver_geometry_bound_immutable_media".to_string(),
+                    serde_json::json!(true),
+                ),
+                (
+                    "starweaver_tool_return_content_parts".to_string(),
+                    serde_json::json!([{
+                        "kind": "data_url",
+                        "data_url": GEOMETRY_SCREENSHOT_SENTINEL,
+                        "media_type": "image/png"
+                    }]),
+                ),
+                (
+                    "geometry_sentinel_audit_marker".to_string(),
+                    serde_json::json!("retained"),
+                ),
+            ])))
+        },
+    );
+    Arc::new(StaticToolset::new("geometry-screenshot").with_tool(Arc::new(tool)))
+}
+
+#[derive(Clone, Default)]
+struct FailingReplayEventLog;
+
+#[async_trait]
+impl ReplayEventLog for FailingReplayEventLog {
+    async fn append(&self, _scope: ReplayScope, _event: ReplayEvent) -> Result<(), ReplayError> {
+        Err(ReplayError::Failed(
+            "retain publication in outbox".to_string(),
+        ))
+    }
+
+    async fn replay_after(
+        &self,
+        _scope: &ReplayScope,
+        _cursor: Option<ReplayCursor>,
+        _limit: Option<usize>,
+    ) -> Result<Vec<ReplayEvent>, ReplayError> {
+        Err(ReplayError::Failed("replay unavailable".to_string()))
+    }
+
+    async fn subscribe(
+        &self,
+        _scope: ReplayScope,
+        _cursor: Option<ReplayCursor>,
+    ) -> Result<ReplaySubscription, ReplayError> {
+        Err(ReplayError::Failed("replay unavailable".to_string()))
+    }
+
+    async fn compact_snapshot(&self, _scope: &ReplayScope) -> Result<ReplaySnapshot, ReplayError> {
+        Err(ReplayError::Failed("replay unavailable".to_string()))
+    }
+}
+
+async fn assert_geometry_sentinel_durable_surfaces(
+    store: &InMemorySessionStore,
+    archive: &InMemoryStreamArchive,
+    session_id: &SessionId,
+    run_id: &RunId,
+    live_events: &[starweaver_agent::AgentStreamRecord],
+) {
+    let live_json = serde_json::to_string(live_events).unwrap();
+    assert!(live_json.contains(GEOMETRY_SCREENSHOT_SENTINEL));
+
+    let stored_records = store
+        .replay_stream_records(session_id, run_id)
+        .await
+        .unwrap();
+    let stored_json = serde_json::to_string(&stored_records).unwrap();
+    assert!(!stored_json.contains(GEOMETRY_SCREENSHOT_SENTINEL));
+    assert!(stored_json.contains("geometry_sentinel_audit_marker"));
+
+    let archived_records = archive
+        .replay_raw_after(session_id, run_id, None)
+        .await
+        .unwrap();
+    let archive_json = serde_json::to_string(&archived_records).unwrap();
+    assert!(!archive_json.contains(GEOMETRY_SCREENSHOT_SENTINEL));
+    assert!(archive_json.contains("geometry_sentinel_audit_marker"));
+
+    let publications = store.pending_stream_publications(session_id).await.unwrap();
+    assert_eq!(publications.len(), 1);
+    assert!(!publications[0].archive_pending);
+    assert!(publications[0].replay_pending);
+    let outbox_json = serde_json::to_string(&publications).unwrap();
+    assert!(!outbox_json.contains(GEOMETRY_SCREENSHOT_SENTINEL));
+    assert!(outbox_json.contains("geometry_sentinel_audit_marker"));
+
+    let snapshot = store.resume_snapshot(session_id, run_id).await.unwrap();
+    let durable_store_json = serde_json::to_string(&snapshot).unwrap();
+    assert!(!durable_store_json.contains(GEOMETRY_SCREENSHOT_SENTINEL));
 }
 
 #[derive(Clone)]
@@ -1991,6 +2152,149 @@ async fn runtime_durable_store_resumes_rmcp_stdio_approval_and_deferred_records(
         deferred[0].status,
         starweaver_agent::ExecutionStatus::Completed
     );
+}
+
+#[tokio::test]
+async fn runtime_completed_persistence_strips_geometry_screenshot_from_all_durable_records() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let archive = Arc::new(InMemoryStreamArchive::new());
+    let session_id = SessionId::from_string("session-geometry-durable-completed");
+    let toolset = geometry_screenshot_toolset();
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(geometry_screenshot_model(
+        GeometryRunOutcome::Completed,
+    )))
+    .durable_session_id(session_id.clone())
+    .session_store(store.clone())
+    .stream_archive(archive.clone())
+    .replay_event_log(Arc::new(FailingReplayEventLog))
+    .toolset(&toolset)
+    .build();
+
+    let mut handle = runtime.stream_with_stream_options(
+        "complete geometry sentinel run",
+        AgentStreamOptions::new()
+            .buffer_size(1)
+            .drop_policy(AgentStreamDropPolicy::Backpressure),
+    );
+    let mut live_events = Vec::new();
+    while let Some(record) = handle.recv().await {
+        live_events.push(record);
+    }
+    let result = runtime
+        .finish_stream("complete geometry sentinel run", handle)
+        .await
+        .unwrap();
+
+    assert_eq!(result.result.state.status, RunStatus::Completed);
+    assert!(
+        serde_json::to_string(&result.events)
+            .unwrap()
+            .contains(GEOMETRY_SCREENSHOT_SENTINEL)
+    );
+    assert_geometry_sentinel_durable_surfaces(
+        store.as_ref(),
+        archive.as_ref(),
+        &session_id,
+        &result.result.state.run_id,
+        &live_events,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn runtime_failed_persistence_strips_geometry_screenshot_from_all_durable_records() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let archive = Arc::new(InMemoryStreamArchive::new());
+    let session_id = SessionId::from_string("session-geometry-durable-failed");
+    let toolset = geometry_screenshot_toolset();
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(geometry_screenshot_model(
+        GeometryRunOutcome::Failed,
+    )))
+    .durable_session_id(session_id.clone())
+    .session_store(store.clone())
+    .stream_archive(archive.clone())
+    .replay_event_log(Arc::new(FailingReplayEventLog))
+    .toolset(&toolset)
+    .build();
+
+    let mut handle = runtime.stream_with_stream_options(
+        "fail geometry sentinel run",
+        AgentStreamOptions::new()
+            .buffer_size(1)
+            .drop_policy(AgentStreamDropPolicy::Backpressure),
+    );
+    let mut live_events = Vec::new();
+    while let Some(record) = handle.recv().await {
+        live_events.push(record);
+    }
+    runtime
+        .finish_stream("fail geometry sentinel run", handle)
+        .await
+        .unwrap_err();
+
+    let run_id = runtime.export_full_state().run_id.unwrap();
+    let run = store.load_run(&session_id, &run_id).await.unwrap();
+    assert_eq!(run.status, SessionRunStatus::Failed);
+    assert_geometry_sentinel_durable_surfaces(
+        store.as_ref(),
+        archive.as_ref(),
+        &session_id,
+        &run_id,
+        &live_events,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn runtime_cancelled_persistence_strips_geometry_screenshot_from_all_durable_records() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let archive = Arc::new(InMemoryStreamArchive::new());
+    let session_id = SessionId::from_string("session-geometry-durable-cancelled");
+    let toolset = geometry_screenshot_toolset();
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(geometry_screenshot_model(
+        GeometryRunOutcome::Cancelled,
+    )))
+    .durable_session_id(session_id.clone())
+    .session_store(store.clone())
+    .stream_archive(archive.clone())
+    .replay_event_log(Arc::new(FailingReplayEventLog))
+    .toolset(&toolset)
+    .build();
+
+    let mut handle = runtime.stream_with_stream_options(
+        "cancel geometry sentinel run",
+        AgentStreamOptions::new()
+            .buffer_size(1)
+            .drop_policy(AgentStreamDropPolicy::Backpressure),
+    );
+    let mut live_events = Vec::new();
+    while let Some(record) = handle.recv().await {
+        let has_screenshot = matches!(record.event, AgentStreamEvent::ToolReturn { .. });
+        live_events.push(record);
+        if has_screenshot {
+            handle.interrupt();
+            break;
+        }
+    }
+    while let Some(record) = handle.recv().await {
+        live_events.push(record);
+    }
+    runtime
+        .finish_stream("cancel geometry sentinel run", handle)
+        .await
+        .unwrap_err();
+
+    let run_id = runtime.export_full_state().run_id.unwrap();
+    let run = store.load_run(&session_id, &run_id).await.unwrap();
+    assert_eq!(run.status, SessionRunStatus::Cancelled);
+    assert_geometry_sentinel_durable_surfaces(
+        store.as_ref(),
+        archive.as_ref(),
+        &session_id,
+        &run_id,
+        &live_events,
+    )
+    .await;
 }
 
 #[tokio::test]

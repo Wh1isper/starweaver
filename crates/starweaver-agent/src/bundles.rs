@@ -1,5 +1,6 @@
 //! First-party SDK tool bundles.
 
+mod computer_use;
 mod context_tools;
 mod environment;
 mod helpers;
@@ -15,6 +16,13 @@ use std::sync::Arc;
 
 use starweaver_tools::{DynToolset, PrefixedToolset};
 
+pub use computer_use::{
+    COMPUTER_KEYBOARD_CAPABILITY, COMPUTER_OBSERVE_CAPABILITY, COMPUTER_POINTER_CAPABILITY,
+    COMPUTER_USE_GEOMETRY_BOUND_MEDIA_KEY, ComputerKeyboardHandle, ComputerObserveHandle,
+    ComputerPointerHandle, ComputerToolTimeouts, ComputerUseAdmissionGuard,
+    ComputerUseAttachmentError, ComputerUseToolsetPolicy, InputApprovalPolicy, attach_computer_use,
+    attach_guarded_computer_use, computer_use_tools,
+};
 pub use context_tools::context_tools;
 pub use environment::{
     DEFAULT_SHELL_REVIEW_PROMPT, EnvironmentContextCapability, EnvironmentHandle,

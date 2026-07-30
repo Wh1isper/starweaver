@@ -89,6 +89,50 @@ jobs:
           path: ${{ matrix.archive }}
           if-no-files-found: error
 
+  build-computer-use-mcp:
+    name: Build Computer Use MCP (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: computer-use-mcp-${{ matrix.target }}
+
+      - name: Build observe-only MCP binary
+        run: |
+          set -euo pipefail
+          cargo build --release --locked \
+            -p starweaver-computer-use \
+            --features mcp-server \
+            --bin starweaver-computer-use-mcp \
+            --target "${{ matrix.target }}"
+          binary="target/${{ matrix.target }}/release/starweaver-computer-use-mcp"
+          archive="starweaver-computer-use-mcp-${{ github.event.release.tag_name }}-${{ matrix.target }}.tar.gz"
+          mkdir -p dist
+          cp "$binary" dist/starweaver-computer-use-mcp
+          tar -czf "$archive" -C dist starweaver-computer-use-mcp
+
+      - name: Upload Computer Use MCP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: starweaver-computer-use-mcp-${{ github.event.release.tag_name }}-${{ matrix.target }}.tar.gz
+          path: starweaver-computer-use-mcp-${{ github.event.release.tag_name }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
   # Desktop-managed runtime updates are paused while Desktop remains WIP.
   build-runtime-update-artifacts:
     name: Build independent RPC runtime update artifacts
@@ -432,13 +476,20 @@ jobs:
 
   upload-core-assets:
     name: Upload core release assets
-    needs: [build-binaries, build-protocol-artifacts, build-python-sdist, build-python-wheels]
+    needs: [build-binaries, build-computer-use-mcp, build-protocol-artifacts, build-python-sdist, build-python-wheels]
     runs-on: ubuntu-latest
     steps:
       - name: Download CLI archives
         uses: actions/download-artifact@v4
         with:
           pattern: starweaver-cli-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download Computer Use MCP archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: starweaver-computer-use-mcp-*
           path: dist
           merge-multiple: true
 

@@ -10,7 +10,8 @@ elif command -v id >/dev/null 2>&1 && [ "$(id -u)" = "0" ]; then
 else
   INSTALL_DIR="$HOME/.local/bin"
 fi
-COMPONENTS="${STARWEAVER_COMPONENTS:-cli}"
+REQUESTED_COMPONENTS="${STARWEAVER_COMPONENTS:-}"
+EXCLUDED_COMPONENTS="${STARWEAVER_EXCLUDE_COMPONENTS:-}"
 NO_MODIFY_PATH="${STARWEAVER_NO_MODIFY_PATH:-0}"
 TMP_DIR="${TMPDIR:-/tmp}/starweaver-install-$$"
 
@@ -138,6 +139,17 @@ install_required_file() {
   log "installed $dst"
 }
 
+write_component_version() {
+  component="$1"
+  tag="$2"
+  manifest="$INSTALL_DIR/.starweaver-$component.version"
+  tmp="$INSTALL_DIR/.$(basename "$manifest").tmp.$$"
+  version="${tag#v}"
+  printf '%s\n' "$version" > "$tmp" || { rm -f "$tmp"; fail "failed to stage component version: $component"; }
+  chmod 0644 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$manifest" || { rm -f "$tmp"; fail "failed to record component version: $component"; }
+}
+
 ensure_path_hint() {
   case ":$PATH:" in
     *":$INSTALL_DIR:"*) return ;;
@@ -172,14 +184,46 @@ ensure_path_hint() {
   fi
 }
 
+normalize_component() {
+  case "$1" in
+    cli|starweaver-cli) printf 'cli\n' ;;
+    computer-use|computer-use-mcp|starweaver-computer-use-mcp) printf 'computer-use\n' ;;
+    *) fail "unknown component: $1" ;;
+  esac
+}
+
+component_is_excluded() {
+  candidate="$1"
+  [ -n "$EXCLUDED_COMPONENTS" ] || return 1
+  excluded_old_ifs="$IFS"
+  IFS=','
+  set -- $EXCLUDED_COMPONENTS
+  IFS="$excluded_old_ifs"
+  for excluded do
+    normalized_excluded="$(normalize_component "$excluded")"
+    if [ "$candidate" = "$normalized_excluded" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 install_component() {
   component="$1"
   target="$2"
   tag="$3"
   case "$component" in
-    cli|starweaver-cli)
+    cli)
       asset="starweaver-cli-$tag-$target"
       install_names="starweaver starweaver-cli sw starweaver-rpc"
+      ;;
+    computer-use)
+      case "$target" in
+        *-apple-darwin) ;;
+        *) fail "Computer Use MCP release binaries are currently available only for macOS" ;;
+      esac
+      asset="starweaver-computer-use-mcp-$tag-$target"
+      install_names="starweaver-computer-use-mcp"
       ;;
     *) fail "unknown component: $component" ;;
   esac
@@ -204,12 +248,13 @@ install_component() {
       *) install_required_file "$name" "$extract_dir/$name" ;;
     esac
   done
-  if [ "$component" = "cli" ] || [ "$component" = "starweaver-cli" ]; then
+  if [ "$component" = "cli" ]; then
     if [ -f "$INSTALL_DIR/starweaver" ]; then
       rm -f "$INSTALL_DIR/sw"
       ln -s "starweaver" "$INSTALL_DIR/sw" 2>/dev/null || cp "$INSTALL_DIR/starweaver" "$INSTALL_DIR/sw"
     fi
   fi
+  write_component_version "$component" "$tag"
 }
 
 main() {
@@ -217,14 +262,27 @@ main() {
   tag="$(resolve_version)"
   [ -n "$tag" ] || fail "could not resolve latest release tag"
   target="$(detect_target)"
+  if [ -n "$REQUESTED_COMPONENTS" ]; then
+    components="$REQUESTED_COMPONENTS"
+  else
+    case "$target" in
+      *-apple-darwin) components="cli,computer-use" ;;
+      *) components="cli" ;;
+    esac
+  fi
   mkdir -p "$TMP_DIR" "$INSTALL_DIR"
   trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
   old_ifs="$IFS"
   IFS=','
-  set -- $COMPONENTS
+  set -- $components
   IFS="$old_ifs"
   for component do
-    install_component "$component" "$target" "$tag"
+    normalized="$(normalize_component "$component")"
+    if component_is_excluded "$normalized"; then
+      log "skipping excluded component $normalized"
+      continue
+    fi
+    install_component "$normalized" "$target" "$tag"
   done
   ensure_path_hint
   log "starweaver installed from $tag"

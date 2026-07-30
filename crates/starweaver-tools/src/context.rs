@@ -8,6 +8,9 @@ use starweaver_core::{
     CancellationToken, ConversationId, Metadata, RunAttachments, RunId, TraceContext,
 };
 
+#[derive(Clone, Debug)]
+struct ToolCallIdentity(String);
+
 /// Inline approval state attached by runtime capability hooks.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -92,9 +95,28 @@ impl ToolContext {
         }
     }
 
-    /// Attach dependency store.
+    /// Attach the stable identifier of the exact tool call.
     #[must_use]
-    pub fn with_dependencies(mut self, dependencies: DependencyStore) -> Self {
+    pub fn with_tool_call_id(mut self, tool_call_id: impl Into<String>) -> Self {
+        self.dependencies
+            .insert(ToolCallIdentity(tool_call_id.into()));
+        self
+    }
+
+    /// Return the stable identifier of the exact tool call, when attached by the runtime.
+    #[must_use]
+    pub fn tool_call_id(&self) -> Option<String> {
+        self.dependencies
+            .get::<ToolCallIdentity>()
+            .map(|identity| identity.0.clone())
+    }
+
+    /// Attach dependency store while preserving runtime-owned invocation identity.
+    #[must_use]
+    pub fn with_dependencies(mut self, mut dependencies: DependencyStore) -> Self {
+        if let Some(tool_call_id) = self.tool_call_id() {
+            dependencies.insert(ToolCallIdentity(tool_call_id));
+        }
         self.dependencies = dependencies;
         self
     }

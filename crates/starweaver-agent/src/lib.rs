@@ -17,13 +17,15 @@ pub mod subagent_config;
 pub mod prelude {
     pub use crate::{
         AgentBuilder, AgentError, AgentResult, AgentRuntime, AgentRuntimeBuilder, AgentSession,
-        AgentStreamResult, ContentPart, DynModelAdapter, FunctionTool, ModelSettings, OutputSchema,
-        OutputValue, TestModel, ToolContext, ToolError, ToolResult, typed_tool,
+        AgentStreamResult, ComputerUseToolsetPolicy, ContentPart, DynModelAdapter, FunctionTool,
+        ModelSettings, OutputSchema, OutputValue, TestModel, ToolContext, ToolError, ToolResult,
+        attach_computer_use, attach_guarded_computer_use, computer_use_tools, typed_tool,
     };
 }
 
 /// Advanced protocol crates re-exported only at their explicit owning-layer namespaces.
 pub mod advanced {
+    pub use starweaver_computer_use as computer_use;
     pub use starweaver_context as context;
     pub use starweaver_model as model;
     pub use starweaver_runtime as runtime;
@@ -40,11 +42,15 @@ use starweaver_runtime::Agent as RuntimeAgent;
 pub use bundles::{
     ASK_USER_QUESTION_TOOL_NAME, AgentSessionControl, AgentSessionControlHandle, AgentSessionQuery,
     AgentSessionQueryHandle, AskUserQuestionArgs, AskUserQuestionResult,
-    CLARIFYING_ANSWERS_METADATA_KEY, CLARIFYING_QUESTIONS_REQUEST_KIND, ClarifyingQuestion,
-    ClarifyingQuestionAnswers, ClarifyingQuestionOption, DEFAULT_SHELL_REVIEW_PROMPT,
-    EnvironmentContextCapability, EnvironmentHandle, HostMediaCapabilities,
-    HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle, HostScrapeClient,
-    HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle, MediaUnderstandingRequest,
+    CLARIFYING_ANSWERS_METADATA_KEY, CLARIFYING_QUESTIONS_REQUEST_KIND,
+    COMPUTER_KEYBOARD_CAPABILITY, COMPUTER_OBSERVE_CAPABILITY, COMPUTER_POINTER_CAPABILITY,
+    COMPUTER_USE_GEOMETRY_BOUND_MEDIA_KEY, ClarifyingQuestion, ClarifyingQuestionAnswers,
+    ClarifyingQuestionOption, ComputerKeyboardHandle, ComputerObserveHandle, ComputerPointerHandle,
+    ComputerToolTimeouts, ComputerUseAdmissionGuard, ComputerUseAttachmentError,
+    ComputerUseToolsetPolicy, DEFAULT_SHELL_REVIEW_PROMPT, EnvironmentContextCapability,
+    EnvironmentHandle, HostMediaCapabilities, HostMediaUnderstandingClient,
+    HostMediaUnderstandingClientHandle, HostScrapeClient, HostScrapeClientHandle, HostSearchClient,
+    HostSearchClientHandle, InputApprovalPolicy, MediaUnderstandingRequest,
     MediaUnderstandingResponse, ProcessShellHandle, RuntimeContextCapability,
     SKILL_ACTIVATION_EVENT_KIND, SKILL_RELOAD_EVENT_KIND, SKILL_SCAN_EVENT_KIND, ScrapeRequest,
     ScrapeResponse, SearchRequest, SearchResponse, SearchResultItem, ShellReviewAction,
@@ -56,9 +62,10 @@ pub use bundles::{
     SkillScanDiagnosticKind, SkillScanReport, SkillScheduledReloadResult, SkillSourceKind,
     SkillSourceScope, ToolProxyNamePrefixError, ToolProxyToolset, agent_session_control_tools,
     agent_session_query_tools, attach_agent_session_control, attach_agent_session_query,
-    attach_environment, attach_process_shell, attach_shell_review, attach_shell_review_handle,
-    context_tools, core_toolsets, dynamic_tool_proxy, environment_toolsets, filesystem_tools,
-    host_io_tools, namespaced_toolset, normalize_clarifying_question_answers, parse_skill_markdown,
+    attach_computer_use, attach_environment, attach_guarded_computer_use, attach_process_shell,
+    attach_shell_review, attach_shell_review_handle, computer_use_tools, context_tools,
+    core_toolsets, dynamic_tool_proxy, environment_toolsets, filesystem_tools, host_io_tools,
+    namespaced_toolset, normalize_clarifying_question_answers, parse_skill_markdown,
     process_shell_toolsets, resolve_clarifying_question_answers, shell_tools, skill_tools,
     task_tools, user_input_tools,
 };

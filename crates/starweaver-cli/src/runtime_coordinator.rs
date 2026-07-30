@@ -23,6 +23,7 @@ use starweaver_runtime::AgentStreamRecord;
 use crate::{
     CliError, CliResult, CliService,
     args::RunCommand,
+    computer_use::CliComputerUseCoordinator,
     config::CliConfig,
     prompt_input::PromptInput,
     runner::{CliAgentExecutionHost, CliSteeringChannel, CliSteeringMessage},
@@ -54,6 +55,7 @@ pub(super) struct CliRuntimeCoordinator {
     active_runs: Arc<Mutex<HashMap<String, ActiveRunControl>>>,
     worker_handles: Arc<Mutex<Vec<BackgroundWorkerHandle>>>,
     interactive_host: Arc<CliInteractiveExecutionHost>,
+    computer_use: Option<CliComputerUseCoordinator>,
     closing: Arc<AtomicBool>,
 }
 
@@ -286,6 +288,7 @@ impl CliInteractiveExecutionHost {
 
 struct BackgroundRunWorker {
     config: CliConfig,
+    computer_use: Option<CliComputerUseCoordinator>,
     active_runs: Arc<Mutex<HashMap<String, ActiveRunControl>>>,
     interactive_host: Arc<CliInteractiveExecutionHost>,
     command: RunCommand,
@@ -300,16 +303,7 @@ struct BackgroundRunWorker {
 impl BackgroundRunWorker {
     #[allow(clippy::too_many_lines)]
     fn run(self) {
-        let mut service = match CliService::open(self.config) {
-            Ok(service) => service,
-            Err(error) => {
-                let _ = self
-                    .event_sender
-                    .send(RunStreamEvent::StartFailed(error.to_string()));
-                remove_active_run(&self.active_runs, &self.control_id);
-                return;
-            }
-        };
+        let mut service = CliService::open_with_computer_use(self.config, self.computer_use);
         let mut prepared = match service.prepare_prompt_run(&self.command, self.prompt_input) {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -418,12 +412,16 @@ impl BackgroundRunWorker {
 }
 
 impl CliRuntimeCoordinator {
-    pub(super) fn new(config: CliConfig) -> CliResult<Self> {
+    pub(super) fn new(
+        config: CliConfig,
+        computer_use: Option<CliComputerUseCoordinator>,
+    ) -> CliResult<Self> {
         Ok(Self {
             config,
             active_runs: Arc::new(Mutex::new(HashMap::new())),
             worker_handles: Arc::new(Mutex::new(Vec::new())),
             interactive_host: Arc::new(CliInteractiveExecutionHost::new()?),
+            computer_use,
             closing: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -456,6 +454,7 @@ impl CliRuntimeCoordinator {
             );
         let worker = BackgroundRunWorker {
             config: self.config.clone(),
+            computer_use: self.computer_use.clone(),
             active_runs: Arc::clone(&self.active_runs),
             interactive_host: Arc::clone(&self.interactive_host),
             command,
@@ -541,11 +540,25 @@ impl CliRuntimeCoordinator {
             .interactive_host
             .shutdown(deadline.saturating_duration_since(std::time::Instant::now()));
         let worker_result = drain_worker_handles_until(&self.worker_handles, deadline);
-        match (supervisor_result, worker_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(supervisor), Ok(())) => Err(CliError::Run(supervisor)),
-            (Ok(()), Err(worker)) => Err(CliError::Run(worker)),
-            (Err(supervisor), Err(worker)) => Err(CliError::Run(format!("{supervisor}; {worker}"))),
+        let computer_use_result = self.computer_use.as_ref().map_or(Ok(()), |coordinator| {
+            coordinator.shutdown_with_timeout(
+                deadline.saturating_duration_since(std::time::Instant::now()),
+            )
+        });
+        let mut errors = Vec::new();
+        if let Err(error) = supervisor_result {
+            errors.push(error);
+        }
+        if let Err(error) = worker_result {
+            errors.push(error);
+        }
+        if let Err(error) = computer_use_result {
+            errors.push(error.to_string());
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(CliError::Run(errors.join("; ")))
         }
     }
 

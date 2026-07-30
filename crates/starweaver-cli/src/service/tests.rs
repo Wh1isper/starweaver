@@ -3,6 +3,7 @@
 use chrono::Utc;
 use serde_json::json;
 use starweaver_core::{AgentId, RunId, SessionId, TaskId};
+use starweaver_model::ToolReturnPart;
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, AgentStreamSource};
 use starweaver_session::{
     ApprovalRecord, DeferredToolRecord, ExecutionStatus, RunStatus, SessionDeletionFence,
@@ -329,6 +330,121 @@ fn test_config(root: &Path) -> CliConfig {
     crate::ConfigResolver::for_tests(root)
         .resolve(&cli)
         .unwrap()
+}
+
+const CLI_SCREENSHOT_SENTINEL: &str =
+    "data:image/png;base64,Q0xJX0RVUkFCTEVfU0NSRUVOU0hPVF9TRU5USU5FTA==";
+
+fn geometry_screenshot_record() -> AgentStreamRecord {
+    AgentStreamRecord::new(
+        4,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                "call-cli-screenshot",
+                "computer_observe",
+                json!({"observation_id": "observation-cli"}),
+            )
+            .with_private_metadata(serde_json::Map::from_iter([
+                (
+                    "starweaver_geometry_bound_immutable_media".to_string(),
+                    json!(true),
+                ),
+                (
+                    "starweaver_tool_return_content_parts".to_string(),
+                    json!([{
+                        "kind": "data_url",
+                        "data_url": CLI_SCREENSHOT_SENTINEL,
+                        "media_type": "image/png"
+                    }]),
+                ),
+                ("durable_audit_marker".to_string(), json!("retained")),
+            ])),
+        },
+    )
+}
+
+fn persist_projected_screenshot_fixture(
+    root: &Path,
+) -> (CliConfig, SessionId, RunId, Vec<AgentStreamRecord>) {
+    let config = test_config(root);
+    let mut store = LocalStore::open(&config).unwrap();
+    let session = store
+        .create_session("general", Some("Screenshot projection".to_string()))
+        .unwrap();
+    let mut run = store
+        .append_run(
+            session.session_id.as_str(),
+            "observe".to_string(),
+            None,
+            "general",
+        )
+        .unwrap();
+    let live_records = vec![geometry_screenshot_record()];
+    store
+        .complete_run(
+            &mut run,
+            "done".to_string(),
+            crate::local_store::RunArtifacts {
+                state: starweaver_context::ResumableState::default(),
+                environment_state: None,
+                raw_records: live_records.clone(),
+                checkpoints: Vec::new(),
+                display_messages: Vec::new(),
+                display_snapshot: starweaver_stream::ReplaySnapshot::default(),
+                approvals: Vec::new(),
+                deferred_tools: Vec::new(),
+                status: RunStatus::Completed,
+                terminal_error: None,
+            },
+        )
+        .unwrap();
+    (config, session.session_id, run.run_id, live_records)
+}
+
+#[test]
+fn cli_sqlite_raw_stream_excludes_geometry_screenshot_data_url() {
+    let temp = tempfile::tempdir().unwrap();
+    let (config, session_id, run_id, live_records) =
+        persist_projected_screenshot_fixture(temp.path());
+
+    let persisted = starweaver_storage::SqliteStorage::open(&config.database_path)
+        .unwrap()
+        .load_stream_records(&session_id, &run_id)
+        .unwrap();
+    let persisted_json = serde_json::to_string(&persisted).unwrap();
+    assert!(!persisted_json.contains(CLI_SCREENSHOT_SENTINEL));
+    assert!(persisted_json.contains("durable_audit_marker"));
+    assert!(
+        serde_json::to_string(&live_records)
+            .unwrap()
+            .contains(CLI_SCREENSHOT_SENTINEL),
+        "durable projection must not mutate CLI live stream records"
+    );
+}
+
+#[test]
+fn cli_raw_stream_json_excludes_geometry_screenshot_data_url() {
+    let temp = tempfile::tempdir().unwrap();
+    let (config, session_id, run_id, live_records) =
+        persist_projected_screenshot_fixture(temp.path());
+
+    let raw_path = config
+        .file_store_path
+        .join("sessions")
+        .join(session_id.as_str())
+        .join("runs")
+        .join(run_id.as_str())
+        .join("raw.stream.json");
+    let persisted_json = std::fs::read_to_string(raw_path).unwrap();
+    assert!(!persisted_json.contains(CLI_SCREENSHOT_SENTINEL));
+    assert!(persisted_json.contains("durable_audit_marker"));
+    assert!(
+        serde_json::to_string(&live_records)
+            .unwrap()
+            .contains(CLI_SCREENSHOT_SENTINEL),
+        "durable projection must not mutate CLI live stream records"
+    );
 }
 
 fn test_run_command(

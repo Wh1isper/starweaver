@@ -31,6 +31,7 @@ sha2.workspace = true
 starweaver-agent.workspace = true
 starweaver-context.workspace = true
 starweaver-core.workspace = true
+starweaver-computer-use.workspace = true
 starweaver-environment.workspace = true
 starweaver-envd-client.workspace = true
 starweaver-envd-core.workspace = true

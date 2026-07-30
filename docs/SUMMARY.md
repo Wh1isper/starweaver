@@ -9,6 +9,7 @@
 - [Quickstart](quickstart.md)
 - [Testing](testing.md)
 - [CLI](cli.md)
+- [Computer Use](computer-use.md)
 - [Release](release.md)
 
 # Build Agents
