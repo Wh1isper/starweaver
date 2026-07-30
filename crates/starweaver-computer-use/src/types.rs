@@ -118,7 +118,7 @@ pub struct ComputerUseContractVersion {
 }
 
 impl ComputerUseContractVersion {
-    pub const V1: Self = Self { major: 1, minor: 0 };
+    pub const V1: Self = Self { major: 1, minor: 1 };
 }
 
 /// Version of the canonical function-tool catalog.
@@ -129,7 +129,7 @@ pub struct ToolCatalogVersion {
 }
 
 impl ToolCatalogVersion {
-    pub const V1: Self = Self { major: 1, minor: 0 };
+    pub const V1: Self = Self { major: 1, minor: 1 };
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -184,7 +184,8 @@ impl EffectiveComputerCapabilities {
             observe: self.observe && grant.observe,
             pointer: self.pointer && grant.pointer && grant.observe,
             keyboard: self.keyboard && grant.keyboard && grant.observe,
-            accessibility_snapshot: self.accessibility_snapshot
+            accessibility_snapshot: self.observe
+                && self.accessibility_snapshot
                 && grant.accessibility_snapshot
                 && grant.observe,
         }
@@ -497,9 +498,30 @@ pub struct EncodedDesktopImage {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AccessibilitySnapshot {
     pub generation: AccessibilityGeneration,
+    pub captured_at_monotonic_ms: u64,
     pub nodes: Vec<AccessibilityNode>,
     pub truncated: bool,
-    pub truncation_reasons: Vec<String>,
+    pub truncation_reasons: Vec<AccessibilityTruncationReason>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessibilityTruncationReason {
+    NodeLimit,
+    DepthLimit,
+    ChildLimit,
+    StringLimit,
+    TotalStringLimit,
+    TimeLimit,
+    AttributeUnavailable,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AccessibilityState {
+    pub enabled: Option<bool>,
+    pub focused: Option<bool>,
+    pub selected: Option<bool>,
+    pub protected: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -509,6 +531,7 @@ pub struct AccessibilityNode {
     pub role: String,
     pub name: Option<String>,
     pub value_summary: Option<String>,
+    pub state: AccessibilityState,
     pub model_bounds: Option<ModelRect>,
 }
 
@@ -856,11 +879,47 @@ pub struct IdempotencyPolicy {
     pub max_entries: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PermissionPromptPolicy {
+    pub capture_on_open: bool,
+    pub accessibility_on_observe: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct AccessibilityPolicy {
+    pub max_nodes: usize,
+    pub max_depth: usize,
+    pub max_children_per_node: usize,
+    pub max_string_bytes: usize,
+    pub max_total_string_bytes: usize,
+    pub capture_timeout: Duration,
+    pub messaging_timeout: Duration,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PermissionRequest {
+    #[serde(default)]
+    pub screen_recording: bool,
+    #[serde(default)]
+    pub accessibility: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PermissionRequestOutcome {
+    pub requested: PermissionRequest,
+    pub permissions: PermissionReport,
+    pub effective_capabilities: EffectiveComputerCapabilities,
+    pub diagnostics_code: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct ComputerUsePolicy {
     pub desktop_scope: DesktopSurfaceScope,
     pub allowed_capabilities: ComputerCapabilityGrant,
+    pub permission_prompts: PermissionPromptPolicy,
     pub screenshot: ScreenshotPolicy,
+    pub accessibility: AccessibilityPolicy,
     pub action: ActionPolicy,
     pub queue_wait_timeout: Duration,
     pub operation_timeout: Duration,
@@ -881,11 +940,21 @@ impl Default for ComputerUsePolicy {
                 keyboard: false,
                 accessibility_snapshot: false,
             },
+            permission_prompts: PermissionPromptPolicy::default(),
             screenshot: ScreenshotPolicy {
                 max_width: 4096,
                 max_height: 4096,
                 max_pixels: 16_777_216,
                 max_encoded_bytes: 16 * 1024 * 1024,
+            },
+            accessibility: AccessibilityPolicy {
+                max_nodes: 512,
+                max_depth: 12,
+                max_children_per_node: 64,
+                max_string_bytes: 2 * 1024,
+                max_total_string_bytes: 128 * 1024,
+                capture_timeout: Duration::from_secs(3),
+                messaging_timeout: Duration::from_millis(250),
             },
             action: ActionPolicy {
                 max_click_count: 3,

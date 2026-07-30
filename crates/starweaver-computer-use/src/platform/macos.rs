@@ -1,25 +1,38 @@
-use std::{io::Cursor, os::unix::fs::MetadataExt as _, process::Command, sync::Mutex};
+use std::{
+    io::Cursor,
+    os::unix::fs::MetadataExt as _,
+    process::Command,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
 
 use async_trait::async_trait;
 use image::{DynamicImage, ImageFormat, RgbaImage, imageops::FilterType};
-use objc2_core_graphics::CGPreflightScreenCaptureAccess;
+use objc2_core_graphics::{CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess};
 use sha2::{Digest, Sha256};
 use starweaver_core::CancellationToken;
 use xcap::Monitor;
 
 use crate::{
-    ActiveSessionStatus, AffineTransform2D, BackendProbe, CloseReason, ComputerAction,
-    ComputerUseError, ComputerUseErrorCode, DesktopImageMime, DesktopSurfaceScope, DisplayGeometry,
-    EffectStatus, EffectiveComputerCapabilities, FrameRedactionStatus, GeometrySnapshot,
-    InputCleanupStatus, LayoutGeneration, ModelRect, NativeActionFailure, NativeActionReceipt,
-    NativeBackendKind, NativeDesktopBackend, NativeDesktopPlatform, NativeObservation, NativeRect,
-    PermissionCapabilityStatus, PermissionReport, PixelSize, RetryClassification, TargetGeneration,
-    UserPresenceStatus,
+    AccessibilityGeneration, AccessibilityPolicy, ActiveSessionStatus, AffineTransform2D,
+    BackendProbe, CloseReason, ComputerAction, ComputerUseError, ComputerUseErrorCode,
+    ComputerUsePolicy, DesktopImageMime, DesktopSurfaceScope, DisplayGeometry, EffectStatus,
+    EffectiveComputerCapabilities, FrameRedactionStatus, GeometrySnapshot, InputCleanupStatus,
+    LayoutGeneration, ModelRect, NativeActionFailure, NativeActionReceipt, NativeBackendKind,
+    NativeDesktopBackend, NativeDesktopPlatform, NativeObservation, NativeRect,
+    PermissionCapabilityStatus, PermissionPromptPolicy, PermissionReport, PermissionRequest,
+    PixelSize, RetryClassification, TargetGeneration, UserPresenceStatus,
 };
+
+use super::macos_accessibility;
 
 struct BackendState {
     topology_digest: Option<[u8; 32]>,
     layout_generation: LayoutGeneration,
+    accessibility_generation: AccessibilityGeneration,
     closed: bool,
 }
 
@@ -33,20 +46,45 @@ struct CaptureFence {
 
 pub struct MacosDesktopBackend {
     scope: DesktopSurfaceScope,
+    accessibility_policy: AccessibilityPolicy,
+    permission_prompts: PermissionPromptPolicy,
+    capture_prompt_attempted: AtomicBool,
+    accessibility_prompt_attempted: AtomicBool,
+    started_at: Instant,
     state: Mutex<BackendState>,
 }
 
 impl MacosDesktopBackend {
     #[must_use]
-    pub const fn new(scope: DesktopSurfaceScope) -> Self {
+    pub fn new(policy: &ComputerUsePolicy) -> Self {
         Self {
-            scope,
+            scope: policy.desktop_scope,
+            accessibility_policy: policy.accessibility.clone(),
+            permission_prompts: policy.permission_prompts,
+            capture_prompt_attempted: AtomicBool::new(false),
+            accessibility_prompt_attempted: AtomicBool::new(false),
+            started_at: Instant::now(),
             state: Mutex::new(BackendState {
                 topology_digest: None,
                 layout_generation: LayoutGeneration(1),
+                accessibility_generation: AccessibilityGeneration(0),
                 closed: false,
             }),
         }
+    }
+
+    fn next_accessibility_generation(&self) -> Result<AccessibilityGeneration, ComputerUseError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| backend_error("macOS backend state is unavailable"))?;
+        ensure_backend_open(&state)?;
+        state.accessibility_generation.0 = state.accessibility_generation.0.saturating_add(1);
+        Ok(state.accessibility_generation)
+    }
+
+    fn monotonic_ms(&self) -> u64 {
+        u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -64,6 +102,7 @@ impl MacosDesktopBackend {
             ActiveSessionStatus::Active
         };
         let capture_granted = CGPreflightScreenCaptureAccess();
+        let accessibility_granted = macos_accessibility::is_trusted();
         let (monitors, layout_generation, current_topology_digest) =
             if active_session == ActiveSessionStatus::Active {
                 let monitors = tokio::task::spawn_blocking(Monitor::all)
@@ -110,7 +149,8 @@ impl MacosDesktopBackend {
             // locally initiated resume path are implemented and accepted.
             pointer: false,
             keyboard: false,
-            accessibility_snapshot: false,
+            accessibility_snapshot: accessibility_granted
+                && active_session == ActiveSessionStatus::Active,
         };
         let diagnostics_code = if !console.owned_by_process_user {
             "macos_console_user_mismatch"
@@ -118,8 +158,10 @@ impl MacosDesktopBackend {
             "macos_session_locked"
         } else if !capture_granted {
             "macos_screen_recording_permission_required"
+        } else if !accessibility_granted {
+            "macos_observe_ready_accessibility_permission_required"
         } else {
-            "macos_observe_ready_input_presence_guard_unavailable"
+            "macos_observe_accessibility_ready_input_presence_guard_unavailable"
         };
         let permissions = PermissionReport {
             platform: NativeDesktopPlatform::Macos,
@@ -128,18 +170,14 @@ impl MacosDesktopBackend {
             capture,
             pointer_input: PermissionCapabilityStatus::Unavailable,
             keyboard_input: PermissionCapabilityStatus::Unavailable,
-            accessibility: PermissionCapabilityStatus::Unavailable,
+            accessibility: if accessibility_granted {
+                PermissionCapabilityStatus::Granted
+            } else {
+                PermissionCapabilityStatus::Required
+            },
             user_presence: PermissionCapabilityStatus::Unavailable,
             restart_required: false,
-            remediation: if !console.owned_by_process_user {
-                vec!["Run Computer Use as the user who owns the current foreground macOS console session.".into()]
-            } else if console.locked {
-                vec!["Unlock the current macOS console session and retry from the same foreground user session.".into()]
-            } else if !capture_granted {
-                vec!["Grant Screen Recording permission to this exact executable identity in System Settings, then restart it if macOS requires a restart.".into()]
-            } else {
-                vec!["Pointer and keyboard input are disabled because no accepted production macOS UserPresenceGuard is installed.".into()]
-            },
+            remediation: permission_remediation(&console, capture_granted, accessibility_granted),
             diagnostics_code: diagnostics_code.into(),
         };
         Ok((
@@ -182,11 +220,69 @@ impl NativeDesktopBackend for MacosDesktopBackend {
         Ok(probe)
     }
 
-    async fn open(&self, cancel: CancellationToken) -> Result<BackendProbe, ComputerUseError> {
+    async fn request_permissions(
+        &self,
+        request: PermissionRequest,
+        cancel: CancellationToken,
+    ) -> Result<BackendProbe, ComputerUseError> {
+        if cancel.is_cancelled() {
+            return Err(ComputerUseError::cancelled());
+        }
+        // Permission prompts are attended side effects. Verify the foreground
+        // console-session fence before invoking either native request API.
+        let (initial_probe, _, _) = self.inspect().await?;
+        if initial_probe.permissions.active_session != ActiveSessionStatus::Active {
+            return Ok(initial_probe);
+        }
+        if request.screen_recording && !CGPreflightScreenCaptureAccess() {
+            if cancel.is_cancelled() {
+                return Err(ComputerUseError::cancelled());
+            }
+            self.capture_prompt_attempted.store(true, Ordering::Release);
+            let _immediate_result = CGRequestScreenCaptureAccess();
+        }
+        if request.accessibility && !macos_accessibility::is_trusted() {
+            if cancel.is_cancelled() {
+                return Err(ComputerUseError::cancelled());
+            }
+            // The Screen Recording request above can itself display UI or
+            // block. Re-establish attended foreground-session evidence before
+            // causing a second native permission side effect.
+            let (accessibility_fence, _, _) = self.inspect().await?;
+            if accessibility_fence.permissions.active_session != ActiveSessionStatus::Active {
+                return Ok(accessibility_fence);
+            }
+            if cancel.is_cancelled() {
+                return Err(ComputerUseError::cancelled());
+            }
+            self.accessibility_prompt_attempted
+                .store(true, Ordering::Release);
+            let _immediate_result = macos_accessibility::request_trust();
+        }
         if cancel.is_cancelled() {
             return Err(ComputerUseError::cancelled());
         }
         let (probe, _, _) = self.inspect().await?;
+        Ok(probe)
+    }
+
+    async fn open(&self, cancel: CancellationToken) -> Result<BackendProbe, ComputerUseError> {
+        if cancel.is_cancelled() {
+            return Err(ComputerUseError::cancelled());
+        }
+        let (mut probe, _, _) = self.inspect().await?;
+        if probe.permissions.active_session == ActiveSessionStatus::Active
+            && !probe.capabilities.observe
+            && self.permission_prompts.capture_on_open
+        {
+            if cancel.is_cancelled() {
+                return Err(ComputerUseError::cancelled());
+            }
+            if !self.capture_prompt_attempted.swap(true, Ordering::AcqRel) {
+                let _immediate_result = CGRequestScreenCaptureAccess();
+                (probe, _, _) = self.inspect().await?;
+            }
+        }
         match probe.permissions.active_session {
             ActiveSessionStatus::Locked => Err(ComputerUseError::new(
                 ComputerUseErrorCode::SessionLocked,
@@ -214,13 +310,6 @@ impl NativeDesktopBackend for MacosDesktopBackend {
         include_accessibility: bool,
         cancel: CancellationToken,
     ) -> Result<NativeObservation, ComputerUseError> {
-        if include_accessibility {
-            return Err(ComputerUseError::new(
-                ComputerUseErrorCode::UnsupportedCapability,
-                "macOS accessibility snapshots are not enabled in the V1 observation backend",
-                RetryClassification::Never,
-            ));
-        }
         if cancel.is_cancelled() {
             return Err(ComputerUseError::cancelled());
         }
@@ -242,17 +331,64 @@ impl NativeDesktopBackend for MacosDesktopBackend {
                 },
             );
         }
+        if include_accessibility
+            && !probe.capabilities.accessibility_snapshot
+            && self.permission_prompts.accessibility_on_observe
+        {
+            if cancel.is_cancelled() {
+                return Err(ComputerUseError::cancelled());
+            }
+            if !self
+                .accessibility_prompt_attempted
+                .swap(true, Ordering::AcqRel)
+            {
+                let _immediate_result = macos_accessibility::request_trust();
+            }
+        }
+        if include_accessibility && !macos_accessibility::is_trusted() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::PermissionRequired,
+                "Accessibility permission is required for this executable identity",
+                RetryClassification::AfterPermissionChange,
+            ));
+        }
         let scope = self.scope;
-        let native = tokio::task::spawn_blocking(move || {
+        let mut native = tokio::task::spawn_blocking(move || {
             capture_monitors(scope, monitors, capture_fence.layout_generation)
         })
         .await
         .map_err(|_| backend_error("macOS capture task failed"))??;
-        let (_, _, post_capture_fence) = self.inspect().await?;
+        if include_accessibility {
+            let policy = self.accessibility_policy.clone();
+            let geometry = native.geometry.clone();
+            let generation = self.next_accessibility_generation()?;
+            let captured_at_monotonic_ms = self.monotonic_ms();
+            native.accessibility = Some(
+                tokio::task::spawn_blocking(move || {
+                    macos_accessibility::capture(
+                        &policy,
+                        &geometry,
+                        generation,
+                        captured_at_monotonic_ms,
+                    )
+                })
+                .await
+                .map_err(|_| backend_error("macOS Accessibility capture task failed"))??,
+            );
+        }
+        let (post_capture_probe, _, post_capture_fence) = self.inspect().await?;
         validate_capture_fence(capture_fence, post_capture_fence)?;
+        if include_accessibility && !post_capture_probe.capabilities.accessibility_snapshot {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::PermissionRequired,
+                "Accessibility permission changed during capture; semantic content was discarded",
+                RetryClassification::AfterPermissionChange,
+            ));
+        }
         if cancel.is_cancelled() {
             return Err(ComputerUseError::cancelled());
         }
+        native.post_capture_probe = Some(post_capture_probe);
         Ok(native)
     }
 
@@ -379,6 +515,34 @@ fn console_session() -> Result<ConsoleSession, ComputerUseError> {
         locked,
         owned_by_process_user: console_uid == process_uid,
     })
+}
+
+fn permission_remediation(
+    console: &ConsoleSession,
+    capture_granted: bool,
+    accessibility_granted: bool,
+) -> Vec<String> {
+    if !console.owned_by_process_user {
+        return vec![
+            "Run Computer Use as the user who owns the current foreground macOS console session."
+                .into(),
+        ];
+    }
+    if console.locked {
+        return vec![
+            "Unlock the current macOS console session and retry from the same foreground user session."
+                .into(),
+        ];
+    }
+    let mut remediation = Vec::new();
+    if !capture_granted {
+        remediation.push("Grant Screen Recording permission to this exact executable identity in System Settings, then restart it if macOS requires a restart.".into());
+    }
+    if !accessibility_granted {
+        remediation.push("Grant Accessibility permission to this exact executable identity in System Settings, then retry the observation.".into());
+    }
+    remediation.push("Pointer and keyboard input are disabled because no accepted production macOS UserPresenceGuard is installed.".into());
+    remediation
 }
 
 fn validate_session_uids(console_uid: u32, process_uid: u32) -> Result<(), ComputerUseError> {
@@ -614,6 +778,7 @@ fn capture_monitors(
         // The uncertainty is explicit rather than claiming a complete frame.
         redaction: FrameRedactionStatus::Uncertain,
         accessibility: None,
+        post_capture_probe: None,
     })
 }
 

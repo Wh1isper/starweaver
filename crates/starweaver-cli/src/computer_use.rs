@@ -10,7 +10,7 @@ use starweaver_agent::{
 };
 use starweaver_computer_use::{
     CloseReason, ComputerSessionBinding, ComputerToolGrant, ComputerToolRouter, ComputerUsePolicy,
-    DesktopSurfaceScope, DynComputerUseService, current_desktop_service,
+    DesktopSurfaceScope, DynComputerUseService, PermissionPromptPolicy, current_desktop_service,
     current_desktop_tool_grant,
 };
 use starweaver_context::AgentContext;
@@ -56,7 +56,11 @@ impl CliComputerUseCoordinator {
                 observe: grant.observe,
                 pointer: false,
                 keyboard: false,
-                accessibility_snapshot: false,
+                accessibility_snapshot: true,
+            },
+            permission_prompts: PermissionPromptPolicy {
+                capture_on_open: true,
+                accessibility_on_observe: true,
             },
             ..ComputerUsePolicy::default()
         };
@@ -176,13 +180,30 @@ fn computer_use_cleanup_error(error: &str) -> CliError {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
 
     use super::*;
     use starweaver_computer_use::{
         FakeComputerUseConfig, FakeComputerUseService, InputCleanupStatus,
     };
     use starweaver_core::CancellationToken;
+
+    #[test]
+    fn enabled_composition_allows_accessibility_and_attended_prompts() {
+        let coordinator = CliComputerUseCoordinator::from_config(&CliComputerUseConfig {
+            enabled: true,
+            ..CliComputerUseConfig::default()
+        })
+        .unwrap()
+        .expect("enabled Computer Use composition");
+        let policy = coordinator.service.policy();
+
+        assert!(policy.allowed_capabilities.accessibility_snapshot);
+        assert!(policy.permission_prompts.capture_on_open);
+        assert!(policy.permission_prompts.accessibility_on_observe);
+        assert!(!coordinator.grant.pointer);
+        assert!(!coordinator.grant.keyboard);
+    }
 
     #[test]
     fn observe_only_coordinator_retains_service_and_confirms_shutdown_once() {

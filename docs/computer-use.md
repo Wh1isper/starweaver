@@ -4,33 +4,43 @@ Starweaver Computer Use observes the current local user's active interactive des
 OS-native, process-local service. On macOS, the process user must own the foreground `/dev/console`
 session; a different user, locked session, or inactive session fails closed. The current provisional observe-only boundary is deliberately narrow:
 
-| Platform | Observe current desktop                    | Pointer input                      | Keyboard input                     |
-| -------- | ------------------------------------------ | ---------------------------------- | ---------------------------------- |
-| macOS    | Available with Screen Recording permission | TBD, unavailable in release builds | TBD, unavailable in release builds |
-| Windows  | TBD, unavailable                           | TBD, unavailable                   | TBD, unavailable                   |
-| Linux    | TBD, unavailable                           | TBD, unavailable                   | TBD, unavailable                   |
+| Platform | Observe current desktop                    | Optional accessibility snapshot         | Pointer input                      | Keyboard input                     |
+| -------- | ------------------------------------------ | --------------------------------------- | ---------------------------------- | ---------------------------------- |
+| macOS    | Available with Screen Recording permission | Available with Accessibility permission | TBD, unavailable in release builds | TBD, unavailable in release builds |
+| Windows  | TBD, unavailable                           | TBD, unavailable                        | TBD, unavailable                   | TBD, unavailable                   |
+| Linux    | TBD, unavailable                           | TBD, unavailable                        | TBD, unavailable                   | TBD, unavailable                   |
 
 The capability is opt-in. It does not target a PID, window, application, remote host, hidden desktop,
 or browser session. CLI and RPC link the library in-process; they never call the MCP binary. The
 feature-gated MCP binary is only for non-Starweaver harnesses.
 
-## macOS permission
+## macOS permissions
 
-Observation requires Screen Recording permission for the exact executable identity that performs the
-capture. Inspect readiness without capturing pixels:
+Pixel observation requires Screen Recording permission, and optional accessibility snapshots require
+Accessibility permission, for the exact executable identity that performs the operation. CLI, RPC,
+and the standalone MCP binary are distinct macOS TCC identities; granting one does not grant the
+others. Inspect readiness without capturing pixels or presenting permission UI:
 
 ```bash
 starweaver-computer-use-mcp --doctor --json
 ```
 
-Print onboarding guidance:
+Explicitly request both permissions for the MCP executable:
 
 ```bash
 starweaver-computer-use-mcp --request-permissions --json
 ```
 
-Follow the reported remediation in System Settings. macOS may require restarting the executable after
-the permission changes. Status and diagnostic output contain no screenshots or desktop text.
+This attended command calls the native Screen Recording and Accessibility request APIs. Its immediate
+preflight/trust result is authoritative: displaying a prompt or opening System Settings is not a
+successful grant. Follow any reported remediation, then retry; macOS may require restarting the exact
+executable after Screen Recording changes. `--doctor`, `computer_status`, MCP initialization, and
+`tools/list` remain diagnostic-only and never present permission UI.
+
+When Computer Use is enabled in CLI or RPC, trusted product startup policy allows a one-time attended
+Screen Recording request on the first desktop open and a one-time Accessibility request on the first
+`computer_observe` with `include_accessibility = true`. The model argument only requests already
+host-authorized bounded metadata; it cannot widen policy or enable semantic actions.
 
 ## CLI in-process use
 
@@ -183,9 +193,27 @@ prompt, and unrelated private metadata. Projection clones the live state, so the
 media preparation and history filtering continue to use the exact bytes. Restoring a checkpoint never
 restores a screenshot or observation basis; the next Computer Use step must obtain a fresh observation.
 
-The service does not persist screenshots, desktop text, typed text, native handles, permission tokens,
-or live authority. Lock, user switch, display-topology change, permission loss, session replacement,
-or process mismatch fails closed.
+Optional macOS accessibility output is a breadth-first snapshot of the focused application's AX tree.
+Node count, depth, children per node, per-string bytes, total string bytes, capture deadline, and
+per-message timeout are bounded by immutable host policy. Large child arrays are fetched only up to the
+configured child limit, and native strings are converted into pre-bounded buffers. Output contains only
+bounded role, name, value summary, state, and optional model-space bounds. Secure text and
+`AXContainsProtectedContent` subtrees omit values; protection is inherited by descendants, and the
+service rejects any protected node carrying a value. PIDs, native handles, application paths, and
+unrestricted attributes are never exposed. Accessibility strings and pixels are untrusted,
+prompt-injection-capable data, not instructions or authority.
+
+Product-level Computer Use opt-in authorizes both pixel observation and the ability to request this
+bounded Accessibility snapshot; `include_accessibility` remains an explicit per-call request and native
+Accessibility permission remains independent. The configured desktop scope limits captured pixels.
+Accessibility semantics intentionally describe the whole currently focused application rather than
+pretending that an AX tree can be clipped to one display; bounds outside the captured model space are
+omitted. Choose pixel-only calls (`include_accessibility: false`) when that broader semantic scope is not
+wanted.
+
+The service does not persist screenshots, accessibility content, desktop text, typed text, native
+handles, permission tokens, or live authority. Lock, user switch, display-topology change, permission
+loss, session replacement, or process mismatch fails closed.
 
 ## Validation
 
@@ -197,6 +225,7 @@ cargo clippy -p starweaver-computer-use --all-targets --features mcp-server -- -
 make computer-use-mcp-check
 ```
 
-Native observation requires an attended macOS session and Screen Recording permission. Automated CI
-builds and validates both macOS release targets without claiming that hosted runners provide a valid
-permission grant for live pixel capture.
+Native pixel observation requires an attended macOS session and Screen Recording permission; a live
+accessibility snapshot additionally requires Accessibility permission. Automated CI builds and
+validates both macOS release targets without claiming that hosted runners provide valid TCC grants for
+live pixel or accessibility capture.

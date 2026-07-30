@@ -215,7 +215,7 @@ struct ComputerToolStructuredResult {
 }
 ```
 
-`ComputerObservationView` contains the opaque `observation_id`, safe target/layout/frame/effect generations, geometry, image metadata, capabilities, state, optional bounded accessibility metadata, and redaction status. It excludes the library-internal `ProcessInstanceId` and `ComputerSessionId`; adapters do not need to expose them because callers cite only `observation_id`. `ComputerStatusView` and receipt views similarly omit those internal IDs while retaining bounded process-local correlation and generation evidence. The observation view does not contain image bytes or a data URL. Exactly one `Image` content item accompanies a normal observation/action result.
+`ComputerObservationView` contains the opaque `observation_id`, safe target/layout/frame/effect generations, geometry, image metadata, capabilities, state, optional bounded accessibility metadata, and redaction status. The macOS accessibility projection contains only bounded role/name/value/state fields and optional model-space bounds; secure/protected values are omitted and native handles, PIDs, and application paths are excluded. It excludes the library-internal `ProcessInstanceId` and `ComputerSessionId`; adapters do not need to expose them because callers cite only `observation_id`. `ComputerStatusView` and receipt views similarly omit those internal IDs while retaining bounded process-local correlation and generation evidence. The observation view does not contain image bytes or a data URL. Exactly one `Image` content item accompanies a normal observation/action result.
 
 Before an observation is accepted, the service performs a policy-bounded full decode of the untrusted backend bytes, verifies the detected format against the declared MIME, and verifies decoded pixel dimensions against geometry. Decode width, height, pixel, allocation, and encoded-byte limits reject malformed or decompression-amplified payloads without transforming the retained bytes. A content image's dimensions, MIME, digest, and observation ID MUST then match its structured observation. Adapters validate this invariant before returning.
 
@@ -249,7 +249,7 @@ Requirements:
 - no image content;
 - MUST NOT trigger an input effect;
 - MUST NOT imply a persistent Wayland portal grant;
-- permission prompting follows trusted startup policy, not a model argument.
+- MUST NOT trigger any OS permission prompt; status is always diagnostic-only.
 
 ### 7.2 `computer_observe`
 
@@ -265,7 +265,9 @@ struct ComputerObserveInput {
 }
 ```
 
-`include_accessibility` requests only the optional bounded snapshot already allowed by host policy. It cannot enable Accessibility permission or semantic actions. If policy disables it, the router returns `capability_not_granted` or an explicit observation without accessibility according to fixed policy.
+`include_accessibility` requests only the optional bounded snapshot already allowed by immutable host policy. It cannot widen that policy or enable semantic actions. Product-level Computer Use opt-in in the maintained CLI/RPC compositions authorizes both pixel observation and the ability to make this explicit per-call semantic request; the OS Accessibility grant remains independently probed and enforced. MCP stdio uses the same host ceiling but never prompts implicitly. A trusted CLI/RPC composition may pre-authorize one attended Accessibility prompt on the first such request. If host policy disables accessibility, the service returns `policy_denied`. If permission is still absent after an allowed prompt, the immediate trust result is authoritative and the call returns a typed permission error; it does not fabricate or silently omit the requested tree.
+
+`DesktopSurfaceScope` limits pixel capture. The macOS semantic projection intentionally covers the whole currently focused application because an AX hierarchy is not display-scoped; nodes outside captured model geometry retain bounded semantics but have no model-space bounds. This broader scope is explicit host policy, never inferred from model input. Pixel-only callers keep `include_accessibility = false`.
 
 Output:
 

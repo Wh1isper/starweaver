@@ -5,7 +5,7 @@ use crate::{
     AccessibilitySnapshot, CloseReason, ComputerAction, ComputerUseError, DesktopImageMime,
     EffectStatus, EffectiveComputerCapabilities, FrameRedactionStatus, GeometrySnapshot,
     InputCleanupStatus, NativeBackendKind, NativeDesktopPlatform, NativePoint, PermissionReport,
-    StabilityCheckStatus, TargetGeneration, UserPresenceStatus,
+    PermissionRequest, StabilityCheckStatus, TargetGeneration, UserPresenceStatus,
 };
 
 #[derive(Clone, Debug)]
@@ -27,6 +27,11 @@ pub struct NativeObservation {
     pub color_space: Option<String>,
     pub redaction: FrameRedactionStatus,
     pub accessibility: Option<AccessibilitySnapshot>,
+    /// A passive probe captured by the same backend fence as this observation.
+    ///
+    /// Backends that can cheaply provide this should use it to refresh volatile
+    /// permissions without requiring the caller to request richer content.
+    pub post_capture_probe: Option<BackendProbe>,
 }
 
 #[derive(Clone, Debug)]
@@ -53,6 +58,19 @@ pub trait NativeDesktopBackend: Send + Sync {
     fn kind(&self) -> NativeBackendKind;
 
     async fn probe(&self, cancel: CancellationToken) -> Result<BackendProbe, ComputerUseError>;
+
+    /// Request attended OS permissions and return the immediate authoritative probe.
+    ///
+    /// Prompt presentation is not evidence that a permission was granted. The
+    /// returned probe always reflects the state observed immediately after the
+    /// native request APIs return.
+    async fn request_permissions(
+        &self,
+        _request: PermissionRequest,
+        cancel: CancellationToken,
+    ) -> Result<BackendProbe, ComputerUseError> {
+        self.probe(cancel).await
+    }
 
     async fn open(&self, cancel: CancellationToken) -> Result<BackendProbe, ComputerUseError>;
 

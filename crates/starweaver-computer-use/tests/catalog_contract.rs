@@ -17,6 +17,16 @@ fn checked_in_catalog_matches_generated_canonical_catalog() {
 }
 
 #[test]
+fn accessibility_schema_exposes_bounded_snapshot_metadata() {
+    let fixture = ComputerToolCatalog::canonical_fixture().to_string();
+    assert!(fixture.contains("captured_at_monotonic_ms"));
+    assert!(fixture.contains("truncation_reasons"));
+    assert!(fixture.contains("node_limit"));
+    assert!(fixture.contains("total_string_limit"));
+    assert!(fixture.contains("protected"));
+}
+
+#[test]
 fn catalog_order_and_capability_filtering_are_stable() {
     let full = ComputerToolCatalog::definitions(ComputerToolGrant {
         observe: true,

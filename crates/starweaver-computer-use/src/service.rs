@@ -26,8 +26,9 @@ use crate::{
     DynNativeDesktopBackend, EffectEpoch, EffectStatus, EffectiveComputerCapabilities,
     EncodedDesktopImage, FrameGeneration, FrameRedactionStatus, GeometrySnapshot,
     InputCleanupStatus, ObservationId, ObservationRef, ObserveRequest, OperationId,
-    OperationSequence, PauseReason, PauseReceipt, ProcessInstanceId, RetryClassification,
-    ShutdownReceipt, StabilityCheckStatus, TakeoverEpoch, UserPresenceStatus,
+    OperationSequence, PauseReason, PauseReceipt, PermissionCapabilityStatus, PermissionRequest,
+    PermissionRequestOutcome, ProcessInstanceId, RetryClassification, ShutdownReceipt,
+    StabilityCheckStatus, TakeoverEpoch, UserPresenceStatus,
 };
 
 pub type DynComputerUseService = Arc<dyn ComputerUseService>;
@@ -40,6 +41,26 @@ pub trait ComputerUseService: Send + Sync {
     fn policy(&self) -> &ComputerUsePolicy;
 
     async fn status(&self, cancel: CancellationToken) -> Result<ComputerStatus, ComputerUseError>;
+
+    /// Request attended native permissions from a trusted host path.
+    ///
+    /// This operation is intentionally absent from the model-visible tool
+    /// catalog. Its result is an immediate status observation, not proof that
+    /// the user accepted a prompt.
+    async fn request_permissions(
+        &self,
+        _request: PermissionRequest,
+        cancel: CancellationToken,
+    ) -> Result<PermissionRequestOutcome, ComputerUseError> {
+        if cancel.is_cancelled() {
+            return Err(ComputerUseError::cancelled());
+        }
+        Err(ComputerUseError::new(
+            ComputerUseErrorCode::UnsupportedCapability,
+            "this Computer Use service does not support attended permission requests",
+            RetryClassification::Never,
+        ))
+    }
 
     #[doc(hidden)]
     async fn status_with_queue_deadline(
@@ -286,6 +307,47 @@ impl ComputerUseService for LocalComputerUseService {
         .await
     }
 
+    async fn request_permissions(
+        &self,
+        request: PermissionRequest,
+        cancel: CancellationToken,
+    ) -> Result<PermissionRequestOutcome, ComputerUseError> {
+        if !request.screen_recording && !request.accessibility {
+            return Err(ComputerUseError::invalid(
+                "at least one permission must be requested",
+            ));
+        }
+        self.lifecycle.ensure_healthy()?;
+        let operation_cancel = CancellationToken::new();
+        let operation_guard =
+            BackendOperationGuard::new(self.lifecycle.clone(), operation_cancel.clone(), None);
+        let backend = self.backend.clone();
+        let task_cancel = operation_cancel.clone();
+        let task_lifecycle = self.lifecycle.clone();
+        let task = tokio::spawn(async move {
+            let _backend_guard = cancellable_backend_gate(&task_lifecycle, &task_cancel).await?;
+            task_lifecycle.ensure_healthy()?;
+            backend.request_permissions(request, task_cancel).await
+        });
+        let probe = cancellable(
+            self.policy.operation_timeout,
+            self.policy.cancellation_cleanup_timeout,
+            cancel,
+            operation_cancel,
+            operation_guard,
+            task,
+        )
+        .await?;
+        Ok(PermissionRequestOutcome {
+            requested: request,
+            permissions: probe.permissions,
+            effective_capabilities: probe
+                .capabilities
+                .intersect(self.policy.allowed_capabilities),
+            diagnostics_code: probe.diagnostics_code,
+        })
+    }
+
     async fn status_with_queue_deadline(
         &self,
         cancel: CancellationToken,
@@ -308,7 +370,7 @@ impl ComputerUseService for LocalComputerUseService {
         let task_cancel = operation_cancel.clone();
         let task_lifecycle = self.lifecycle.clone();
         let task = tokio::spawn(async move {
-            let _backend_guard = task_lifecycle.gate.lock().await;
+            let _backend_guard = cancellable_backend_gate(&task_lifecycle, &task_cancel).await?;
             task_lifecycle.ensure_healthy()?;
             backend.probe(task_cancel).await
         });
@@ -371,7 +433,7 @@ impl ComputerUseService for LocalComputerUseService {
         let task_cancel = operation_cancel.clone();
         let task_lifecycle = self.lifecycle.clone();
         let task = tokio::spawn(async move {
-            let _backend_guard = task_lifecycle.gate.lock().await;
+            let _backend_guard = cancellable_backend_gate(&task_lifecycle, &task_cancel).await?;
             task_lifecycle.ensure_healthy()?;
             backend.open(task_cancel).await
         });
@@ -569,10 +631,13 @@ impl LocalComputerSession {
                 RetryClassification::AfterPermissionChange,
             ));
         }
-        if include_accessibility && !self.capabilities().accessibility_snapshot {
+        if include_accessibility
+            && (!self.policy.allowed_capabilities.observe
+                || !self.policy.allowed_capabilities.accessibility_snapshot)
+        {
             return Err(ComputerUseError::new(
-                ComputerUseErrorCode::UnsupportedCapability,
-                "accessibility observation is not granted",
+                ComputerUseErrorCode::PolicyDenied,
+                "accessibility observation is disabled by host policy",
                 RetryClassification::Never,
             ));
         }
@@ -592,11 +657,27 @@ impl LocalComputerSession {
         let task_cancel = operation_cancel.clone();
         let task_lifecycle = self.lifecycle.clone();
         let task = tokio::spawn(async move {
-            let _backend_guard = task_lifecycle.gate.lock().await;
+            let _backend_guard = cancellable_backend_gate(&task_lifecycle, &task_cancel).await?;
             task_lifecycle.ensure_healthy()?;
-            backend.observe(include_accessibility, task_cancel).await
+            let observation = backend
+                .observe(include_accessibility, task_cancel.clone())
+                .await;
+            let permission_probe = if include_accessibility
+                && observation.as_ref().is_err_and(|error| {
+                    matches!(
+                        error.code,
+                        ComputerUseErrorCode::PermissionRequired
+                            | ComputerUseErrorCode::PermissionDenied
+                            | ComputerUseErrorCode::PermissionRestartRequired
+                    )
+                }) {
+                Some(backend.probe(task_cancel).await)
+            } else {
+                None
+            };
+            Ok((observation, permission_probe))
         });
-        let native = cancellable(
+        let outcome = cancellable(
             self.policy.operation_timeout,
             self.policy.cancellation_cleanup_timeout,
             cancel,
@@ -608,10 +689,43 @@ impl LocalComputerSession {
         if self.lifecycle.is_poisoned() {
             self.mark_unavailable(data);
         }
-        let native = match native {
-            Ok(native) => {
+        let mut native = match outcome {
+            Ok((Ok(native), _)) => {
                 data.state = previous_state;
                 native
+            }
+            Ok((Err(error), permission_probe)) => {
+                // A generic permission error is not enough to infer an
+                // Accessibility-only failure: Screen Recording can fail with
+                // the same code. Preserve the pixel
+                // session only when a fresh passive probe, taken under the
+                // same backend gate, proves pixel authority and target
+                // identity remain valid while Accessibility remains absent.
+                let fresh_accessibility_wait =
+                    permission_probe.and_then(Result::ok).filter(|probe| {
+                        include_accessibility
+                            && probe.permissions.active_session == ActiveSessionStatus::Active
+                            && probe.capabilities.observe
+                            && probe.permissions.accessibility
+                                != PermissionCapabilityStatus::Granted
+                            && probe.target_generation == data.probe.target_generation
+                    });
+                if let Some(probe) = fresh_accessibility_wait {
+                    clear_observations(data);
+                    data.probe = probe;
+                    let effective = data
+                        .probe
+                        .capabilities
+                        .intersect(self.policy.allowed_capabilities);
+                    self.capabilities_bits
+                        .store(capabilities_to_bits(effective), Ordering::Release);
+                    data.state = previous_state;
+                } else if invalidates_session(&error) {
+                    self.mark_unavailable(data);
+                } else if !self.lifecycle.is_poisoned() {
+                    data.state = previous_state;
+                }
+                return Err(error);
             }
             Err(error) => {
                 if invalidates_session(&error) {
@@ -622,6 +736,29 @@ impl LocalComputerSession {
                 return Err(error);
             }
         };
+        let post_capture_accessibility = native
+            .post_capture_probe
+            .as_ref()
+            .map(|probe| probe.capabilities.accessibility_snapshot);
+        if let Some(post_capture_probe) = native.post_capture_probe.take() {
+            if post_capture_probe.target_generation != data.probe.target_generation
+                || !post_capture_probe.capabilities.observe
+            {
+                self.mark_unavailable(data);
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::StaleTarget,
+                    "the active desktop authority changed during capture",
+                    RetryClassification::AfterFreshObservation,
+                ));
+            }
+            data.probe = post_capture_probe;
+            let effective = data
+                .probe
+                .capabilities
+                .intersect(self.policy.allowed_capabilities);
+            self.capabilities_bits
+                .store(capabilities_to_bits(effective), Ordering::Release);
+        }
         native.geometry.validate().map_err(|message| {
             ComputerUseError::new(
                 ComputerUseErrorCode::InvalidTransform,
@@ -629,6 +766,42 @@ impl LocalComputerSession {
                 RetryClassification::AfterFreshObservation,
             )
         })?;
+        match (include_accessibility, native.accessibility.as_ref()) {
+            (true, Some(snapshot)) => {
+                if post_capture_accessibility == Some(false) {
+                    self.mark_unavailable(data);
+                    return Err(ComputerUseError::new(
+                        ComputerUseErrorCode::PermissionRequired,
+                        "Accessibility authority changed during capture",
+                        RetryClassification::AfterPermissionChange,
+                    ));
+                }
+                validate_accessibility_snapshot(&self.policy, &native.geometry, snapshot)?;
+                data.probe.capabilities.accessibility_snapshot = true;
+                data.probe.permissions.accessibility = PermissionCapabilityStatus::Granted;
+                let effective = data
+                    .probe
+                    .capabilities
+                    .intersect(self.policy.allowed_capabilities);
+                self.capabilities_bits
+                    .store(capabilities_to_bits(effective), Ordering::Release);
+            }
+            (true, None) => {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "the backend omitted a requested accessibility snapshot",
+                    RetryClassification::AfterPermissionChange,
+                ));
+            }
+            (false, Some(_)) => {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::Internal,
+                    "the backend returned accessibility content without a request",
+                    RetryClassification::Never,
+                ));
+            }
+            (false, None) => {}
+        }
         validate_image_policy(&self.policy, &native)?;
         if matches!(
             native.redaction,
@@ -847,7 +1020,7 @@ impl ComputerSession for LocalComputerSession {
         let task_cancel = operation_cancel.clone();
         let task_lifecycle = self.lifecycle.clone();
         let task = tokio::spawn(async move {
-            let _backend_guard = task_lifecycle.gate.lock().await;
+            let _backend_guard = cancellable_backend_gate(&task_lifecycle, &task_cancel).await?;
             task_lifecycle.ensure_healthy()?;
             backend.probe(task_cancel).await
         });
@@ -1078,7 +1251,18 @@ impl ComputerSession for LocalComputerSession {
         let task_cancel = operation_cancel.clone();
         let task_lifecycle = self.lifecycle.clone();
         let task = tokio::spawn(async move {
-            let _backend_guard = task_lifecycle.gate.lock().await;
+            let _backend_guard = match cancellable_backend_gate(&task_lifecycle, &task_cancel).await
+            {
+                Ok(guard) => guard,
+                Err(error) => {
+                    return Err(crate::NativeActionFailure {
+                        error,
+                        effect_status: EffectStatus::NotExecuted,
+                        receipt: None,
+                        cleanup: InputCleanupStatus::NotRequired,
+                    });
+                }
+            };
             if let Err(error) = task_lifecycle.ensure_healthy() {
                 return Err(crate::NativeActionFailure {
                     error,
@@ -1297,6 +1481,17 @@ impl ComputerSession for LocalComputerSession {
                 Err(error)
             }
         }
+    }
+}
+
+async fn cancellable_backend_gate<'a>(
+    lifecycle: &'a BackendLifecycle,
+    cancel: &CancellationToken,
+) -> Result<MutexGuard<'a, ()>, ComputerUseError> {
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => Err(ComputerUseError::cancelled()),
+        guard = lifecycle.gate.lock() => Ok(guard),
     }
 }
 
@@ -1637,6 +1832,130 @@ fn backend_poisoned() -> ComputerUseError {
     )
 }
 
+#[allow(clippy::too_many_lines)]
+fn validate_accessibility_snapshot(
+    policy: &ComputerUsePolicy,
+    geometry: &GeometrySnapshot,
+    snapshot: &crate::AccessibilitySnapshot,
+) -> Result<(), ComputerUseError> {
+    let accessibility = &policy.accessibility;
+    if snapshot.nodes.len() > accessibility.max_nodes {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "accessibility snapshot exceeds the configured node budget",
+            RetryClassification::Never,
+        ));
+    }
+    if snapshot.truncated == snapshot.truncation_reasons.is_empty() {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "accessibility truncation metadata is inconsistent",
+            RetryClassification::Never,
+        ));
+    }
+
+    let mut node_states = HashMap::<u64, (usize, bool)>::with_capacity(snapshot.nodes.len());
+    let mut child_counts = HashMap::<u64, usize>::new();
+    let mut total_string_bytes = 0_usize;
+    for node in &snapshot.nodes {
+        if node.role.is_empty() || node.role.len() > accessibility.max_string_bytes {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "accessibility node role violates the configured string budget",
+                RetryClassification::Never,
+            ));
+        }
+        for value in [node.name.as_ref(), node.value_summary.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if value.len() > accessibility.max_string_bytes {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "accessibility node string exceeds the configured budget",
+                    RetryClassification::Never,
+                ));
+            }
+        }
+        total_string_bytes = total_string_bytes
+            .checked_add(node.role.len())
+            .and_then(|value| value.checked_add(node.name.as_ref().map_or(0, String::len)))
+            .and_then(|value| value.checked_add(node.value_summary.as_ref().map_or(0, String::len)))
+            .ok_or_else(|| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "accessibility string accounting overflowed",
+                    RetryClassification::Never,
+                )
+            })?;
+        if total_string_bytes > accessibility.max_total_string_bytes {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "accessibility snapshot exceeds the total string budget",
+                RetryClassification::Never,
+            ));
+        }
+        let (depth, inherited_protection) = match node.parent_local_id {
+            Some(parent) => {
+                let (parent_depth, parent_protected) =
+                    node_states.get(&parent).copied().ok_or_else(|| {
+                        ComputerUseError::new(
+                            ComputerUseErrorCode::BackendUnavailable,
+                            "accessibility parent must precede its child",
+                            RetryClassification::Never,
+                        )
+                    })?;
+                let child_count = child_counts.entry(parent).or_default();
+                *child_count = child_count.saturating_add(1);
+                if *child_count > accessibility.max_children_per_node {
+                    return Err(ComputerUseError::new(
+                        ComputerUseErrorCode::BackendUnavailable,
+                        "accessibility snapshot exceeds the per-node child budget",
+                        RetryClassification::Never,
+                    ));
+                }
+                (parent_depth + 1, parent_protected)
+            }
+            None => (0, false),
+        };
+        let effective_protection = inherited_protection || node.state.protected == Some(true);
+        if effective_protection && node.value_summary.is_some() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "protected accessibility subtrees must not expose value summaries",
+                RetryClassification::Never,
+            ));
+        }
+        if depth > accessibility.max_depth
+            || node_states
+                .insert(node.local_id, (depth, effective_protection))
+                .is_some()
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "accessibility snapshot contains invalid identity or depth",
+                RetryClassification::Never,
+            ));
+        }
+        if let Some(bounds) = node.model_bounds {
+            let right = bounds.x.checked_add(bounds.width);
+            let bottom = bounds.y.checked_add(bounds.height);
+            if bounds.width == 0
+                || bounds.height == 0
+                || right.is_none_or(|value| value > geometry.model_size_px.width)
+                || bottom.is_none_or(|value| value > geometry.model_size_px.height)
+            {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "accessibility bounds fall outside the captured model space",
+                    RetryClassification::Never,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_image_policy(
     policy: &ComputerUsePolicy,
     native: &crate::NativeObservation,
@@ -1886,16 +2205,94 @@ mod tests {
 
     use super::{
         BackendLifecycle, BackendOperationGuard, LocalComputerSession, cancellable,
-        validate_image_policy,
+        validate_accessibility_snapshot, validate_image_policy,
     };
     use crate::{
         ClickAction, CloseReason, ComputerAction, ComputerActionRequest, ComputerCapabilityGrant,
         ComputerSession, ComputerSessionState, ComputerUseError, ComputerUseErrorCode,
         ComputerUsePolicy, ComputerUseService, DesktopImageMime, EffectStatus,
         FakeComputerUseConfig, FakeNativeDesktopBackend, InputCleanupStatus,
-        LocalComputerUseService, ModelPoint, ObservationRef, ObserveRequest, OperationId,
-        PointerButton, ProcessInstanceId, RetryClassification,
+        LocalComputerUseService, ModelPoint, NativeDesktopBackend, ObservationRef, ObserveRequest,
+        OperationId, PermissionRequest, PointerButton, ProcessInstanceId, RetryClassification,
     };
+
+    #[tokio::test]
+    async fn protected_accessibility_value_is_rejected_at_service_boundary() {
+        let mut policy = ComputerUsePolicy::default();
+        policy.allowed_capabilities.accessibility_snapshot = true;
+        let mut config = FakeComputerUseConfig::default();
+        config.capabilities.accessibility_snapshot = true;
+        let backend = FakeNativeDesktopBackend::new(config);
+        let mut native = backend
+            .observe(true, CancellationToken::new())
+            .await
+            .expect("fake Accessibility observation should succeed");
+        let snapshot = native
+            .accessibility
+            .as_mut()
+            .expect("fake Accessibility snapshot should be present");
+        snapshot.nodes[0].state.protected = Some(true);
+        snapshot.nodes[0].value_summary = Some("must not escape".into());
+
+        let error = validate_accessibility_snapshot(&policy, &native.geometry, snapshot)
+            .expect_err("protected values must be rejected");
+        assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
+
+        snapshot.nodes[0].value_summary = None;
+        let mut child = snapshot.nodes[0].clone();
+        child.local_id = 2;
+        child.parent_local_id = Some(1);
+        child.state.protected = Some(false);
+        child.value_summary = Some("must not escape through a child".into());
+        snapshot.nodes.push(child);
+        let error = validate_accessibility_snapshot(&policy, &native.geometry, snapshot)
+            .expect_err("ancestor protection must be inherited by the validator");
+        assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
+    }
+
+    #[tokio::test]
+    async fn queued_permission_cancellation_does_not_poison_backend_lifecycle() {
+        let backend = Arc::new(FakeNativeDesktopBackend::new(
+            FakeComputerUseConfig::default(),
+        ));
+        let service = Arc::new(LocalComputerUseService::new(
+            short_timeout_policy(),
+            backend,
+        ));
+        let gate = service.lifecycle.gate.clone();
+        let held_gate = gate.lock().await;
+        let cancel = CancellationToken::new();
+        let request = {
+            let service = service.clone();
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                service
+                    .request_permissions(
+                        PermissionRequest {
+                            screen_recording: true,
+                            accessibility: true,
+                        },
+                        cancel,
+                    )
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        cancel.cancel();
+        let error = tokio::time::timeout(Duration::from_millis(100), request)
+            .await
+            .expect("queued permission request should cancel promptly")
+            .expect("permission task should not panic")
+            .expect_err("queued permission request should be cancelled");
+        assert_eq!(error.code, ComputerUseErrorCode::Cancelled);
+        assert!(!service.lifecycle.is_poisoned());
+
+        drop(held_gate);
+        service
+            .status(CancellationToken::new())
+            .await
+            .expect("backend should remain usable after queued cancellation");
+    }
 
     const WEDGE_NONE: u8 = 0;
     const WEDGE_OBSERVE: u8 = 1;

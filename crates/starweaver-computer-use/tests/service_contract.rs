@@ -6,11 +6,12 @@ use std::{sync::Arc, time::Duration};
 
 use starweaver_computer_use::{
     AffineTransform2D, COMPUTER_CLICK_TOOL, COMPUTER_OBSERVE_TOOL, ClickAction, ComputerAction,
-    ComputerActionRequest, ComputerCapabilityGrant, ComputerToolContent, ComputerToolGrant,
-    ComputerToolInvocation, ComputerToolRouter, ComputerUseErrorCode, ComputerUseFailure,
-    ComputerUsePolicy, ComputerUseService, EffectStatus, FakeComputerUseConfig,
-    FakeComputerUseService, InvocationId, InvocationSource, ModelPoint, ObservationRef,
-    ObserveRequest, OperationId, PointerButton, RetryClassification,
+    ComputerActionRequest, ComputerCapabilityGrant, ComputerSessionState, ComputerToolContent,
+    ComputerToolGrant, ComputerToolInvocation, ComputerToolRouter, ComputerUseError,
+    ComputerUseErrorCode, ComputerUseFailure, ComputerUsePolicy, ComputerUseService, EffectStatus,
+    FakeComputerUseConfig, FakeComputerUseService, InvocationId, InvocationSource, ModelPoint,
+    ObservationRef, ObserveRequest, OperationId, PermissionCapabilityStatus, PermissionRequest,
+    PointerButton, RetryClassification,
 };
 use starweaver_core::CancellationToken;
 
@@ -65,6 +66,286 @@ const fn click_request(
             modifiers: Vec::new(),
         }),
     }
+}
+
+#[tokio::test]
+async fn requested_accessibility_snapshot_is_bounded_and_structured() {
+    let mut policy = full_policy();
+    policy.allowed_capabilities.accessibility_snapshot = true;
+    let mut config = FakeComputerUseConfig::default();
+    config.capabilities.accessibility_snapshot = true;
+    let service = FakeComputerUseService::new(policy, config);
+
+    let permission = service
+        .request_permissions(
+            PermissionRequest {
+                screen_recording: true,
+                accessibility: true,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect("fake permission request should return immediate status");
+    assert_eq!(
+        permission.permissions.accessibility,
+        PermissionCapabilityStatus::Granted
+    );
+    assert!(permission.effective_capabilities.accessibility_snapshot);
+
+    let session = service
+        .open_current_desktop(CancellationToken::new())
+        .await
+        .expect("fake session should open");
+    let observation = session
+        .observe(
+            ObserveRequest {
+                operation_id: OperationId::new(),
+                include_accessibility: true,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect("accessibility observation should succeed");
+    let snapshot = observation
+        .accessibility
+        .expect("requested accessibility snapshot must be present");
+    assert_eq!(snapshot.generation.0, 1);
+    assert!(!snapshot.truncated);
+    assert_eq!(snapshot.nodes.len(), 1);
+    assert_eq!(snapshot.nodes[0].role, "AXApplication");
+    assert_eq!(snapshot.nodes[0].state.protected, Some(false));
+    assert_eq!(
+        snapshot.nodes[0]
+            .model_bounds
+            .expect("fake root bounds should be present")
+            .width,
+        320
+    );
+}
+
+#[tokio::test]
+async fn service_rejects_accessibility_snapshot_over_policy_budget() {
+    let mut policy = full_policy();
+    policy.allowed_capabilities.accessibility_snapshot = true;
+    policy.accessibility.max_nodes = 0;
+    let mut config = FakeComputerUseConfig::default();
+    config.capabilities.accessibility_snapshot = true;
+    let service = FakeComputerUseService::new(policy, config);
+    let session = service
+        .open_current_desktop(CancellationToken::new())
+        .await
+        .expect("fake session should open");
+
+    let error = session
+        .observe(
+            ObserveRequest {
+                operation_id: OperationId::new(),
+                include_accessibility: true,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("service must reject backend data over the host budget");
+    assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
+}
+
+#[tokio::test]
+async fn initial_accessibility_prompt_does_not_invalidate_pixel_session() {
+    let mut policy = full_policy();
+    policy.allowed_capabilities.accessibility_snapshot = true;
+    let service = FakeComputerUseService::new(policy, FakeComputerUseConfig::default());
+    let session = service
+        .open_current_desktop(CancellationToken::new())
+        .await
+        .expect("fake session should open");
+    service
+        .backend()
+        .fail_next_observe(ComputerUseError::new(
+            ComputerUseErrorCode::PermissionRequired,
+            "injected initial accessibility permission request",
+            RetryClassification::AfterPermissionChange,
+        ))
+        .await;
+
+    let error = session
+        .observe(
+            ObserveRequest {
+                operation_id: OperationId::new(),
+                include_accessibility: true,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("initial permission request should remain authoritative");
+    assert_eq!(error.code, ComputerUseErrorCode::PermissionRequired);
+    assert_eq!(
+        session
+            .status(CancellationToken::new())
+            .await
+            .expect("pixel session should remain probeable")
+            .state,
+        ComputerSessionState::ReadyControl
+    );
+}
+
+#[tokio::test]
+async fn accessibility_revocation_preserves_proven_pixel_authority() {
+    let mut policy = full_policy();
+    policy.allowed_capabilities.accessibility_snapshot = true;
+    let mut config = FakeComputerUseConfig::default();
+    config.capabilities.accessibility_snapshot = true;
+    let service = FakeComputerUseService::new(policy, config);
+    let session = service
+        .open_current_desktop(CancellationToken::new())
+        .await
+        .expect("fake session should open");
+    assert!(session.capabilities().accessibility_snapshot);
+
+    service
+        .backend()
+        .set_capabilities(starweaver_computer_use::EffectiveComputerCapabilities {
+            observe: true,
+            pointer: true,
+            keyboard: true,
+            accessibility_snapshot: false,
+        })
+        .await;
+    service
+        .backend()
+        .fail_next_observe(ComputerUseError::new(
+            ComputerUseErrorCode::PermissionRequired,
+            "injected Accessibility revocation",
+            RetryClassification::AfterPermissionChange,
+        ))
+        .await;
+
+    let error = session
+        .observe(
+            ObserveRequest {
+                operation_id: OperationId::new(),
+                include_accessibility: true,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("revoked Accessibility authority must reject semantic capture");
+    assert_eq!(error.code, ComputerUseErrorCode::PermissionRequired);
+    assert!(session.capabilities().observe);
+    assert!(!session.capabilities().accessibility_snapshot);
+    assert_eq!(
+        session
+            .status(CancellationToken::new())
+            .await
+            .expect("pixel session should remain available")
+            .state,
+        ComputerSessionState::ReadyControl
+    );
+}
+
+#[tokio::test]
+async fn generic_permission_error_invalidates_session_when_pixel_authority_was_revoked() {
+    let mut policy = full_policy();
+    policy.allowed_capabilities.accessibility_snapshot = true;
+    let service = FakeComputerUseService::new(policy, FakeComputerUseConfig::default());
+    let session = service
+        .open_current_desktop(CancellationToken::new())
+        .await
+        .expect("fake session should open");
+    service
+        .backend()
+        .set_capabilities(starweaver_computer_use::EffectiveComputerCapabilities {
+            observe: false,
+            pointer: false,
+            keyboard: false,
+            accessibility_snapshot: false,
+        })
+        .await;
+    service
+        .backend()
+        .fail_next_observe(ComputerUseError::new(
+            ComputerUseErrorCode::PermissionRequired,
+            "injected ambiguous permission loss",
+            RetryClassification::AfterPermissionChange,
+        ))
+        .await;
+
+    let error = session
+        .observe(
+            ObserveRequest {
+                operation_id: OperationId::new(),
+                include_accessibility: true,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("revoked pixel authority must invalidate the session");
+    assert_eq!(error.code, ComputerUseErrorCode::PermissionRequired);
+    assert!(!session.capabilities().observe);
+    assert_eq!(
+        session
+            .status(CancellationToken::new())
+            .await
+            .expect("invalidated session should remain inspectable")
+            .state,
+        ComputerSessionState::SessionUnavailable
+    );
+}
+
+#[tokio::test]
+async fn ordinary_observation_refreshes_revoked_accessibility_capability() {
+    let mut policy = full_policy();
+    policy.allowed_capabilities.accessibility_snapshot = true;
+    let mut config = FakeComputerUseConfig::default();
+    config.capabilities.accessibility_snapshot = true;
+    let service = FakeComputerUseService::new(policy, config);
+    let session = service
+        .open_current_desktop(CancellationToken::new())
+        .await
+        .expect("fake session should open");
+    assert!(session.capabilities().accessibility_snapshot);
+
+    service
+        .backend()
+        .set_capabilities(starweaver_computer_use::EffectiveComputerCapabilities {
+            observe: true,
+            pointer: true,
+            keyboard: true,
+            accessibility_snapshot: false,
+        })
+        .await;
+    let observation = session
+        .observe(
+            ObserveRequest {
+                operation_id: OperationId::new(),
+                include_accessibility: false,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect("pixel-only observation should remain available");
+
+    assert!(!observation.capabilities.accessibility_snapshot);
+    assert!(!session.capabilities().accessibility_snapshot);
+}
+
+#[tokio::test]
+async fn accessibility_request_cannot_widen_host_policy() {
+    let service = FakeComputerUseService::new(full_policy(), FakeComputerUseConfig::default());
+    let session = service
+        .open_current_desktop(CancellationToken::new())
+        .await
+        .expect("fake session should open");
+    let error = session
+        .observe(
+            ObserveRequest {
+                operation_id: OperationId::new(),
+                include_accessibility: true,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("accessibility must remain denied by host policy");
+    assert_eq!(error.code, ComputerUseErrorCode::PolicyDenied);
 }
 
 #[tokio::test]

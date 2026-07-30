@@ -79,7 +79,7 @@ No default mode is implied. Invoking the executable without one of these modes M
 
 ### 4.1 `--stdio`
 
-`--stdio` starts the MCP server. Server options are host-owned process configuration. The implemented observe-only release accepts `--desktop-scope`, `--allow-pointer`, `--allow-keyboard`, and `--json`; unsupported input flags cannot widen the compiled capability ceiling. The broader target surface includes:
+`--stdio` starts the MCP server. Server options are host-owned process configuration. The implemented observe-only release accepts `--desktop-scope`, `--allow-pointer`, `--allow-keyboard`, and `--json`; unsupported input flags cannot widen the compiled capability ceiling. Stdio policy permits optional bounded accessibility snapshots but fixes both implicit permission-prompt switches to false. The broader target surface includes:
 
 ```text
 --desktop-scope primary-display|visible-desktop
@@ -113,7 +113,7 @@ A future config file MAY replace or complement flags, but it MUST have a strict 
 
 ### 4.2 `--doctor`
 
-`--doctor` performs non-destructive diagnostics and emits one bounded report. It MUST NOT synthesize input. It SHOULD avoid triggering OS permission prompts unless an explicit diagnostic option says otherwise.
+`--doctor` performs non-destructive diagnostics and emits one bounded report. It MUST NOT synthesize input or trigger OS permission prompts.
 
 The report includes:
 
@@ -130,16 +130,16 @@ Machine-readable JSON SHOULD be available through an explicit option. Reports MU
 
 ### 4.3 `--request-permissions`
 
-`--request-permissions` is attended onboarding. It MAY cause platform permission UI and MUST clearly describe which process identity is requesting authority.
+`--request-permissions` is attended onboarding outside the MCP tool surface. On macOS, the implemented command invokes the native request paths for both Screen Recording and Accessibility, then emits the immediate `PermissionRequestOutcome`. It may present platform UI and MUST clearly describe which process identity is requesting authority.
 
 Platform semantics differ:
 
-- macOS MAY request or direct the user to Screen Recording and Accessibility settings, then report the immediate trust result; showing a prompt is not success;
+- macOS requests Screen Recording and Accessibility for the MCP executable identity and reports the immediate preflight/trust result; showing a prompt is not success, and a later grant requires retry/restart as reported;
 - Windows MAY perform capture-consent onboarding required by the selected backend but MUST NOT request elevation or `uiAccess`;
 - Wayland portal authority is bound to the live D-Bus client/session, so a separate onboarding invocation cannot promise reusable authority to a later server process. It MUST explain that `--stdio --permission-prompts=interactive` will perform consent in the actual MCP process;
 - X11 diagnostics MAY explain broad same-session authority but MUST NOT modify X authorization.
 
-The command MUST exit after reporting the result. It MUST NOT leave a daemon or permission broker running.
+The command MUST exit after reporting the result. JSON mode serializes the typed immediate outcome; text mode reports each permission, effective capabilities, diagnostic code, and remediation. It MUST NOT leave a daemon or permission broker running. MCP initialization, `tools/list`, `computer_status`, and ordinary stdio tool calls cannot invoke this host-only operation.
 
 ### 4.4 `--version`
 

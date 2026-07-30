@@ -7,6 +7,8 @@ use crate::{
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod macos_accessibility;
 #[cfg(not(target_os = "macos"))]
 mod unsupported;
 
@@ -15,7 +17,7 @@ mod unsupported;
 pub fn current_desktop_backend(policy: &ComputerUsePolicy) -> DynNativeDesktopBackend {
     #[cfg(target_os = "macos")]
     {
-        Arc::new(macos::MacosDesktopBackend::new(policy.desktop_scope))
+        Arc::new(macos::MacosDesktopBackend::new(policy))
     }
     #[cfg(not(target_os = "macos"))]
     {

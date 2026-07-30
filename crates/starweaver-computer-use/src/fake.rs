@@ -6,13 +6,15 @@ use starweaver_core::CancellationToken;
 use tokio::sync::Mutex;
 
 use crate::{
+    AccessibilityGeneration, AccessibilityNode, AccessibilitySnapshot, AccessibilityState,
     AffineTransform2D, BackendProbe, CloseReason, ComputerAction, ComputerUseError,
     ComputerUsePolicy, ComputerUseService, DesktopImageMime, DisplayGeometry, DynComputerSession,
     EffectStatus, EffectiveComputerCapabilities, FrameRedactionStatus, GeometrySnapshot,
     InputCleanupStatus, LayoutGeneration, LocalComputerUseService, ModelPoint, ModelRect,
     NativeActionFailure, NativeActionReceipt, NativeBackendKind, NativeDesktopBackend,
     NativeDesktopPlatform, NativeObservation, NativeRect, PermissionCapabilityStatus,
-    PermissionReport, PixelSize, StabilityCheckStatus, TargetGeneration, UserPresenceStatus,
+    PermissionReport, PermissionRequest, PermissionRequestOutcome, PixelSize, StabilityCheckStatus,
+    TargetGeneration, UserPresenceStatus,
 };
 
 #[derive(Clone, Debug)]
@@ -46,6 +48,7 @@ struct FakeState {
     config: FakeComputerUseConfig,
     target_generation: TargetGeneration,
     layout_generation: LayoutGeneration,
+    accessibility_generation: AccessibilityGeneration,
     actions: Vec<ComputerAction>,
     next_observe_error: Option<ComputerUseError>,
     next_action_failure: Option<NativeActionFailure>,
@@ -64,6 +67,7 @@ impl FakeNativeDesktopBackend {
                 config,
                 target_generation: TargetGeneration(1),
                 layout_generation: LayoutGeneration(1),
+                accessibility_generation: AccessibilityGeneration(0),
                 actions: Vec::new(),
                 next_observe_error: None,
                 next_action_failure: None,
@@ -200,13 +204,45 @@ impl NativeDesktopBackend for FakeNativeDesktopBackend {
             })?;
         let size = state.config.size;
         let geometry = fake_geometry(size, state.target_generation, state.layout_generation);
+        let accessibility = if include_accessibility {
+            state.accessibility_generation.0 = state.accessibility_generation.0.saturating_add(1);
+            Some(AccessibilitySnapshot {
+                generation: state.accessibility_generation,
+                captured_at_monotonic_ms: 0,
+                nodes: vec![AccessibilityNode {
+                    local_id: 1,
+                    parent_local_id: None,
+                    role: "AXApplication".into(),
+                    name: Some("Deterministic fake application".into()),
+                    value_summary: None,
+                    state: AccessibilityState {
+                        enabled: Some(true),
+                        focused: Some(true),
+                        selected: None,
+                        protected: Some(false),
+                    },
+                    model_bounds: Some(ModelRect {
+                        x: 0,
+                        y: 0,
+                        width: size.width,
+                        height: size.height,
+                    }),
+                }],
+                truncated: false,
+                truncation_reasons: Vec::new(),
+            })
+        } else {
+            None
+        };
+        let post_capture_probe = Some(Self::probe_from_state(&state));
         Ok(NativeObservation {
             geometry,
             mime_type: DesktopImageMime::ImagePng,
             image_bytes: encoded.into_inner(),
             color_space: Some("srgb".into()),
             redaction: FrameRedactionStatus::Complete,
-            accessibility: None,
+            accessibility,
+            post_capture_probe,
         })
     }
 
@@ -302,6 +338,14 @@ impl ComputerUseService for FakeComputerUseService {
         cancel: CancellationToken,
     ) -> Result<crate::ComputerStatus, ComputerUseError> {
         self.inner.status(cancel).await
+    }
+
+    async fn request_permissions(
+        &self,
+        request: PermissionRequest,
+        cancel: CancellationToken,
+    ) -> Result<PermissionRequestOutcome, ComputerUseError> {
+        self.inner.request_permissions(request, cancel).await
     }
 
     async fn status_with_queue_deadline(

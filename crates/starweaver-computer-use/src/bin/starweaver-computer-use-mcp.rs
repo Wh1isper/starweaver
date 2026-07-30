@@ -8,7 +8,9 @@ use serde::Serialize;
 use starweaver_computer_use::{
     BoundedStdioTransport, CloseReason, ComputerCapabilityGrant, ComputerStatus, ComputerToolGrant,
     ComputerUseContractVersion, ComputerUseMcpServer, ComputerUsePolicy, DesktopSurfaceScope,
-    McpResourceLimits, ToolCatalogVersion, current_desktop_service, current_desktop_tool_grant,
+    DynComputerUseService, McpResourceLimits, PermissionPromptPolicy, PermissionRequest,
+    PermissionRequestOutcome, ToolCatalogVersion, current_desktop_service,
+    current_desktop_tool_grant,
 };
 use starweaver_core::CancellationToken;
 
@@ -50,7 +52,7 @@ struct Args {
     #[arg(long)]
     doctor: bool,
 
-    /// Print attended permission-onboarding status and remediation.
+    /// Request attended Screen Recording and Accessibility permissions.
     #[arg(long)]
     request_permissions: bool,
 
@@ -139,22 +141,23 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let service = current_desktop_service(policy);
-    let status = service.status(CancellationToken::new()).await?;
-    let report = DiagnosticReport {
-        package_version: env!("CARGO_PKG_VERSION"),
-        build_target: env!("STARWEAVER_BUILD_TARGET"),
-        release_readiness: "provisional_unsigned_observe_only",
-        service_contract: ComputerUseContractVersion::V1,
-        tool_catalog: ToolCatalogVersion::V1,
-        effective_tool_grant: effective,
-        status,
-    };
     if args.request_permissions {
-        eprintln!(
-            "This command does not synthesize input. Follow the reported remediation for the exact executable identity, then restart if macOS requires it."
-        );
+        let outcome = request_attended_permissions(&service).await?;
+        print_permission_outcome(&outcome, args.json)?;
+    } else {
+        // Doctor is deliberately status-only: it must never invoke native prompt APIs.
+        let status = service.status(CancellationToken::new()).await?;
+        let report = DiagnosticReport {
+            package_version: env!("CARGO_PKG_VERSION"),
+            build_target: env!("STARWEAVER_BUILD_TARGET"),
+            release_readiness: "provisional_unsigned_observe_only",
+            service_contract: ComputerUseContractVersion::V1,
+            tool_catalog: ToolCatalogVersion::V1,
+            effective_tool_grant: effective,
+            status,
+        };
+        print_report(&report, args.json)?;
     }
-    print_report(&report, args.json)?;
     tokio::time::timeout(
         PROCESS_SHUTDOWN_BUDGET,
         service.shutdown(CloseReason::HostShutdown),
@@ -171,10 +174,30 @@ fn policy(args: &Args, effective: ComputerToolGrant) -> ComputerUsePolicy {
             observe: effective.observe,
             pointer: effective.pointer,
             keyboard: effective.keyboard,
-            accessibility_snapshot: false,
+            accessibility_snapshot: true,
+        },
+        // The stdio service never triggers TCC prompts implicitly. Onboarding is
+        // confined to the explicit --request-permissions host command.
+        permission_prompts: PermissionPromptPolicy {
+            capture_on_open: false,
+            accessibility_on_observe: false,
         },
         ..ComputerUsePolicy::default()
     }
+}
+
+async fn request_attended_permissions(
+    service: &DynComputerUseService,
+) -> Result<PermissionRequestOutcome, starweaver_computer_use::ComputerUseError> {
+    service
+        .request_permissions(
+            PermissionRequest {
+                screen_recording: true,
+                accessibility: true,
+            },
+            CancellationToken::new(),
+        )
+        .await
 }
 
 async fn serve_stdio(
@@ -266,19 +289,48 @@ fn print_version() {
     );
 }
 
+fn print_permission_outcome(
+    outcome: &PermissionRequestOutcome,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(outcome)?);
+        return Ok(());
+    }
+    println!(
+        "permission_request=immediate_outcome\nrequested_screen_recording={} requested_accessibility={}\nscreen_recording={:?} accessibility={:?} restart_required={}\neffective_observe={} effective_accessibility_snapshot={}\ndiagnostics_code={}\nremediation:",
+        outcome.requested.screen_recording,
+        outcome.requested.accessibility,
+        outcome.permissions.capture,
+        outcome.permissions.accessibility,
+        outcome.permissions.restart_required,
+        outcome.effective_capabilities.observe,
+        outcome.effective_capabilities.accessibility_snapshot,
+        outcome.diagnostics_code,
+    );
+    for item in &outcome.permissions.remediation {
+        println!("- {item}");
+    }
+    println!(
+        "The outcome reflects status immediately after the native requests returned; restart if macOS requires it."
+    );
+    Ok(())
+}
+
 fn print_report(report: &DiagnosticReport, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     if json {
         println!("{}", serde_json::to_string_pretty(report)?);
         return Ok(());
     }
     println!(
-        "release_readiness={}\nbackend={:?} platform={:?} scope={:?} active_session={:?}\ncapture={:?} pointer={:?} keyboard={:?} user_presence={:?}\ndiagnostics_code={}\nremediation:",
+        "release_readiness={}\nbackend={:?} platform={:?} scope={:?} active_session={:?}\ncapture={:?} accessibility={:?} pointer={:?} keyboard={:?} user_presence={:?}\ndiagnostics_code={}\nremediation:",
         report.release_readiness,
         report.status.backend,
         report.status.platform,
         report.status.desktop_scope,
         report.status.active_session,
         report.status.permissions.capture,
+        report.status.permissions.accessibility,
         report.status.permissions.pointer_input,
         report.status.permissions.keyboard_input,
         report.status.user_presence,
@@ -288,4 +340,81 @@ fn print_report(report: &DiagnosticReport, json: bool) -> Result<(), Box<dyn std
         println!("- {item}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use std::sync::Arc;
+
+    use super::*;
+    use starweaver_computer_use::{FakeComputerUseConfig, FakeComputerUseService};
+
+    #[test]
+    fn stdio_policy_allows_accessibility_without_implicit_prompts() {
+        let args = Args::try_parse_from(["starweaver-computer-use-mcp", "--stdio"])
+            .expect("valid stdio arguments");
+        let policy = policy(&args, ComputerToolGrant::observe_only());
+
+        assert!(policy.allowed_capabilities.observe);
+        assert!(policy.allowed_capabilities.accessibility_snapshot);
+        assert!(!policy.allowed_capabilities.pointer);
+        assert!(!policy.allowed_capabilities.keyboard);
+        assert!(!policy.permission_prompts.capture_on_open);
+        assert!(!policy.permission_prompts.accessibility_on_observe);
+    }
+
+    #[test]
+    fn request_permissions_is_an_exclusive_explicit_mode() {
+        let args = Args::try_parse_from([
+            "starweaver-computer-use-mcp",
+            "--request-permissions",
+            "--json",
+        ])
+        .expect("valid onboarding arguments");
+        assert!(args.request_permissions);
+        assert!(args.json);
+        assert!(
+            Args::try_parse_from([
+                "starweaver-computer-use-mcp",
+                "--doctor",
+                "--request-permissions",
+            ])
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn onboarding_contract_requests_both_permissions_and_is_json_serializable() {
+        let policy = ComputerUsePolicy {
+            allowed_capabilities: ComputerCapabilityGrant {
+                observe: true,
+                accessibility_snapshot: true,
+                ..ComputerCapabilityGrant::default()
+            },
+            ..ComputerUsePolicy::default()
+        };
+        let service: DynComputerUseService = Arc::new(FakeComputerUseService::new(
+            policy,
+            FakeComputerUseConfig::default(),
+        ));
+
+        let outcome = request_attended_permissions(&service)
+            .await
+            .expect("fake onboarding request");
+        assert_eq!(
+            outcome.requested,
+            PermissionRequest {
+                screen_recording: true,
+                accessibility: true,
+            }
+        );
+        let value = serde_json::to_value(outcome).expect("machine-readable outcome");
+        assert_eq!(value["requested"]["screen_recording"], true);
+        assert_eq!(value["requested"]["accessibility"], true);
+        assert!(value.get("permissions").is_some());
+        assert!(value.get("effective_capabilities").is_some());
+        assert!(value.get("diagnostics_code").is_some());
+    }
 }

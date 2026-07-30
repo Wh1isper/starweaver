@@ -162,7 +162,7 @@ Each platform spike MUST inventory every required native call and prove one of t
 1. maintained, provenance-reviewed Rust dependencies expose the required operation through a sound safe API; or
 2. an already accepted same-process safe wrapper boundary can be reused without weakening workspace lints.
 
-A C/Swift shim does not by itself make the Rust FFI call safe. If required behavior cannot be implemented under the current lint/package boundary, native work is blocked pending an explicit architecture and security decision covering the smallest audited FFI wrapper, ownership/lifetime invariants, fuzz/fault tests, dependency/release provenance, and whether the one-package decision must change. The implementation MUST NOT bypass the gate with a crate-level lint override or scattered undocumented unsafe blocks.
+A C/Swift shim does not by itself make the Rust FFI call safe. The implemented macOS Accessibility path uses one narrow, documented `objc2` module that owns Core Foundation retain/cast invariants and exposes only owned Starweaver values to the rest of the crate. Unsafe Rust remains denied everywhere else in the package. New native behavior must stay within that reviewed boundary or require an explicit architecture and security decision; scattered undocumented unsafe blocks remain forbidden.
 
 ## 4. Common capability profile
 
@@ -243,13 +243,20 @@ Pointer and keyboard input MUST use high-level service operations that construct
 
 The process MUST run as the logged-in user. It MUST NOT request root, a privileged helper, a system extension, or authorization plug-in.
 
-Accessibility is optional for V1 pixel control. If enabled:
+Accessibility is optional for V1 pixel control. The implemented macOS collector:
 
-- `AXIsProcessTrustedWithOptions` or an equivalent public trust check MUST be used;
-- the immediate trust result MUST be treated as authoritative for that call; showing a prompt does not imply permission was granted;
-- snapshots MUST have node, depth, string, attribute, and elapsed-time limits;
-- AX timeout or refusal MUST degrade only the semantic capability, not silently falsify a complete semantic tree;
-- Apple Events automation is outside the baseline and MUST NOT be requested merely for Computer Use.
+- uses `AXIsProcessTrusted` for passive probes and `AXIsProcessTrustedWithOptions` only on an authorized attended request;
+- treats the immediate trust result as authoritative; showing a prompt does not imply permission was granted;
+- starts from the system-wide `AXFocusedApplication` and walks that application's tree breadth-first;
+- enforces immutable node, depth, children-per-node, per-string, total-string, capture-deadline, and per-message timeout limits, fetches child arrays only up to the configured limit, and converts native strings into pre-bounded buffers;
+- emits only bounded role, name, value summary, state, and optional CGRect-derived model-space bounds;
+- uses the public `AXContainsProtectedContent` attribute and secure-text subrole, inherits protection through descendants, omits every protected value, and requires the service validator to reject malformed protected-value output;
+- treats `DesktopSurfaceScope` as a pixel boundary while explicitly projecting the whole focused application's AX semantics; nodes outside model geometry carry no model-space bounds;
+- exposes no PID, AX handle, application path, or unrestricted native attribute;
+- fails a requested semantic snapshot on permission/backend failure rather than silently falsifying a complete tree; and
+- does not request or use Apple Events automation.
+
+`status` is passive. CLI/RPC trusted composition may authorize a one-time Screen Recording request on first open and a one-time Accessibility request on the first accessibility-enabled observation. MCP stdio authorizes neither implicit prompt; its attended top-level `--request-permissions` command explicitly requests both permissions.
 
 ### 6.4 TCC identity and packaging
 

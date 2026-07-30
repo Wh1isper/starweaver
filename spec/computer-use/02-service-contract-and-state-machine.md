@@ -57,6 +57,12 @@ pub trait ComputerUseService: Send + Sync {
         cancel: CancellationToken,
     ) -> Result<ComputerStatus, ComputerUseError>;
 
+    async fn request_permissions(
+        &self,
+        request: PermissionRequest,
+        cancel: CancellationToken,
+    ) -> Result<PermissionRequestOutcome, ComputerUseError>;
+
     async fn open_current_desktop(
         &self,
         cancel: CancellationToken,
@@ -103,6 +109,8 @@ pub trait ComputerSession: Send + Sync {
 }
 ```
 
+`request_permissions` is a trusted-host onboarding operation and is deliberately absent from the model-visible tool catalog. `PermissionRequestOutcome` reports the immediate authoritative permission probe after invoking the requested native APIs; prompt presentation is not a grant.
+
 `ComputerSession` is process-local authority. It MUST NOT implement `Serialize`, `Deserialize`, checkpoint, restore, clone-to-process, or a durable token export API. An `Arc` clone within one process is only a reference to the same state machine; it does not create another controller. `capabilities()` returns a point-in-time value; callers must not cache it as authority, and every operation re-evaluates volatile readiness.
 
 Calling `open_current_desktop` while an existing control session is active MUST either return the existing compatible session or fail with `session_already_open`, according to fixed service configuration. It MUST NOT create competing input controllers.
@@ -115,6 +123,7 @@ Calling `open_current_desktop` while an existing control session is active MUST 
 struct ComputerUsePolicy {
     desktop_scope: DesktopSurfaceScope,
     allowed_capabilities: ComputerCapabilityGrant,
+    permission_prompts: PermissionPromptPolicy,
     screenshot: ScreenshotPolicy,
     pointer: PointerPolicy,
     keyboard: KeyboardPolicy,
@@ -139,6 +148,21 @@ struct ComputerCapabilityGrant {
     keyboard: bool,
     accessibility_snapshot: bool,
 }
+
+struct PermissionPromptPolicy {
+    capture_on_open: bool,
+    accessibility_on_observe: bool,
+}
+
+struct AccessibilityPolicy {
+    max_nodes: usize,
+    max_depth: usize,
+    max_children_per_node: usize,
+    max_string_bytes: usize,
+    max_total_string_bytes: usize,
+    capture_timeout: Duration,
+    messaging_timeout: Duration,
+}
 ```
 
 The effective capabilities are the intersection of:
@@ -156,7 +180,7 @@ Policy MUST bound at least:
 
 - maximum encoded image bytes and model-visible dimensions;
 - accepted image MIME types;
-- maximum accessibility nodes, depth, string bytes, and capture duration;
+- maximum accessibility nodes, depth, children per node, per-string bytes, total string bytes, capture duration, and native messaging timeout;
 - point, path, click-count, scroll, text, key-count, and action-duration bounds;
 - queue-wait, operation, and cancellation-cleanup timeouts;
 - post-action settle behavior;
@@ -325,7 +349,7 @@ struct ComputerObservation {
 ```rust
 struct AccessibilitySnapshot {
     generation: AccessibilityGeneration,
-    captured_at_monotonic: MonotonicTimestamp,
+    captured_at_monotonic_ms: u64,
     nodes: Vec<AccessibilityNode>,
     truncated: bool,
     truncation_reasons: Vec<AccessibilityTruncationReason>,
@@ -340,16 +364,18 @@ struct AccessibilityNode {
     state: AccessibilityState,
     model_bounds: Option<ModelRect>,
 }
+
+struct AccessibilityState {
+    enabled: Option<bool>,
+    focused: Option<bool>,
+    selected: Option<bool>,
+    protected: Option<bool>,
+}
 ```
 
 The snapshot is untrusted desktop content. Strings MUST be bounded and treated as prompt-injection-capable data. Native handles, PIDs, HWNDs, AX references, D-Bus paths, application paths, and unrestricted attributes MUST NOT be exposed.
 
-If the caller requests accessibility but it is unavailable, policy decides whether observation:
-
-- succeeds with `accessibility = None` and an explicit capability diagnostic; or
-- fails with `accessibility_unavailable`.
-
-It MUST NOT fabricate an empty complete tree. V1 provides no semantic action that consumes `local_id`.
+In the implemented strict policy, a requested snapshot either returns `Some(AccessibilitySnapshot)` or fails with a typed permission/backend error. It never silently substitutes `None` or fabricates an empty complete tree. The service independently validates node, parent/depth, child, string, total-string, truncation, and model-bounds invariants before exposing backend data. V1 provides no semantic action that consumes `local_id`.
 
 ## 8. Mandatory observation reference and internal basis
 
@@ -689,7 +715,7 @@ struct ComputerStatus {
 }
 ```
 
-`status` MUST NOT trigger an input effect. Whether it may trigger an OS permission prompt is fixed by trusted startup policy; the default SHOULD be diagnostic-only. Wayland portal authority that inherently requires interactive negotiation is established by open/observe according to the platform spec, not falsely reported as a persistent grant by status.
+`status` MUST NOT trigger an input effect or an OS permission prompt. `PermissionPromptPolicy` defaults both prompt paths to false. A trusted CLI/RPC composition may enable a one-time attended capture prompt on `open_current_desktop` and a one-time attended Accessibility prompt when an authorized observation first requests accessibility. MCP stdio keeps both implicit prompt paths false and uses only the explicit host-side `request_permissions` operation. Wayland portal authority that inherently requires interactive negotiation is established by open/observe according to the platform spec, not falsely reported as a persistent grant by status.
 
 Status and errors MUST NOT include screenshot pixels, window titles, typed text, accessibility content, portal tokens, raw native handles, user names, or stable cross-run fingerprints.
 

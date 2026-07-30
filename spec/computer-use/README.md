@@ -11,14 +11,14 @@ The normative current implementation status is generated from [`../capabilities.
 The implemented provisional subset is:
 
 - one published `starweaver-computer-use` library with typed service/state-machine contracts, canonical schemas/router, deterministic fake, and explicit target selection;
-- a macOS same-process native backend for current-desktop observation with Screen Recording permission;
+- a macOS same-process native backend for current-desktop pixel observation plus optional bounded focused-application Accessibility snapshots, each with its own TCC permission;
 - explicit unsupported backends on Windows and Linux that expose no Computer Use tools;
 - an opt-in `starweaver-agent` Toolset with grant-intersected dependencies and immutable geometry-bound media;
 - default-off CLI and RPC in-process composition, including RPC principal-bound, expiring, revocable run admission;
 - a feature-gated, observe-only stdio MCP binary for non-Starweaver harnesses; and
 - separate checksum-covered macOS MCP release archives plus crates.io publication of the library package.
 
-Production pointer and keyboard input remain statically unavailable on every platform. They cannot be enabled by config or launch flags and remain blocked on the input-specific user-presence, emergency-stop, signing, review, and release gates. Windows/Linux observation and optional accessibility metadata also remain planned. See [`../alignment/13-computer-use-macos-evidence.md`](../alignment/13-computer-use-macos-evidence.md).
+Production pointer and keyboard input remain statically unavailable on every platform. They cannot be enabled by config or launch flags and remain blocked on the input-specific user-presence, emergency-stop, signing, review, and release gates. Windows/Linux pixel observation and cross-platform accessibility parity remain planned. See [`../alignment/13-computer-use-macos-evidence.md`](../alignment/13-computer-use-macos-evidence.md).
 
 ## Fixed decisions
 
@@ -187,13 +187,12 @@ The specs deliberately leave the following decisions gated on prototypes or main
 
 - the exact product-neutral API for grant-intersected Filtered dependency assembly and stable `(run_id, tool_call_id)` propagation;
 - the exact explicit CLI/RPC configuration and profile fields for process coordination, maximum capability grants, and RPC initiating-caller authorization;
-- whether all required native calls can remain behind sound safe dependencies under the workspace unsafe-Rust prohibition, or require an explicit wrapper/package-boundary revision;
-- macOS Rust/Objective-C bindings versus an in-process Swift static shim;
+- whether future native calls can remain within the current narrow, audited macOS `objc2` FFI module while the rest of the crate remains unsafe-denied, or require a separate wrapper/package boundary;
 - Windows Graphics Capture versus Desktop Duplication for the required baseline;
 - exact Linux Wayland RemoteDesktop/libei support floor and compositor matrix;
 - primary-display versus normalized virtual-desktop default for multi-monitor systems;
 - the production native user-presence indicator and emergency-stop mechanism on each OS;
-- whether optional accessibility snapshots can reach cross-platform parity without destabilizing the baseline;
+- how optional accessibility snapshots can reach cross-platform parity without destabilizing the implemented macOS baseline;
 - final package/release feature defaults and publisher-signing policy.
 
 No open item permits browser, unattended, elevated, locked-session, remote-session, or provider-native behavior to enter V1 implicitly.

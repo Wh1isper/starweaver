@@ -38,11 +38,23 @@ uuid.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 nix = { version = "0.31.3", default-features = false, features = ["user"] }
+objc2-application-services = { version = "0.3.2", default-features = false, features = ["AXError", "AXUIElement", "AXValue", "HIServices", "objc2-core-graphics"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFCGTypes", "CFDictionary", "CFNumber", "CFString"] }
 objc2-core-graphics = { version = "0.3.2", default-features = true }
 xcap = { version = "0.9.7", default-features = false }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-std", "io-util", "process", "signal"] }
 
-[lints]
-workspace = true
+# Native Accessibility requires a very small audited unsafe FFI boundary in
+# `platform::macos_accessibility`; the rest of this crate remains unsafe-denied.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+unwrap_used = "warn"
+expect_used = "warn"

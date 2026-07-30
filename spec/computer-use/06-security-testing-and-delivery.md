@@ -141,8 +141,8 @@ Startup policy MUST bound:
 - maximum text bytes/scalars;
 - allowed canonical key names, chord width, and sequence length;
 - post-action settle time;
-- optional accessibility node/depth/string/time budgets;
-- permission-prompt behavior;
+- optional accessibility node, depth, children-per-node, per-string, total-string, capture-time, and native messaging-time budgets;
+- independently fixed capture-on-open and accessibility-on-observe permission-prompt behavior, defaulting false;
 - input capability grants;
 - user-presence mode;
 - logging level and redaction; and
@@ -370,7 +370,7 @@ Core dumps and crash reporters can capture pixels or text. Production packaging 
 
 ### 9.3 Optional semantic observation
 
-Accessibility metadata is independently gated and bounded. It MUST exclude or redact known secure/password values where platform APIs identify them, cap node/depth/string/time/total bytes, and return truncation metadata. It MUST not be included merely because pixel capture is authorized.
+Accessibility metadata is independently requested, OS-permissioned, and bounded. Product composition may place pixel observation and the ability to make that explicit request under one host-level Computer Use opt-in, but a pixel-only call MUST NOT include semantic data. The projection MUST exclude or redact known secure/password values where platform APIs identify them, inherit protected-content state through descendants, cap node/depth/children/string/time/total bytes before materializing unbounded native arrays or strings, and return truncation metadata. On macOS, pixel `DesktopSurfaceScope` does not pretend to clip the focused application's AX hierarchy: the host-authorized semantic scope is the whole focused application, while model-space bounds exist only where geometry intersects the pixel capture.
 
 ## 10. MCP and adapter security
 
@@ -519,7 +519,7 @@ The fake backend simulates:
 - cancellation during every action phase;
 - held-state cleanup success/failure;
 - image encoding limits; and
-- optional accessibility truncation.
+- accessibility permission acquisition/revocation, secure-value redaction, malformed parent/bounds rejection, and every truncation budget.
 
 The same scenario suite runs through typed library calls, the shared CLI/RPC Toolset adapter, and in-process MCP server mapping. Separate composition fixtures prove both CLI and RPC attach one process-level coordinator without routing through MCP.
 
@@ -557,13 +557,13 @@ Required evidence:
 
 - public ScreenCaptureKit/CoreGraphics/AX/CGEvent baseline;
 - stable TCC identity for actual signed package;
-- Screen Recording and Accessibility denial/onboarding/restart behavior;
+- Screen Recording and Accessibility passive probe, attended request, immediate-result, denial, revocation, and restart behavior for each executable identity;
 - active console and lock/Fast User Switching failure;
 - Retina/mixed-scale/multi-display geometry;
 - protected/redacted frame handling;
 - event-tap or alternative same-process physical-input detection;
 - native indicator/emergency stop while another app has focus;
-- same-process Swift shim integrity if selected; and
+- narrow same-process `objc2` FFI ownership/cast review, with unsafe denied elsewhere in the crate; and
 - update continuity without helper/XPC/private API.
 
 Input release is blocked until Developer ID/signing/notarization policy is accepted for the actual artifact. Ad-hoc builds are development-only.
@@ -715,7 +715,7 @@ Capabilities MAY graduate independently. A platform may release observe-only, ob
 
 ### Phase 5: optional accessibility metadata
 
-Optional bounded AX/UIA/AT-SPI observation is a separate graduation lane. It MUST NOT delay or destabilize the pixel baseline and MUST not add semantic action tools without a new spec.
+The provisional macOS lane is implemented: focused-application AX observation is independently permissioned, breadth-first, budget-bounded, secure-value-redacted, service-validated, non-durable, and contains no semantic action tools. UIA/AT-SPI support and cross-platform parity remain separate future graduations. Accessibility work MUST NOT delay or destabilize the pixel baseline and MUST not add semantic action tools without a new spec.
 
 ## 18. Release gates
 
@@ -804,17 +804,15 @@ The following decisions require prototype evidence and maintainer discussion:
 
 01. The exact native `UserPresenceGuard` indicator, emergency stop, physical-input detector, and local resume UX per OS.
 02. Maximum allowed takeover-to-cancellation acknowledgement latency per action/backend.
-03. Whether primary-display or normalized visible-desktop is the default scope.
-04. macOS pure Rust versus same-process Swift shim and app-bundle versus standalone signed identity.
+03. Whether primary-display or normalized visible-desktop remains the default scope.
+04. macOS app-bundle versus standalone signed identity and release-byte TCC continuity.
 05. Windows WGC versus Desktop Duplication and supported Windows version floor.
 06. Wayland compositor/portal/EIS support matrix and whether some targets remain observe-only.
 07. The explicit X11 support/release policy and per-target session-manager/lock-state contract.
-08. Whether optional accessibility metadata ships in the first observation release.
-09. Exact screenshot dimensions/byte defaults and PNG versus JPEG policy.
-10. Whether `starweaver-core` cancellation/identity primitives are reused.
-11. The independent MCP client conformance set.
-12. Release artifact lane and native publisher-signing readiness.
-13. Whether required native APIs can be reached under the workspace unsafe-Rust prohibition or require an explicitly reviewed safe-wrapper/package-boundary revision.
+08. Exact screenshot dimensions/byte defaults and PNG versus JPEG policy.
+09. The independent MCP client conformance set.
+10. Release artifact lane and native publisher-signing readiness.
+11. Whether later native features remain within the implemented narrow macOS FFI module or justify a separate reviewed wrapper/package boundary.
 
 Open decisions do not permit weaker defaults. Until decided and proven, the narrower or observe-only behavior applies.
 

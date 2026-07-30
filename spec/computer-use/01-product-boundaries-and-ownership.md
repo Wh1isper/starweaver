@@ -345,7 +345,7 @@ Policy MUST bound at least:
 - allowed image formats;
 - maximum text length, key count, drag path length, scroll magnitude, and operation timeout;
 - post-action observation and settling behavior;
-- optional accessibility metadata;
+- optional accessibility capability, traversal budgets, and independently fixed prompt policy;
 - user-presence requirements; and
 - logging/redaction behavior.
 
@@ -440,13 +440,10 @@ No section in this document claims implemented capability.
 
 The following require prototype evidence before implementation contracts graduate:
 
-1. Whether the crate uses pure Rust platform bindings on macOS or links a same-process Swift/Objective-C shim behind a C ABI.
-2. Whether the baseline capture surface is the normalized virtual desktop or the display containing the active window/pointer; the choice remains host-owned either way.
-3. The exact production `UserPresenceGuard` implementation on each OS.
-4. Whether optional accessibility metadata is included in the first release or deferred while preserving the field in the typed observation.
-5. Whether release automation publishes the feature-gated MCP binary alongside the library crate; a separate Cargo package is not justified without later independent release/dependency evidence.
-6. Whether `starweaver-core` cancellation and identity primitives are reused or equivalent local types keep the library completely independent.
-7. The exact field names and configuration syntax for the fixed CLI/RPC process-coordinator and maximum-grant contract. RPC semantics are not open: generic `run` grants no Computer Use, dedicated default-denied observe/pointer/keyboard principal capabilities are intersected into an expiring/revocable run admission, and resume/continuation requires fresh derivation without adding a Computer-Use-specific host-protocol method.
+1. Whether the baseline capture-scope default remains the primary display or changes to the normalized visible desktop; the choice remains host-owned either way.
+2. The exact production `UserPresenceGuard` implementation on each OS.
+3. Whether later native features remain inside the implemented narrow same-process `objc2` FFI boundary or justify a separate wrapper package.
+4. The exact field names and configuration syntax for future input-capable CLI/RPC maximum grants. RPC semantics are not open: generic `run` grants no Computer Use, dedicated default-denied observe/pointer/keyboard principal capabilities are intersected into an expiring/revocable run admission, and resume/continuation requires fresh derivation without adding a Computer-Use-specific host-protocol method.
 
 Open decisions MUST NOT weaken the stated exclusions or dependency direction.
 

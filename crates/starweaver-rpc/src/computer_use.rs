@@ -16,7 +16,7 @@ use starweaver_agent::{
 use starweaver_computer_use::{
     CloseReason, ComputerCapabilityGrant, ComputerSessionBinding, ComputerToolGrant,
     ComputerToolRouter, ComputerUsePolicy, DesktopSurfaceScope, DynComputerUseService,
-    current_desktop_service, current_desktop_tool_grant,
+    PermissionPromptPolicy, current_desktop_service, current_desktop_tool_grant,
 };
 use starweaver_context::AgentContext;
 use starweaver_core::CancellationToken;
@@ -128,7 +128,11 @@ impl RpcComputerUseCoordinator {
                 observe: grant.observe,
                 pointer: false,
                 keyboard: false,
-                accessibility_snapshot: false,
+                accessibility_snapshot: true,
+            },
+            permission_prompts: PermissionPromptPolicy {
+                capture_on_open: true,
+                accessibility_on_observe: true,
             },
             ..ComputerUsePolicy::default()
         };
@@ -412,6 +416,35 @@ mod tests {
             admission_generation,
         ));
         drop(lease);
+    }
+
+    #[test]
+    fn enabled_composition_allows_accessibility_prompts_without_widening_principals() {
+        let coordinator = coordinator(RpcComputerUseConfig {
+            enabled: true,
+            ..RpcComputerUseConfig::default()
+        });
+        let policy = coordinator
+            .service
+            .as_ref()
+            .expect("enabled service")
+            .policy();
+
+        assert!(policy.allowed_capabilities.accessibility_snapshot);
+        assert!(policy.permission_prompts.capture_on_open);
+        assert!(policy.permission_prompts.accessibility_on_observe);
+        assert!(!coordinator.grant.pointer);
+        assert!(!coordinator.grant.keyboard);
+        assert!(
+            !coordinator
+                .principal(RpcTransport::Stdio, "stdio", "connection", 1)
+                .observe
+        );
+        assert!(
+            !coordinator
+                .principal(RpcTransport::Http, "http", "connection", 1)
+                .observe
+        );
     }
 
     #[test]

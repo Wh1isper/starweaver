@@ -18,7 +18,7 @@ one workspace.
 - Structured output through JSON Schema, typed parsing, output functions, and validation retry.
 - Runtime extension hooks for prompt preparation, request shaping, tool policy, output validation, usage, and trace recording.
 - Durable execution foundations: context export/restore, checkpoints, session records, replay streams, and SQLite storage adapters.
-- First-party SDK bundles for filesystem, shell, skills, task tracking, host search/scrape/media adapters, MCP, subagents, and opt-in macOS Computer Use observation.
+- First-party SDK bundles for filesystem, shell, skills, task tracking, host search/scrape/media adapters, MCP, subagents, and opt-in macOS pixel plus bounded Accessibility Computer Use observation.
 - A CLI launcher with profile-based local runs, install/update flow, display messages, local storage, and release artifacts.
 - An experimental, maintenance-paused Tauri 2 Desktop foundation retained as WIP source code.
 
@@ -168,7 +168,7 @@ Starweaver is organized as focused crates:
 - `starweaver-tools`: function tools, toolsets, metadata, lifecycle, MCP foundations, approval, and deferred execution.
 - `starweaver-context`: `AgentContext`, typed dependencies, state, event/message buses, notes, usage, and resumable state.
 - `starweaver-environment`: local and virtual filesystem/shell providers, policies, resources, and environment snapshots.
-- `starweaver-computer-use`: typed current-active-desktop service, canonical tool router, deterministic fake, macOS observe-only backend, and feature-gated stdio MCP binary.
+- `starweaver-computer-use`: typed current-active-desktop service, canonical tool router, deterministic fake, macOS pixel plus bounded Accessibility observe-only backend, and feature-gated stdio MCP binary.
 - `starweaver-session`, `starweaver-stream`, `starweaver-storage`: durable session, replay, display stream, and SQLite storage contracts.
 - `starweaver-cli`: local CLI product surface, launcher dispatch, profiles, TUI, storage, install, and update workflows.
 - `starweaver-rpc-core`: generated IDL-first `starweaver.host` major-1 wire boundary, strict server/client codecs, typed errors/events/cursors, launch-envelope contracts, and narrow framing/projection helpers; the generated contract atomically replaces handwritten DTO authority.
