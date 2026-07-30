@@ -18,7 +18,7 @@ one workspace.
 - Structured output through JSON Schema, typed parsing, output functions, and validation retry.
 - Runtime extension hooks for prompt preparation, request shaping, tool policy, output validation, usage, and trace recording.
 - Durable execution foundations: context export/restore, checkpoints, session records, replay streams, and SQLite storage adapters.
-- First-party SDK bundles for filesystem, shell, skills, task tracking, host search/scrape/media adapters, MCP, subagents, and opt-in macOS pixel plus bounded Accessibility Computer Use observation.
+- First-party SDK bundles for filesystem, shell, skills, task tracking, host search/scrape/media adapters, MCP, subagents, and opt-in macOS Computer Use observation, pointer/keyboard input, and bounded Accessibility metadata.
 - A CLI launcher with profile-based local runs, install/update flow, display messages, local storage, and release artifacts.
 - An experimental, maintenance-paused Tauri 2 Desktop foundation retained as WIP source code.
 
@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/in
 
 The installer downloads all components available for the current platform and verifies
 `checksums.txt` when available. It installs `starweaver`, `starweaver-cli`, `sw`, and
-`starweaver-rpc`; on macOS it also installs the observe-only external-harness
+`starweaver-rpc`; on macOS it also installs the full-family external-harness
 `starweaver-computer-use-mcp` binary. It installs into `$HOME/.local/bin` for normal users and
 `/usr/local/bin` for root. Override the location when needed:
 
@@ -59,10 +59,12 @@ curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/in
 ```
 
 Installing the binary does not enable Computer Use in CLI or RPC. Both products keep the Toolset
-default-disabled and use the Computer Use library in-process instead of this MCP binary. Unsigned and
-not-notarized macOS capture executables remain provisional observe-only components rather than
-production-ready identities. See [Computer Use](docs/computer-use.md) for opt-in configuration and
-security boundaries.
+default-disabled and use the Computer Use library in-process instead of this MCP binary. Launching the
+standalone MCP server is its own explicit opt-in to the full canonical observe, pointer, and keyboard
+family. Screen Recording and Accessibility/post-event permissions remain authoritative. Unsigned and
+not-notarized executables may have less stable TCC identity and additional OS warnings, but signing is
+not an input-availability gate. See [Computer Use](docs/computer-use.md) for configuration and security
+boundaries.
 
 Update all installed components available for the current platform from GitHub release artifacts:
 
@@ -168,7 +170,7 @@ Starweaver is organized as focused crates:
 - `starweaver-tools`: function tools, toolsets, metadata, lifecycle, MCP foundations, approval, and deferred execution.
 - `starweaver-context`: `AgentContext`, typed dependencies, state, event/message buses, notes, usage, and resumable state.
 - `starweaver-environment`: local and virtual filesystem/shell providers, policies, resources, and environment snapshots.
-- `starweaver-computer-use`: typed current-active-desktop service, canonical tool router, deterministic fake, macOS pixel plus bounded Accessibility observe-only backend, and feature-gated stdio MCP binary.
+- `starweaver-computer-use`: typed current-active-desktop service, canonical tool router, deterministic fake, macOS pixel observation plus bounded Accessibility and high-level pointer/keyboard backend, and feature-gated full-family stdio MCP binary.
 - `starweaver-session`, `starweaver-stream`, `starweaver-storage`: durable session, replay, display stream, and SQLite storage contracts.
 - `starweaver-cli`: local CLI product surface, launcher dispatch, profiles, TUI, storage, install, and update workflows.
 - `starweaver-rpc-core`: generated IDL-first `starweaver.host` major-1 wire boundary, strict server/client codecs, typed errors/events/cursors, launch-envelope contracts, and narrow framing/projection helpers; the generated contract atomically replaces handwritten DTO authority.

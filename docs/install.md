@@ -66,8 +66,10 @@ curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/in
 ```
 
 Installing that binary does not enable the default-denied Computer Use Toolset in CLI or RPC. See
-[Computer Use](computer-use.md) for Screen Recording permission, CLI/RPC in-process
-configuration, provisional observe-only limits, and the unsigned/not-notarized binary warning. Default installation does not make Computer Use production-ready or enable its CLI/RPC Toolset.
+[Computer Use](computer-use.md) for Screen Recording and Accessibility/post-event permissions,
+CLI/RPC in-process configuration, the full macOS observe/pointer/keyboard surface, and the
+unsigned/not-notarized binary warning. Default installation does not enable the CLI/RPC Toolset;
+launching the installed standalone MCP server is a separate explicit opt-in.
 
 ## Crates
 

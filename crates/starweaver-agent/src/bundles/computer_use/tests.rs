@@ -1,17 +1,24 @@
 use std::{collections::BTreeSet, sync::Arc};
 
+use async_trait::async_trait;
 use serde_json::json;
 use starweaver_computer_use::{
-    COMPUTER_STATUS_TOOL, ComputerSessionBinding, ComputerToolCatalog, ComputerToolContent,
-    ComputerToolGrant, ComputerToolInvocation, ComputerToolRouter, ComputerUsePolicy,
-    DesktopImageMime, FakeComputerUseConfig, FakeComputerUseService, InvocationId,
-    InvocationSource,
+    COMPUTER_CLICK_TOOL, COMPUTER_STATUS_TOOL, CloseReason, CloseReceipt, ComputerActionReceipt,
+    ComputerActionRequest, ComputerActionResult, ComputerObservation, ComputerSession,
+    ComputerSessionBinding, ComputerSessionId, ComputerSessionState, ComputerStatus,
+    ComputerToolCatalog, ComputerToolContent, ComputerToolGrant, ComputerToolInvocation,
+    ComputerToolRouter, ComputerUseError, ComputerUseFailure, ComputerUsePolicy, DesktopImageMime,
+    EffectEpoch, EffectStatus, EffectiveComputerCapabilities, FakeComputerUseConfig,
+    FakeComputerUseService, InputCleanupStatus, InvocationId, InvocationSource, LayoutGeneration,
+    ObserveRequest, OperationSequence, PauseReason, PauseReceipt, ProcessInstanceId,
+    StabilityCheckStatus, TakeoverEpoch, TargetGeneration,
 };
 use starweaver_context::{AgentContext, ModelCapability};
 use starweaver_core::{AgentId, CancellationToken, ConversationId, RunId};
 use starweaver_tools::{
     ToolContext, ToolDependencyProfile, ToolError, tool_dependency_requirements,
 };
+use tokio::sync::Semaphore;
 
 use super::{
     COMPUTER_OBSERVE_CAPABILITY, ComputerUseAdmissionGuard, ComputerUseAttachmentError,
@@ -119,6 +126,197 @@ async fn guarded_handle_fails_closed_after_process_local_revocation() {
         panic!("revocation should return a structured error");
     };
     assert_eq!(error.code, "policy_denied");
+}
+
+struct RevocationRaceSession {
+    session_id: ComputerSessionId,
+    process_instance_id: ProcessInstanceId,
+    started: Arc<Semaphore>,
+    effect_status: EffectStatus,
+}
+
+impl RevocationRaceSession {
+    fn new(effect_status: EffectStatus) -> Self {
+        Self {
+            session_id: ComputerSessionId::new(),
+            process_instance_id: ProcessInstanceId::new(),
+            started: Arc::new(Semaphore::new(0)),
+            effect_status,
+        }
+    }
+}
+
+#[async_trait]
+impl ComputerSession for RevocationRaceSession {
+    fn id(&self) -> ComputerSessionId {
+        self.session_id.clone()
+    }
+
+    fn process_instance_id(&self) -> ProcessInstanceId {
+        self.process_instance_id.clone()
+    }
+
+    fn capabilities(&self) -> EffectiveComputerCapabilities {
+        EffectiveComputerCapabilities {
+            observe: true,
+            pointer: true,
+            keyboard: true,
+            accessibility_snapshot: false,
+        }
+    }
+
+    async fn status(&self, _cancel: CancellationToken) -> Result<ComputerStatus, ComputerUseError> {
+        Err(ComputerUseError::cancelled())
+    }
+
+    async fn observe(
+        &self,
+        _request: ObserveRequest,
+        _cancel: CancellationToken,
+    ) -> Result<ComputerObservation, ComputerUseError> {
+        Err(ComputerUseError::cancelled())
+    }
+
+    async fn act(
+        &self,
+        request: ComputerActionRequest,
+        cancel: CancellationToken,
+    ) -> Result<ComputerActionResult, ComputerUseFailure> {
+        self.started.add_permits(1);
+        cancel.cancelled().await;
+        let action_kind = request.action.kind();
+        Err(ComputerUseFailure {
+            error: ComputerUseError::cancelled(),
+            effect_status: self.effect_status,
+            receipt: Some(ComputerActionReceipt {
+                operation_id: request.operation_id,
+                sequence: OperationSequence(1),
+                request_digest_hex: "controlled-revocation-race".to_string(),
+                effect_status: self.effect_status,
+                action_kind,
+                process_instance_id: self.process_instance_id.clone(),
+                session_id: self.session_id.clone(),
+                target_generation: TargetGeneration(1),
+                basis_observation_id: request.observation.observation_id,
+                basis_layout_generation: LayoutGeneration(1),
+                basis_effect_epoch: EffectEpoch(1),
+                resulting_effect_epoch: EffectEpoch(2),
+                native_event_count: 1,
+                transformed_points: Vec::new(),
+                cleanup: InputCleanupStatus::Complete,
+                stability_check: StabilityCheckStatus::NotPerformed,
+                started_at_monotonic_ms: 1,
+                completed_at_monotonic_ms: 2,
+            }),
+        })
+    }
+
+    async fn pause(&self, _reason: PauseReason) -> Result<PauseReceipt, ComputerUseError> {
+        Ok(PauseReceipt {
+            state: ComputerSessionState::Paused,
+            takeover_epoch: TakeoverEpoch(1),
+        })
+    }
+
+    async fn close(&self, _reason: CloseReason) -> Result<CloseReceipt, ComputerUseError> {
+        Ok(CloseReceipt {
+            state: ComputerSessionState::Closed,
+            cleanup: InputCleanupStatus::Complete,
+        })
+    }
+}
+
+#[tokio::test]
+async fn in_flight_revocation_preserves_canonical_input_receipts() {
+    for effect_status in [
+        EffectStatus::Executed,
+        EffectStatus::PartiallyExecuted,
+        EffectStatus::DeliveryUncertain,
+    ] {
+        let session = Arc::new(RevocationRaceSession::new(effect_status));
+        let service = Arc::new(FakeComputerUseService::new(
+            ComputerUsePolicy::default(),
+            FakeComputerUseConfig::default(),
+        ));
+        let router = Arc::new(ComputerToolRouter::new(
+            service,
+            ComputerSessionBinding::HostAttached(session.clone()),
+            ComputerToolGrant::full(),
+        ));
+        let revoked = CancellationToken::new();
+        let handle = super::ComputerPointerHandle::new(
+            router,
+            ComputerUseAdmissionGuard::with_revocation(|| true, revoked.clone()),
+        );
+        let dispatch = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .call(
+                        ComputerToolInvocation::new(
+                            InvocationId::from_stable_parts(
+                                "computer-use-revocation-race",
+                                ["run", "call"],
+                            ),
+                            InvocationSource::StarweaverToolCall,
+                        ),
+                        COMPUTER_CLICK_TOOL,
+                        json!({
+                            "observation_id": starweaver_computer_use::ObservationId::new().to_string(),
+                            "x": 10,
+                            "y": 20
+                        }),
+                        CancellationToken::new(),
+                    )
+                    .await
+            }
+        });
+
+        let Ok(started_permit) = session.started.acquire().await else {
+            panic!("controlled session should remain open");
+        };
+        started_permit.forget();
+        revoked.cancel();
+        let Ok(result) = dispatch.await else {
+            panic!("dispatch task should complete normally");
+        };
+        let Some(receipt) = result.structured.receipt else {
+            panic!("started dispatch must retain its canonical receipt");
+        };
+        assert_eq!(receipt.effect_status, effect_status);
+        assert_ne!(
+            result
+                .structured
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("policy_denied")
+        );
+
+        let denied = handle
+            .call(
+                ComputerToolInvocation::new(
+                    InvocationId::from_stable_parts(
+                        "computer-use-revocation-race",
+                        ["run", "not-started"],
+                    ),
+                    InvocationSource::StarweaverToolCall,
+                ),
+                COMPUTER_CLICK_TOOL,
+                json!({
+                    "observation_id": starweaver_computer_use::ObservationId::new().to_string(),
+                    "x": 10,
+                    "y": 20
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(denied.structured.receipt.is_none());
+        assert_eq!(
+            denied.structured.error.map(|error| error.code),
+            Some("policy_denied".to_string())
+        );
+    }
 }
 
 #[test]

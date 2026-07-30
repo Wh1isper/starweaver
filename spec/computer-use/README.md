@@ -1,24 +1,29 @@
 # Computer Use Architecture
 
-Status: accepted architecture; macOS observation subset implemented.
+Status: accepted architecture; macOS observe, pointer, and keyboard subset implemented.
 
 This spec set defines Starweaver Computer Use as a local, OS-native capability for observing and controlling the **current active interactive desktop**. One typed Rust library owns the implementation. The maintained Starweaver CLI and standalone RPC products consume it in-process through a first-party function-tool toolset. Harnesses outside the Starweaver ecosystem consume the same canonical tools by spawning a local stdio MCP binary.
 
-The normative current implementation status is generated from [`../capabilities.toml`](../capabilities.toml). The broader contracts remain release gates for platform and input capability that has not graduated.
+The normative current implementation status is generated from [`../capabilities.toml`](../capabilities.toml). The broader contracts remain release gates for platforms that have not graduated.
 
 ## Implementation status
 
 The implemented provisional subset is:
 
 - one published `starweaver-computer-use` library with typed service/state-machine contracts, canonical schemas/router, deterministic fake, and explicit target selection;
-- a macOS same-process native backend for current-desktop pixel observation plus optional bounded focused-application Accessibility snapshots, each with its own TCC permission;
+- a macOS same-process native backend for current-desktop pixel observation, high-level pointer and keyboard input, plus optional bounded focused-application Accessibility snapshots;
 - explicit unsupported backends on Windows and Linux that expose no Computer Use tools;
 - an opt-in `starweaver-agent` Toolset with grant-intersected dependencies and immutable geometry-bound media;
-- default-off CLI and RPC in-process composition, including RPC principal-bound, expiring, revocable run admission;
-- a feature-gated, observe-only stdio MCP binary for non-Starweaver harnesses; and
+- default-off CLI and RPC in-process composition, including ordinary RPC caller/run admission, expiry, cancellation, and revocation;
+- a feature-gated full-catalog stdio MCP binary for non-Starweaver harnesses; and
 - separate checksum-covered macOS MCP release archives plus crates.io publication of the library package.
 
-Production pointer and keyboard input remain statically unavailable on every platform. They cannot be enabled by config or launch flags and remain blocked on the input-specific user-presence, emergency-stop, signing, review, and release gates. Windows/Linux pixel observation and cross-platform accessibility parity remain planned. See [`../alignment/13-computer-use-macos-evidence.md`](../alignment/13-computer-use-macos-evidence.md).
+On macOS, explicitly enabling Computer Use in CLI/RPC or launching the standalone MCP server grants
+the full canonical observe, pointer, and keyboard family at the product boundary. Native Screen
+Recording and Accessibility/post-event permission remains authoritative. There is no input-specific
+`UserPresenceGuard`, emergency-stop, signing/notarization, principal split, per-call CLI/RPC HITL
+approval, or launch-flag release gate. Windows/Linux observation and input plus cross-platform
+accessibility parity remain planned. See [`../alignment/13-computer-use-macos-evidence.md`](../alignment/13-computer-use-macos-evidence.md).
 
 ## Fixed decisions
 
@@ -105,7 +110,7 @@ The arrows are dependency/call directions. Neither the MCP binary nor the Starwe
 5. `05-mcp-binary-and-process-lifecycle.md`
    - MCP stdio server contract, process lifecycle, configuration, protocol mapping, cancellation, diagnostics, and packaging commands.
 6. `06-security-testing-and-delivery.md`
-   - threat model, attended user-presence control, privacy, failure rules, test matrix, staged delivery, release gates, and open decisions.
+   - threat model, product/run authorization, privacy, failure rules, test matrix, delivery evidence, release gates, and open decisions.
 
 ## Normative language
 
@@ -133,7 +138,7 @@ Lock, secure-desktop transition, fast-user switch, seat loss, portal revocation,
 
 `starweaver-cli` and `starweaver-rpc` create the service/router through the first-party Toolset in their own product process. That process is the OS permission identity and owns every capture stream, portal session, input state, observation, and cancellation fence. Library state is ephemeral and MUST NOT be checkpointed as authority.
 
-CLI has one process-local coordinator that retains the native service handle for the CLI process lifetime; a one-shot headless process naturally has one run, while a TUI process reuses that coordinator across multiple authorized runs. Normal returns, command errors, and TUI exits all invoke one bounded coordinated shutdown. Mandatory cleanup failure is propagated through the command result when possible and otherwise reported on stderr. Enabling CLI Computer Use automatically attaches the Toolset to every effective profile. RPC has one process-local coordinator shared by all enabled agents/runs in that RPC process; enabling the server also automatically attaches the Toolset to every effective profile, while each run still requires its own initiating-principal authorization and per-tool grants. An RPC client controls the RPC host machine's current desktop, never the client's desktop. Reachability of an RPC transport does not grant observe/pointer/keyboard authority.
+CLI has one process-local coordinator that retains the native service handle for the CLI process lifetime; a one-shot headless process naturally has one run, while a TUI process reuses that coordinator across multiple authorized runs. Normal returns, command errors, and TUI exits all invoke one bounded coordinated shutdown. Mandatory cleanup failure is propagated through the command result when possible and otherwise reported on stderr. Enabling CLI Computer Use automatically attaches the Toolset to every effective profile. RPC has one process-local coordinator shared by all enabled agents/runs in that RPC process; enabling the server also automatically attaches the Toolset to every effective profile, while each run still requires ordinary initiating-caller and run authorization. Maintained CLI/RPC composition grants the full family and uses direct input without per-call approval metadata. An RPC client controls the RPC host machine's current desktop, never the client's desktop. Reachability of an RPC transport without enabled configuration and normal run authorization grants no Computer Use authority.
 
 ### External harness MCP use
 
@@ -186,13 +191,11 @@ Adapters MUST pass byte-normalized schema parity fixtures. A change to a tool na
 The specs deliberately leave the following decisions gated on prototypes or maintainer review:
 
 - the exact product-neutral API for grant-intersected Filtered dependency assembly and stable `(run_id, tool_call_id)` propagation;
-- the exact explicit CLI/RPC configuration and profile fields for process coordination, maximum capability grants, and RPC initiating-caller authorization;
-- whether future native calls can remain within the current narrow, audited macOS `objc2` FFI module while the rest of the crate remains unsafe-denied, or require a separate wrapper/package boundary;
+- whether future native calls can remain within the narrow, audited `macos_accessibility`, `macos_input`, and `macos_session` boundaries while the rest of the crate remains unsafe-denied, or require a separate wrapper/package boundary;
 - Windows Graphics Capture versus Desktop Duplication for the required baseline;
 - exact Linux Wayland RemoteDesktop/libei support floor and compositor matrix;
 - primary-display versus normalized virtual-desktop default for multi-monitor systems;
-- the production native user-presence indicator and emergency-stop mechanism on each OS;
 - how optional accessibility snapshots can reach cross-platform parity without destabilizing the implemented macOS baseline;
-- final package/release feature defaults and publisher-signing policy.
+- final publisher-signing policy for identity continuity and OS-warning reduction.
 
 No open item permits browser, unattended, elevated, locked-session, remote-session, or provider-native behavior to enter V1 implicitly.

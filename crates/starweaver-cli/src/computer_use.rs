@@ -6,7 +6,8 @@ use std::{
 };
 
 use starweaver_agent::{
-    ComputerUseToolsetPolicy, DynToolset, attach_computer_use, computer_use_tools,
+    ComputerUseToolsetPolicy, DynToolset, InputApprovalPolicy, attach_computer_use,
+    computer_use_tools,
 };
 use starweaver_computer_use::{
     CloseReason, ComputerSessionBinding, ComputerToolGrant, ComputerToolRouter, ComputerUsePolicy,
@@ -48,14 +49,13 @@ impl CliComputerUseCoordinator {
                 )));
             }
         };
-        let requested = ComputerToolGrant::observe_only();
-        let grant = current_desktop_tool_grant(requested);
+        let grant = current_desktop_tool_grant(ComputerToolGrant::full());
         let policy = ComputerUsePolicy {
             desktop_scope,
             allowed_capabilities: starweaver_computer_use::ComputerCapabilityGrant {
                 observe: grant.observe,
-                pointer: false,
-                keyboard: false,
+                pointer: grant.pointer,
+                keyboard: grant.keyboard,
                 accessibility_snapshot: true,
             },
             permission_prompts: PermissionPromptPolicy {
@@ -83,7 +83,13 @@ impl CliComputerUseCoordinator {
     }
 
     pub(crate) fn toolset(&self) -> DynToolset {
-        computer_use_tools(self.grant, ComputerUseToolsetPolicy::default())
+        computer_use_tools(
+            self.grant,
+            ComputerUseToolsetPolicy {
+                input_approval: InputApprovalPolicy::Never,
+                ..ComputerUseToolsetPolicy::default()
+            },
+        )
     }
 
     pub(crate) fn configure_context(&self, context: &mut AgentContext) -> CliResult<()> {
@@ -189,7 +195,7 @@ mod tests {
     use starweaver_core::CancellationToken;
 
     #[test]
-    fn enabled_composition_allows_accessibility_and_attended_prompts() {
+    fn enabled_composition_requests_the_complete_native_grant() {
         let coordinator = CliComputerUseCoordinator::from_config(&CliComputerUseConfig {
             enabled: true,
             ..CliComputerUseConfig::default()
@@ -201,8 +207,29 @@ mod tests {
         assert!(policy.allowed_capabilities.accessibility_snapshot);
         assert!(policy.permission_prompts.capture_on_open);
         assert!(policy.permission_prompts.accessibility_on_observe);
-        assert!(!coordinator.grant.pointer);
-        assert!(!coordinator.grant.keyboard);
+        assert_eq!(
+            policy.allowed_capabilities.observe,
+            coordinator.grant.observe
+        );
+        assert_eq!(
+            policy.allowed_capabilities.pointer,
+            coordinator.grant.pointer
+        );
+        assert_eq!(
+            policy.allowed_capabilities.keyboard,
+            coordinator.grant.keyboard
+        );
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(coordinator.grant, ComputerToolGrant::full());
+            let click = coordinator
+                .toolset()
+                .get_tools()
+                .into_iter()
+                .find(|tool| tool.name() == starweaver_computer_use::COMPUTER_CLICK_TOOL)
+                .expect("full CLI composition includes click");
+            assert!(!click.metadata().contains_key("approval_required"));
+        }
     }
 
     #[test]

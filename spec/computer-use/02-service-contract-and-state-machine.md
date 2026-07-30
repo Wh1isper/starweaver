@@ -132,7 +132,6 @@ struct ComputerUsePolicy {
     cancellation_cleanup_timeout: Duration,
     post_action_settle: SettlePolicy,
     accessibility: AccessibilityPolicy,
-    user_presence: UserPresencePolicy,
     idempotency: IdempotencyPolicy,
     diagnostics: DiagnosticsPolicy,
 }
@@ -171,7 +170,7 @@ The effective capabilities are the intersection of:
 2. native runtime availability;
 3. current OS permission state;
 4. active interactive-session eligibility;
-5. attended user-presence readiness; and
+5. current product/run lifecycle authorization; and
 6. host policy.
 
 Tool or MCP arguments MUST NOT widen this intersection. Backend fallback MUST NOT broaden the configured desktop scope, permission model, or session authority.
@@ -414,12 +413,12 @@ Before an effect, the service resolves `observation_id` and MUST verify:
 - its immutable geometry, recorded dimensions, and digest match the observation result;
 - its age does not exceed host policy;
 - the session remains active, unlocked, and attended;
-- its capture-time presence epoch exactly matches the current armed epoch; and
+- its capture-time lifecycle epoch has not been invalidated by revocation or failed cleanup; and
 - the relevant capability remains effective.
 
 The service MUST NOT accept a basis-free pointer or keyboard action. `type_text` and `press_keys` require `observation_id` because focus and input destination are visual state. The model/MCP caller MUST NOT be required to echo process/session IDs, generations, dimensions, hashes, or maximum-age policy that the service already owns.
 
-A frame may naturally advance after observation due to animation. The service does not require the live frame counter to remain numerically equal before every action; instead it validates the ledger record, target/layout, current effect epoch, policy age, session/user-presence state, and policy. Backends MAY add a stricter visual-stability check. The receipt records whether a stricter check was performed. This distinction permits ordinary repaint but never permits an observation to survive an intervening accepted input effect.
+A frame may naturally advance after observation due to animation. The service does not require the live frame counter to remain numerically equal before every action; instead it validates the ledger record, target/layout, current effect epoch, policy age, session/lifecycle state, and policy. Backends MAY add a stricter visual-stability check. The receipt records whether a stricter check was performed. This distinction permits ordinary repaint but never permits an observation to survive an intervening accepted input effect.
 
 ## 9. High-level action model
 
@@ -611,9 +610,10 @@ Cancellation rules:
 - pointer/key actions check cancellation before the first event and at safe internal boundaries;
 - once a press event has occurred, cleanup release events take precedence over normal cancellation completion;
 - drag and chord actions report `PartiallyExecuted` if cancelled after a visible prefix;
+- the native backend keeps unconfirmed held state backend-owned across future abandonment, retries it during checked close, and never clears that state merely because one best-effort release was posted;
 - cleanup has a separate bounded timeout and best-effort fallback;
 - a terminal cleanup failure suspends control capability and returns `input_cleanup_failed`;
-- every backend call runs in an owned task under one shared serialized backend gate;
+- every backend call runs in an owned task under one shared serialized service gate, and the maintained native backend independently reserves active input so public direct callers cannot overlap `execute`/`execute` or `execute`/`close`;
 - public router/service/session fence acquisition observes cancellation immediately and shares one absolute `queue_wait_timeout` across lazy-session caching, service slots, and session state; queued calls do not accumulate an unbounded multiple of backend operation timeouts;
 - after request cancellation or operation timeout, the service signals cooperative cancellation and waits only `cancellation_cleanup_timeout` for terminal completion;
 - direct abandonment, task abort, or drop of a polled service operation atomically publishes the terminal poisoned lifecycle before waking waiters or signalling operation cancellation, so a cancellation-cooperative backend cannot release exclusivity into a healthy-looking lifecycle;
@@ -621,6 +621,7 @@ Cancellation rules:
 - if the owned task does not terminate within the cleanup budget, the service permanently poisons the shared backend lifecycle before releasing its gate, clears effective capabilities and observations, and enters `SessionUnavailable`;
 - a poisoned lifecycle rejects every later probe, open, observe, action, and close without calling the backend; recovery requires a new host process, not an in-process session retry;
 - every action reserves an idempotent `DeliveryUncertain`/cleanup-failed receipt before native handoff, so cancellation, timeout, direct future abandonment, and task abort cannot erase effect uncertainty; policy construction normalizes the ledger capacity to at least one entry;
+- an adapter-level admission revocation that occurs after dispatch starts cooperatively cancels dispatch but returns the router's canonical executed, partial, uncertain, or not-executed result; only revocation proven before dispatch may return receipt-free policy denial;
 - an action that exceeds the cleanup budget retains that receipt; its still-owned task may finish only in quarantine and can never overlap a later admitted backend call;
 - only `NotRequired` and `Complete` confirm held-input cleanup; `BestEffort` and `Failed` both retain the receipt, return `input_cleanup_failed`, clear observations, and pause control;
 - backend close itself is owned and operation-timeout-bounded; error, timeout, `BestEffort`, or `Failed` poisons the lifecycle, and shutdown reports that mandatory cleanup was not confirmed;
@@ -666,12 +667,12 @@ stateDiagram-v2
     ReadyControl --> Operating: observe or action
     Operating --> ReadyObserveOnly: observation complete
     Operating --> ReadyControl: action plus observation complete
-    Operating --> Paused: user takeover or terminal cleanup failure
+    Operating --> Paused: authorization revocation or terminal cleanup failure
     Operating --> SessionUnavailable: backend task exceeds cleanup budget
-    ReadyControl --> Paused: attended pause
+    ReadyControl --> Paused: authorization revocation
     ReadyObserveOnly --> SessionUnavailable: lock, switch, authority loss
     ReadyControl --> SessionUnavailable: lock, switch, authority loss
-    Paused --> Probing: explicit resume
+    Paused --> Probing: normal fresh authorization and retry
     SessionUnavailable --> Probing: explicit retry
     Created --> Closing: close
     ReadyObserveOnly --> Closing: close
@@ -684,9 +685,9 @@ stateDiagram-v2
 Requirements:
 
 - entering `Paused` or `SessionUnavailable` atomically invalidates queued actions and clears the observation ledger;
-- a status probe or capture that observes lock, inactive/session change, capture-permission loss, secure-desktop loss, target/topology change, or revoked user presence enters `SessionUnavailable`, clears effective capabilities and geometry basis, and requires a new session plus fresh observation after recovery;
-- every physical takeover increments `TakeoverEpoch`, so an action racing ledger cleanup still fails its capture-time epoch check;
-- recoverable pause/session changes require explicit caller action, successful probe, and a fresh observation;
+- a status probe or capture that observes lock, inactive/session change, capture-permission loss, secure-desktop loss, target/topology change, or revoked run/lifecycle authority enters `SessionUnavailable`, clears effective capabilities and geometry basis, and requires a new session plus fresh observation after recovery;
+- lifecycle invalidation increments the compatibility `TakeoverEpoch`, so an action racing ledger cleanup still fails its capture-time epoch check; this does not imply a `UserPresenceGuard` or physical-input detector;
+- recoverable pause/session changes require explicit caller action, successful probe, normal authorization where applicable, and a fresh observation;
 - `SessionUnavailable` caused by a poisoned backend lifecycle is process-terminal: in-process probe, reopen, and backend close are forbidden;
 - old observations never become valid again after target or layout generation changes;
 - unlock or session reactivation MUST NOT resume a queued action;
@@ -710,7 +711,7 @@ struct ComputerStatus {
     target_generation: Option<TargetGeneration>,
     layout_generation: Option<LayoutGeneration>,
     effect_epoch: Option<EffectEpoch>,
-    user_presence: UserPresenceStatus,
+    user_presence: UserPresenceStatus, // compatibility diagnostic; not an input gate
     diagnostics_code: DiagnosticsCode,
 }
 ```
@@ -806,9 +807,9 @@ The crate MUST ship `FakeComputerUseService` and `FakeNativeDesktopBackend` with
 
 - scripted status and permission transitions;
 - deterministic PNG frames and geometry;
-- independent target, layout, frame, effect, takeover, and accessibility generations;
+- independent target, layout, frame, effect, lifecycle-revocation, and accessibility generations;
 - action recording and configured post-action frames;
-- stale-basis, lock, session-switch, permission, user-presence, cancellation, and cleanup faults;
+- stale-basis, lock, session-switch, permission, authorization-revocation, cancellation, and cleanup faults;
 - idempotency duplicates/conflicts/result eviction;
 - effect-executed/post-observation-failed outcomes;
 - bounded timing through an injectable monotonic clock.
@@ -823,9 +824,9 @@ Every backend and adapter MUST pass shared tests for:
 
 - process restart invalidates all bases;
 - close/reopen creates a new session and target generation;
-- lock, switch, seat loss, portal loss, secure desktop, and physical takeover invalidate queued actions and observation-ledger entries;
+- lock, switch, seat loss, portal loss, secure desktop, run revocation, and cancellation invalidate queued actions and observation-ledger entries;
 - recovery requires explicit probe/resume plus fresh observation;
-- observe → takeover → resume → old-observation reuse fails under adversarial race scheduling; and
+- observe → lifecycle revocation → fresh admission → old-observation reuse fails under adversarial race scheduling; and
 - no old action runs after recovery.
 
 ### Geometry and basis
@@ -833,7 +834,7 @@ Every backend and adapter MUST pass shared tests for:
 - affine round trips across scale, crop, rotation, negative native origins, and mixed displays;
 - target, layout, frame, and effect generations advance independently;
 - stale target/layout/session/process IDs fail closed;
-- unknown/evicted observation IDs, corrupted ledger records, expired observations, takeover-epoch mismatches, and out-of-range coordinates are rejected;
+- unknown/evicted observation IDs, corrupted ledger records, expired observations, compatibility lifecycle-epoch mismatches, and out-of-range coordinates are rejected;
 - the immutable ledger geometry is the only transform used for the cited observation; and
 - no coordinate clamping or guessed transform occurs.
 

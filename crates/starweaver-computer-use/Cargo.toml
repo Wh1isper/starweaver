@@ -46,8 +46,10 @@ xcap = { version = "0.9.7", default-features = false }
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-std", "io-util", "process", "signal"] }
 
-# Native Accessibility requires a very small audited unsafe FFI boundary in
-# `platform::macos_accessibility`; the rest of this crate remains unsafe-denied.
+# Native Accessibility, Unicode input, and typed session-property sampling
+# require small audited unsafe FFI boundaries in
+# `platform::macos_accessibility`, `platform::macos_input`, and
+# `platform::macos_session`; the rest of this crate remains unsafe-denied.
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "warn"

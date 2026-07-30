@@ -1,6 +1,6 @@
 # Computer Use Product Boundaries and Ownership
 
-Status: **Accepted normative architecture; macOS observation subset implemented**
+Status: **Accepted normative architecture; macOS observe/input subset implemented**
 Scope: **current active interactive desktop only**
 Related specs: [`../sdk/03-first-party-tool-bundles.md`](../sdk/03-first-party-tool-bundles.md), [`../core/03-tools-output-capabilities.md`](../core/03-tools-output-capabilities.md), [`../core/04-context-state-executor.md`](../core/04-context-state-executor.md), [`../ops/00-product-boundaries.md`](../ops/00-product-boundaries.md)
 
@@ -21,7 +21,7 @@ The implementation MUST have one semantic core. The internal toolset and MCP ser
 
 The terms **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are normative requirements.
 
-A statement marked **Current evidence** describes the repository at the time it was written. A statement marked **Planned** describes required future behavior and is not an implementation claim. Current capability status is generated from `../capabilities.toml`; the implemented macOS observe-only subset is recorded in `../alignment/13-computer-use-macos-evidence.md`.
+A statement marked **Current evidence** describes the repository at the time it was written. A statement marked **Planned** describes required future behavior and is not an implementation claim. Current capability status is generated from `../capabilities.toml`; the implemented macOS observe, pointer, and keyboard subset is recorded in `../alignment/13-computer-use-macos-evidence.md`.
 
 ## 3. Product definition
 
@@ -346,7 +346,6 @@ Policy MUST bound at least:
 - maximum text length, key count, drag path length, scroll magnitude, and operation timeout;
 - post-action observation and settling behavior;
 - optional accessibility capability, traversal budgets, and independently fixed prompt policy;
-- user-presence requirements; and
 - logging/redaction behavior.
 
 The effective capability set is the intersection of build/platform support, current OS permission state, active-session state, and host policy.
@@ -375,7 +374,7 @@ A service instance moves through these product-level phases:
 2. `Probing`: platform/session/permission state inspected.
 3. `ReadyObserveOnly` or `ReadyControl`: effective capabilities established.
 4. `Operating`: one serialized observe/action operation is active.
-5. `Suspended`: lock, session switch, permission loss, portal closure, display reconfiguration, user takeover, or cancellation invalidated live state.
+5. `Suspended`: lock, session switch, permission loss, portal closure, display reconfiguration, run/lifecycle revocation, or cancellation invalidated live state.
 6. `Closing`: queued operations rejected; active operation cancelled at a safe boundary; input released.
 7. `Closed`: native resources released; all previous IDs and bases invalid.
 
@@ -388,8 +387,8 @@ Internal toolset lifecycle and MCP process lifecycle are adapters over this stat
 - `starweaver-cli` and `starweaver-rpc` are the maintained Starweaver composition roots for Computer Use.
 - Both products use the first-party Toolset and typed library in-process; neither launches or loops through the MCP binary.
 - The library remains a lower layer and MUST NOT depend on CLI, RPC, their transports, durable host state, or product handlers.
-- CLI and RPC each own explicit startup/profile policy, per-tool grants, process-lifetime coordination, shutdown, and permission diagnostics for their own executable identity.
-- RPC adds no Computer-Use-specific wire method: enabled RPC-hosted agents receive ordinary tools after RPC-owned configuration and authorization. A remote RPC caller never changes the fact that effects occur on the RPC host's local active desktop.
+- CLI and RPC each own explicit product enablement, process-lifetime coordination, shutdown, and permission diagnostics for their own executable identity. Their maintained composition grants the full canonical family and sets `InputApprovalPolicy::Never`; SDK integrators may still choose narrower grants or a configurable approval policy.
+- RPC adds no Computer-Use-specific wire method or observe/pointer/keyboard principal split: enabled RPC-hosted agents receive ordinary tools after normal RPC caller/run authorization. A remote RPC caller never changes the fact that effects occur on the RPC host's local active desktop.
 - The MCP binary is the supported boundary for non-Starweaver harnesses and MUST be launchable by any conforming local MCP-capable harness.
 - No Starweaver graphical Desktop product, renderer, sidecar, generated binding, packaging lane, or update channel is assumed or required.
 - Python or another harness integration is not a baseline in-process binding; it uses stdio MCP unless a later explicit architecture decision changes the cross-ecosystem boundary.
@@ -408,17 +407,11 @@ Breaking changes to tool names, required arguments, coordinate semantics, conten
 
 ## 12. Implementation status
 
-At the time of this spec:
-
-- `starweaver-computer-use` does not exist;
-- the `starweaver-computer-use-mcp` binary target does not exist;
-- the first-party Computer Use toolset does not exist;
-- Starweaver has an MCP client but no generic MCP server product for exporting toolsets;
-- the current multimodal tool-return path can carry image content from an internal tool;
-- typed dependency filtering and toolset lifecycle primitives are implemented; and
-- native backend dependency choices still require platform spikes.
-
-No section in this document claims implemented capability.
+At the time of this spec, `starweaver-computer-use`, its canonical eight-tool router, first-party
+Toolset, macOS observe/pointer/keyboard backend, and feature-gated stdio MCP binary are implemented.
+CLI and RPC compose the Toolset in-process. Windows and Linux backends remain explicit unsupported
+implementations. Current evidence is indexed in
+`../alignment/13-computer-use-macos-evidence.md` and `../capabilities.toml`.
 
 ## 13. Decision log
 
@@ -441,9 +434,7 @@ No section in this document claims implemented capability.
 The following require prototype evidence before implementation contracts graduate:
 
 1. Whether the baseline capture-scope default remains the primary display or changes to the normalized visible desktop; the choice remains host-owned either way.
-2. The exact production `UserPresenceGuard` implementation on each OS.
-3. Whether later native features remain inside the implemented narrow same-process `objc2` FFI boundary or justify a separate wrapper package.
-4. The exact field names and configuration syntax for future input-capable CLI/RPC maximum grants. RPC semantics are not open: generic `run` grants no Computer Use, dedicated default-denied observe/pointer/keyboard principal capabilities are intersected into an expiring/revocable run admission, and resume/continuation requires fresh derivation without adding a Computer-Use-specific host-protocol method.
+2. Whether later native features remain inside the implemented narrow same-process `objc2` FFI boundary or justify a separate wrapper package.
 
 Open decisions MUST NOT weaken the stated exclusions or dependency direction.
 
@@ -452,7 +443,7 @@ Open decisions MUST NOT weaken the stated exclusions or dependency direction.
 Before code implementation is considered architecture-ready:
 
 - CLI and RPC in-process composition, direct typed service fixtures, and the external-harness MCP server path are represented in compile-time or fixture-level design tests;
-- RPC negative admission fixtures prove generic `run`, profile selection, cross-principal runs, revoked/expired grants, and durable resume cannot acquire or preserve ungranted observe/pointer/keyboard authority;
+- RPC admission fixtures prove disabled configuration, unauthorized callers/runs, cross-principal runs, revoked/expired admissions, and durable resume cannot acquire or preserve Computer Use authority;
 - `cargo metadata` proves the core library has no forbidden dependency path;
 - the canonical catalog has checked-in deterministic JSON Schema fixtures;
 - toolset and MCP declarations are byte-equivalent after canonical JSON normalization;

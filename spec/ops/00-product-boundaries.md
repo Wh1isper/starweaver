@@ -114,7 +114,7 @@ It may embed the Agent SDK and connect directly to local or remote envd provider
 - typed request/result/error mapping;
 - RPC process startup and shutdown.
 
-It may embed the Agent SDK and connect directly to local or remote envd providers. When Computer Use is explicitly enabled, RPC creates one process-local coordinator shared across authorized runs and attaches the first-party Toolset directly; it does not launch the Computer Use MCP binary. Generic `run` authority grants no Computer Use: each run needs a default-denied principal grant that is expiring/revocable and freshly derived on resume/continuation. Effects target the RPC host process's current local desktop, not the RPC client's machine. It must not depend on `starweaver-cli`.
+It may embed the Agent SDK and connect directly to local or remote envd providers. When Computer Use is explicitly enabled, RPC creates one process-local coordinator shared across normally authorized runs and attaches the full first-party Toolset directly; it does not launch the Computer Use MCP binary. There is no separate Computer Use principal grant: enabled configuration plus ordinary caller/run authorization is sufficient, while admission remains expiring/revocable and is freshly derived on resume/continuation. Effects target the RPC host process's current local desktop, not the RPC client's machine. It must not depend on `starweaver-cli`.
 
 The RPC binary remains independently runnable even when a Desktop release bundles and supervises it. Desktop communicates through the versioned host protocol and process lifecycle only; RPC does not import Desktop state or APIs.
 

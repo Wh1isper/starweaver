@@ -101,7 +101,7 @@ gh release create vX.Y.Z --target "$(git rev-parse HEAD)" --title "Starweaver vX
 Publishing the GitHub Release triggers `.github/workflows/release.yml`:
 
 1. build CLI launcher archives, including the standalone RPC binary,
-2. build the observe-only `starweaver-computer-use-mcp` binary for both macOS Rust targets,
+2. build the input-capable `starweaver-computer-use-mcp` binary for both macOS Rust targets,
 3. package the self-contained public host OpenRPC bundle, generated manifest, and canonical source schemas,
 4. build Python source and wheel distributions for `packages/starweaver-py`,
 5. upload maintained core assets with `checksums.txt`,
@@ -154,12 +154,13 @@ The release also includes:
 - `checksums.txt` for maintained CLI, protocol, and Python release assets.
 
 Computer Use MCP archives contain only `starweaver-computer-use-mcp`. Windows and Linux Computer
-Use release binaries are TBD and are not built or published. The macOS binaries are checksum-covered
-but are not Apple Developer ID signed or notarized. Computer Use is therefore a provisional
-observe-only component, not a production-ready macOS capture identity, even when the default
-installer includes it. Stable TCC identity, notarization, and permission continuity for exact release
-bytes are required before that status can graduate; see [Computer Use](computer-use.md) for the
-permission and local-policy boundary.
+Use release binaries are TBD and are not built or published. On macOS, launching the stdio server
+explicitly enables the canonical observe, pointer, and keyboard family, subject to Screen Recording,
+Accessibility/post-event permission, and active same-user unlocked-session checks. The binaries are
+checksum-covered but are not Apple Developer ID signed or notarized. Signing and notarization affect
+Gatekeeper warnings, stable TCC identity, and permission continuity across updates; they are not an
+input-availability gate. See [Computer Use](computer-use.md) for the permission and local-policy
+boundary.
 
 External TypeScript consumers generate complete bindings from the public contract with
 `make rpc-typescript-generate OUTPUT=<empty-or-generator-owned-directory>`. Starweaver does not

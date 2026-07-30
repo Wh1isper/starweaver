@@ -1,6 +1,6 @@
 # Computer Use MCP Binary and Process Lifecycle
 
-Status: **Accepted normative architecture; observe-only stdio binary implemented**
+Status: **Accepted normative architecture; full macOS stdio binary implemented**
 Scope: local stdio MCP exposure of the current active interactive desktop
 Depends on: [`01-product-boundaries-and-ownership.md`](01-product-boundaries-and-ownership.md), [`02-service-contract-and-state-machine.md`](02-service-contract-and-state-machine.md), [`03-toolset-and-library-integration.md`](03-toolset-and-library-integration.md), [`04-native-active-desktop-backends.md`](04-native-active-desktop-backends.md)
 
@@ -23,8 +23,8 @@ The binary MUST:
 - expose MCP over stdio only;
 - run as the current local interactive user;
 - own its native capture, input, permission, portal, cancellation, and cleanup state in the same process;
-- default to observation authority only; and
-- fail closed when current-session, permission, policy, or user-presence requirements are not satisfied.
+- expose the full canonical observe, pointer, and keyboard family on the supported macOS backend; and
+- fail closed when current-session, permission, policy, run-lifecycle, or cancellation requirements are not satisfied.
 
 It MUST NOT:
 
@@ -79,12 +79,13 @@ No default mode is implied. Invoking the executable without one of these modes M
 
 ### 4.1 `--stdio`
 
-`--stdio` starts the MCP server. Server options are host-owned process configuration. The implemented observe-only release accepts `--desktop-scope`, `--allow-pointer`, `--allow-keyboard`, and `--json`; unsupported input flags cannot widen the compiled capability ceiling. Stdio policy permits optional bounded accessibility snapshots but fixes both implicit permission-prompt switches to false. The broader target surface includes:
+`--stdio` starts the MCP server. Launching it is the user's explicit Computer Use opt-in. The
+implemented command accepts `--desktop-scope` and `--json`; deprecated hidden `--allow-pointer` and
+`--allow-keyboard` compatibility flags are ignored and are not release gates. Stdio policy permits optional bounded accessibility snapshots but
+fixes both implicit permission-prompt switches to false. The broader target surface includes:
 
 ```text
 --desktop-scope primary-display|visible-desktop
---allow-pointer
---allow-keyboard
 --permission-prompts never|interactive
 --image-format png|jpeg
 --max-image-width <u32>
@@ -92,21 +93,17 @@ No default mode is implied. Invoking the executable without one of these modes M
 --max-image-bytes <u64>
 --operation-timeout-ms <u64>
 --post-action-settle-ms <u64>
---user-presence required|development-terminal-only
 --x11 explicit|disabled
 --log-level error|warn|info|debug
 ```
 
 Options not present in the implemented command remain planned. The following semantics are fixed:
 
-- observe is the default and minimum capability;
-- pointer and keyboard are denied unless explicitly enabled by launch policy;
-- enabling keyboard does not implicitly enable pointer, or vice versa;
-- pointer/keyboard require observe because every successful action returns a post-action observation;
-- tool arguments cannot change launch policy;
+- the supported macOS backend advertises the full canonical family;
+- pointer/keyboard still require observation because every successful action returns a post-action observation;
+- tool arguments cannot change process policy;
 - `permission-prompts=never` is the default;
-- an attended Wayland deployment that requires an in-process portal chooser must explicitly select `interactive`;
-- `development-terminal-only` is forbidden in release artifacts as defined by `06-security-testing-and-delivery.md`; and
+- an attended Wayland deployment that requires an in-process portal chooser must explicitly select `interactive`; and
 - X11 is never an automatic fallback from a denied or unavailable Wayland portal.
 
 A future config file MAY replace or complement flags, but it MUST have a strict schema, reject unknown fields, and be selected explicitly by the launching user or harness. The binary MUST NOT scan Starweaver CLI/RPC, editor, graphical-product, or browser configuration.
@@ -121,7 +118,7 @@ The report includes:
 - selected platform/backend and desktop scope;
 - process permission/signing identity classification;
 - active-session/seat eligibility;
-- capture, pointer, keyboard, optional accessibility, and user-presence status;
+- capture, pointer, keyboard, optional accessibility, and compatibility lifecycle status (the legacy `user_presence` field is diagnostic only);
 - whether restart, portal interaction, or native onboarding is required;
 - effective launch-policy capabilities; and
 - stable remediation codes and human-readable instructions.
@@ -130,11 +127,11 @@ Machine-readable JSON SHOULD be available through an explicit option. Reports MU
 
 ### 4.3 `--request-permissions`
 
-`--request-permissions` is attended onboarding outside the MCP tool surface. On macOS, the implemented command invokes the native request paths for both Screen Recording and Accessibility, then emits the immediate `PermissionRequestOutcome`. It may present platform UI and MUST clearly describe which process identity is requesting authority.
+`--request-permissions` is attended onboarding outside the MCP tool surface. On macOS, the implemented command invokes the native request paths for Screen Recording, CoreGraphics post-event access, and AX trust independently, then emits the immediate `PermissionRequestOutcome`. It may present platform UI and MUST clearly describe which process identity is requesting authority.
 
 Platform semantics differ:
 
-- macOS requests Screen Recording and Accessibility for the MCP executable identity and reports the immediate preflight/trust result; showing a prompt is not success, and a later grant requires retry/restart as reported;
+- macOS requests Screen Recording plus Accessibility/post-event access for the MCP executable identity, re-establishes the foreground-session fence before each native request, and reports the immediate preflight/trust result; showing a prompt is not success, and a later grant requires retry/restart as reported;
 - Windows MAY perform capture-consent onboarding required by the selected backend but MUST NOT request elevation or `uiAccess`;
 - Wayland portal authority is bound to the live D-Bus client/session, so a separate onboarding invocation cannot promise reusable authority to a later server process. It MUST explain that `--stdio --permission-prompts=interactive` will perform consent in the actual MCP process;
 - X11 diagnostics MAY explain broad same-session authority but MUST NOT modify X authorization.
@@ -196,7 +193,7 @@ stateDiagram-v2
     Operating --> Cancelling: correlated cancellation, EOF, signal, or timeout
     Cancelling --> Ready: backend terminates within cleanup budget
     Cancelling --> Unavailable: backend exceeds cleanup budget; lifecycle poisoned
-    Ready --> Suspended: lock, switch, permission loss, portal close, or user takeover
+    Ready --> Suspended: lock, switch, permission loss, portal close, or lifecycle revocation
     Suspended --> OpeningDesktop: explicit new call after attended recovery
     Idle --> Closing: EOF, shutdown, or signal
     Ready --> Closing: EOF, shutdown, or signal
@@ -272,7 +269,7 @@ Capability groups are:
 | pointer    | `computer_click`, `computer_move_pointer`, `computer_drag`, `computer_scroll` |
 | keyboard   | `computer_type_text`, `computer_press_keys`                                   |
 
-`computer_status` MUST always be present after successful MCP initialization because it is the safe diagnostic path. `computer_observe` is present when observation is allowed by launch policy and the build has a candidate backend. Pointer and keyboard tools appear only when their explicit launch grants are present. Because effect tools return a post-action image, they also require observe.
+`computer_status` MUST always be present after successful MCP initialization because it is the safe diagnostic path. `computer_observe` is present when observation is allowed by launch policy and the build has a candidate backend. On the supported macOS backend, pointer and keyboard tools appear whenever the server is launched. Because effect tools return a post-action image, they also require observation support. OS permission readiness is enforced at call time rather than by input-specific launch grants.
 
 `tools/list` MUST NOT initiate a permission prompt merely to decide inventory. V1 keeps the catalog stable for the connection: later permission denial, lock, revocation, or recovery is reported through `computer_status` and typed call errors rather than tool removal/addition. The server therefore MUST NOT advertise tool-list-change support in V1. A capability becoming newly available can never add input tools beyond launch policy.
 
@@ -367,7 +364,7 @@ The following classes MUST remain distinguishable:
 - stale observation or geometry;
 - out-of-bounds action;
 - input rejected or delivery uncertain;
-- user-presence pause/revocation;
+- run/lifecycle authorization revocation;
 - cancellation/timeout;
 - protected/redacted capture;
 - image/encoding limit;
@@ -456,18 +453,19 @@ It MUST NOT log:
 
 Metrics MAY count calls, errors, cancellation, permission classes, and bounded latency histograms without content labels. Telemetry/export is off by default and requires a later explicit policy; local logs do not imply network export.
 
-## 12. Permission-prompt and user-presence behavior
+## 12. Permission-prompt and lifecycle behavior
 
-The MCP client is untrusted tool-call input. Launching the process configures maximum authority but does not waive attended-control requirements.
+The MCP client is untrusted tool-call input. Launching the process is the user's explicit opt-in to the
+full canonical family, but does not bypass native permission or current-session checks.
 
 - No tool may change `permission-prompts` policy.
 - Interactive OS permission UI is user-owned; the server reports cancellation/denial without retry loops.
-- Input tools remain unavailable unless launch policy grants their capability and the required `UserPresenceGuard` is production-ready.
-- Physical user takeover pauses/revokes queued input as defined in `06-security-testing-and-delivery.md`.
-- A client cannot resume after takeover by replaying the old call; an explicit attended resume plus fresh observation is required.
+- Screen Recording and Accessibility/post-event permission remain authoritative at call time.
+- Lock, user/session switch, authorization revocation, cancellation, or process shutdown invalidates queued input.
 - Protected/elevated/secure surfaces are failures, never a reason to widen mechanism.
 
-The binary MUST expose its current input-enabled state through the platform-required visible indicator/guard. A hidden MCP client window is not a user-presence surface.
+No input-specific `UserPresenceGuard`, physical-takeover detector, visible indicator, or emergency-stop
+mechanism is required by this product contract.
 
 ## 13. Packaging and identity
 
@@ -487,7 +485,7 @@ Platform packages MUST preserve the identity requirements in `04-native-active-d
 - Windows publisher signing and controlled DLL search path;
 - Linux package provenance and controlled native-library loading.
 
-Release artifacts MUST include checksums and provenance according to repository release policy. Native publisher signing remains a release gate where the platform permission/user-trust model depends on it; a checksum is not a substitute.
+Release artifacts MUST include checksums and provenance according to repository release policy. Native publisher signing is recommended for stable permission identity and reduced OS warnings, but is not an input-availability gate; a checksum is not a substitute for publisher identity.
 
 The binary MUST NOT self-update, download code, install permissions, edit MCP client configuration, or modify shell startup files. Installation/configuration belongs to packaging or the user/client product.
 
@@ -524,8 +522,7 @@ Tests spawn the built binary and cover:
 - stdin EOF, graceful shutdown, SIGINT/SIGTERM where portable, and forced timeout;
 - cancellation during queue wait, capture, drag, key chord, image encoding, and post-action observation;
 - no orphan process or listener;
-- default observation-only inventory;
-- input inventory only with explicit launch flags; and
+- full canonical macOS inventory on ordinary `--stdio` launch; and
 - actual release artifact smoke execution.
 
 ### 14.3 Negative surface tests
@@ -568,7 +565,7 @@ The MCP binary MUST be implemented only after:
 2. deterministic fake service conformance passes;
 3. one platform backend can prove same-process observation and cleanup;
 4. server and cancellation spikes pass against the resolved workspace `rmcp` version; and
-5. security policy defines launch grants and user-presence behavior.
+5. security policy defines native permission, run-lifecycle, and cancellation behavior.
 
 Implementation then proceeds:
 
@@ -576,7 +573,7 @@ Implementation then proceeds:
 2. subprocess stdio conformance binary over the fake backend;
 3. native backend composition and lazy permission/session acquisition;
 4. packaging identity and actual-artifact tests; and
-5. input-capable release only after all security gates in `06-security-testing-and-delivery.md`.
+5. full-family release after the durable invariants in `06-security-testing-and-delivery.md` pass.
 
 ## 17. Acceptance gates
 
@@ -586,16 +583,16 @@ The MCP binary is architecture-complete only when:
 - the default library feature graph contains no `rmcp` server dependency;
 - it serves stdio and no other transport;
 - initialization triggers no OS authority prompt;
-- default launch exposes no pointer/keyboard tools;
+- ordinary macOS launch exposes the full canonical observe/pointer/keyboard family;
 - canonical catalog and MCP schemas match normalized fixtures;
 - image and structured result mapping is lossless and bounded;
 - cancellation is request-correlated and releases held input;
 - EOF/signal shutdown closes native sessions within budget;
 - stdout purity passes fault-injection tests;
 - no sensitive content is logged or retained;
-- packaged signed/provenance-covered artifacts pass platform smoke tests;
+- packaged checksum/provenance-covered artifacts pass platform smoke tests, with signing evidence tracked separately for TCC continuity and OS warnings;
 - no helper, daemon, service, network listener, Starweaver product dependency, graphical-product assumption, browser backend, provider-native tool, or unattended path exists; and
-- every enabled input mode has a production `UserPresenceGuard` accepted by `06-security-testing-and-delivery.md`.
+- input preserves observation-basis, serialization, idempotency, cancellation, held-state cleanup, and lifecycle-revocation invariants.
 
 ## 18. Open decisions
 

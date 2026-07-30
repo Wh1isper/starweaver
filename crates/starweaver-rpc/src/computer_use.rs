@@ -10,8 +10,8 @@ use std::{
 };
 
 use starweaver_agent::{
-    ComputerUseAdmissionGuard, ComputerUseToolsetPolicy, DynToolset, attach_guarded_computer_use,
-    computer_use_tools,
+    ComputerUseAdmissionGuard, ComputerUseToolsetPolicy, DynToolset, InputApprovalPolicy,
+    attach_guarded_computer_use, computer_use_tools,
 };
 use starweaver_computer_use::{
     CloseReason, ComputerCapabilityGrant, ComputerSessionBinding, ComputerToolGrant,
@@ -32,7 +32,6 @@ pub(crate) struct RpcComputerUsePrincipal {
     authority_identity: String,
     connection_id: Option<String>,
     authorization_generation: u64,
-    observe: bool,
 }
 
 impl RpcComputerUsePrincipal {
@@ -40,13 +39,11 @@ impl RpcComputerUsePrincipal {
         authority_identity: impl Into<String>,
         connection_id: Option<String>,
         authorization_generation: u64,
-        observe: bool,
     ) -> Self {
         Self {
             authority_identity: authority_identity.into(),
             connection_id,
             authorization_generation,
-            observe,
         }
     }
 }
@@ -121,13 +118,13 @@ impl RpcComputerUseCoordinator {
             RpcComputerUseDesktopScope::PrimaryDisplay => DesktopSurfaceScope::PrimaryDisplay,
             RpcComputerUseDesktopScope::VisibleDesktop => DesktopSurfaceScope::VisibleDesktop,
         };
-        let grant = current_desktop_tool_grant(ComputerToolGrant::observe_only());
+        let grant = current_desktop_tool_grant(ComputerToolGrant::full());
         let policy = ComputerUsePolicy {
             desktop_scope,
             allowed_capabilities: ComputerCapabilityGrant {
                 observe: grant.observe,
-                pointer: false,
-                keyboard: false,
+                pointer: grant.pointer,
+                keyboard: grant.keyboard,
                 accessibility_snapshot: true,
             },
             permission_prompts: PermissionPromptPolicy {
@@ -153,11 +150,18 @@ impl RpcComputerUseCoordinator {
 
     pub(crate) fn toolset() -> DynToolset {
         computer_use_tools(
-            ComputerToolGrant::observe_only(),
-            ComputerUseToolsetPolicy::default(),
+            ComputerToolGrant::full(),
+            ComputerUseToolsetPolicy {
+                input_approval: InputApprovalPolicy::Never,
+                ..ComputerUseToolsetPolicy::default()
+            },
         )
     }
 
+    // Keep principal derivation on the process coordinator: callers should not
+    // construct transport identities independently even though V1 has no
+    // transport-specific Computer Use capability bit.
+    #[allow(clippy::unused_self)]
     pub(crate) fn principal(
         &self,
         transport: RpcTransport,
@@ -165,20 +169,11 @@ impl RpcComputerUseCoordinator {
         connection_id: &str,
         authorization_generation: u64,
     ) -> RpcComputerUsePrincipal {
-        let observe = match transport {
-            RpcTransport::Stdio => self.config.stdio_observe,
-            RpcTransport::Http => self.config.http_observe,
-        };
         // Stdio is a persistent principal and loses authority on connection close. Unary HTTP has
         // no persistent connection lifetime, so its credential fingerprint and startup
         // authorization generation remain the revocation boundary until the short run TTL expires.
         let connection_id = (transport == RpcTransport::Stdio).then(|| connection_id.to_string());
-        RpcComputerUsePrincipal::new(
-            authority_identity,
-            connection_id,
-            authorization_generation,
-            observe,
-        )
+        RpcComputerUsePrincipal::new(authority_identity, connection_id, authorization_generation)
     }
 
     pub(crate) fn attach_run(
@@ -195,7 +190,6 @@ impl RpcComputerUseCoordinator {
             return Ok(None);
         };
         if !profile_grants_toolset
-            || !principal.observe
             || !self.grant.observe
             || principal.authorization_generation != self.state.authorization_generation
         {
@@ -209,7 +203,7 @@ impl RpcComputerUseCoordinator {
             authorization_generation: principal.authorization_generation,
             admission_generation,
             expires_at: Instant::now() + Duration::from_millis(self.config.grant_ttl_ms),
-            grant: ComputerToolGrant::observe_only(),
+            grant: self.grant,
             revoked: revoked.clone(),
         };
         let replaced = self
@@ -236,12 +230,8 @@ impl RpcComputerUseCoordinator {
             move || admission_is_current(&weak_state, &guarded_target, admission_generation),
             revoked,
         );
-        if let Err(error) = attach_guarded_computer_use(
-            context,
-            router.clone(),
-            ComputerToolGrant::observe_only(),
-            guard,
-        ) {
+        if let Err(error) = attach_guarded_computer_use(context, router.clone(), self.grant, guard)
+        {
             self.revoke_target(target);
             return Err(RpcHostError::Invalid(error.to_string()));
         }
@@ -391,7 +381,6 @@ mod tests {
         let coordinator = RpcComputerUseCoordinator::from_config(
             RpcComputerUseConfig {
                 enabled: true,
-                stdio_observe: true,
                 ..RpcComputerUseConfig::default()
             },
             0,
@@ -419,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn enabled_composition_allows_accessibility_prompts_without_widening_principals() {
+    fn enabled_composition_requests_full_grant_without_new_principal_gates() {
         let coordinator = coordinator(RpcComputerUseConfig {
             enabled: true,
             ..RpcComputerUseConfig::default()
@@ -433,27 +422,46 @@ mod tests {
         assert!(policy.allowed_capabilities.accessibility_snapshot);
         assert!(policy.permission_prompts.capture_on_open);
         assert!(policy.permission_prompts.accessibility_on_observe);
-        assert!(!coordinator.grant.pointer);
-        assert!(!coordinator.grant.keyboard);
+        assert_eq!(
+            policy.allowed_capabilities.observe,
+            coordinator.grant.observe
+        );
+        assert_eq!(
+            policy.allowed_capabilities.pointer,
+            coordinator.grant.pointer
+        );
+        assert_eq!(
+            policy.allowed_capabilities.keyboard,
+            coordinator.grant.keyboard
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(coordinator.grant, ComputerToolGrant::full());
+        let click = RpcComputerUseCoordinator::toolset()
+            .get_tools()
+            .into_iter()
+            .find(|tool| tool.name() == starweaver_computer_use::COMPUTER_CLICK_TOOL)
+            .expect("RPC toolset includes click");
+        assert!(!click.metadata().contains_key("approval_required"));
         assert!(
-            !coordinator
+            coordinator
                 .principal(RpcTransport::Stdio, "stdio", "connection", 1)
-                .observe
+                .connection_id
+                .is_some()
         );
         assert!(
-            !coordinator
+            coordinator
                 .principal(RpcTransport::Http, "http", "connection", 1)
-                .observe
+                .connection_id
+                .is_none()
         );
     }
 
     #[test]
-    fn server_profile_and_principal_are_independent_required_gates() {
+    fn enablement_profile_and_startup_generation_are_required_gates() {
         let target = target();
         let mut context = AgentContext::default();
         let disabled = coordinator(RpcComputerUseConfig {
             enabled: false,
-            stdio_observe: true,
             ..RpcComputerUseConfig::default()
         });
         let principal =
@@ -467,7 +475,6 @@ mod tests {
 
         let enabled = coordinator(RpcComputerUseConfig {
             enabled: true,
-            stdio_observe: true,
             ..RpcComputerUseConfig::default()
         });
         let principal =
@@ -478,15 +485,11 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        let denied_principal = RpcComputerUsePrincipal::new(
-            "local-stdio",
-            Some("connection-enabled".to_string()),
-            1,
-            false,
-        );
+        let stale_principal =
+            RpcComputerUsePrincipal::new("local-stdio", Some("connection-enabled".to_string()), 2);
         assert!(
             enabled
-                .attach_run(&mut context, &target, Some(&denied_principal), true)
+                .attach_run(&mut context, &target, Some(&stale_principal), true)
                 .unwrap()
                 .is_none()
         );
@@ -495,10 +498,9 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
-    async fn complete_intersection_attaches_observe_only_and_lease_drop_revokes() {
+    async fn complete_intersection_attaches_full_grant_and_lease_drop_revokes() {
         let coordinator = coordinator(RpcComputerUseConfig {
             enabled: true,
-            stdio_observe: true,
             ..RpcComputerUseConfig::default()
         });
         let target = target();
@@ -521,7 +523,18 @@ mod tests {
                 .named_dependency::<starweaver_agent::ComputerPointerHandle>(
                     starweaver_agent::COMPUTER_POINTER_CAPABILITY,
                 )
-                .is_none()
+                .is_some()
+        );
+        assert!(
+            context
+                .named_dependency::<starweaver_agent::ComputerKeyboardHandle>(
+                    starweaver_agent::COMPUTER_KEYBOARD_CAPABILITY,
+                )
+                .is_some()
+        );
+        assert_eq!(
+            coordinator.state.admissions.lock().unwrap()[&target].grant,
+            ComputerToolGrant::full()
         );
         assert_eq!(coordinator.active_admission_count(), 1);
         drop(lease);
@@ -530,11 +543,37 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
+    async fn authorized_http_principal_receives_the_same_full_grant() {
+        let coordinator = coordinator(RpcComputerUseConfig {
+            enabled: true,
+            ..RpcComputerUseConfig::default()
+        });
+        let target = target();
+        let principal = coordinator.principal(
+            RpcTransport::Http,
+            "authorized-http-credential",
+            "unary-request",
+            1,
+        );
+        let mut context = AgentContext::default();
+        let lease = coordinator
+            .attach_run(&mut context, &target, Some(&principal), true)
+            .unwrap()
+            .expect("authorized HTTP run receives Computer Use admission");
+
+        let admissions = coordinator.state.admissions.lock().unwrap();
+        assert_eq!(admissions[&target].grant, ComputerToolGrant::full());
+        assert!(admissions[&target].connection_id.is_none());
+        drop(admissions);
+        drop(lease);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
     async fn ttl_task_revokes_exact_active_generation() {
         let coordinator = coordinator(RpcComputerUseConfig {
             enabled: true,
             grant_ttl_ms: 5,
-            stdio_observe: true,
             ..RpcComputerUseConfig::default()
         });
         let target = target();
@@ -559,7 +598,6 @@ mod tests {
     async fn replacement_admission_revokes_the_old_generation() {
         let coordinator = coordinator(RpcComputerUseConfig {
             enabled: true,
-            stdio_observe: true,
             ..RpcComputerUseConfig::default()
         });
         let target = target();
@@ -593,7 +631,6 @@ mod tests {
         let config = RpcComputerUseConfig {
             enabled: true,
             grant_ttl_ms: 1,
-            stdio_observe: true,
             ..RpcComputerUseConfig::default()
         };
         let coordinator = coordinator(config);

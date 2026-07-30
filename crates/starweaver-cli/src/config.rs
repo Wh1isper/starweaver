@@ -317,7 +317,7 @@ struct StorageConfig {
 /// CLI-owned opt-in Computer Use configuration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CliComputerUseConfig {
-    /// Install the observe-only current-desktop toolset.
+    /// Install the current-desktop observe, pointer, and keyboard toolset.
     #[serde(default)]
     pub enabled: bool,
     /// Capture either the primary active display or complete visible desktop.

@@ -1,6 +1,6 @@
 # Computer Use Toolset and Library Integration
 
-Status: **Accepted normative architecture; observe-only adapter implemented**
+Status: **Accepted normative architecture; full macOS adapter implemented**
 Scope: **canonical tool protocol, Starweaver first-party Toolset, and adapter parity**
 Depends on: [`02-service-contract-and-state-machine.md`](02-service-contract-and-state-machine.md)
 MCP mapping: [`05-mcp-binary-and-process-lifecycle.md`](05-mcp-binary-and-process-lifecycle.md)
@@ -22,7 +22,7 @@ V1 uses eight focused tools instead of one provider-style tagged action union:
 - tool-level capability grants can distinguish observation, pointer, and keyboard authority;
 - each schema has fewer conditionally valid fields;
 - providers with limited JSON Schema support receive straightforward object schemas;
-- approval and timeout metadata can differ by risk class;
+- SDK-integrator approval and timeout metadata can differ by risk class;
 - MCP `tools/list` can omit unsupported capability groups;
 - model errors can identify one intended operation without interpreting a loose native payload.
 
@@ -225,7 +225,7 @@ Errors with `EffectStatus::Executed`, `PartiallyExecuted`, or `DeliveryUncertain
 
 ### 7.1 `computer_status`
 
-Purpose: report service/session readiness, permissions, effective capability groups, backend, active-session state, configured surface scope, and user-presence state without capturing pixels or injecting input.
+Purpose: report service/session readiness, permissions, effective capability groups, backend, active-session state, configured surface scope, and compatibility lifecycle diagnostics without capturing pixels or injecting input. A legacy `user_presence` status field, where present, is diagnostic only and is not a required guard or input gate.
 
 Input:
 
@@ -518,9 +518,9 @@ pub fn attach_computer_use(
 
 The toolset name and stable ID are `computer_use` and `starweaver.computer_use.tools.v1` respectively.
 
-CLI and RPC each construct one process-level service/router coordinator and attach shared method-limited handles into authorized agent contexts. CLI retains it for the CLI process lifetime. RPC retains one coordinator for the RPC process and shares it across enabled runs; the router serializes native operations, while RPC-owned run/caller authorization and per-tool grants remain independent. Creating one native controller per RPC run is forbidden.
+CLI and RPC each construct one process-level service/router coordinator and attach shared method-limited handles into authorized agent contexts. CLI retains it for the CLI process lifetime. RPC retains one coordinator for the RPC process and shares it across enabled runs; the router serializes native operations, while RPC-owned ordinary caller/run authorization remains independent. Creating one native controller per RPC run is forbidden.
 
-RPC attachment occurs only after run admission derives a current default-denied caller grant for `computer.observe`, `computer.pointer`, and `computer.keyboard`; generic `run` authorization grants none. The admitted grant is process-local, generation/expiry checked before every Computer Use call and again before each effect fence, and never restored from durable context. Revocation removes that run's handles, cancels queued/active observations and queued pre-effect work, and does not close the shared coordinator. Resume/continuation re-derives authorization before attachment.
+RPC attachment occurs only when `[computer_use].enabled = true` and ordinary caller/run admission succeeds. There are no transport-specific observe settings or separate observe/pointer/keyboard principal capabilities. The admitted authorization is process-local, generation/expiry checked before every Computer Use call and again before each effect fence, and never restored from durable context. Revocation removes that run's handles, cancels queued/active observations and queued pre-effect work, and does not close the shared coordinator. Resume/continuation performs fresh normal authorization before attachment.
 
 The bundle MUST be opt-in in both products. CLI profile/configuration and RPC-owned agent/profile configuration attach it explicitly; it is never inferred from model choice or transport access. CLI and RPC call the library directly and MUST NOT configure their own MCP client to loop back through `starweaver-computer-use-mcp`.
 
@@ -627,9 +627,14 @@ context.grant_tool_capabilities(
 );
 ```
 
-Pointer and keyboard tools receive their own grants. Granting observe does not grant pointer or keyboard. Granting one pointer tool does not automatically expose all pointer tools unless the CLI/RPC product explicitly grants each tool and includes it in the toolset.
+The SDK adapter retains capability-group and per-tool grants so non-product integrators can compose a
+narrower toolset. These are internal host-capability boundaries, not RPC transport principals. The
+maintained CLI and RPC products install grants for the full canonical family whenever Computer Use is
+explicitly enabled; profiles and callers cannot split pointer from keyboard authority.
 
-If a tool requests a capability but its per-tool grant omits it, grant-intersected dependency assembly removes the handle and the tool fails closed as unavailable. Profile validation SHOULD detect this mismatch before the model sees the tool. Contract tests MUST prove both named and direct typed lookup cannot recover an omitted observe, pointer, or keyboard wrapper.
+If an SDK integrator omits a required per-tool grant, grant-intersected dependency assembly removes the
+handle and the tool fails closed as unavailable. Contract tests MUST prove both named and direct typed
+lookup cannot recover an omitted wrapper.
 
 ## 14. Tool construction and lifecycle
 
@@ -669,20 +674,18 @@ struct ComputerUseToolsetPolicy {
 
 enum InputApprovalPolicy {
     Always,
-    HostManagedAttendedSession,
+    Never,
 }
 ```
 
-The default is `Always`: every pointer/keyboard tool carries `approval_required = true`.
+The SDK-facing policy may retain `Always` as its conservative default for other integrators. The
+maintained CLI and RPC compositions explicitly select `Never`: enabling Computer Use is the user's
+product opt-in, and pointer/keyboard tools carry no per-call `approval_required` metadata. Native
+Screen Recording and Accessibility/post-event permission, ordinary product/run authorization,
+active same-user unlocked-session validation, and lifecycle revocation remain authoritative.
 
-`HostManagedAttendedSession` MAY omit per-call approval metadata only when the CLI or RPC product has separately established:
-
-- an explicit user-authorized attended control session;
-- the production `UserPresenceGuard` required by `06-security-testing-and-delivery.md`;
-- per-tool `ToolCapabilityGrant` values; and
-- a policy that expires/revokes authority on takeover, lock, switch, or session loss.
-
-The toolset does not infer consequential intent from pixels or accessibility text. Approval metadata is a host control, not proof that a click is safe.
+The toolset does not infer consequential intent from pixels or accessibility text. Optional approval
+metadata is an integrator control, not proof that a click is safe.
 
 Approval resume MUST reuse the exact original arguments and stable `tool_call_id`-derived invocation identity. It MUST resolve and revalidate the referenced observation before effect. A stale basis after approval returns feedback requiring `computer_observe`; it does not click a transformed or current coordinate by guess.
 
@@ -695,7 +698,7 @@ The adapter maps canonical failures by effect status.
 When `effect_status = NotExecuted`:
 
 - invalid argument, stale basis, unsupported key/text, and fresh-observation requirements map to `ToolError::Feedback` with stable code and bounded remediation;
-- permission, policy, session, and user-presence denials map to non-retryable user-facing tool errors;
+- permission, policy, session, and lifecycle-authorization denials map to non-retryable user-facing tool errors;
 - cancellation maps to `ToolError::Cancelled`;
 - backend failure maps to `ToolError::Execution` only when no effect occurred.
 
@@ -749,7 +752,7 @@ The toolset contributes one deduplicated instruction block with a stable key. It
 - use the post-action observation returned by every successful input as the next basis;
 - never guess coordinates after layout/session changes;
 - never blindly repeat an executed, partial, or uncertain action;
-- expect user takeover, permission prompts, lock/switch, and protected surfaces to stop the session;
+- expect permission loss, run/lifecycle revocation, lock/switch, and protected surfaces to stop the session;
 - use `agent-browser` for browser/CDP workflows rather than treating this toolset as a browser backend.
 
 Instructions MUST NOT claim unattended, locked-session, elevated, remote, or provider-native ability.
@@ -767,7 +770,7 @@ AND adapter host policy includes tool
 
 The Starweaver adapter additionally requires the corresponding named typed wrapper and per-tool `ToolCapabilityGrant` during context-aware preparation. If observe authority is not attached at all, no Computer Use tool is visible. `computer_status` SHOULD remain available whenever the adapter has observation/diagnostic authority so transient readiness can be explained.
 
-Transient permission, lock, portal, session, user-presence, or RPC caller-admission state is enforced again on every call. Starweaver MAY omit a transiently unavailable effect tool at a later context-preparation boundary, but current calls fail closed immediately and previously prepared inventory never grants authority. An RPC profile may name the bundle, but tool preparation intersects the admitted run grant; a generic `run` caller or stale/revoked admission receives no corresponding handle. The MCP adapter instead keeps its V1 connection catalog stable from build/backend static support plus launch policy and reports transient changes through `computer_status` and typed call errors; it does not add/remove tools or advertise tool-list-change support.
+Transient permission, lock, portal, session, or RPC caller/run-admission state is enforced again on every call. Starweaver MAY omit a transiently unavailable effect tool at a later context-preparation boundary, but current calls fail closed immediately and previously prepared inventory never grants authority. An RPC profile may name the bundle, but tool preparation still requires enabled configuration and a current ordinary run admission; a stale/revoked admission receives no corresponding handle. The MCP adapter instead keeps its V1 connection catalog stable from build/backend static support plus launch policy and reports transient changes through `computer_status` and typed call errors; it does not add/remove tools or advertise tool-list-change support.
 
 ## 20. MCP parity boundary
 
@@ -783,14 +786,14 @@ The MCP adapter defined in `05-mcp-binary-and-process-lifecycle.md` consumes the
 
 Adapter-only differences are limited to:
 
-| Concern                 | Starweaver adapter                      | MCP adapter                                                            |
-| ----------------------- | --------------------------------------- | ---------------------------------------------------------------------- |
-| Invocation context      | `ToolContext`                           | MCP request context                                                    |
-| Cancellation source     | Starweaver cancellation token           | MCP cancellation/process shutdown                                      |
-| Image transport         | tool-return media content part          | MCP image content                                                      |
-| Capability installation | named typed handles plus per-tool grant | trusted launch-time `ComputerToolGrant`                                |
-| Approval                | Starweaver HITL metadata                | startup/user-presence policy; MCP has no Starweaver approval authority |
-| Lifecycle events        | `AgentContext` toolset events           | stderr/MCP logging and process exit                                    |
+| Concern                 | Starweaver adapter                          | MCP adapter                             |
+| ----------------------- | ------------------------------------------- | --------------------------------------- |
+| Invocation context      | `ToolContext`                               | MCP request context                     |
+| Cancellation source     | Starweaver cancellation token               | MCP cancellation/process shutdown       |
+| Image transport         | tool-return media content part              | MCP image content                       |
+| Capability installation | named typed handles plus per-tool grant     | trusted launch-time `ComputerToolGrant` |
+| Approval                | Configurable SDK metadata; CLI/RPC use none | MCP launch is the explicit user opt-in  |
+| Lifecycle events        | `AgentContext` toolset events               | stderr/MCP logging and process exit     |
 
 These differences MUST NOT change action semantics or schemas.
 
@@ -806,7 +809,7 @@ The first-party adapter tests use `FakeComputerUseService` from the library and 
 - tool omission when effective capability is unavailable;
 - sequential annotations and zero effect retries;
 - stale basis feedback and fresh-observation guidance;
-- approval pause/resume with unchanged invocation identity and observation revalidation;
+- optional SDK approval pause/resume with unchanged invocation identity and observation revalidation, plus no approval metadata in maintained CLI/RPC direct mode;
 - normal screenshot mapping;
 - geometry-bound immutable-media preservation and rejection of resize/crop/split/recompression/removal;
 - bounded backend-image decode plus encoded-format/MIME/dimension mismatch rejection;
@@ -830,12 +833,12 @@ The Toolset/library integration is implementation-ready only when:
 06. `starweaver-agent` uses the grant-intersected Filtered mode with exactly one method-limited named wrapper per tool and no ambient CLI/RPC product dependency, shell, or mutable context capability.
 07. CLI and RPC use one process-level coordinator directly through the Toolset, while non-Starweaver harnesses use the stdio MCP adapter; no graphical Desktop composition is assumed.
 08. Hosts install per-tool `ToolCapabilityGrant`; missing grants remove authority.
-09. RPC run admission is default-denied, principal-bound, expiring, revocable, and freshly derived on resume/continuation; generic `run` authorization grants no Computer Use handle.
+09. RPC Computer Use requires enabled configuration and ordinary principal/run admission; admission is expiring, revocable, and freshly derived on resume/continuation without separate observe/pointer/keyboard principal capabilities.
 10. Effect tools are sequential, non-inherited, opt-in, and have automatic retries disabled.
 11. A service-owned effect epoch rejects any action whose observation predates another accepted effect, including across RPC runs sharing one coordinator.
 12. Starweaver and MCP normalized definitions match the canonical fixture.
 13. Ambiguous effects preserve receipt/effect status and cannot enter automatic retry.
 14. The service bounded-decodes backend image bytes and verifies actual format/MIME/dimensions before image mapping; tool-return media then avoids structured base64 duplication, the live model pipeline proves exact geometry-bound bytes/dimensions are never transformed, and durable checkpoint/context/stream fixtures prove screenshot bytes are removed without deleting unrelated metadata.
 15. Tests prove the adapter never bypasses `ComputerToolRouter` or accesses native backends directly.
-16. CLI and RPC composition fixtures prove direct in-process attachment, explicit product/per-tool grants, shared RPC process coordination, no MCP loopback, and negative RPC caller-admission behavior.
+16. CLI and RPC composition fixtures prove direct in-process attachment, full-family product grants, `InputApprovalPolicy::Never`, shared RPC process coordination, no MCP loopback, and negative RPC caller/run-admission behavior.
 17. No tool schema contains provider-native, browser/CDP, remote/VM, locked-session, helper, privilege, arbitrary target, raw input-state, clipboard, shell, or native-extension fields.

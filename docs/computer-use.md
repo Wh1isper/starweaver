@@ -1,14 +1,14 @@
 # Computer Use
 
-Starweaver Computer Use observes the current local user's active interactive desktop through an
-OS-native, process-local service. On macOS, the process user must own the foreground `/dev/console`
-session; a different user, locked session, or inactive session fails closed. The current provisional observe-only boundary is deliberately narrow:
+Starweaver Computer Use observes and operates the current local user's active interactive desktop
+through an OS-native, process-local service. On macOS, the process user must own the foreground
+`/dev/console` session; a different user, locked session, or inactive session fails closed.
 
-| Platform | Observe current desktop                    | Optional accessibility snapshot         | Pointer input                      | Keyboard input                     |
-| -------- | ------------------------------------------ | --------------------------------------- | ---------------------------------- | ---------------------------------- |
-| macOS    | Available with Screen Recording permission | Available with Accessibility permission | TBD, unavailable in release builds | TBD, unavailable in release builds |
-| Windows  | TBD, unavailable                           | TBD, unavailable                        | TBD, unavailable                   | TBD, unavailable                   |
-| Linux    | TBD, unavailable                           | TBD, unavailable                        | TBD, unavailable                   | TBD, unavailable                   |
+| Platform | Observe current desktop                    | Optional accessibility snapshot         | Pointer input                                | Keyboard input                               |
+| -------- | ------------------------------------------ | --------------------------------------- | -------------------------------------------- | -------------------------------------------- |
+| macOS    | Available with Screen Recording permission | Available with Accessibility permission | Available with Accessibility/post permission | Available with Accessibility/post permission |
+| Windows  | TBD, unavailable                           | TBD, unavailable                        | TBD, unavailable                             | TBD, unavailable                             |
+| Linux    | TBD, unavailable                           | TBD, unavailable                        | TBD, unavailable                             | TBD, unavailable                             |
 
 The capability is opt-in. It does not target a PID, window, application, remote host, hidden desktop,
 or browser session. CLI and RPC link the library in-process; they never call the MCP binary. The
@@ -16,31 +16,27 @@ feature-gated MCP binary is only for non-Starweaver harnesses.
 
 ## macOS permissions
 
-Pixel observation requires Screen Recording permission, and optional accessibility snapshots require
-Accessibility permission, for the exact executable identity that performs the operation. CLI, RPC,
-and the standalone MCP binary are distinct macOS TCC identities; granting one does not grant the
-others. Inspect readiness without capturing pixels or presenting permission UI:
+Pixel observation requires Screen Recording permission. Optional accessibility snapshots and native
+pointer/keyboard event posting require Accessibility/post-event permission for the exact executable
+identity that performs the operation. CLI, RPC, and the standalone MCP binary are distinct macOS TCC
+identities; granting one does not grant the others. Inspect readiness without capturing pixels or
+presenting permission UI:
 
 ```bash
 starweaver-computer-use-mcp --doctor --json
 ```
 
-Explicitly request both permissions for the MCP executable:
+Explicitly request the required Screen Recording and Accessibility/post-event permissions for the MCP executable:
 
 ```bash
 starweaver-computer-use-mcp --request-permissions --json
 ```
 
-This attended command calls the native Screen Recording and Accessibility request APIs. Its immediate
-preflight/trust result is authoritative: displaying a prompt or opening System Settings is not a
-successful grant. Follow any reported remediation, then retry; macOS may require restarting the exact
+This attended command calls the native Screen Recording, post-event, and Accessibility request APIs independently. Its immediate preflight/trust result is authoritative: displaying a prompt or opening System Settings is not a successful grant. Follow any reported remediation, then retry; macOS may require restarting the exact
 executable after Screen Recording changes. `--doctor`, `computer_status`, MCP initialization, and
 `tools/list` remain diagnostic-only and never present permission UI.
 
-When Computer Use is enabled in CLI or RPC, trusted product startup policy allows a one-time attended
-Screen Recording request on the first desktop open and a one-time Accessibility request on the first
-`computer_observe` with `include_accessibility = true`. The model argument only requests already
-host-authorized bounded metadata; it cannot widen policy or enable semantic actions.
+When Computer Use is enabled in CLI or RPC, trusted product startup policy allows a one-time attended Screen Recording request on the first desktop open and one attended Accessibility/post-event onboarding attempt on the first `computer_observe` with `include_accessibility = true`. Post-event and AX trust are requested and re-probed independently. The model argument only requests already host-authorized bounded metadata; it cannot widen policy or enable semantic actions.
 
 ## CLI in-process use
 
@@ -75,16 +71,18 @@ starweaver cli --profile examples/profiles/computer-use-macos.yaml \
 The CLI keeps one process-local coordinator and its native service handle for the process lifetime.
 One-shot commands and every TUI exit path use a bounded coordinated shutdown; a native cleanup failure
 is returned as a command failure, or reported on stderr when unwinding leaves no result channel.
-Configuration cannot enable pointer or keyboard input in this release.
+Enabling Computer Use is the user's product-level opt-in and makes the full canonical observe,
+pointer, and keyboard family available when the macOS permissions above are granted. Maintained CLI
+direct mode uses `InputApprovalPolicy::Never`: input tools do not add a per-call
+`approval_required` pause. The native permissions and ordinary run cancellation remain authoritative.
 
 ## RPC in-process use
 
-RPC requires two independent authorization gates:
-
-1. RPC server Computer Use is enabled; this automatically injects the Toolset into every effective RPC profile; and
-2. the initiating transport principal has a separate observe capability.
-
-Profiles do not need to list `computer_use` themselves. The automatic materialization does not grant caller authority.
+RPC requires Computer Use to be enabled in server configuration and the initiating caller/run to pass
+the ordinary RPC transport authorization and run-admission checks. Enabling the feature automatically
+injects the Toolset into every effective RPC profile. Profiles do not need to list `computer_use`
+themselves, and there are no separate `stdio_observe`, `http_observe`, pointer, or keyboard principal
+capabilities.
 
 Example `rpc.toml`:
 
@@ -93,27 +91,23 @@ Example `rpc.toml`:
 enabled = true
 desktop_scope = "primary_display"
 grant_ttl_ms = 300000
-stdio_observe = true
-http_observe = false
 
 [profiles.macos_observer]
 model_id = "openai-responses:gpt-5"
 ```
 
-The generic HTTP `run` scope grants no Computer Use authority. `stdio_observe` and `http_observe` are
-separate, default-denied principal capabilities. A stdio admission is also bound to its persistent
-connection and is revoked when that connection closes. Unary HTTP admissions are bound to the
-credential fingerprint and process-start authorization evidence, and expire at the configured TTL.
-In V1 this evidence is immutable for the RPC process; standalone generation `0` is valid, while
-ordinary runtime profile reloads use separate per-run snapshot generations and do not revoke an
-already admitted run.
-`grant_ttl_ms` must be between 1 and 900000.
+A stdio admission is bound to its persistent connection and is revoked when that connection closes.
+Unary HTTP admissions are bound to the credential fingerprint and process-start authorization
+evidence, and expire at the configured TTL. In V1 this evidence is immutable for the RPC process;
+standalone generation `0` is valid, while ordinary runtime profile reloads use separate per-run
+snapshot generations and do not revoke an already admitted run. `grant_ttl_ms` must be between 1 and
+900000\.
 
-Every admitted run receives a fresh process-local grant. Every tool call checks the exact run grant,
-principal fingerprint, authorization generation, admission generation, expiry, and effective
-observe-only ceiling. Connection close, expiry, run completion, and host shutdown cooperatively cancel
-in-flight observation and revoke future calls. Durable run/context records never serialize or restore
-this authority; resume derives a fresh grant from the initiating caller.
+Every admitted run receives fresh process-local authorization for the full canonical Computer Use
+family. Every tool call checks the exact run, caller fingerprint, authorization/admission generation,
+expiry, and enabled configuration; every effect checks again at the serialized service fence.
+Maintained RPC direct mode uses `InputApprovalPolicy::Never`, so there is no additional per-call HITL
+approval for pointer or keyboard tools. Connection close, expiry, run completion, cancellation, and host shutdown cooperatively cancel in-flight work and revoke future calls. Once a call has crossed the dispatch boundary, cancellation preserves the router's canonical executed, partial, uncertain, or not-executed receipt rather than replacing it with a receipt-free admission error. Durable run/context records never serialize or restore this authority; resume performs normal fresh caller/run admission.
 
 RPC always observes the RPC host's local active desktop, never the RPC client's desktop.
 
@@ -158,20 +152,17 @@ budget or unconfirmed mandatory cleanup produces a non-zero exit. If a native
 capture does not stop within its bounded cancellation grace, or if its handler is directly aborted or
 dropped, the process permanently disables that backend lifecycle before it can be reused, performs no
 concurrent close or retry, reports unconfirmed cleanup, and exits rather than hanging indefinitely.
-Only `not_required` and `complete` cleanup outcomes are treated as confirmed; `best_effort` and `failed`
-remain errors.
+Only `not_required` and `complete` cleanup outcomes are treated as confirmed; `best_effort` and `failed` remain errors. The macOS backend atomically reserves native input so even direct backend callers cannot overlap two actions or close over an active action. It retains unconfirmed held-key/button state for checked close to retry, probes post-event permission before and after release delivery, and performs a synchronous best-effort release before preserving still-unconfirmed state when a direct future is abandoned.
 
-`--allow-pointer` and `--allow-keyboard` cannot widen the compiled release ceiling. They currently
-produce a diagnostic and the corresponding tools remain omitted.
+Launching `starweaver-computer-use-mcp --stdio` is the user's explicit opt-in and advertises the full
+canonical observe, pointer, and keyboard tool family on the supported macOS backend. There are no
+`--allow-pointer` or `--allow-keyboard` release gates. Tool calls still require the same active, unlocked, same-user session checks and native permissions as the in-process paths. A dedicated macOS worker samples `CGSessionCopyCurrentDictionary` every 10 milliseconds and retains lock, console, user, audit, and lock-time history in the target-generation epoch. The backend also samples synchronously at each capture/input fence and during long actions, so a lock/unlock or switch/return round trip invalidates old observation coordinates even when no business operation observed the intermediate state.
 
-Computer Use remains a provisional component, even when it is included by the default macOS
-installer, because GitHub Release archives are checksum-covered but are not Apple Developer ID signed
-or notarized. The CLI and RPC Toolset remains default-denied. A production-ready macOS capture claim
-is blocked until Developer ID signing, notarization, stable TCC identity, and release-byte permission
-continuity are proven. If Gatekeeper quarantines the standalone binary, inspect and verify the
-downloaded archive first, then
-apply any organization-approved per-application exception. Such an exception does not replace code
-signing.
+GitHub Release archives are checksum-covered but are not Apple Developer ID signed or notarized.
+Signing and notarization can improve TCC identity continuity and reduce Gatekeeper/OS warnings, but
+they do not determine whether pointer or keyboard tools are available. If Gatekeeper quarantines the
+standalone binary, inspect and verify the downloaded archive first, then apply any
+organization-approved per-application exception. Such an exception does not replace code signing.
 
 ## Image and authority invariants
 
@@ -201,7 +192,8 @@ bounded role, name, value summary, state, and optional model-space bounds. Secur
 `AXContainsProtectedContent` subtrees omit values; protection is inherited by descendants, and the
 service rejects any protected node carrying a value. PIDs, native handles, application paths, and
 unrestricted attributes are never exposed. Accessibility strings and pixels are untrusted,
-prompt-injection-capable data, not instructions or authority.
+prompt-injection-capable data, not instructions or authority. Native FFI is confined to three reviewed
+macOS modules: `macos_accessibility` owns the `objc2`/Core Foundation retain-and-cast boundary, `macos_input` owns the sole audited unsafe `CGEventKeyboardSetUnicodeString` call, and `macos_session` owns the typed CoreGraphics session-dictionary cast and numeric conversion used by the continuous transition monitor.
 
 Product-level Computer Use opt-in authorizes both pixel observation and the ability to request this
 bounded Accessibility snapshot; `include_accessibility` remains an explicit per-call request and native

@@ -115,7 +115,7 @@ struct NativeDesktopSession {
 }
 ```
 
-It MUST NOT be serialized, checkpointed, restored, copied to another process, or treated as durable authority. Restarting the process creates a new session, new generations, and invalidates every observation and action basis from the old process.
+`user_presence_state` is a compatibility diagnostic for backends that can report such state; it is not a required guard or input gate. The session MUST NOT be serialized, checkpointed, restored, copied to another process, or treated as durable authority. Restarting the process creates a new session, new generations, and invalidates every observation and action basis from the old process.
 
 ### 3.2 Active-session validation
 
@@ -127,7 +127,7 @@ Before opening capture and immediately before every input action, the backend MU
 - the process can access the current input desktop/compositor session;
 - the display topology and coordinate transform still match the cited generation;
 - the required permission grant remains usable;
-- user-presence policy has not paused or revoked control.
+- product/run authorization and cancellation have not been revoked.
 
 A failed validation MUST invalidate queued actions. The backend MUST return a typed failure and MUST require a fresh observation after recovery.
 
@@ -139,15 +139,11 @@ stateDiagram-v2
     Probing --> Ready: active session and permissions valid
     Ready --> Observed: capture
     Observed --> Ready: valid action and post-action observation
-    Ready --> Paused: physical user input or emergency stop
-    Observed --> Paused: physical user input or emergency stop
-    Ready --> SessionUnavailable: lock, switch, disconnect, or seat change
-    Observed --> SessionUnavailable: lock, switch, disconnect, or seat change
-    Paused --> Ready: explicit attended resume and fresh observation
+    Ready --> SessionUnavailable: lock, switch, disconnect, seat change, or authorization revocation
+    Observed --> SessionUnavailable: lock, switch, disconnect, seat change, or authorization revocation
     SessionUnavailable --> Probing: explicit retry after session returns
     Probing --> Closed: close or process exit
     Ready --> Closed: close or process exit
-    Paused --> Closed: close or process exit
     SessionUnavailable --> Closed: close or process exit
 ```
 
@@ -162,7 +158,7 @@ Each platform spike MUST inventory every required native call and prove one of t
 1. maintained, provenance-reviewed Rust dependencies expose the required operation through a sound safe API; or
 2. an already accepted same-process safe wrapper boundary can be reused without weakening workspace lints.
 
-A C/Swift shim does not by itself make the Rust FFI call safe. The implemented macOS Accessibility path uses one narrow, documented `objc2` module that owns Core Foundation retain/cast invariants and exposes only owned Starweaver values to the rest of the crate. Unsafe Rust remains denied everywhere else in the package. New native behavior must stay within that reviewed boundary or require an explicit architecture and security decision; scattered undocumented unsafe blocks remain forbidden.
+A C/Swift shim does not by itself make the Rust FFI call safe. The implemented macOS Accessibility path uses the narrow documented `macos_accessibility` module to own `objc2`/Core Foundation retain-and-cast invariants and expose only owned Starweaver values. The narrow documented `macos_input` module owns the sole unsafe `CGEventKeyboardSetUnicodeString` call, with an immutable live UTF-16 slice and exact length. The narrow `macos_session` module owns the property-list-safe typed cast of `CGSessionCopyCurrentDictionary` plus checked numeric conversion for continuous lock/console transition sampling. Unsafe Rust remains denied outside these reviewed macOS modules. New native behavior must stay within a reviewed boundary or require an explicit architecture and security decision; scattered undocumented unsafe blocks remain forbidden.
 
 ## 4. Common capability profile
 
@@ -239,14 +235,14 @@ ScreenCaptureKit frame metadata, content rectangle, point/pixel scale, and backi
 
 ### 6.3 Input and Accessibility
 
-Pointer and keyboard input MUST use high-level service operations that construct and post complete `CGEvent` sequences. Drag and chord operations MUST release every pressed button/modifier on success, cancellation, error, panic boundary, and process shutdown.
+Pointer and keyboard input MUST use high-level service operations that construct and post complete `CGEvent` sequences. Drag and chord operations MUST release every pressed button/modifier on success, cancellation, error, panic boundary, and process shutdown. The implemented backend atomically reserves active input in backend state, rejects overlapping direct `execute` calls, and refuses `close` while an action owns input. It retains any unconfirmed held state outside an abandoned action future, probes post-event permission before and after release delivery, retries unresolved state during checked close, and does not report `NotRequired` while a release remains unconfirmed.
 
 The process MUST run as the logged-in user. It MUST NOT request root, a privileged helper, a system extension, or authorization plug-in.
 
 Accessibility is optional for V1 pixel control. The implemented macOS collector:
 
-- uses `AXIsProcessTrusted` for passive probes and `AXIsProcessTrustedWithOptions` only on an authorized attended request;
-- treats the immediate trust result as authoritative; showing a prompt does not imply permission was granted;
+- uses `AXIsProcessTrusted` and `CGPreflightPostEventAccess` for passive probes, and invokes `AXIsProcessTrustedWithOptions` plus `CGRequestPostEventAccess` independently only on an authorized attended request;
+- treats each immediate trust/preflight result as authoritative; showing a prompt does not imply permission was granted;
 - starts from the system-wide `AXFocusedApplication` and walks that application's tree breadth-first;
 - enforces immutable node, depth, children-per-node, per-string, total-string, capture-deadline, and per-message timeout limits, fetches child arrays only up to the configured limit, and converts native strings into pre-bounded buffers;
 - emits only bounded role, name, value summary, state, and optional CGRect-derived model-space bounds;
@@ -256,20 +252,22 @@ Accessibility is optional for V1 pixel control. The implemented macOS collector:
 - fails a requested semantic snapshot on permission/backend failure rather than silently falsifying a complete tree; and
 - does not request or use Apple Events automation.
 
-`status` is passive. CLI/RPC trusted composition may authorize a one-time Screen Recording request on first open and a one-time Accessibility request on the first accessibility-enabled observation. MCP stdio authorizes neither implicit prompt; its attended top-level `--request-permissions` command explicitly requests both permissions.
+`status` is passive. CLI/RPC trusted composition may authorize a one-time Screen Recording request on first open and one Accessibility/post-event onboarding attempt on the first accessibility-enabled observation. The backend re-establishes the foreground-session fence before each independent native request and re-probes both grants afterward. MCP stdio authorizes neither implicit prompt; its attended top-level `--request-permissions` command explicitly invokes the Screen Recording, post-event, and AX trust request paths.
+
+The implemented input path fingerprints the active console session UUID, audit identity, and available lock marker, and combines that snapshot with an epoch maintained by a dedicated worker that samples `CGSessionCopyCurrentDictionary` every 10 milliseconds. The worker retains lock, on-console, login, user, audit, and lock-time history, so `TargetGeneration` advances across a lock/unlock or switch-away/return round trip even when no business operation sampled the intermediate state. Every capture/input fence also requests a synchronous sample. Pre/post observation fences and a periodic fence during long actions reject session-epoch, Screen Recording, post-event, or display-generation changes and release any held input before returning. Text synthesis isolates line-feed, carriage-return, and tab controls as canonical key events, splits the remaining UTF-16 without breaking surrogate pairs, and uses bounded inter-part pacing so CoreGraphics does not silently drop leading controls or large back-to-back text.
 
 ### 6.4 TCC identity and packaging
 
 Screen Recording and Accessibility grants attach to the effective code identity and execution topology. `starweaver-cli`, `starweaver-rpc`, and `starweaver-computer-use-mcp` therefore each own TCC onboarding for their own executable identity. A permission granted to one does not grant either of the other processes.
 
-Every capture- or input-capable CLI, RPC, or MCP distribution MUST have a stable signed identity, notarization where applicable, and permission-continuity evidence for exact release bytes before it is called production-ready. For the MCP artifact, the macOS packaging spike MUST decide between:
+Stable signing and notarization SHOULD be used for predictable TCC identity continuity and fewer OS warnings, but are not prerequisites for exposing input when the current executable has the required native grants. For the MCP artifact, packaging may use either:
 
 1. a signed `.app` bundle whose `Contents/MacOS/starweaver-computer-use-mcp` executable is launched directly as the stdio server; or
 2. a signed standalone executable whose TCC behavior is proven across install path, update, restart, and signature changes.
 
 A thin launcher that transfers capture/input authority to another process is not permitted in V1. If a Swift or Objective-C implementation shim is necessary, it MUST be linked into the same process as a static/dynamic library with a narrow Rust-owned C ABI; it MUST NOT become an XPC service or helper process.
 
-The package MUST use a stable bundle identifier/designated requirement and MUST test permission continuity across an in-place signed update. Ad-hoc signatures are development-only.
+A signed package SHOULD use a stable bundle identifier/designated requirement and test permission continuity across an in-place update. Ad-hoc or unsigned builds may require renewed permission grants and may trigger OS warnings, but retain the same canonical tool availability once permission is granted.
 
 ### 6.5 macOS failure contract
 
@@ -285,7 +283,7 @@ The backend MUST distinguish at least:
 - `protected_or_redacted_frame`;
 - `capture_stream_interrupted`;
 - `input_event_rejected`;
-- `user_presence_revoked`.
+- `run_authorization_revoked`.
 
 Returning wallpaper, a blank frame, or a redacted frame as if it were a valid observation is forbidden. The backend SHOULD detect known redaction/blank-frame signals and MUST mark uncertainty when reliable detection is unavailable.
 
@@ -343,7 +341,6 @@ The backend MUST return `secure_desktop_unavailable` for UAC consent UI, Winlogo
 - distinguish known integrity/UIPI boundaries when possible;
 - treat inability to prove delivery as `input_delivery_uncertain` or `input_rejected`, not success;
 - construct complete press/release sequences and perform best-effort cleanup;
-- tag synthesized input with a process-specific marker where supported, solely to help user-presence logic distinguish self-generated events;
 - avoid global hooks or injection techniques that require elevation.
 
 Optional UIA MUST be cache/budget bounded. A UIA pattern action is not part of the V1 public tool surface; the semantic snapshot capability MUST not cause pointer/keyboard actions to target an arbitrary HWND supplied by the caller.
@@ -368,7 +365,7 @@ The backend MUST distinguish at least:
 - `display_topology_changed`;
 - `input_rejected`;
 - `input_delivery_uncertain`;
-- `user_presence_revoked`.
+- `run_authorization_revoked`.
 
 ## 8. Linux Wayland backend
 
@@ -421,7 +418,7 @@ Absolute input through RemoteDesktop/EIS MUST target the exact authorized stream
 
 Portal chooser results can authorize monitor, window, or virtual sources. V1 requests the configured current-desktop scope, but the user/portal remains authoritative. If the granted source does not match the required scope, the backend MUST report `portal_scope_mismatch`; it MUST NOT silently combine unauthorized sources.
 
-### 8.4 Wayland permission and user presence
+### 8.4 Wayland permission and lifecycle
 
 Permission is explicit portal consent, not a persistent global grant. Diagnostics MUST distinguish:
 
@@ -433,10 +430,9 @@ Permission is explicit portal consent, not a persistent global grant. Diagnostic
 - portal session closed/revoked;
 - PipeWire negotiation/frame failure;
 - EIS connection unavailable;
-- compositor/session inactive;
-- user-presence guard unavailable.
+- compositor/session inactive.
 
-A production Wayland backend is not release-ready until the required attended user-presence indicator/emergency-stop design in `06-security-testing-and-delivery.md` is proven on every supported desktop family. If a compositor/portal cannot provide the needed control guard and no same-process native UI solution is available, input capability MUST remain disabled for that support target.
+A production Wayland backend is not release-ready until active same-user unlocked-seat validation, portal/EIS revocation, serialization, cancellation, and held-input cleanup are proven for every supported desktop family.
 
 ### 8.5 Optional AT-SPI
 
@@ -451,7 +447,6 @@ The X11 backend MAY use:
 - XShm/XGetImage-equivalent capture for the current X server;
 - XTest for pointer/keyboard synthesis;
 - RandR for display topology;
-- XInput2/XRecord-class observation where feasible for attended user-presence detection;
 - AT-SPI for optional semantic observation.
 
 It MUST run only when launch-time policy explicitly enables X11 and the process is attached to the current active user's X server. Automatic fallback from a refused/unavailable Wayland portal to X11 is forbidden, including through XWayland.
@@ -460,7 +455,7 @@ The backend MUST disclose that X11 generally provides broader same-session captu
 
 No V1 Linux mode may use `/dev/uinput`, evdev device reads, setuid binaries, root, input-group elevation, or a privileged helper.
 
-X11 input support additionally requires a declared desktop/session-manager contract that can reliably identify active session, lock, logout, and user-switch transitions for every supported target, using bounded public same-user APIs such as the target's screen-saver/session D-Bus interface plus logind where applicable. X11 capture/XTest/XInput APIs alone are not proof that the session is unlocked. If no reliable lock/session signal exists for a target, that target is observe-only or unsupported; an environment-variable or successful X connection check MUST NOT enable input.
+X11 input support additionally requires a declared desktop/session-manager contract that can reliably identify active session, lock, logout, and user-switch transitions for every supported target, using bounded public same-user APIs such as the target's screen-saver/session D-Bus interface plus logind where applicable. X11 capture/XTest/XInput APIs alone are not proof that the session is unlocked. If no reliable lock/session signal exists for a target, that target is unsupported; an environment-variable or successful X connection check MUST NOT enable input.
 
 ## 10. Cross-platform backend selection
 
@@ -489,7 +484,7 @@ struct PermissionReport {
     pointer_input: PermissionCapabilityStatus,
     keyboard_input: PermissionCapabilityStatus,
     accessibility: PermissionCapabilityStatus,
-    user_presence: PermissionCapabilityStatus,
+    user_presence: PermissionCapabilityStatus, // compatibility diagnostic; not a required gate
     restart_required: bool,
     remediation: Vec<RemediationStep>,
     diagnostics_code: DiagnosticsCode,
@@ -502,7 +497,7 @@ Remediation text MUST be platform-specific and actionable. It MUST NOT claim tha
 
 All packages MUST preserve one-process authority:
 
-- macOS: one signed identity; optional same-process Swift/Objective-C library is allowed; no XPC/helper.
+- macOS: one executable identity (with a stable signed identity when signing is used); optional same-process Swift/Objective-C library is allowed; no XPC/helper.
 - Windows: one user-session executable; no service, scheduled task, elevated broker, or injected component.
 - Linux: one user-session executable linked to/using portal, PipeWire, and input client libraries; no daemon or privileged device helper.
 
@@ -521,13 +516,13 @@ No native backend graduates to implementation commitment before the following sp
 - Verify TCC behavior for signed app-bundle executable and signed standalone executable.
 - Verify first grant, denial, restart-required behavior, update continuity, and path/signature change.
 - Exercise CGEvent pointer, scroll, text/key chords, cancellation cleanup, lock, Fast User Switching, and protected content.
-- Measure optional AX snapshot limits and event-tap/user-presence feasibility.
+- Measure optional AX snapshot limits and input posting/cleanup behavior.
 
 ### 13.2 Windows spike
 
 - Compare WGC and Desktop Duplication on supported Windows 10/11 versions.
 - Verify picker/border requirements, multi-monitor capture, HDR/rotation/DPI, topology changes, lock, console/RDP transition, and protected content.
-- Verify SendInput receipts, low/medium/high-integrity targets, UIPI failure, secure desktop, focus change, held-input cleanup, and physical-input detection.
+- Verify SendInput receipts, low/medium/high-integrity targets, UIPI failure, secure desktop, focus change, and held-input cleanup.
 - Measure optional UIA snapshot budgets.
 - Validate signed portable/MSIX/installer layouts according to the selected distribution plan.
 
@@ -535,8 +530,8 @@ No native backend graduates to implementation commitment before the following sp
 
 - Test portal + PipeWire + RemoteDesktop/EIS on the declared GNOME, KDE, and other support targets.
 - Record portal versions, chooser behavior, logical/pixel transforms, multi-monitor streams, cancellation, lock/switch, D-Bus loss, and portal revocation.
-- Determine whether a production-quality same-process attended guard is feasible per desktop family.
-- Validate explicit X11 session-manager/lock-state detection, XShm/XTest behavior, and user-presence detection without becoming a Wayland fallback.
+- Validate portal/EIS lifecycle revocation and held-input cleanup per desktop family.
+- Validate explicit X11 session-manager/lock-state detection and XShm/XTest behavior without becoming a Wayland fallback.
 - Confirm package/library discovery under supported distribution formats.
 
 ## 14. Backend acceptance gates
@@ -550,7 +545,7 @@ A backend is release-eligible only when:
 05. protected/redacted/blank capture is not reported as an ordinary successful observation;
 06. no test path uses a helper, service, elevation, private API baseline, uinput, arbitrary target selector, browser, remote desktop, or unattended session;
 07. model-visible pixels and coordinates pass mixed-scale, multi-monitor, rotation, resize, and topology-change property/integration fixtures;
-08. physical user input and emergency stop revoke or pause action authority within the bounded latency defined in `06-security-testing-and-delivery.md`;
+08. cancellation, lock/session change, and run/lifecycle revocation invalidate queued input and release held synthetic state within bounded latency;
 09. package tests execute the actual shipped artifact, not only a development binary;
 10. unsupported platform/version/compositor combinations return a stable typed `unsupported_backend` or `unsupported_session` failure.
 
@@ -561,8 +556,6 @@ These decisions require spike evidence before the implementation spec can be pro
 - macOS pure Rust bindings versus a same-process Swift bridge;
 - macOS app-bundle versus signed standalone MCP executable for stable TCC onboarding;
 - Windows WGC versus Desktop Duplication baseline and whether both remain supported;
-- Windows user-presence detection mechanism that does not require elevation;
 - Wayland desktop/compositor support matrix and EIS versus portal notification paths;
-- production attended guard UI/stop mechanism on each Linux desktop family;
 - primary-display versus visible-desktop default capture scope;
 - minimum OS versions and package formats.

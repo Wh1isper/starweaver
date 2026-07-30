@@ -64,13 +64,13 @@ struct Args {
     #[arg(long, value_enum, default_value_t = DesktopScopeArg::PrimaryDisplay)]
     desktop_scope: DesktopScopeArg,
 
-    /// Request pointer tools in launch policy; unavailable release backends omit them.
-    #[arg(long)]
-    allow_pointer: bool,
+    /// Deprecated compatibility flag; pointer tools are included automatically.
+    #[arg(long = "allow-pointer", hide = true)]
+    legacy_allow_pointer: bool,
 
-    /// Request keyboard tools in launch policy; unavailable release backends omit them.
-    #[arg(long)]
-    allow_keyboard: bool,
+    /// Deprecated compatibility flag; keyboard tools are included automatically.
+    #[arg(long = "allow-keyboard", hide = true)]
+    legacy_allow_keyboard: bool,
 
     /// Emit doctor or onboarding output as JSON.
     #[arg(long)]
@@ -118,25 +118,10 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let requested = ComputerToolGrant {
-        observe: true,
-        pointer: args.allow_pointer,
-        keyboard: args.allow_keyboard,
-    };
-    let effective = current_desktop_tool_grant(requested);
+    let effective = current_desktop_tool_grant(requested_tool_grant(&args));
     let policy = policy(&args, effective);
 
     if args.stdio {
-        if requested.pointer && !effective.pointer {
-            eprintln!(
-                "starweaver-computer-use-mcp: pointer input is not release-ready on this backend; pointer tools are omitted"
-            );
-        }
-        if requested.keyboard && !effective.keyboard {
-            eprintln!(
-                "starweaver-computer-use-mcp: keyboard input is not release-ready on this backend; keyboard tools are omitted"
-            );
-        }
         return serve_stdio(policy, effective).await;
     }
 
@@ -150,7 +135,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let report = DiagnosticReport {
             package_version: env!("CARGO_PKG_VERSION"),
             build_target: env!("STARWEAVER_BUILD_TARGET"),
-            release_readiness: "provisional_unsigned_observe_only",
+            release_readiness: "native_current_desktop",
             service_contract: ComputerUseContractVersion::V1,
             tool_catalog: ToolCatalogVersion::V1,
             effective_tool_grant: effective,
@@ -165,6 +150,13 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     .await
     .map_err(|_| shutdown_timeout_error())??;
     Ok(())
+}
+
+const fn requested_tool_grant(args: &Args) -> ComputerToolGrant {
+    // Keep accepting the old opt-in flags so existing launch scripts do not fail,
+    // but they no longer alter the all-or-nothing Computer Use product grant.
+    let _ = (args.legacy_allow_pointer, args.legacy_allow_keyboard);
+    ComputerToolGrant::full()
 }
 
 fn policy(args: &Args, effective: ComputerToolGrant) -> ComputerUsePolicy {
@@ -279,7 +271,7 @@ fn shutdown_timeout_error() -> io::Error {
 
 fn print_version() {
     println!(
-        "starweaver-computer-use-mcp {}\ncomputer-use-contract {}.{}\ntool-catalog {}.{}\nfeatures mcp-server,observe-only\nrelease-readiness provisional-unsigned-observe-only\ntarget {}",
+        "starweaver-computer-use-mcp {}\ncomputer-use-contract {}.{}\ntool-catalog {}.{}\nfeatures mcp-server,observe,pointer,keyboard\nrelease-readiness native-current-desktop\ntarget {}",
         env!("CARGO_PKG_VERSION"),
         ComputerUseContractVersion::V1.major,
         ComputerUseContractVersion::V1.minor,
@@ -352,17 +344,32 @@ mod tests {
     use starweaver_computer_use::{FakeComputerUseConfig, FakeComputerUseService};
 
     #[test]
-    fn stdio_policy_allows_accessibility_without_implicit_prompts() {
+    fn stdio_policy_grants_all_tools_without_implicit_prompts() {
         let args = Args::try_parse_from(["starweaver-computer-use-mcp", "--stdio"])
             .expect("valid stdio arguments");
-        let policy = policy(&args, ComputerToolGrant::observe_only());
+        let grant = requested_tool_grant(&args);
+        let policy = policy(&args, grant);
 
+        assert_eq!(grant, ComputerToolGrant::full());
         assert!(policy.allowed_capabilities.observe);
         assert!(policy.allowed_capabilities.accessibility_snapshot);
-        assert!(!policy.allowed_capabilities.pointer);
-        assert!(!policy.allowed_capabilities.keyboard);
+        assert!(policy.allowed_capabilities.pointer);
+        assert!(policy.allowed_capabilities.keyboard);
         assert!(!policy.permission_prompts.capture_on_open);
         assert!(!policy.permission_prompts.accessibility_on_observe);
+    }
+
+    #[test]
+    fn obsolete_input_flags_remain_accepted_but_do_not_change_the_full_grant() {
+        let args = Args::try_parse_from([
+            "starweaver-computer-use-mcp",
+            "--stdio",
+            "--allow-pointer",
+            "--allow-keyboard",
+        ])
+        .expect("legacy input flags remain compatible");
+
+        assert_eq!(requested_tool_grant(&args), ComputerToolGrant::full());
     }
 
     #[test]

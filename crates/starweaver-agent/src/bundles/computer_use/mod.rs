@@ -42,6 +42,8 @@ pub enum InputApprovalPolicy {
     Always,
     /// Rely on a separately proven host-managed attended control session.
     HostManagedAttendedSession,
+    /// Execute directly without a per-input approval prompt.
+    Never,
 }
 
 /// Per-class Computer Use tool execution timeouts.

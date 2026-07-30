@@ -9,6 +9,10 @@ use crate::{
 mod macos;
 #[cfg(target_os = "macos")]
 mod macos_accessibility;
+#[cfg(target_os = "macos")]
+mod macos_input;
+#[cfg(target_os = "macos")]
+mod macos_session;
 #[cfg(not(target_os = "macos"))]
 mod unsupported;
 
@@ -33,20 +37,15 @@ pub fn current_desktop_service(policy: ComputerUsePolicy) -> DynComputerUseServi
     Arc::new(LocalComputerUseService::new(policy, backend))
 }
 
-/// Intersect an external-harness launch grant with release-ready native support.
+/// Intersect an external-harness launch grant with native platform support.
 ///
-/// The current macOS release backend is observe-only until its production
-/// user-presence guard and input delivery gates are complete. Other platforms
-/// remain unsupported.
+/// macOS supports the complete observe, pointer, and keyboard product grant.
+/// Other platforms remain unsupported.
 #[must_use]
 pub const fn current_desktop_tool_grant(requested: ComputerToolGrant) -> ComputerToolGrant {
     #[cfg(target_os = "macos")]
     {
-        ComputerToolGrant {
-            observe: requested.observe,
-            pointer: false,
-            keyboard: false,
-        }
+        requested
     }
     #[cfg(not(target_os = "macos"))]
     {

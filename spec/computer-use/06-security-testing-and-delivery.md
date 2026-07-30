@@ -1,6 +1,6 @@
 # Computer Use Security, Testing, and Delivery
 
-Status: **Accepted release gates; macOS observation subset implemented**
+Status: **Accepted release contract; macOS observe/input subset implemented**
 Scope: attended control of the current active interactive desktop
 Depends on: [`01-product-boundaries-and-ownership.md`](01-product-boundaries-and-ownership.md), [`02-service-contract-and-state-machine.md`](02-service-contract-and-state-machine.md), [`03-toolset-and-library-integration.md`](03-toolset-and-library-integration.md), [`04-native-active-desktop-backends.md`](04-native-active-desktop-backends.md), [`05-mcp-binary-and-process-lifecycle.md`](05-mcp-binary-and-process-lifecycle.md)
 
@@ -19,16 +19,15 @@ The following invariants are mandatory:
 01. The screen, accessibility metadata, model output, tool caller, and MCP client are untrusted input.
 02. The process operates only the current local user's active, unlocked, visible interactive desktop.
 03. Tool arguments cannot select another process, window, user, session, seat, display server, native handle, or remote endpoint.
-04. Build support, OS permission, startup policy, user-presence state, current-session state, and observation basis are all required before an effect.
-05. Observation, pointer, and keyboard are separate capabilities. One does not imply another.
+04. Build support, OS permission, explicit product/process enablement, current run/lifecycle authorization, current-session state, and observation basis are all required before an effect.
+05. On supported macOS product paths, explicit Computer Use enablement grants the canonical observe, pointer, and keyboard family together; native permissions still gate each operation.
 06. Every pointer or keyboard action cites one opaque current-session `observation_id`; the service resolves and revalidates its full geometry/frame basis immediately before native input.
 07. High-level actions are balanced; no public raw key/button-down authority persists across calls.
 08. The service and MCP binary persist no screenshots, text input, key sequences, portal tokens, or live desktop authority by default.
-09. Lock, secure desktop, session switch, seat loss, permission loss, portal close, physical takeover, cancellation, or emergency stop invalidates queued input.
+09. Lock, secure desktop, session switch, seat loss, permission loss, portal close, run revocation, cancellation, or shutdown invalidates queued input.
 10. Protected, elevated, or unsupported surfaces fail closed. No fallback elevates, widens scope, switches mechanism, or crosses a session boundary.
-11. A production input-capable build requires an attended, same-process `UserPresenceGuard` accepted for that OS support target.
-12. A model or MCP client can never resume input authority after user takeover by calling a tool.
-13. Browser/CDP, remote/VM, unattended, helper/daemon/service, privileged, network MCP, and provider-native paths remain absent.
+11. Input requires no separate `UserPresenceGuard`, emergency stop, physical-takeover detector, signing/notarization gate, or per-input principal.
+12. Browser/CDP, remote/VM, unattended, helper/daemon/service, privileged, network MCP, and provider-native paths remain absent.
 
 ## 3. Threat model
 
@@ -41,7 +40,6 @@ Assets include:
 - current focus and display topology;
 - pointer/keyboard input authority;
 - permission and portal session handles;
-- the user's ability to see, interrupt, and retake control;
 - tool schemas, policy, and capability grants;
 - process/signing identity and package integrity; and
 - diagnostics that may reveal application or session state.
@@ -58,7 +56,6 @@ The design assumes possible malicious or malformed behavior from:
 - applications that reject or reinterpret synthetic input;
 - protected/elevated UI outside the process's authority;
 - compromised or buggy native libraries and platform APIs;
-- physical user actions racing synthetic actions;
 - malformed images, accessibility trees, and platform metadata;
 - process crash, hard kill, OS sleep, lock, switch, and device removal; and
 - packaging/signing/update mistakes that change permission identity or load untrusted libraries.
@@ -74,7 +71,6 @@ flowchart LR
     router[Canonical tool router]
     policy[Startup policy and capability grant]
     service[ComputerUseService]
-    presence[UserPresenceGuard]
     backend[Native backend]
     os[Current interactive desktop]
     user[Attended user]
@@ -83,18 +79,17 @@ flowchart LR
     adapter --> router
     policy --> router
     router --> service
-    presence --> service
     service --> backend
     backend --> os
-    user -->|physical input, stop, resume| presence
+    user -->|explicit product enablement and OS permission decisions| policy
     os -->|untrusted pixels and metadata| backend
 ```
 
-Only the service/native backend owns OS handles. The router owns canonical request validation. Startup policy and user presence are independent gates. Neither screen content nor caller intent is authority.
+Only the service/native backend owns OS handles. The router owns canonical request validation. Explicit product enablement, ordinary run authorization, and native permission are independent gates. Neither screen content nor caller intent can widen them.
 
 ## 4. Startup policy and capability grants
 
-### 4.1 Three capabilities
+### 4.1 Canonical capability family
 
 The canonical authority classes are:
 
@@ -102,15 +97,15 @@ The canonical authority classes are:
 - `pointer`: click, move, drag, and scroll; and
 - `keyboard`: text and key/chord input.
 
-Pointer and keyboard require observe because every successful effect returns a fresh post-action observation. They remain independently granted.
+Pointer and keyboard require observation support because every successful effect returns a fresh post-action observation. On the maintained macOS paths they are one product grant, not separate user-facing or RPC-principal grants.
 
-For the MCP binary, launch policy is the maximum grant. Default `--stdio` grants observe only. Pointer and keyboard require explicit host/user-controlled options.
+Launching the MCP binary with `--stdio` is the user's explicit opt-in and exposes the full canonical family on the supported macOS backend. There are no pointer/keyboard launch flags.
 
-For the Starweaver adapter, CLI or RPC installs per-tool `ToolCapabilityGrant` values and named typed handles as specified by `03-toolset-and-library-integration.md`. The model cannot attach a handle or modify a grant.
+The Starweaver SDK adapter retains method-limited handles and per-tool `ToolCapabilityGrant` values as defense in depth and for integrators that intentionally build narrower bundles. The maintained CLI and RPC products install the full family when `[computer_use].enabled = true`. Both use `InputApprovalPolicy::Never`; no input call receives extra HITL approval metadata.
 
-CLI effective authority is additionally bounded by CLI-owned process configuration and per-tool grants. Enabling `[computer_use]` automatically materializes the Toolset into every effective CLI profile; profiles do not create or widen native authority. RPC effective authority is additionally bounded by RPC-owned server configuration and an admitted initiating-caller grant. Enabling RPC Computer Use likewise materializes the Toolset into every effective RPC profile, but merely reaching RPC over stdio or HTTP does not attach an authorized handle or grant input. The generic RPC `run` scope grants none of `computer.observe`, `computer.pointer`, or `computer.keyboard`; these are separate principal capabilities, default denied, and pointer/keyboard also require observe. When enabled, effects occur on the RPC host's current local desktop, never on the RPC client's machine.
+RPC additionally requires ordinary transport caller authorization and run admission. It has no `stdio_observe`/`http_observe` settings or separate observe/pointer/keyboard principal capabilities. When enabled, effects occur on the RPC host's current local desktop, never on the RPC client's machine.
 
-RPC binds a process-local admitted grant to each `run_id`, principal fingerprint, authorization generation, expiry, immutable config/profile ceiling, and effective capability set. Every Computer Use call checks it, and every effect checks again before entering the service fence. Revocation/expiry cancels queued/active observations and queued pre-effect work and removes that run's handles. Resume and continuation require fresh authorization derivation; durable records never restore the caller grant.
+RPC binds process-local authorization to each `run_id`, principal fingerprint, authorization generation, expiry, and immutable config/profile snapshot. Every Computer Use call checks it, and every effect checks again before entering the service fence. Revocation/expiry cancels queued/active observations and queued pre-effect work and removes that run's handles. Resume and continuation perform fresh normal authorization; durable records never restore live authority.
 
 ### 4.2 Policy intersection
 
@@ -120,10 +115,10 @@ Effective authority is:
 compiled backend support
 intersect current active-session eligibility
 intersect current OS permission/portal grant
-intersect startup ComputerUsePolicy
+intersect startup ComputerUsePolicy and explicit product/process enablement
 intersect adapter/tool capability grant
-intersect RPC admitted caller/run grant when RPC-hosted
-intersect current UserPresenceGuard state
+intersect ordinary RPC caller/run admission when RPC-hosted
+intersect current lifecycle/cancellation state
 intersect valid action observation basis
 ```
 
@@ -143,8 +138,6 @@ Startup policy MUST bound:
 - post-action settle time;
 - optional accessibility node, depth, children-per-node, per-string, total-string, capture-time, and native messaging-time budgets;
 - independently fixed capture-on-open and accessibility-on-observe permission-prompt behavior, defaulting false;
-- input capability grants;
-- user-presence mode;
 - logging level and redaction; and
 - explicit X11 compatibility permission.
 
@@ -154,113 +147,30 @@ Tool calls cannot widen these values. Config reload is not supported in V1; chan
 
 The service can validate mechanisms and authority, not the real-world consequence of clicking a UI. It MUST NOT claim to detect every purchase, message send, deletion, credential disclosure, or legal action from pixels.
 
-CLI and RPC MAY mark all input tools approval-required or implement higher-level product policy outside this library. External MCP harnesses remain responsible for their own human-in-the-loop product policy. In every case, the native service still enforces its startup grant, attended-presence state, and action basis.
+The SDK may retain configurable input approval for other integrators. Maintained CLI/RPC direct mode sets `InputApprovalPolicy::Never`; enabling Computer Use is the user's opt-in. External MCP harnesses may add their own human-in-the-loop policy. In every case, the native service still enforces product/process enablement, native permission, current run/lifecycle authorization, and the action basis.
 
 Screen text that says to ignore policy, reveal secrets, alter grants, run commands, or disable safety has no privileged interpretation.
 
-## 5. User presence and takeover
+## 5. Product authorization and lifecycle revocation
 
-### 5.1 Production requirement
+Explicitly enabling Computer Use in maintained CLI/RPC or launching the standalone MCP server is the
+user's opt-in to the full canonical tool family on a supported backend. This contract adds no
+input-specific `UserPresenceGuard`, visible indicator, emergency stop, physical-input takeover
+detector, signing/notarization gate, per-pointer/per-keyboard principal, or per-call CLI/RPC approval.
 
-Every production build that enables pointer or keyboard authority MUST have a supported same-process `UserPresenceGuard` for that platform/session family. The guard is a release requirement, not an optional UI enhancement.
+This does not weaken ordinary authority and lifecycle boundaries:
 
-The guard MUST provide:
+- CLI/RPC configuration must be enabled and the current caller/run must remain authorized;
+- the standalone server must remain attached to its one live stdio process/connection;
+- Screen Recording and Accessibility/post-event permission remain authoritative on macOS;
+- the process must remain the same user in the active, unlocked interactive session;
+- lock, switch, permission loss, connection close, run completion, expiry, revocation, cancellation,
+  or shutdown invalidates queued work and observations as applicable;
+- every effect still passes the serialized pre-effect fence with a current observation basis; and
+- cancellation/error/shutdown still releases held synthetic buttons, keys, and modifiers.
 
-- a persistent OS-visible indication that control is armed or active;
-- an emergency-stop mechanism outside model/MCP-controlled screen content;
-- physical user input detection sufficient to pause or revoke synthetic action authority;
-- a locally initiated attended resume path;
-- a monotonically increasing takeover/arm epoch;
-- a synchronous pre-effect check callable by the service;
-- bounded cancellation acknowledgement; and
-- cleanup integration for process exit and panic.
-
-A hidden client window, log line, MCP notification, or model-visible tool result is not an out-of-band user-presence mechanism.
-
-### 5.2 Illustrative guard contract
-
-```rust
-#[async_trait]
-pub trait UserPresenceGuard: Send + Sync {
-    async fn arm(
-        &self,
-        policy: PresencePolicy,
-        cancel: CancellationToken,
-    ) -> Result<PresenceLease, ComputerUseError>;
-
-    fn current(&self) -> PresenceSnapshot;
-
-    async fn before_effect(
-        &self,
-        lease: &PresenceLease,
-        expected_epoch: TakeoverEpoch,
-    ) -> Result<PresencePermit, ComputerUseError>;
-
-    async fn synthetic_action_started(
-        &self,
-        permit: &PresencePermit,
-        action_id: ActionId,
-    ) -> Result<(), ComputerUseError>;
-
-    async fn synthetic_action_finished(
-        &self,
-        permit: PresencePermit,
-        outcome: ActionOutcome,
-    );
-
-    async fn disarm(&self, reason: DisarmReason) -> PresenceCloseReceipt;
-}
-
-struct PresenceSnapshot {
-    state: PresenceState, // disarmed, armed, active, paused, revoked
-    takeover_epoch: TakeoverEpoch,
-    indicator_visible: bool,
-    emergency_stop_ready: bool,
-    last_transition_reason: PresenceReason,
-}
-```
-
-Native event handles remain private. The service stores only process-local guard references and current epoch.
-
-### 5.3 Physical input takeover
-
-When physical user input or emergency stop is detected:
-
-1. the guard atomically increments `TakeoverEpoch` and changes state to `paused` or `revoked`;
-2. queued actions are cancelled;
-3. the active action stops at the next safe high-level boundary;
-4. synthetic held keys/buttons/modifiers are released;
-5. the user-facing indicator changes before control-transfer acknowledgement;
-6. every old action basis/permit is invalidated; and
-7. the caller receives `user_presence_paused` or `user_presence_revoked`.
-
-No call from a model or MCP client can resume the guard. Resume requires a local human action owned by the native guard, or a complete process restart under attended launch policy. After resume, the service MUST obtain a new active-session probe and observation before accepting input.
-
-The guard SHOULD distinguish self-generated input from physical input using public platform markers where available. If it cannot do so reliably, the backend MUST choose a conservative policy; it MUST NOT ignore all input monitoring merely to avoid self-triggering.
-
-### 5.4 Development-only exception
-
-A temporary `development-terminal-only` presence mode MAY exist solely for backend bring-up when all of these conditions hold:
-
-- the build is debug/non-release;
-- the option requires an explicit compile-time development feature and launch flag;
-- the process has a controlling terminal visible to the developer;
-- a terminal command or signal stops input;
-- diagnostics clearly label the mode non-production;
-- automated release/package checks reject the feature and identifying strings; and
-- no published binary, default example, CI release artifact, or documentation quickstart enables it.
-
-This exception is not a release fallback. If no production guard exists for an OS/session target, release artifacts for that target MUST be observe-only.
-
-### 5.5 Platform acceptance
-
-The exact indicator and emergency-stop UX is platform-specific and remains gated by the spikes in `04-native-active-desktop-backends.md`. A platform is input-release-ready only when tests prove:
-
-- the indicator is visible while armed;
-- emergency stop works while the controlled application has focus;
-- physical input races cannot execute queued effects after takeover acknowledgement;
-- lock/switch and permission loss revoke the guard; and
-- external-harness MCP use has the same attended guarantees as CLI/RPC in-process use.
+A caller cannot restore old authority or replay queued input after revocation. Recovery requires normal
+fresh product/run admission where applicable and a fresh observation.
 
 ## 6. Observation, prompt injection, and geometry safety
 
@@ -280,7 +190,7 @@ Immediately before native input the service MUST verify:
 - active/unlocked/ordinary desktop state;
 - the ledger record's observation/frame identity and its current target/layout generations;
 - exact equality between the observation's effect epoch and the session's current effect epoch;
-- exact equality between the observation's capture-time takeover epoch and the current armed epoch;
+- current product/run authorization and cancellation state;
 - capability grant and limits;
 - coordinates/path/key/text bounds; and
 - cancellation state.
@@ -430,7 +340,7 @@ Local structured logs and metrics MAY include:
 - operation phase and bounded duration;
 - image dimensions and encoded byte count;
 - generation mismatch category;
-- cancellation/takeover/cleanup outcome; and
+- cancellation/revocation/cleanup outcome; and
 - package/signing classification without user identity.
 
 ### 12.2 Forbidden fields
@@ -459,7 +369,7 @@ flowchart BT
     schema[Canonical schema and adapter parity]
     fake[Deterministic fake service/toolset/MCP]
     native[Platform current-desktop integration]
-    permission[Permission, lock, takeover, and failure tests]
+    permission[Permission, lock, revocation, and failure tests]
     package[Installed package and release-artifact tests]
 
     unit --> schema
@@ -481,8 +391,8 @@ Required tests cover:
 - independent process/session/backend/geometry/frame/effect/presence generations;
 - stale, future, wrong-process, wrong-session, wrong-effect-epoch, and wrong-scope bases;
 - run A observe → run B effect → run A queued action rejection under one shared RPC coordinator;
-- generic RPC `run` authorization exposes no Computer Use handle, observe-only cannot widen to input, and untrusted profile selection cannot exceed principal grants;
-- RPC grant revocation cancels queued/active observation and wins against queued pre-effect work, grants do not bleed across principals/runs, and resume/continuation without fresh authorization restores no handle;
+- disabled RPC Computer Use or failed ordinary caller/run authorization exposes no Computer Use handle, while enabled authorized runs receive the full family;
+- RPC run revocation cancels queued/active observation and wins against queued pre-effect work, authority does not bleed across principals/runs, and resume/continuation without fresh authorization restores no handle;
 - action limits and canonical key validation;
 - balanced input cleanup state machine;
 - cancellation at every safe boundary;
@@ -514,7 +424,6 @@ The fake backend simulates:
 - multi-display and geometry changes;
 - blank/protected/redacted frames;
 - accepted/rejected/uncertain input;
-- physical takeover and emergency stop;
 - lock/session switch/portal close;
 - cancellation during every action phase;
 - held-state cleanup success/failure;
@@ -541,7 +450,6 @@ Common scenarios:
 - cancel at every native action boundary;
 - resize, rotate, scale, add/remove display where feasible;
 - lock, unlock, switch session/seat, sleep/wake, and disconnect events;
-- physical input and emergency-stop races;
 - protected/elevated UI refusal;
 - permission denial/revocation;
 - process termination and held-state cleanup; and
@@ -561,12 +469,10 @@ Required evidence:
 - active console and lock/Fast User Switching failure;
 - Retina/mixed-scale/multi-display geometry;
 - protected/redacted frame handling;
-- event-tap or alternative same-process physical-input detection;
-- native indicator/emergency stop while another app has focus;
-- narrow same-process `objc2` FFI ownership/cast review, with unsafe denied elsewhere in the crate; and
+- narrow same-process `macos_accessibility` retain/cast review, `macos_input` review of the sole unsafe `CGEventKeyboardSetUnicodeString` call, and `macos_session` review of the typed `CGSessionCopyCurrentDictionary` cast plus numeric conversion used by continuous transition sampling, with unsafe denied outside those modules; and
 - update continuity without helper/XPC/private API.
 
-Input release is blocked until Developer ID/signing/notarization policy is accepted for the actual artifact. Ad-hoc builds are development-only.
+Developer ID signing and notarization are tracked for TCC identity continuity and reduced OS warnings, not as an input-availability gate. Unsigned or ad-hoc artifacts require the same native grants and may require permission renewal.
 
 ### 14.2 Windows
 
@@ -578,12 +484,10 @@ Required evidence:
 - WTS/input-desktop/lock/console-RDP transition validation;
 - UIPI/higher-integrity and secure desktop refusal;
 - `SendInput` rejection/uncertainty/cleanup semantics;
-- physical-input detection and synthetic marker handling;
-- native indicator/emergency stop;
 - Authenticode/installer or accepted publisher identity; and
 - actual package DLL search-path protection.
 
-No input release may depend on `uiAccess`, elevation, service, injection, or secure-desktop switching.
+Input must not depend on `uiAccess`, elevation, service, injection, or secure-desktop switching.
 
 ### 14.3 Linux Wayland
 
@@ -595,15 +499,11 @@ Required evidence per supported compositor/desktop family:
 - D-Bus/portal/PipeWire/EIS loss cleanup;
 - portal cancellation and scope mismatch;
 - lock/seat/session transition failure;
-- physical takeover detection where available;
-- persistent compositor or same-process native control indicator/emergency stop; and
 - package-native library discovery and provenance.
-
-If a desktop family cannot provide the required production `UserPresenceGuard`, its release artifact is observe-only.
 
 ### 14.4 Linux X11
 
-X11 tests run only with explicit compatibility policy. They prove current-user/current-display binding, the declared desktop/session-manager lock and user-switch signals, XShm/XTest behavior, broad-authority disclosure, physical takeover, cleanup, and no Wayland-denial fallback. X11 input remains disabled where active/unlocked state cannot be proven independently of the X connection. No test or package may require `uinput`, evdev reads, root, input-group membership, setuid, or another user's X authority.
+X11 tests run only with explicit compatibility policy. They prove current-user/current-display binding, the declared desktop/session-manager lock and user-switch signals, XShm/XTest behavior, broad-authority disclosure, cleanup, and no Wayland-denial fallback. X11 input remains disabled where active/unlocked state cannot be proven independently of the X connection. No test or package may require `uinput`, evdev reads, root, input-group membership, setuid, or another user's X authority.
 
 ## 15. Permission and package tests
 
@@ -630,168 +530,85 @@ Implementation changes MUST add repository checks proving:
 - `starweaver-computer-use` has no normal dependency on agent, model, runtime, environment, RPC, CLI, session/storage/stream, or graphical-product crates;
 - `starweaver-agent` depends on the library with `default-features = false` and without `mcp-server`;
 - CLI and RPC dependency/feature graphs use the in-process Toolset/library and never enable the Computer Use `mcp-server` feature or launch the binary for built-in Computer Use;
-- RPC Computer Use cannot build/enable until authorization/config contracts implement default-denied `computer.observe`, `computer.pointer`, and `computer.keyboard`, immutable run admission, generation/expiry checks, revocation, and fresh resume admission;
+- RPC Computer Use requires explicit enabled configuration plus ordinary caller/run authorization with immutable run admission, generation/expiry checks, revocation, and fresh resume admission; it defines no transport- or input-specific principal capabilities;
 - default library builds contain no `rmcp` server dependency;
 - only the feature-gated binary/server module imports `rmcp` server APIs;
 - no network server dependency or listening socket path is introduced;
 - no browser/CDP/provider-native symbols appear in implementation modules;
 - no helper/service/daemon/uinput/elevation path exists;
 - public API and schema changes pass release API checks;
-- the package inherits the workspace unsafe-Rust prohibition, and every native call is provided through an accepted sound safe dependency/wrapper; any unavoidable unsafe FFI requires a separate architecture/security decision before implementation; and
+- the package keeps unsafe Rust denied outside the reviewed `macos_accessibility`, `macos_input`, and `macos_session` modules; native calls use a sound safe dependency where available, while any new unsafe FFI requires an explicit architecture/security decision and a similarly narrow audited boundary before implementation; and
 - each graduated subset is registered in `spec/capabilities.toml` only after implementation and evidence exist; unregistered platform/input capability remains planned.
 
 Existing repository gates such as `make architecture-check`, `make capability-check`, `make fmt-check`, `make check`, `make test`, `make scripts-check`, and `make release-api-check` remain applicable. Implementation batches MUST add focused commands rather than weaken aggregate gates.
 
-## 17. Delivery phases
+## 17. Delivery status
 
-Current graduation: Phase 0 is implemented; Phase 1 and Phase 2 are implemented for macOS observation only. Windows/Linux observation and Phases 3–5 remain planned. The generated capability status and `../alignment/13-computer-use-macos-evidence.md` are authoritative for the delivered subset.
+The deterministic core, macOS pixel observation, optional bounded Accessibility snapshot, native
+pointer/keyboard operations, first-party Toolset, CLI/RPC in-process composition, and full-family MCP
+stdio binary are implemented. Windows and Linux backends remain planned and explicitly unsupported.
+The generated capability status and `../alignment/13-computer-use-macos-evidence.md` are authoritative.
 
-### Phase 0: contract and deterministic core
+A platform graduation requires:
 
-Deliver:
+- same-process current-session observation and high-level input;
+- geometry, stale-observation, serialization, idempotency, and bounded image evidence;
+- native permission and active same-user unlocked-session diagnostics;
+- lock/switch/protected-content failure without broader fallback;
+- balanced input cleanup under success, error, cancellation, and shutdown;
+- adapter/schema parity, redaction, and zero-retention tests; and
+- capability-registry evidence.
 
-- accepted spec set;
-- package/API dependency design;
-- canonical typed DTOs/catalog/router;
-- policy/state machine/error taxonomy;
-- RPC caller-principal/run-admission grant contract and negative conformance fixtures;
-- deterministic fake backend;
-- JSON Schema fixtures; and
-- unit/property/redaction tests.
-
-Gate: no native input, MCP binary, or Starweaver adapter lands before contract fixtures pass.
-
-### Phase 1: observation-only native spikes
-
-For macOS, Windows, Wayland, and explicit X11:
-
-- prove same-process current-session capture;
-- prove geometry and image limits;
-- prove permission/session diagnostics;
-- prove lock/switch/protected-content failure; and
-- decide target API/dependency/package options.
-
-Gate: each supported backend passes observation-only platform and package-identity evidence. Unsupported targets remain unavailable rather than using a fallback.
-
-### Phase 2: observation adapters
-
-Deliver:
-
-- production library observation path;
-- `computer_status` and `computer_observe` Starweaver Toolset adapter;
-- CLI and RPC in-process observation composition with one coordinator per product process and explicit grants;
-- feature-gated MCP server/binary for non-Starweaver harnesses with default observation-only catalog;
-- image/structured-result parity; and
-- stdio conformance and zero-retention tests.
-
-Gate: observation-only artifacts may be released independently after privacy, package, and MCP gates pass.
-
-### Phase 3: native input and presence prototypes
-
-Deliver per platform:
-
-- high-level pointer/keyboard backend;
-- balanced cleanup/cancellation/idempotency;
-- physical takeover detection;
-- production candidate native indicator/emergency stop/local resume;
-- protected/elevated refusal; and
-- controlled test application integration.
-
-Gate: prototypes remain development-only. `development-terminal-only` cannot enter release builds.
-
-### Phase 4: input-capable release
-
-Enable pointer and/or keyboard per platform only after:
-
-- production `UserPresenceGuard` acceptance;
-- takeover/cancellation latency tests;
-- packaged signing/identity tests;
-- permission/onboarding UX validation;
-- actual release-artifact integration tests;
-- security/code review with no unresolved P0/P1 findings; and
-- capability registry evidence.
-
-Capabilities MAY graduate independently. A platform may release observe-only, observe+pointer, or full observe+pointer+keyboard according to evidence.
-
-### Phase 5: optional accessibility metadata
-
-The provisional macOS lane is implemented: focused-application AX observation is independently permissioned, breadth-first, budget-bounded, secure-value-redacted, service-validated, non-durable, and contains no semantic action tools. UIA/AT-SPI support and cross-platform parity remain separate future graduations. Accessibility work MUST NOT delay or destabilize the pixel baseline and MUST not add semantic action tools without a new spec.
+Optional accessibility metadata remains independently requested and OS-permissioned. UIA/AT-SPI and
+cross-platform parity remain future work; semantic action tools require a new spec.
 
 ## 18. Release gates
 
-### 18.1 Universal release gate
-
 No artifact is released unless:
 
-- all fixed exclusions remain true;
-- package dependency checks pass;
-- canonical schema/adapters are in parity;
-- Computer Use library/MCP-owned screenshot, accessibility, and input buffers follow the zero-retention baseline; CLI/RPC or harness history retention is separately disclosed and never restores native authority; logs are redacted; and the model/MCP client receives the exact geometry-bound image bytes and dimensions recorded by the observation;
-- default MCP launch is observe-only;
-- stdio framing and cancellation pass;
+- all fixed exclusions and package dependency checks remain true;
+- canonical schemas and adapters are in parity;
+- screenshot, accessibility, and input buffers follow the zero-retention baseline and logs are redacted;
+- the model/MCP client receives exact geometry-bound image bytes and dimensions;
+- ordinary macOS MCP launch exposes the full canonical family;
+- stdio framing, bounded cancellation, idempotency, serialization, and held-state cleanup pass;
 - native session/permission failures are typed and fail closed;
-- RPC generic `run` authorization and profile selection cannot obtain Computer Use without dedicated admitted caller capabilities, and resume/continuation restore no grant;
-- protected/elevated surfaces have no fallback;
-- actual package bytes pass smoke/provenance checks; and
-- documentation clearly distinguishes implemented capability from planned platform support.
+- RPC requires enabled configuration plus ordinary current caller/run authorization, revocation, and fresh resume admission, without transport- or input-specific principals;
+- maintained CLI/RPC input has no per-call approval metadata;
+- protected/elevated surfaces have no fallback; and
+- actual package bytes pass smoke/checksum/provenance checks.
 
-### 18.2 Input-specific gate
-
-Pointer or keyboard is enabled in a release only when:
-
-- launch grants are explicit and separate;
-- RPC-hosted input additionally has current `computer.observe` plus `computer.pointer` or `computer.keyboard` caller admission bound to the run and checked for revocation/expiry before effect;
-- a production same-process `UserPresenceGuard` exists;
-- emergency stop is out-of-band and works under controlled focus;
-- physical takeover invalidates queued work before acknowledgement;
-- local-only resume and fresh observation are enforced;
-- held-state cleanup passes fault injection;
-- ambiguous delivery is never auto-retried;
-- input text/key data is absent from Computer Use-owned logs and persistence; any CLI/RPC or harness history retention follows its separately disclosed product policy and cannot restore authority;
-- secure/locked/higher-integrity/session-switch tests pass; and
-- target-specific signing/package policy is satisfied.
-
-A failed input gate reduces the artifact to observe-only; it MUST NOT be waived by a warning flag in a release build.
-
-### 18.3 MCP-specific gate
-
-The MCP artifact additionally requires:
-
-- server/cancellation conformance against the resolved workspace `rmcp` version;
-- no resources/prompts/sampling/tasks/network capability;
-- deterministic launch-policy-filtered `tools/list` that remains stable for the V1 connection;
-- structured+image mapping parity;
-- stdout purity under fault injection;
-- stdin EOF/signal shutdown cleanup; and
-- no separate MCP crate, agent/runtime dependency, or generic server framework introduced without new evidence.
+Signing/notarization evidence is tracked for stable TCC identity, permission continuity across updates,
+and OS warning reduction. It is not an input-availability gate. The MCP artifact additionally requires
+server/cancellation conformance, deterministic stable `tools/list`, structured/image parity, stdout
+purity, EOF/signal cleanup, and no network or broader MCP capability.
 
 ## 19. Incident and recovery behavior
 
 If an invariant violation is detected at runtime, the process MUST prefer loss of capability over continuation:
 
-1. disarm user presence;
+1. revoke process/run input authority;
 2. cancel queued/current effects;
 3. release held input;
 4. close native capture/input authority when safety is uncertain;
 5. invalidate observations and generations;
 6. return or log only a redacted stable diagnostic code; and
-7. require process restart or explicit attended recovery according to error class.
+7. require process restart or normal fresh caller/run admission according to error class.
 
 The library and MCP binary do not upload incident data. A user MAY manually provide redacted diagnostics from `--doctor`.
 
-Permission identity change, repeated protected-frame misclassification, cleanup failure, stdout framing corruption, or post-takeover action is release-blocking and should disable input in the affected build/platform until corrected.
+Repeated protected-frame misclassification, cleanup failure, post-revocation action, or stdout framing corruption is release-blocking and should disable the affected build/platform until corrected. Permission identity changes require renewed OS permission and remediation but do not remove the canonical input tools.
 
 ## 20. Independent review requirements
 
-Before Phase 4, an independent architecture/security review MUST examine:
+Before a new platform graduates, an independent architecture/security review MUST examine:
 
 - crate and feature dependency direction;
 - native API/public-private boundary;
 - action basis and geometry correctness;
-- user-presence/takeover races;
 - cancellation and held-input cleanup;
 - MCP protocol and stdout isolation;
-- permission/signing/package identity;
+- permission/package identity and signing-related continuity;
 - screenshot/text retention and logs;
 - elevated/protected-surface refusal; and
 - absence of hidden helper, browser, remote, unattended, or network paths.
@@ -802,19 +619,17 @@ Findings are severity-classified. P0/P1 findings block release. Supported lower-
 
 The following decisions require prototype evidence and maintainer discussion:
 
-01. The exact native `UserPresenceGuard` indicator, emergency stop, physical-input detector, and local resume UX per OS.
-02. Maximum allowed takeover-to-cancellation acknowledgement latency per action/backend.
-03. Whether primary-display or normalized visible-desktop remains the default scope.
-04. macOS app-bundle versus standalone signed identity and release-byte TCC continuity.
-05. Windows WGC versus Desktop Duplication and supported Windows version floor.
-06. Wayland compositor/portal/EIS support matrix and whether some targets remain observe-only.
-07. The explicit X11 support/release policy and per-target session-manager/lock-state contract.
-08. Exact screenshot dimensions/byte defaults and PNG versus JPEG policy.
-09. The independent MCP client conformance set.
-10. Release artifact lane and native publisher-signing readiness.
-11. Whether later native features remain within the implemented narrow macOS FFI module or justify a separate reviewed wrapper/package boundary.
+1. Whether primary-display or normalized visible-desktop remains the default scope.
+2. macOS app-bundle versus standalone signed identity for better TCC continuity.
+3. Windows WGC versus Desktop Duplication and supported Windows version floor.
+4. Wayland compositor/portal/EIS support matrix.
+5. The explicit X11 support/release policy and per-target session-manager/lock-state contract.
+6. Exact screenshot dimensions/byte defaults and PNG versus JPEG policy.
+7. The independent MCP client conformance set.
+8. Release artifact lane and native publisher-signing readiness.
+9. Whether later native features remain within the implemented narrow macOS FFI module or justify a separate reviewed wrapper/package boundary.
 
-Open decisions do not permit weaker defaults. Until decided and proven, the narrower or observe-only behavior applies.
+Open decisions do not permit weaker session, geometry, cancellation, cleanup, or lifecycle invariants.
 
 ## 22. Final acceptance criteria
 
@@ -822,11 +637,11 @@ The spec set is implementation-ready when:
 
 - service/tool/MCP/native/security contracts agree on one process and one current active desktop;
 - canonical capability names and tool schemas are unambiguous;
-- startup grants and default observation-only MCP behavior are fixed;
-- `UserPresenceGuard` is a required input-release dependency with a clearly non-release development exception;
+- explicit product enablement and full-family macOS MCP behavior are fixed;
+- no input-specific guard, emergency stop, principal split, approval, signing, or launch-flag gate is required;
 - observation basis, post-action image, cancellation, idempotency, and cleanup semantics are testable;
 - zero retention and redacted observability are explicit;
 - each platform has a bounded spike and package-evidence plan;
-- delivery phases allow observation to ship without prematurely enabling input;
+- platform delivery evidence proves observation and balanced high-level input together;
 - all browser, provider-native, remote, VM, unattended, locked, helper, daemon, privileged, network-MCP, and graphical-product-owned paths remain excluded; and
 - maintainers have concrete open decisions to discuss rather than implicit implementation guesses.

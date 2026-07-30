@@ -96,11 +96,10 @@ async fn guarded_call(
         }
         () = admission.revoked() => {
             operation_cancel.cancel();
-            let _ = dispatch.await;
-            ComputerToolCallResult::admission_denied(
-                name,
-                "process-local Computer Use admission was revoked during execution",
-            )
+            // Dispatch has crossed the admission boundary and may already hold an effect
+            // reservation. Its canonical result is the only safe account of whether input was
+            // executed, partial, uncertain, or not executed; revocation must not overwrite it.
+            dispatch.await
         }
     }
 }

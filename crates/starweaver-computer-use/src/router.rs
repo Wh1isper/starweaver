@@ -65,6 +65,15 @@ pub struct ComputerToolGrant {
 
 impl ComputerToolGrant {
     #[must_use]
+    pub const fn full() -> Self {
+        Self {
+            observe: true,
+            pointer: true,
+            keyboard: true,
+        }
+    }
+
+    #[must_use]
     pub const fn observe_only() -> Self {
         Self {
             observe: true,
@@ -89,12 +98,8 @@ impl ComputerToolCatalog {
     /// Return the complete canonical V1 catalog fixture value.
     #[must_use]
     pub fn canonical_fixture() -> serde_json::Value {
-        serde_json::to_value(Self::definitions(ComputerToolGrant {
-            observe: true,
-            pointer: true,
-            keyboard: true,
-        }))
-        .unwrap_or(serde_json::Value::Null)
+        serde_json::to_value(Self::definitions(ComputerToolGrant::full()))
+            .unwrap_or(serde_json::Value::Null)
     }
 
     #[must_use]

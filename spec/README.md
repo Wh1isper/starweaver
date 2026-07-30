@@ -29,13 +29,13 @@ SDK layer:
 
 Native current-desktop Computer Use:
 
-- `computer-use/README.md` — current-active-desktop scope, implemented macOS observe-only subset, package shape, reading order, and fixed exclusions
+- `computer-use/README.md` — current-active-desktop scope, implemented macOS observe/pointer/keyboard subset, package shape, reading order, and fixed exclusions
 - `computer-use/01-product-boundaries-and-ownership.md` — CLI/RPC in-process and external-harness MCP topology, crate ownership, dependency direction, and lifecycle
 - `computer-use/02-service-contract-and-state-machine.md` — typed service API, observations, geometry, actions, receipts, cancellation, and state machine
 - `computer-use/03-toolset-and-library-integration.md` — canonical tool catalog/router, shared CLI/RPC Toolset adapter, grants, media projection, and schema parity
 - `computer-use/04-native-active-desktop-backends.md` — macOS, Windows, Wayland, and explicit X11 active-session backend architecture
 - `computer-use/05-mcp-binary-and-process-lifecycle.md` — feature-gated stdio MCP boundary for non-Starweaver harnesses, protocol mapping, lifecycle, diagnostics, and packaging
-- `computer-use/06-security-testing-and-delivery.md` — attended-use threat model, user-presence controls, tests, phases, and release gates
+- `computer-use/06-security-testing-and-delivery.md` — active-desktop threat model, product/run authorization, tests, delivery evidence, and release gates
 
 Agent SDK environment layer:
 
@@ -67,7 +67,7 @@ Readiness review:
 - `alignment/10-session-search-evidence.md` — session-search implementation and boundary evidence
 - `alignment/11-tui-ui-ux-completion.md` — completed TUI interaction and validation evidence
 - `alignment/12-rpc-host-readiness.md` — RPC host durability, recovery, and interoperability evidence
-- `alignment/13-computer-use-macos-evidence.md` — macOS observe-only Computer Use implementation and release evidence
+- `alignment/13-computer-use-macos-evidence.md` — macOS observe/pointer/keyboard Computer Use implementation and release evidence
 
 Claw product specs:
 
@@ -194,7 +194,7 @@ flowchart TD
 - `starweaver-usage` is a leaf accounting crate; usage data and optional pricing are not owned by `starweaver-core` or `starweaver-runtime`.
 - Runtime contracts expose stable stream records, checkpoints, usage snapshot events, traces, and capability hooks.
 - SDK ergonomics live in `starweaver-agent`; concrete environment resources live in `starweaver-environment`.
-- `starweaver-computer-use` owns one process-local, OS-native current-active-desktop service and canonical tool router. The implemented release subset is macOS observation only; Windows/Linux observation and all production input remain planned and fail closed. `starweaver-agent` owns the first-party Toolset adapter; CLI and RPC directly construct their own process coordinator and have no MCP loopback; the same package's optional stdio MCP binary target is the boundary for non-Starweaver harnesses. The library has no reverse dependency on environment, model-native tools, browser/CDP, RPC, CLI, graphical products, remote sessions, or unattended execution.
+- `starweaver-computer-use` owns one process-local, OS-native current-active-desktop service and canonical tool router. The implemented macOS subset provides observation plus high-level pointer and keyboard input; Windows/Linux remain planned and fail closed. `starweaver-agent` owns the first-party Toolset adapter; CLI and RPC directly construct their own process coordinator and have no MCP loopback; the same package's optional full-family stdio MCP binary target is the boundary for non-Starweaver harnesses. The library has no reverse dependency on environment, model-native tools, browser/CDP, RPC, CLI, graphical products, remote sessions, or unattended execution.
 - `starweaver-environment` owns the Agent SDK environment provider contracts,
   provider registry, SDK state snapshots, and adapters.
 - Envd is a standalone environment service/protocol; Starweaver can consume it

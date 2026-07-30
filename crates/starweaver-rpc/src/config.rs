@@ -308,10 +308,10 @@ pub enum RpcComputerUseDesktopScope {
     VisibleDesktop,
 }
 
-/// RPC-owned process-local Computer Use policy and principal capabilities.
+/// RPC-owned process-local Computer Use policy.
 ///
-/// These capabilities are intentionally independent from generic host method scopes. A `run`
-/// scope never implies active-desktop observation authority.
+/// Enabling this policy makes the full Computer Use toolset available to otherwise authorized
+/// runs; normal transport authentication, run ownership, and lifecycle controls still apply.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RpcComputerUseConfig {
     /// Install the process-local Computer Use coordinator.
@@ -323,12 +323,6 @@ pub struct RpcComputerUseConfig {
     /// Maximum lifetime of one fresh run-local admission in milliseconds.
     #[serde(default = "default_computer_use_grant_ttl_ms")]
     pub grant_ttl_ms: u64,
-    /// Grant observation capability to the trusted local stdio principal.
-    #[serde(default)]
-    pub stdio_observe: bool,
-    /// Grant observation capability to the configured HTTP credential principal.
-    #[serde(default)]
-    pub http_observe: bool,
 }
 
 impl Default for RpcComputerUseConfig {
@@ -337,8 +331,6 @@ impl Default for RpcComputerUseConfig {
             enabled: false,
             desktop_scope: RpcComputerUseDesktopScope::PrimaryDisplay,
             grant_ttl_ms: default_computer_use_grant_ttl_ms(),
-            stdio_observe: false,
-            http_observe: false,
         }
     }
 }
@@ -1522,8 +1514,6 @@ clarifying_questions = true
 enabled = true
 desktop_scope = "visible_desktop"
 grant_ttl_ms = 45000
-stdio_observe = true
-http_observe = false
 
 [server.http_auth]
 token_env = "RPC_TEST_TOKEN"
@@ -1556,8 +1546,6 @@ base_url = "https://models.example.test/v1"
                 enabled: true,
                 desktop_scope: RpcComputerUseDesktopScope::VisibleDesktop,
                 grant_ttl_ms: 45_000,
-                stdio_observe: true,
-                http_observe: false,
             })
         );
         let server = file.server.unwrap();

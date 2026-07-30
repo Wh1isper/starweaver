@@ -149,7 +149,8 @@ fn computer_use_injection_is_idempotent_for_name_stable_id_and_all_toolsets() {
 }
 
 #[test]
-fn computer_use_is_default_denied_and_enabled_config_auto_injects_observe_only_tools() {
+#[allow(clippy::too_many_lines)]
+fn computer_use_is_default_denied_and_enabled_config_auto_injects_full_tools() {
     let mut config = test_config();
     assert!(
         crate::computer_use::CliComputerUseCoordinator::from_config(&config.computer_use())
@@ -182,7 +183,19 @@ fn computer_use_is_default_denied_and_enabled_config_auto_injects_observe_only_t
         .map(|tool| tool.name().to_string())
         .collect::<Vec<_>>();
     if cfg!(target_os = "macos") {
-        assert_eq!(tool_names, ["computer_status", "computer_observe"]);
+        assert_eq!(
+            tool_names,
+            [
+                "computer_status",
+                "computer_observe",
+                "computer_click",
+                "computer_move_pointer",
+                "computer_drag",
+                "computer_scroll",
+                "computer_type_text",
+                "computer_press_keys",
+            ]
+        );
     } else {
         assert!(tool_names.is_empty());
     }
@@ -226,12 +239,21 @@ fn computer_use_is_default_denied_and_enabled_config_auto_injects_observe_only_t
             .is_some(),
         cfg!(target_os = "macos")
     );
-    assert!(
+    assert_eq!(
         context
             .named_dependency::<starweaver_agent::ComputerPointerHandle>(
                 starweaver_agent::COMPUTER_POINTER_CAPABILITY,
             )
-            .is_none()
+            .is_some(),
+        cfg!(target_os = "macos")
+    );
+    assert_eq!(
+        context
+            .named_dependency::<starweaver_agent::ComputerKeyboardHandle>(
+                starweaver_agent::COMPUTER_KEYBOARD_CAPABILITY,
+            )
+            .is_some(),
+        cfg!(target_os = "macos")
     );
 }
 

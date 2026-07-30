@@ -4,14 +4,12 @@ database_path = "starweaver.sqlite"
 workspace_root = "."
 mcp_config_path = "mcp.json"
 
-# Disabled by default. For attended macOS observation, set enabled and
-# stdio_observe to true, then explicitly select the macos_observer profile.
+# Disabled by default. Enable to expose the full macOS Computer Use toolset to
+# otherwise authorized runs in every effective profile.
 [computer_use]
 enabled = false
 desktop_scope = "primary_display"
 grant_ttl_ms = 300000
-stdio_observe = false
-http_observe = false
 
 [profiles.default]
 model_id = "openai-responses:gpt-5"
