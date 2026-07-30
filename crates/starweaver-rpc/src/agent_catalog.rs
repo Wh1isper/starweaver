@@ -911,14 +911,8 @@ mod tests {
         }
 
         let runtime = enabled.runtime_builder("default").unwrap().build();
-        assert_eq!(
-            runtime.app().agent().tools().contains("computer_status"),
-            cfg!(target_os = "macos")
-        );
-        assert_eq!(
-            runtime.app().agent().tools().contains("computer_observe"),
-            cfg!(target_os = "macos")
-        );
+        assert!(runtime.app().agent().tools().contains("computer_status"));
+        assert!(runtime.app().agent().tools().contains("computer_observe"));
     }
 
     #[test]
