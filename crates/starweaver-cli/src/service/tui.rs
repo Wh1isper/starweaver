@@ -342,7 +342,9 @@ impl CliService {
     fn interactive_tui(&mut self, command: &TuiCommand) -> CliResult<()> {
         let mut state = crate::tui::InteractiveTuiState::welcome(&self.config.tui_state_dir);
         state.set_goal_max_iterations(self.config.max_goal_iterations);
-        state.set_user_input_timeout(Duration::from_secs(self.config.user_input_timeout_seconds));
+        state.set_user_input_timeout(Duration::from_secs(
+            self.config.user_input_timeout_seconds(),
+        ));
         let initial_render_mode = command
             .render_mode
             .or(read_tui_render_mode(&self.config)?)
@@ -419,7 +421,8 @@ impl CliService {
         }
         let mut coordinator_config = self.config.clone();
         coordinator_config.oauth_refresh.enabled = false;
-        let coordinator = CliRuntimeCoordinator::new(coordinator_config)?;
+        let coordinator =
+            CliRuntimeCoordinator::new(coordinator_config, self.computer_use.0.clone())?;
         let mut shutdown_guard = TuiRuntimeShutdownGuard {
             coordinator: Some(coordinator.clone()),
         };

@@ -13,6 +13,8 @@ This document is the normative ownership and dependency decision for the Starwea
 - The RPC product owns its own protocol dispatch, transports, application coordination, configuration projection, authorization, and lifecycle.
 - CLI/TUI and RPC may share lower-level library contracts and implementations. Shared code must be product-neutral and must not encode CLI commands, TUI state, RPC methods, or transport behavior.
 - CLI/TUI and RPC can each connect to envd independently through `starweaver-environment`, `starweaver-envd-core`, and `starweaver-envd-client`.
+- For planned Computer Use, CLI and RPC are the only maintained Starweaver composition roots. Each uses the shared `starweaver-agent` Toolset and `starweaver-computer-use` library in-process; neither product routes through the Computer Use MCP binary.
+- Non-Starweaver harnesses use the separate `starweaver-computer-use-mcp` stdio process. No Starweaver graphical Desktop product is assumed for this capability.
 - Packaging may distribute CLI and RPC binaries together. Packaging does not imply a runtime or crate dependency between them.
 - The planned Desktop product is an RPC protocol client and process supervisor specified in `../desktop/`. Shipping and supervising an exact RPC binary does not make RPC a CLI implementation detail or permit Desktop to link RPC implementation/runtime/storage crates into its renderer.
 
@@ -32,6 +34,7 @@ flowchart TD
     environment[Environment provider and resolver]
     envd_client[Envd client]
     envd[Envd service]
+    computer[Computer Use library]
     cli[CLI and TUI product]
     rpc_core[Typed host RPC protocol]
     rpc[Standalone RPC product]
@@ -43,6 +46,7 @@ flowchart TD
     runtime --> tools
     runtime --> context
     agent --> runtime
+    agent --> computer
     session --> core
     stream --> core
     storage --> session
@@ -51,6 +55,7 @@ flowchart TD
     envd_client --> envd
 
     cli --> agent
+    cli --> computer
     cli --> storage
     cli --> environment
     cli --> envd_client
@@ -60,6 +65,7 @@ flowchart TD
     rpc_core --> stream
     rpc --> rpc_core
     rpc --> agent
+    rpc --> computer
     rpc --> storage
     rpc --> environment
     rpc --> envd_client
@@ -77,6 +83,7 @@ The products may share:
 - stream, replay, display, and projection contracts;
 - environment provider, environment binding, and envd client abstractions;
 - reusable run-lifecycle helpers that do not expose a product command or transport model;
+- the process-local Computer Use service/router and first-party Toolset used directly by both products; and
 - test fixtures and conformance suites.
 
 A shared abstraction is acceptable only when both products can consume it without importing the other product crate.
@@ -94,7 +101,7 @@ A shared abstraction is acceptable only when both products can consume it withou
 - CLI-owned active-run coordination and TUI steering;
 - local UX for approvals, sessions, replay, install, and update.
 
-It may embed the Agent SDK and connect directly to local or remote envd providers. It does not expose or implement the Starweaver host protocol as part of its normative boundary.
+It may embed the Agent SDK and connect directly to local or remote envd providers. When Computer Use is explicitly enabled, CLI creates one process-local coordinator and attaches the first-party Toolset directly; it does not launch the Computer Use MCP binary. It does not expose or implement the Starweaver host protocol as part of its normative boundary.
 
 ### Standalone RPC
 
@@ -107,7 +114,7 @@ It may embed the Agent SDK and connect directly to local or remote envd provider
 - typed request/result/error mapping;
 - RPC process startup and shutdown.
 
-It may embed the Agent SDK and connect directly to local or remote envd providers. It must not depend on `starweaver-cli`.
+It may embed the Agent SDK and connect directly to local or remote envd providers. When Computer Use is explicitly enabled, RPC creates one process-local coordinator shared across normally authorized runs and attaches the full first-party Toolset directly; it does not launch the Computer Use MCP binary. There is no separate Computer Use principal grant: enabled configuration plus ordinary caller/run authorization is sufficient, while admission remains expiring/revocable and is freshly derived on resume/continuation. Effects target the RPC host process's current local desktop, not the RPC client's machine. It must not depend on `starweaver-cli`.
 
 The RPC binary remains independently runnable even when a Desktop release bundles and supervises it. Desktop communicates through the versioned host protocol and process lifecycle only; RPC does not import Desktop state or APIs.
 
@@ -158,6 +165,7 @@ starweaver-storage -> either product crate
 - RPC tests run without linking `starweaver-cli`.
 - Both products can create an agent run against local environment providers.
 - Both products can independently connect to an envd endpoint through shared environment/envd abstractions.
+- Computer Use composition tests prove CLI and RPC use the shared in-process Toolset/library, never the MCP binary, and that RPC transport reachability alone does not grant the capability.
 - Storage contract tests pass for both product paths.
 - RPC protocol conformance tests do not invoke CLI commands or CLI configuration types.
 - CLI/TUI behavior tests do not invoke RPC handlers.

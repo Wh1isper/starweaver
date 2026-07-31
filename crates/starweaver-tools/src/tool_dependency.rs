@@ -65,6 +65,19 @@ impl ToolDependencyRequirements {
         }
     }
 
+    /// Build grant-intersected filtered dependency requirements.
+    ///
+    /// This is the strict dependency profile with no mutable context capabilities:
+    /// named host capabilities are intersected with the current per-tool grant and
+    /// ambient application dependencies are excluded.
+    #[must_use]
+    pub fn granted_filtered(
+        host_capabilities: impl IntoIterator<Item = impl Into<String>>,
+        shell_environment: bool,
+    ) -> Self {
+        Self::strict(host_capabilities, Vec::<String>::new(), shell_environment)
+    }
+
     /// Add mutable context capability requests to filtered requirements.
     #[must_use]
     pub fn with_context_capabilities(

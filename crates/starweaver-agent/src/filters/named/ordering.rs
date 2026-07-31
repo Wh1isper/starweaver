@@ -2,6 +2,7 @@ use starweaver_runtime::CapabilityOrdering;
 
 /// Ordered default filter names for SDK request preparation.
 pub const DEFAULT_FILTER_ORDER: &[&str] = &[
+    "geometry_media",
     "reasoning_normalize",
     "media_split",
     "media_compress",

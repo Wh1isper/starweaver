@@ -4,6 +4,7 @@
 use std::{
     collections::BTreeSet,
     fs,
+    panic::AssertUnwindSafe,
     path::Path,
     sync::{
         Arc, Mutex,
@@ -41,6 +42,7 @@ use crate::{
         SessionSearchGranularityArg, SessionSearchSourceArg, SessionSearchStatusArg,
         StorageCommand, StorageImportLegacyCommand, TuiCommand,
     },
+    computer_use::CliComputerUseCoordinator,
     config::{
         CliConfig, read_current_session, read_last_retention_maintenance,
         remove_project_state_if_current_session, write_current_session,
@@ -54,7 +56,7 @@ use crate::{
         HITL_RESUME_CLAIM_ID_METADATA_KEY, HITL_RESUME_PREFLIGHT_SOURCE_RUN_ID_METADATA_KEY,
         HITL_RESUME_SOURCE_RUN_ID_METADATA_KEY, LocalSessionStore, LocalStore,
     },
-    profiles::{ResolvedProfile, list_profiles, resolve_profile},
+    profiles::{ResolvedProfile, list_profiles, resolve_profile_with_computer_use},
     prompt_input::PromptInput,
     runner::{
         CliAgentExecutionHost, CliRunPolicy, CliSteeringChannel, execute_agent_session_with_host,
@@ -418,16 +420,44 @@ pub struct CliService {
     config: CliConfig,
     store: Option<LocalStore>,
     host_instance_id: String,
+    computer_use: AssertUnwindSafe<Option<CliComputerUseCoordinator>>,
+    owns_computer_use_shutdown: bool,
 }
 
 impl CliService {
     /// Open service from resolved config.
     pub fn open(config: CliConfig) -> CliResult<Self> {
+        let computer_use = CliComputerUseCoordinator::from_config(&config.computer_use())?;
         Ok(Self {
             config,
             store: None,
             host_instance_id: format!("cli-host-{}", uuid::Uuid::new_v4()),
+            computer_use: AssertUnwindSafe(computer_use),
+            owns_computer_use_shutdown: true,
         })
+    }
+
+    pub(super) fn open_with_computer_use(
+        config: CliConfig,
+        computer_use: Option<CliComputerUseCoordinator>,
+    ) -> Self {
+        Self {
+            config,
+            store: None,
+            host_instance_id: format!("cli-host-{}", uuid::Uuid::new_v4()),
+            computer_use: AssertUnwindSafe(computer_use),
+            owns_computer_use_shutdown: false,
+        }
+    }
+
+    fn shutdown_computer_use(&self) -> CliResult<()> {
+        if !self.owns_computer_use_shutdown {
+            return Ok(());
+        }
+        self.computer_use
+            .0
+            .as_ref()
+            .map_or(Ok(()), CliComputerUseCoordinator::shutdown)
     }
 
     fn store(&mut self) -> CliResult<&mut LocalStore> {
@@ -439,66 +469,80 @@ impl CliService {
             .ok_or_else(|| CliError::Storage("store initialization failed".to_string()))
     }
 
-    /// Execute a parsed CLI command.
+    /// Execute a parsed CLI command and always run bounded process-local cleanup.
     pub fn execute(mut self, cli: Cli) -> CliResult<String> {
-        if let Some(prompt) = cli.prompt.clone() {
-            let command = RunCommand {
-                prompt: Some(prompt),
-                prompt_parts: Vec::new(),
-                session: cli.session.clone(),
-                continue_session: cli.continue_session,
-                new_session: cli.new_session,
-                run: cli.run.clone(),
-                branch_from: cli.branch_from.clone(),
-                profile: cli.profile.clone(),
-                continuation_mode: cli.continuation_mode,
-                output: cli.output,
-                hitl: cli.hitl,
-                goal: None,
-                worker: cli.worker.clone(),
-                worker_label: cli.worker_label.clone(),
-                worktree: cli.worktree.clone(),
-                worktree_name: cli.worktree_name.clone(),
-                branch: cli.branch,
-                session_affinity_id: None,
-                environment_attachments: Vec::new(),
-                hitl_resume: false,
-            };
-            return self.run_prompt(&command);
-        }
-        let default_command = CliCommand::Tui(TuiCommand {
-            session: cli.session.clone(),
-            run: cli.run.clone(),
-            after: None,
-            interactive: false,
-            snapshot: false,
-            output: OutputMode::Text,
-            render_mode: None,
-        });
-        match cli.command.unwrap_or(default_command) {
-            CliCommand::Version => Ok(format!("{}\n", sdk_name())),
-            CliCommand::Diagnostics => Ok(self.diagnostics()?),
-            CliCommand::ReplayCheck => {
-                Ok("run `make replay-check` from the repository root\n".to_string())
+        let command_result = (|| {
+            if let Some(prompt) = cli.prompt.clone() {
+                let command = RunCommand {
+                    prompt: Some(prompt),
+                    prompt_parts: Vec::new(),
+                    session: cli.session.clone(),
+                    continue_session: cli.continue_session,
+                    new_session: cli.new_session,
+                    run: cli.run.clone(),
+                    branch_from: cli.branch_from.clone(),
+                    profile: cli.profile.clone(),
+                    continuation_mode: cli.continuation_mode,
+                    output: cli.output,
+                    hitl: cli.hitl,
+                    goal: None,
+                    worker: cli.worker.clone(),
+                    worker_label: cli.worker_label.clone(),
+                    worktree: cli.worktree.clone(),
+                    worktree_name: cli.worktree_name.clone(),
+                    branch: cli.branch,
+                    session_affinity_id: None,
+                    environment_attachments: Vec::new(),
+                    hitl_resume: false,
+                };
+                return self.run_prompt(&command);
             }
-            CliCommand::Update(command) => Self::update(&command),
-            CliCommand::Run(command) => self.run_prompt(&command),
-            CliCommand::Session { command } => self.session(command),
-            CliCommand::Storage { command } => self.storage(command),
-            CliCommand::Profile { command } => self.profile(command),
-            CliCommand::Setup(command) => self.setup(&command),
-            CliCommand::Auth { command } => Self::auth(command),
-            CliCommand::Skill { command } => self.skills(command),
-            CliCommand::Subagent { command } => self.subagents(command),
-            CliCommand::Mcp { command } => self.mcp(command),
-            CliCommand::Tools { command } => self.tools(&command),
-            CliCommand::Tui(command) => self.tui(&command),
-            CliCommand::Approval { command } => self.approval(command),
-            CliCommand::Deferred { command } => self.deferred(command),
-            CliCommand::Resume(command) => self.resume(&command),
-            CliCommand::Reset(command) => self.reset(&command),
-            CliCommand::Config { command } => self.config(command),
-            CliCommand::Completion { shell } => render_completion(shell),
+            let default_command = CliCommand::Tui(TuiCommand {
+                session: cli.session.clone(),
+                run: cli.run.clone(),
+                after: None,
+                interactive: false,
+                snapshot: false,
+                output: OutputMode::Text,
+                render_mode: None,
+            });
+            match cli.command.unwrap_or(default_command) {
+                CliCommand::Version => Ok(format!("{}\n", sdk_name())),
+                CliCommand::Diagnostics => Ok(self.diagnostics()?),
+                CliCommand::ReplayCheck => {
+                    Ok("run `make replay-check` from the repository root\n".to_string())
+                }
+                CliCommand::Update(command) => Self::update(&command),
+                CliCommand::Run(command) => self.run_prompt(&command),
+                CliCommand::Session { command } => self.session(command),
+                CliCommand::Storage { command } => self.storage(command),
+                CliCommand::Profile { command } => self.profile(command),
+                CliCommand::Setup(command) => self.setup(&command),
+                CliCommand::Auth { command } => Self::auth(command),
+                CliCommand::Skill { command } => self.skills(command),
+                CliCommand::Subagent { command } => self.subagents(command),
+                CliCommand::Mcp { command } => self.mcp(command),
+                CliCommand::Tools { command } => self.tools(&command),
+                CliCommand::Tui(command) => self.tui(&command),
+                CliCommand::Approval { command } => self.approval(command),
+                CliCommand::Deferred { command } => self.deferred(command),
+                CliCommand::Resume(command) => self.resume(&command),
+                CliCommand::Reset(command) => self.reset(&command),
+                CliCommand::Config { command } => self.config(command),
+                CliCommand::Completion { shell } => render_completion(shell),
+            }
+        })();
+        let cleanup_result = self.shutdown_computer_use();
+        // The result below now owns cleanup reporting; prevent Drop from
+        // repeating a sticky mandatory-cleanup error.
+        self.owns_computer_use_shutdown = false;
+        match (command_result, cleanup_result) {
+            (Ok(output), Ok(())) => Ok(output),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(cleanup)) => Err(cleanup),
+            (Err(error), Err(cleanup)) => Err(CliError::Run(format!(
+                "{error}; additional shutdown failure: {cleanup}"
+            ))),
         }
     }
 
@@ -614,7 +658,11 @@ impl CliService {
             .profile
             .as_deref()
             .unwrap_or(&self.config.default_profile);
-        let resolved_profile = resolve_profile(&self.config, Some(selected_profile))?;
+        let resolved_profile = resolve_profile_with_computer_use(
+            &self.config,
+            Some(selected_profile),
+            self.computer_use.0.clone(),
+        )?;
         let slash_expansion = expand_slash_command(&self.config.slash_commands, &raw_prompt);
         let explicit_skills = slash_expansion
             .is_none()
@@ -1465,6 +1513,16 @@ impl CliService {
             .or(session.head_run_id.as_ref())
             .ok_or_else(|| CliError::NotFound("run".to_string()))?;
         self.store()?.load_run(session_id, run_id.as_str())
+    }
+}
+
+impl Drop for CliService {
+    fn drop(&mut self) {
+        if let Err(error) = self.shutdown_computer_use() {
+            // Drop covers early-return and unwind paths that cannot propagate a
+            // result. Keep cleanup diagnostics off normal command output.
+            eprintln!("starweaver-cli: {error}");
+        }
     }
 }
 

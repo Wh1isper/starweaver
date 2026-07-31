@@ -308,7 +308,13 @@ fn async_delegation_mode_makes_delegate_async_and_hides_backend() {
     );
     assert_eq!(
         visible_tool_names(&tools),
-        vec!["delegate".to_string(), "subagent_info".to_string()]
+        vec![
+            CANCEL_SUBAGENT_TOOL_NAME.to_string(),
+            "delegate".to_string(),
+            STEER_SUBAGENT_TOOL_NAME.to_string(),
+            "subagent_info".to_string(),
+            WAIT_SUBAGENT_TOOL_NAME.to_string()
+        ]
     );
     let instructions = tools.get_instructions().join("\n");
     assert!(instructions.contains("delegate is asynchronous"));
@@ -344,9 +350,12 @@ fn dual_delegation_mode_keeps_blocking_delegate_and_adds_spawn_delegate() {
     assert_eq!(
         visible_tool_names(&tools),
         vec![
+            CANCEL_SUBAGENT_TOOL_NAME.to_string(),
             "delegate".to_string(),
             SPAWN_DELEGATE_TOOL_NAME.to_string(),
-            "subagent_info".to_string()
+            STEER_SUBAGENT_TOOL_NAME.to_string(),
+            "subagent_info".to_string(),
+            WAIT_SUBAGENT_TOOL_NAME.to_string()
         ]
     );
     let instructions = tools.get_instructions().join("\n");
@@ -980,6 +989,30 @@ async fn background_control_tools_manage_completion_during_cancellation_grace() 
     parent.messages.unsubscribe(parent.agent_id.as_str());
     parent.dependencies.insert_arc(Arc::clone(&monitor));
     let context_handle = AgentContextHandle::new(parent.clone());
+
+    let idle_definitions = control_tools.definitions_for_context(&parent);
+    let idle_tool_names = idle_definitions
+        .iter()
+        .map(|definition| definition.name.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        idle_tool_names,
+        vec![
+            CANCEL_SUBAGENT_TOOL_NAME.to_string(),
+            STEER_SUBAGENT_TOOL_NAME.to_string(),
+            WAIT_SUBAGENT_TOOL_NAME.to_string(),
+        ]
+    );
+    let child_context = AgentContext {
+        parent_run_id: Some(RunId::from_string("parent-run")),
+        ..AgentContext::default()
+    };
+    assert!(
+        control_tools
+            .definitions_for_context(&child_context)
+            .is_empty()
+    );
+
     let delegated = delegate
         .call(
             delegation_tool_context(&parent, context_handle.clone()),
@@ -1000,14 +1033,8 @@ async fn background_control_tools_manage_completion_during_cancellation_grace() 
         "child tool entered"
     );
 
-    let active_tools = control_tools
-        .definitions_for_context(&parent)
-        .into_iter()
-        .map(|definition| definition.name)
-        .collect::<Vec<_>>();
-    assert!(active_tools.contains(&WAIT_SUBAGENT_TOOL_NAME.to_string()));
-    assert!(active_tools.contains(&STEER_SUBAGENT_TOOL_NAME.to_string()));
-    assert!(active_tools.contains(&CANCEL_SUBAGENT_TOOL_NAME.to_string()));
+    let active_definitions = control_tools.definitions_for_context(&parent);
+    assert_eq!(active_definitions, idle_definitions);
 
     let info_context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
         .with_dependencies(parent.dependencies.clone());
@@ -1152,14 +1179,8 @@ async fn background_control_tools_manage_completion_during_cancellation_grace() 
     assert_eq!(terminal.content["status"], "completed");
     assert_eq!(terminal.content["cancellation_reason"], "test cancellation");
 
-    let retained_tools = control_tools
-        .definitions_for_context(&parent)
-        .into_iter()
-        .map(|definition| definition.name)
-        .collect::<Vec<_>>();
-    assert!(retained_tools.contains(&WAIT_SUBAGENT_TOOL_NAME.to_string()));
-    assert!(!retained_tools.contains(&STEER_SUBAGENT_TOOL_NAME.to_string()));
-    assert!(!retained_tools.contains(&CANCEL_SUBAGENT_TOOL_NAME.to_string()));
+    let retained_definitions = control_tools.definitions_for_context(&parent);
+    assert_eq!(retained_definitions, idle_definitions);
     let retained_info = info
         .call(info_context, serde_json::json!({}))
         .await

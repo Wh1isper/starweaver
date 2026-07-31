@@ -434,12 +434,7 @@ impl SubagentRegistry {
             .with_metadata(explicit_delegation_legacy_metadata())
             .with_tag("delegation")
             .with_prepare_definition(|context, definition| {
-                let monitor = context.dependency::<BackgroundSubagentMonitor>()?;
-                let main_agent = context.parent_run_id.is_none()
-                    && !context.metadata.contains_key("parent_agent_id")
-                    && context.agent_id.as_str() == "main";
-                (main_agent && (monitor.has_active_tasks() || !monitor.task_results().is_empty()))
-                    .then_some(definition)
+                is_main_agent_context(context).then_some(definition)
             }),
         )
     }
@@ -481,8 +476,7 @@ impl SubagentRegistry {
             .with_metadata(explicit_delegation_legacy_metadata())
             .with_tag("delegation")
             .with_prepare_definition(|context, definition| {
-                let monitor = context.dependency::<BackgroundSubagentMonitor>()?;
-                (is_main_agent_context(context) && monitor.has_active_tasks()).then_some(definition)
+                is_main_agent_context(context).then_some(definition)
             }),
         )
     }
@@ -530,9 +524,7 @@ impl SubagentRegistry {
             .with_metadata(explicit_delegation_legacy_metadata())
             .with_tag("delegation")
             .with_prepare_definition(|context, definition| {
-                let monitor = context.dependency::<BackgroundSubagentMonitor>()?;
-                (is_main_agent_context(context) && monitor.has_active_tasks())
-                    .then_some(definition)
+                is_main_agent_context(context).then_some(definition)
             }),
         )
     }

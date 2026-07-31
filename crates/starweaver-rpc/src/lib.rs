@@ -18,6 +18,7 @@
 
 mod agent_catalog;
 mod auth;
+mod computer_use;
 mod config;
 mod config_authorization;
 mod coordinator;
@@ -42,9 +43,10 @@ pub use agent_catalog::{RpcAgentCatalog, RpcProfileSummary};
 pub use auth::{RpcHttpAuthConfig, RpcHttpScope};
 pub use config::{
     ResolvedRpcEnvironmentResource, ResolvedRpcEnvironmentSource, RpcClientCapabilitiesConfig,
-    RpcConfig, RpcEnvironmentCatalogEntry, RpcEnvironmentConfig, RpcEnvironmentResourceConfig,
-    RpcEnvironmentSourceConfig, RpcLaunchEvidence, RpcProfileConfig, RpcProviderConfig,
-    RpcSessionSearchBackend, RpcSessionSearchConfig, RpcSubagentConfig,
+    RpcComputerUseConfig, RpcComputerUseDesktopScope, RpcConfig, RpcEnvironmentCatalogEntry,
+    RpcEnvironmentConfig, RpcEnvironmentResourceConfig, RpcEnvironmentSourceConfig,
+    RpcLaunchEvidence, RpcProfileConfig, RpcProviderConfig, RpcSessionSearchBackend,
+    RpcSessionSearchConfig, RpcSubagentConfig,
 };
 pub use coordinator::{
     RpcHitlResumeRequest, RpcRunRequest, RpcRunStatus, RpcRuntimeCoordinator, RpcStartedRun,

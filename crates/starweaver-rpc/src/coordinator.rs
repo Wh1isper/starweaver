@@ -51,7 +51,8 @@ use tokio::{
 use crate::RpcConfig;
 
 use crate::{
-    RpcAgentCatalog, RpcHostError, RpcHostResult,
+    RpcAgentCatalog, RpcHostError, RpcHostResult, RpcTransport,
+    computer_use::{RpcComputerUseCoordinator, RpcComputerUsePrincipal},
     environment::{
         effective_rpc_environment_attachments, resolve_rpc_environment,
         safe_rpc_environment_attachments,
@@ -295,6 +296,7 @@ pub struct RpcRuntimeCoordinator {
     background_tasks: Arc<Mutex<HashMap<SubagentAttemptId, JoinHandle<()>>>>,
     background_reconciler: Arc<Mutex<Option<JoinHandle<()>>>>,
     supervisors: Arc<Mutex<HashMap<SessionId, Arc<BackgroundSubagentSupervisor>>>>,
+    computer_use: RpcComputerUseCoordinator,
     accepting: Arc<AtomicBool>,
     host_instance_id: Arc<String>,
     owner_generation: u64,
@@ -327,11 +329,16 @@ impl RpcRuntimeCoordinator {
         let runtime_config =
             RuntimeConfigManager::load_or_create(&config.state_dir, config.clone(), catalog)
                 .unwrap_or_else(|error| panic!("test runtime config: {error}"));
+        let computer_use = RpcComputerUseCoordinator::from_config(
+            config.computer_use,
+            config.launch.configuration_generation,
+        );
         Self::new_with_workspace_registry(
             storage,
             environment_manager,
             workspace_registry,
             runtime_config,
+            computer_use,
             format!("rpc-test-host-{}", uuid::Uuid::new_v4()),
             1,
         )
@@ -342,6 +349,7 @@ impl RpcRuntimeCoordinator {
         environment_manager: EnvironmentAttachmentManager,
         workspace_registry: WorkspaceRegistry,
         runtime_config: RuntimeConfigManager,
+        computer_use: RpcComputerUseCoordinator,
         host_instance_id: String,
         owner_generation: u64,
     ) -> Self {
@@ -356,10 +364,35 @@ impl RpcRuntimeCoordinator {
             background_tasks: Arc::new(Mutex::new(HashMap::new())),
             background_reconciler: Arc::new(Mutex::new(None)),
             supervisors: Arc::new(Mutex::new(HashMap::new())),
+            computer_use,
             accepting: Arc::new(AtomicBool::new(true)),
             host_instance_id: Arc::new(host_instance_id),
             owner_generation,
         }
+    }
+
+    pub(crate) fn computer_use_principal(
+        &self,
+        transport: RpcTransport,
+        authority_identity: &str,
+        connection_id: &str,
+        authorization_generation: u64,
+    ) -> RpcComputerUsePrincipal {
+        self.computer_use.principal(
+            transport,
+            authority_identity,
+            connection_id,
+            authorization_generation,
+        )
+    }
+
+    pub(crate) fn revoke_computer_use_connection(
+        &self,
+        authority_identity: &str,
+        connection_id: &str,
+    ) {
+        self.computer_use
+            .revoke_connection(authority_identity, connection_id);
     }
 
     async fn lease_session_workspace(
@@ -595,13 +628,22 @@ impl RpcRuntimeCoordinator {
     /// Returns validation, storage, or runtime materialization failures.
     #[must_use]
     pub fn resume_waiting(&self, request: RpcHitlResumeRequest) -> RpcBoxFuture<'_, RpcStartedRun> {
-        Box::pin(self.resume_waiting_inner(request))
+        Box::pin(self.resume_waiting_inner(request, None))
+    }
+
+    pub(crate) fn resume_waiting_for_principal(
+        &self,
+        request: RpcHitlResumeRequest,
+        principal: RpcComputerUsePrincipal,
+    ) -> RpcBoxFuture<'_, RpcStartedRun> {
+        Box::pin(self.resume_waiting_inner(request, Some(principal)))
     }
 
     #[allow(clippy::too_many_lines)]
     async fn resume_waiting_inner(
         &self,
         mut request: RpcHitlResumeRequest,
+        computer_use_principal: Option<RpcComputerUsePrincipal>,
     ) -> RpcHostResult<RpcStartedRun> {
         request.environment_attachments =
             effective_rpc_environment_attachments(&request.environment_attachments);
@@ -818,6 +860,7 @@ impl RpcRuntimeCoordinator {
             },
             admission,
             launch,
+            computer_use_principal,
         ))
         .await
     }
@@ -868,7 +911,15 @@ impl RpcRuntimeCoordinator {
     /// Returns storage or runtime construction failures.
     #[must_use]
     pub fn start(&self, request: RpcRunRequest) -> RpcBoxFuture<'_, RpcStartedRun> {
-        Box::pin(self.start_inner(request, None, None))
+        Box::pin(self.start_inner(request, None, None, None))
+    }
+
+    pub(crate) fn start_for_principal(
+        &self,
+        request: RpcRunRequest,
+        principal: RpcComputerUsePrincipal,
+    ) -> RpcBoxFuture<'_, RpcStartedRun> {
+        Box::pin(self.start_inner(request, None, None, Some(principal)))
     }
 
     async fn start_preadmitted_hitl(
@@ -876,10 +927,15 @@ impl RpcRuntimeCoordinator {
         request: RpcRunRequest,
         admission: RunAdmissionReceipt,
         launch: HitlLaunch,
+        computer_use_principal: Option<RpcComputerUsePrincipal>,
     ) -> RpcHostResult<RpcStartedRun> {
-        let result =
-            Box::pin(self.start_inner(request, Some(admission.clone()), Some(launch.clone())))
-                .await;
+        let result = Box::pin(self.start_inner(
+            request,
+            Some(admission.clone()),
+            Some(launch.clone()),
+            computer_use_principal,
+        ))
+        .await;
         let error = match result {
             Ok(started) => return Ok(started),
             Err(error) => error,
@@ -1040,6 +1096,7 @@ impl RpcRuntimeCoordinator {
         mut request: RpcRunRequest,
         preadmitted: Option<RunAdmissionReceipt>,
         hitl_launch: Option<HitlLaunch>,
+        computer_use_principal: Option<RpcComputerUsePrincipal>,
     ) -> RpcHostResult<RpcStartedRun> {
         request.environment_attachments =
             effective_rpc_environment_attachments(&request.environment_attachments);
@@ -1342,6 +1399,12 @@ impl RpcRuntimeCoordinator {
                     );
                 }
             }
+            let computer_use_lease = self.computer_use.attach_run(
+                &mut context,
+                &target,
+                computer_use_principal.as_ref(),
+                runtime_catalog.grants_toolset(&request.profile, "computer_use"),
+            )?;
             let terminal_replay_sequence = Arc::new(AtomicUsize::new(0));
             let mut runtime_builder = runtime_catalog.runtime_builder(&request.profile)?;
             if let Some(toolset) = deferred_toolset.as_ref() {
@@ -1413,32 +1476,39 @@ impl RpcRuntimeCoordinator {
                 handle,
                 resolved_environment,
                 terminal_replay_sequence,
+                computer_use_lease,
             ))
         })
         .await;
-        let (mut runtime, input, mut handle, resolved_environment, terminal_replay_sequence) =
-            match prepared {
-                Ok(prepared) => prepared,
-                Err(error) => {
-                    if hitl_launch.is_some() {
-                        // `start_preadmitted_hitl` owns exactly-once related-run failure evidence
-                        // and admission release for every pre-worker error.
-                        return Err(error);
-                    }
-                    let _ = self
-                        .storage
-                        .session_store()
-                        .finalize_run_admission(
-                            &admission.lease,
-                            RunTerminalProjection::failed(RunTerminalError::new(
-                                "runtime_preparation_failed",
-                                "runtime preparation failed",
-                            )),
-                        )
-                        .await;
+        let (
+            mut runtime,
+            input,
+            mut handle,
+            resolved_environment,
+            terminal_replay_sequence,
+            computer_use_lease,
+        ) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                if hitl_launch.is_some() {
+                    // `start_preadmitted_hitl` owns exactly-once related-run failure evidence
+                    // and admission release for every pre-worker error.
                     return Err(error);
                 }
-            };
+                let _ = self
+                    .storage
+                    .session_store()
+                    .finalize_run_admission(
+                        &admission.lease,
+                        RunTerminalProjection::failed(RunTerminalError::new(
+                            "runtime_preparation_failed",
+                            "runtime preparation failed",
+                        )),
+                    )
+                    .await;
+                return Err(error);
+            }
+        };
         let control = handle.control_handle();
         supervisor.begin_parent_run(run_id.clone());
         let initial_status = RpcRunStatus {
@@ -1535,6 +1605,7 @@ impl RpcRuntimeCoordinator {
         let completion_coordinator = self.clone();
         let task = tokio::spawn(async move {
             let _workspace_lease = workspace_lease;
+            let _computer_use_lease = computer_use_lease;
             let projection_context =
                 DisplayProjectionContext::new(worker_session_id.clone(), worker_run_id.clone());
             let mut heartbeat = tokio::time::interval(ACTIVE_LEASE_HEARTBEAT);
@@ -2666,6 +2737,7 @@ impl RpcRuntimeCoordinator {
             },
             Some(receipt.admission),
             None,
+            None,
         ))
         .await?;
         store
@@ -2756,6 +2828,20 @@ impl RpcRuntimeCoordinator {
     pub async fn shutdown(&self, timeout: Duration) -> RpcHostResult<()> {
         self.accepting.store(false, Ordering::Release);
         let deadline = tokio::time::Instant::now() + timeout;
+        // Revocation is synchronous so even a zero caller budget fences Computer Use authority.
+        self.computer_use.revoke_all();
+        tokio::time::timeout_at(deadline, self.shutdown_before(deadline))
+            .await
+            .map_err(|_| {
+                RpcHostError::Runtime(
+                    "RPC shutdown exceeded its shared deadline while draining owned resources"
+                        .to_string(),
+                )
+            })?
+    }
+
+    async fn shutdown_before(&self, deadline: tokio::time::Instant) -> RpcHostResult<()> {
+        let computer_use_error = self.computer_use.shutdown(deadline).await.err();
         let supervisors = self
             .supervisors
             .lock()
@@ -2823,6 +2909,11 @@ impl RpcRuntimeCoordinator {
         if let Some(error) = supervisor_error {
             return Err(RpcHostError::Runtime(format!(
                 "RPC shutdown could not durably terminalize every background subagent: {error}"
+            )));
+        }
+        if let Some(error) = computer_use_error {
+            return Err(RpcHostError::Runtime(format!(
+                "RPC shutdown could not close Computer Use cleanly: {error}"
             )));
         }
         Ok(())
@@ -3563,10 +3654,17 @@ mod tests {
         EnvironmentAttachmentAccessMode, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
         LOCAL_ENVIRONMENT_ATTACHMENT_KIND,
     };
+    use async_trait::async_trait;
     use rusqlite::Connection;
     use starweaver_agent::{
         AgentRuntimeBuilder, DynToolset, FunctionTool, StaticToolset, TestModel, ToolContext,
         ToolResult,
+    };
+    use starweaver_computer_use::{
+        BackendProbe, CloseReason, ComputerAction, ComputerUseError, ComputerUsePolicy,
+        ComputerUseService, FakeComputerUseConfig, FakeNativeDesktopBackend, GeometrySnapshot,
+        InputCleanupStatus, LocalComputerUseService, NativeActionFailure, NativeActionReceipt,
+        NativeBackendKind, NativeDesktopBackend, NativeDesktopPlatform, NativeObservation,
     };
     use starweaver_model::{
         ModelResponse, ModelResponsePart, PartDelta, PartEnd, ProviderPartInfo, ToolCallPart,
@@ -3574,9 +3672,123 @@ mod tests {
     };
     use starweaver_session::{ApprovalStatus, DurableBackgroundSubagentDeliveryRelease};
 
+    struct NonTerminatingComputerUseBackend {
+        inner: FakeNativeDesktopBackend,
+        close_started: AtomicBool,
+    }
+
+    impl NonTerminatingComputerUseBackend {
+        fn new() -> Self {
+            Self {
+                inner: FakeNativeDesktopBackend::new(FakeComputerUseConfig::default()),
+                close_started: AtomicBool::new(false),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl NativeDesktopBackend for NonTerminatingComputerUseBackend {
+        fn platform(&self) -> NativeDesktopPlatform {
+            self.inner.platform()
+        }
+
+        fn kind(&self) -> NativeBackendKind {
+            self.inner.kind()
+        }
+
+        async fn probe(
+            &self,
+            cancel: starweaver_core::CancellationToken,
+        ) -> Result<BackendProbe, ComputerUseError> {
+            self.inner.probe(cancel).await
+        }
+
+        async fn open(
+            &self,
+            cancel: starweaver_core::CancellationToken,
+        ) -> Result<BackendProbe, ComputerUseError> {
+            self.inner.open(cancel).await
+        }
+
+        async fn observe(
+            &self,
+            include_accessibility: bool,
+            cancel: starweaver_core::CancellationToken,
+        ) -> Result<NativeObservation, ComputerUseError> {
+            self.inner.observe(include_accessibility, cancel).await
+        }
+
+        async fn execute(
+            &self,
+            action: &ComputerAction,
+            geometry: &GeometrySnapshot,
+            cancel: starweaver_core::CancellationToken,
+        ) -> Result<NativeActionReceipt, NativeActionFailure> {
+            self.inner.execute(action, geometry, cancel).await
+        }
+
+        async fn close(
+            &self,
+            _reason: CloseReason,
+        ) -> Result<InputCleanupStatus, ComputerUseError> {
+            self.close_started.store(true, Ordering::Release);
+            std::future::pending().await
+        }
+    }
+
     // File-backed SQLite has a long latency tail under parallel Windows CI load; production
     // run-await limits remain owned by the RPC service policy.
     const TEST_RUN_COMPLETION_TIMEOUT: Duration = Duration::from_secs(30);
+
+    #[tokio::test]
+    async fn shutdown_bounds_non_terminating_computer_use_backend_by_caller_deadline() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let backend = Arc::new(NonTerminatingComputerUseBackend::new());
+        let policy = ComputerUsePolicy {
+            operation_timeout: Duration::from_secs(30),
+            cancellation_cleanup_timeout: Duration::from_secs(30),
+            ..ComputerUsePolicy::default()
+        };
+        let service = Arc::new(LocalComputerUseService::new(
+            policy.clone(),
+            backend.clone(),
+        ));
+        service
+            .open_current_desktop(starweaver_core::CancellationToken::new())
+            .await
+            .unwrap();
+        let mut coordinator = RpcRuntimeCoordinator::new(
+            config.clone(),
+            RpcAgentCatalog::new(config).unwrap(),
+            storage,
+            EnvironmentAttachmentManager::new(),
+        );
+        coordinator.computer_use = RpcComputerUseCoordinator::with_service_for_tests(service);
+
+        let caller_timeout = Duration::from_millis(25);
+        assert!(caller_timeout < policy.operation_timeout);
+        assert!(caller_timeout < policy.cancellation_cleanup_timeout);
+        let started_at = std::time::Instant::now();
+        let error = match tokio::time::timeout(
+            Duration::from_secs(1),
+            coordinator.shutdown(caller_timeout),
+        )
+        .await
+        {
+            Ok(Err(error)) => error,
+            Ok(Ok(())) => panic!("a non-terminating backend cannot shut down cleanly"),
+            Err(error) => {
+                panic!("RPC shutdown exceeded the caller-bounded test envelope: {error}")
+            }
+        };
+
+        assert!(backend.close_started.load(Ordering::Acquire));
+        assert!(started_at.elapsed() < Duration::from_secs(1));
+        assert!(error.to_string().contains("shared deadline"));
+    }
 
     #[test]
     fn transcript_projection_exposes_only_public_text_and_suppresses_the_final_duplicate() {

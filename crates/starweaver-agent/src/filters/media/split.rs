@@ -6,7 +6,7 @@ use starweaver_model::{ContentPart, ModelMessage, ModelRequestPart, detect_media
 use starweaver_runtime::AgentRunState;
 
 use crate::{
-    filters::message::request_metadata_mut,
+    filters::{media::policy::geometry_bound_media, message::request_metadata_mut},
     media_compression::{ImageSegment, split_image_data},
 };
 
@@ -26,9 +26,15 @@ pub(in crate::filters) fn media_split_filter(
     for message in &mut messages {
         if let ModelMessage::Request(request) = message {
             for part in &mut request.parts {
-                let ModelRequestPart::UserPrompt { content, .. } = part else {
+                let ModelRequestPart::UserPrompt {
+                    content, metadata, ..
+                } = part
+                else {
                     continue;
                 };
+                if geometry_bound_media(metadata) {
+                    continue;
+                }
                 let outcome = split_content_parts(
                     content,
                     context.model_config.image_split_max_height,

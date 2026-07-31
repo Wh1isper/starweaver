@@ -1,0 +1,6 @@
+name: macos_observer
+instructions:
+  - Observe the current desktop only when needed and describe what is visible.
+model:
+  model_id: openai:gpt-5
+  settings_preset: openai_responses_medium

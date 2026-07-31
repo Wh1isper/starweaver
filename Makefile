@@ -15,9 +15,10 @@ RPC_MAKE_ARGS = $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 CLI_ARGS ?= $(if $(ARGS),$(ARGS),$(CLI_MAKE_ARGS))
 SW_ARGS ?= $(if $(ARGS),$(ARGS),$(SW_MAKE_ARGS))
 RPC_ARGS ?= $(if $(ARGS),$(ARGS),$(if $(RPC_MAKE_ARGS),$(RPC_MAKE_ARGS),stdio))
+COMPUTER_USE_MCP_ARGS ?= $(if $(ARGS),$(ARGS),--doctor)
 RUST_WORKSPACE_EXCLUDES = --exclude starweaver-desktop
-MAINTAINED_RUST_PACKAGES = starweaver-agent starweaver-cli starweaver-context starweaver-core \
-	starweaver-envd starweaver-envd-client starweaver-envd-core starweaver-environment \
+MAINTAINED_RUST_PACKAGES = starweaver-agent starweaver-cli starweaver-computer-use \
+	starweaver-context starweaver-core starweaver-envd starweaver-envd-client starweaver-envd-core starweaver-environment \
 	starweaver-model starweaver-oauth starweaver-oauth-provider starweaver-rpc \
 	starweaver-rpc-core starweaver-runtime starweaver-session starweaver-storage \
 	starweaver-stream starweaver-tools starweaver-usage xtask
@@ -141,6 +142,15 @@ clean: ## Remove Rust build artifacts for the workspace and Python extension
 .PHONY: rpc
 rpc: ## Run the standalone RPC host; pass ARGS="http --port 8765" to change transport
 	@cargo run -p starweaver-rpc --bin starweaver-rpc --locked -- $(RPC_ARGS)
+
+.PHONY: computer-use-mcp
+computer-use-mcp: ## Run the local Computer Use MCP binary; defaults to --doctor
+	@cargo run -p starweaver-computer-use --features mcp-server --bin starweaver-computer-use-mcp --locked -- $(COMPUTER_USE_MCP_ARGS)
+
+.PHONY: computer-use-mcp-check
+computer-use-mcp-check: ## Build and inspect the release Computer Use MCP binary
+	@cargo build --release -p starweaver-computer-use --features mcp-server --bin starweaver-computer-use-mcp --locked
+	@target/release/starweaver-computer-use-mcp --version
 
 .PHONY: desktop
 desktop: desktop-sync ## Run Desktop with the explicit development RPC binary
@@ -396,8 +406,8 @@ upversion: ## Update workspace version; pass VERSION=x.y.z
 .PHONY: semver-check
 semver-check: ## Check Rust public API compatibility against the latest release
 	@command -v cargo-semver-checks >/dev/null || { echo "cargo-semver-checks is required"; exit 1; }
-	@# starweaver-storage has no published 0.6 baseline; include it after the first 0.7 release.
-	@cargo semver-checks check-release --workspace --exclude starweaver-storage --exclude starweaver-desktop
+	@# First-release crates have no crates.io baseline; add them after their initial publication.
+	@cargo semver-checks check-release --workspace --exclude starweaver-storage --exclude starweaver-computer-use --exclude starweaver-desktop
 
 .PHONY: release-api-check
 release-api-check: agent-api-check py-api-check semver-check py-wheel-smoke ## Validate reviewed Rust/Python APIs and the built wheel before release

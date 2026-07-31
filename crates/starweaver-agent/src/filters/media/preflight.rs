@@ -11,7 +11,9 @@ use crate::{
     filters::message::request_metadata_mut, media_compression::data_url as encode_data_url,
 };
 
-use super::policy::{is_image_content, is_video_content, media_policy_from_state_and_context};
+use super::policy::{
+    geometry_bound_media, is_image_content, is_video_content, media_policy_from_state_and_context,
+};
 
 pub(in crate::filters) fn media_preflight_filter(
     state: &AgentRunState,
@@ -25,7 +27,12 @@ pub(in crate::filters) fn media_preflight_filter(
         if let ModelMessage::Request(request) = message {
             for part in &mut request.parts {
                 match part {
-                    ModelRequestPart::UserPrompt { content, .. } => {
+                    ModelRequestPart::UserPrompt {
+                        content, metadata, ..
+                    } => {
+                        if geometry_bound_media(metadata) {
+                            continue;
+                        }
                         for item in content {
                             let result = preflight_content_part(item, &policy);
                             if result.replaced {
@@ -35,6 +42,14 @@ pub(in crate::filters) fn media_preflight_filter(
                         }
                     }
                     ModelRequestPart::ToolReturn(tool_return) => {
+                        if tool_return
+                            .private_metadata
+                            .get("starweaver_geometry_bound_immutable_media")
+                            .and_then(Value::as_bool)
+                            == Some(true)
+                        {
+                            continue;
+                        }
                         let result = preflight_tool_value(&mut tool_return.content, &policy);
                         if result.replaced {
                             replacements += 1;
@@ -179,13 +194,45 @@ fn preflight_tool_value(value: &mut Value, policy: &MediaPolicy) -> PreflightOut
 }
 
 fn enforce_media_count_limits(messages: &mut [ModelMessage], policy: &MediaPolicy) -> usize {
-    let mut image_count = 0usize;
-    let mut video_count = 0usize;
+    // Reserve slots for immutable geometry-bound media before considering transformable media.
+    // A reverse-only pass could otherwise keep a newer ordinary image first and then exceed the
+    // total model count when it reaches an older immutable screenshot that cannot be replaced.
+    let (mut image_count, mut video_count) =
+        messages
+            .iter()
+            .fold((0usize, 0usize), |(mut images, mut videos), message| {
+                if let ModelMessage::Request(request) = message {
+                    for part in &request.parts {
+                        if let ModelRequestPart::UserPrompt {
+                            content, metadata, ..
+                        } = part
+                            && geometry_bound_media(metadata)
+                        {
+                            for item in content {
+                                if is_image_content(item) {
+                                    images = images.saturating_add(1);
+                                } else if is_video_content(item) {
+                                    videos = videos.saturating_add(1);
+                                }
+                            }
+                        }
+                    }
+                }
+                (images, videos)
+            });
     let mut replaced = 0usize;
     for message in messages.iter_mut().rev() {
         if let ModelMessage::Request(request) = message {
             for part in request.parts.iter_mut().rev() {
-                if let ModelRequestPart::UserPrompt { content, .. } = part {
+                if let ModelRequestPart::UserPrompt {
+                    content, metadata, ..
+                } = part
+                {
+                    if geometry_bound_media(metadata) {
+                        // Already reserved above; the dedicated safety processor admits these
+                        // exact bytes and generic preflight must never replace them.
+                        continue;
+                    }
                     for item in content.iter_mut().rev() {
                         if is_image_content(item) {
                             image_count += 1;

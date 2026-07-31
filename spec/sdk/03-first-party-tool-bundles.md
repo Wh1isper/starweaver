@@ -198,6 +198,27 @@ Skill config should support:
 
 Skill state lives in a context state domain and SDK config.
 
+### Computer Use Bundle
+
+The planned opt-in Computer Use bundle exposes ordinary function tools for the current active, unlocked, attended OS desktop. Its normative architecture is [`../computer-use/README.md`](../computer-use/README.md).
+
+Baseline tools:
+
+- `computer_status`
+- `computer_observe`
+- `computer_click`
+- `computer_move_pointer`
+- `computer_drag`
+- `computer_scroll`
+- `computer_type_text`
+- `computer_press_keys`
+
+`starweaver-agent` owns only the first-party Toolset adapter, typed context attachment, instructions, approval/timeout metadata, and image projection into the existing tool-return media path. `starweaver-cli` and `starweaver-rpc` are the maintained Starweaver composition roots: both attach this Toolset and the planned `starweaver-computer-use` library in-process. The library owns the typed service, canonical argument/result schemas, router, process-level coordinator, state machine, deterministic fake, and target-gated native backends. Its feature-gated `starweaver-computer-use-mcp` binary maps the same catalog to local MCP stdio exclusively as the supported boundary for non-Starweaver harnesses.
+
+The bundle is not part of `core_toolsets()` and MUST be explicitly attached and granted by CLI or RPC. Following the first-party bundle rule, its tools use the planned grant-intersected Filtered dependency mode with no ambient CLI/RPC product dependencies, shell environment, or mutable context capabilities. The current compatibility-oriented plain Filtered assembly is insufficient and blocks this bundle until the runtime can intersect each named handle with the per-tool `ToolCapabilityGrant`. Separate named, method-limited observe, pointer, and keyboard handles then prevent one tool from acquiring unrelated OS authority.
+
+CLI and RPC MUST NOT loop back through their generic MCP client bundle to use `starweaver-computer-use-mcp`; they use the in-process Toolset/library path. An RPC-enabled tool always operates the RPC host process's current desktop, never an RPC client's machine. RPC requires enabled Computer Use configuration plus ordinary caller/run authorization; it derives expiring/revocable process-local admission for each run and derives it again on resume/continuation, without separate observe/pointer/keyboard principal capabilities. The maintained CLI/RPC products attach the full canonical family and use no per-call input approval metadata. Browser/CDP, provider-native computer tools, remote/VM/unattended/locked-session operation, target/window/PID selection, helpers/daemons, and graphical Desktop ownership are outside this bundle. Every input action is sequential, cites a current observation/geometry basis, and returns a receipt plus a fresh model-visible observation. The library and MCP binary do not persist screenshots or native authority.
+
 ### MCP Bundle
 
 The live MCP client uses the official Model Context Protocol Rust SDK at <https://github.com/modelcontextprotocol/rust-sdk> through the `rmcp` crate for stdio and streamable HTTP transports. Starweaver wraps `rmcp` behind SDK toolset contracts so MCP tools, resources, prompts, sampling, roots, logging, completions, notifications, subscriptions, and long-running tasks can participate in Starweaver policy, context, tracing, and replay tests. Streamable HTTP uses `rmcp` session reinitialization for expired sessions. The older standalone SSE transport is not exposed by `rmcp` 1.7 and should only be added through a separate host adapter if a product still requires that protocol.
@@ -262,6 +283,8 @@ Policies are represented as tool metadata and capability settings so runtime and
 ## Acceptance Gates
 
 - bundle registration tests
+- Computer Use canonical catalog parity across the Starweaver Toolset and feature-gated MCP binary
+- Computer Use fake-service, grant-intersected Filtered dependency, ambient-lookup denial, per-tool grant, sequential-action, media-return, and cancellation tests
 - fake environment tests
 - policy metadata tests
 - approval/deferred behavior tests

@@ -8,6 +8,7 @@ mod atomic_file;
 mod client_state;
 mod clipboard;
 mod command_catalog;
+mod computer_use;
 mod config;
 mod display_preview;
 mod environment;

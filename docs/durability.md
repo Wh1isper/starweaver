@@ -96,4 +96,4 @@ assert_eq!(final_checkpoint.resume.cursor.message_cursor, final_checkpoint.state
 # }
 ```
 
-`resume` gives durable runtimes a stable cursor contract. The full `state` field remains available for exact runtime restoration and audit archives.
+`resume` gives durable runtimes a stable cursor contract. The full `state` field remains available for runtime restoration and audit archives, subject to explicit process-local evidence exclusions. In particular, geometry-bound Computer Use screenshot data URLs and their generated media carriers are projected out before a checkpoint reaches an executor. The structured tool result and unrelated metadata remain durable, but restoration must capture a fresh screenshot rather than reconstruct an old observation basis.

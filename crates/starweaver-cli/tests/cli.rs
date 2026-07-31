@@ -61,7 +61,7 @@ fn cli_update_accepts_dry_run_and_force_flags() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("target=cli"));
+    assert!(stdout.contains("target=all"));
     assert!(stdout.contains("force=true"));
     assert!(stdout.contains("status=dry-run"));
 }

@@ -101,11 +101,12 @@ gh release create vX.Y.Z --target "$(git rev-parse HEAD)" --title "Starweaver vX
 Publishing the GitHub Release triggers `.github/workflows/release.yml`:
 
 1. build CLI launcher archives, including the standalone RPC binary,
-2. package the self-contained public host OpenRPC bundle, generated manifest, and canonical source schemas,
-3. build Python source and wheel distributions for `packages/starweaver-py`,
-4. upload maintained core assets with `checksums.txt`,
-5. publish maintained workspace crates in dependency order through the `Release` environment, and
-6. publish the Python package to PyPI through the `Release` environment.
+2. build the input-capable `starweaver-computer-use-mcp` binary for both macOS Rust targets,
+3. package the self-contained public host OpenRPC bundle, generated manifest, and canonical source schemas,
+4. build Python source and wheel distributions for `packages/starweaver-py`,
+5. upload maintained core assets with `checksums.txt`,
+6. publish maintained workspace crates, including `starweaver-computer-use`, in dependency order through the `Release` environment, and
+7. publish the Python package to PyPI through the `Release` environment.
 
 The retained Desktop installer and Desktop-managed runtime update jobs are statically disabled while
 Desktop remains WIP. They do not build, sign, attest, or upload release assets.
@@ -145,10 +146,21 @@ starweaver-rpc.exe
 
 The release also includes:
 
+- `starweaver-computer-use-mcp-vX.Y.Z-x86_64-apple-darwin.tar.gz`;
+- `starweaver-computer-use-mcp-vX.Y.Z-aarch64-apple-darwin.tar.gz`;
 - `starweaver-host-X.Y.Z.openrpc.json`, the self-contained public OpenRPC bundle;
 - `starweaver-host-X.Y.Z.manifest.json`, the generated protocol identity and inventory manifest;
 - `starweaver-host-X.Y.Z-schemas.tar.gz`, the canonical split source schemas and pinned tooling profile; and
 - `checksums.txt` for maintained CLI, protocol, and Python release assets.
+
+Computer Use MCP archives contain only `starweaver-computer-use-mcp`. Windows and Linux Computer
+Use release binaries are TBD and are not built or published. On macOS, launching the stdio server
+explicitly enables the canonical observe, pointer, and keyboard family, subject to Screen Recording,
+Accessibility/post-event permission, and active same-user unlocked-session checks. The binaries are
+checksum-covered but are not Apple Developer ID signed or notarized. Signing and notarization affect
+Gatekeeper warnings, stable TCC identity, and permission continuity across updates; they are not an
+input-availability gate. See [Computer Use](computer-use.md) for the permission and local-policy
+boundary.
 
 External TypeScript consumers generate complete bindings from the public contract with
 `make rpc-typescript-generate OUTPUT=<empty-or-generator-owned-directory>`. Starweaver does not
@@ -171,8 +183,9 @@ make publish-dry-run
 ```
 
 Dependent crates cannot always be fully dry-run against crates.io before the matching Starweaver
-dependency versions are published. The dry-run target validates the release package lists and
-dry-runs the dependency-free first-wave crates: `starweaver-core`, `starweaver-usage`, and
+dependency versions are published. The dry-run target validates the release package lists, including
+`starweaver-computer-use`, and dry-runs the dependency-free first-wave crates:
+`starweaver-core`, `starweaver-usage`, and
 `starweaver-oauth`.
 
 Manual publish after validation and approval:
@@ -215,8 +228,8 @@ distribution files that are already visible on PyPI.
 Verify the public install path:
 
 ```bash
-STARWEAVER_VERSION=vX.Y.Z \
-  curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh \
+  | STARWEAVER_VERSION=vX.Y.Z sh
 
 starweaver version
 sw cli -p "hello" --output text

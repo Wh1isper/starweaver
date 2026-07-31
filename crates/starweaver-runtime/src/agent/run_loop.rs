@@ -621,6 +621,7 @@ impl Agent {
             state.conversation_id.clone(),
             state.run_step,
         )
+        .with_tool_call_id(call.id.clone())
         .with_dependencies(tool_dependencies)
         .with_trace_context(tool_span.context().clone())
         .with_run_attachments(context.run_attachment_values().clone())

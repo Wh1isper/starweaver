@@ -9,7 +9,7 @@ use starweaver_core::{
 use starweaver_usage::Usage;
 use thiserror::Error;
 
-use crate::AgentRunState;
+use crate::{AgentRunState, durable_projection::project_run_state};
 
 /// Compact cursor values durable stores use to resume and audit a run.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -146,14 +146,15 @@ impl AgentCheckpoint {
     /// Build a checkpoint from run state.
     #[must_use]
     pub fn new(node: AgentExecutionNode, state: &AgentRunState) -> Self {
+        let durable_state = project_run_state(state);
         Self {
             checkpoint_id: CheckpointId::new(),
             run_id: state.run_id.clone(),
             conversation_id: state.conversation_id.clone(),
             node,
             run_step: state.run_step,
-            resume: AgentResumeEvidence::new(node, state),
-            state: state.clone(),
+            resume: AgentResumeEvidence::new(node, &durable_state),
+            state: durable_state,
             metadata: Metadata::default(),
         }
     }

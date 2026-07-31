@@ -632,3 +632,68 @@ fn task_status_rejects_unknown_values() {
     assert_eq!(TaskStatus::parse("blocked"), None);
     assert!(serde_json::from_value::<TaskStatus>(serde_json::json!("blocked")).is_err());
 }
+
+#[test]
+fn full_state_export_projects_process_local_screenshot_without_mutating_live_history() {
+    const SCREENSHOT_DATA_URL: &str = "data:image/png;base64,UFJPQ0VTU19MT0NBTF9TQ1JFRU5TSE9U";
+    let private_metadata = serde_json::Map::from_iter([
+        (
+            "starweaver_tool_return_content_parts".to_string(),
+            serde_json::json!([{
+                "kind": "data_url",
+                "data_url": SCREENSHOT_DATA_URL,
+                "media_type": "image/png"
+            }]),
+        ),
+        (
+            "starweaver_geometry_bound_immutable_media".to_string(),
+            serde_json::json!(true),
+        ),
+        (
+            "other_private_metadata".to_string(),
+            serde_json::json!("preserved"),
+        ),
+    ]);
+    let mut context = AgentContext::default();
+    context
+        .message_history
+        .push(ModelMessage::Request(ModelRequest {
+            parts: vec![ModelRequestPart::ToolReturn(
+                ToolReturnPart::new("call-1", "computer_observe", serde_json::json!({}))
+                    .with_private_metadata(private_metadata),
+            )],
+            timestamp: None,
+            instructions: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: serde_json::Map::new(),
+        }));
+
+    let exported = context.export_full_state();
+    assert!(
+        serde_json::to_string(&context.message_history)
+            .unwrap()
+            .contains(SCREENSHOT_DATA_URL)
+    );
+    let encoded = serde_json::to_string(&exported).unwrap();
+    assert!(!encoded.contains(SCREENSHOT_DATA_URL));
+    assert!(encoded.contains("other_private_metadata"));
+    assert!(encoded.contains("preserved"));
+
+    let restored = AgentContext::from_state(exported);
+    let ModelMessage::Request(request) = &restored.message_history[0] else {
+        panic!("restored request expected");
+    };
+    let ModelRequestPart::ToolReturn(tool_return) = &request.parts[0] else {
+        panic!("restored tool return expected");
+    };
+    assert!(
+        !tool_return
+            .private_metadata
+            .contains_key("starweaver_tool_return_content_parts")
+    );
+    assert_eq!(
+        tool_return.private_metadata.get("other_private_metadata"),
+        Some(&serde_json::json!("preserved"))
+    );
+}

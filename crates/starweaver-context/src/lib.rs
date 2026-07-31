@@ -7,6 +7,7 @@ mod config;
 mod context_handle;
 mod context_protocol;
 mod dependency;
+mod durable_projection;
 mod event;
 mod host_capabilities;
 mod message_bus;
@@ -39,6 +40,7 @@ pub use context_protocol::{
     ModelWrapperMetadata, ToolIdWrapper, ToolSearchInvalidation, ToolSearchState, WrapperMetadata,
 };
 pub use dependency::DependencyStore;
+pub use durable_projection::project_tool_return_for_durable_evidence;
 pub use event::{AgentEvent, EventBus};
 pub use host_capabilities::{HostCapabilities, ToolCapabilityGrant};
 pub use message_bus::{BusMessage, MessageBus};

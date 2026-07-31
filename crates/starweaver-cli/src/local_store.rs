@@ -8,7 +8,7 @@ use serde_json::Value;
 use starweaver_context::{AgentCheckpoint, ResumableState};
 use starweaver_core::{ConversationId, RunId, SessionId};
 use starweaver_environment::EnvironmentState;
-use starweaver_runtime::AgentStreamRecord;
+use starweaver_runtime::{AgentStreamRecord, project_stream_records_for_durable_evidence};
 use starweaver_session::{
     AcquireRunAdmission, ApprovalRecord, ApprovalStatus, ClarificationAnswer,
     ContinuationPreparationMode, DeferredToolRecord, EnvironmentStateRef, ExecutionStatus,
@@ -380,7 +380,12 @@ impl LocalStore {
         if display_snapshot.scope.is_none() {
             display_snapshot.scope = Some(scope.clone());
         }
-        let raw_cursor = artifacts.raw_records.last().map(|record| {
+        // Treat this as the fail-closed durable-evidence boundary even when a caller has already
+        // projected its records. The clone keeps caller-owned/live evidence untouched, and this
+        // single local projection feeds both canonical SQLite and the JSON compatibility mirror.
+        let durable_raw_records =
+            project_stream_records_for_durable_evidence(&artifacts.raw_records);
+        let raw_cursor = durable_raw_records.last().map(|record| {
             StreamCursorRef::new(ReplayCursor::raw_runtime(scope.clone(), record.sequence))
         });
         let display_cursor = artifacts.display_messages.last().map(|message| {
@@ -418,7 +423,7 @@ impl LocalStore {
             .environment_state
             .as_ref()
             .map(EnvironmentState::to_json);
-        commit.stream_records.clone_from(&artifacts.raw_records);
+        commit.stream_records.clone_from(&durable_raw_records);
         commit.checkpoints.clone_from(&artifacts.checkpoints);
         commit.approvals.clone_from(&artifacts.approvals);
         commit.deferred_tools.clone_from(&artifacts.deferred_tools);
@@ -443,7 +448,7 @@ impl LocalStore {
         // evidence commit. A mirror failure must not turn a durably completed run into a reported
         // failure: no canonical record points at these mutable files, and search already treats
         // them as optional compatibility evidence.
-        let _ = self.write_run_blob(run, "raw.stream.json", &artifacts.raw_records);
+        let _ = self.write_run_blob(run, "raw.stream.json", &durable_raw_records);
         let _ = self.write_run_blob(run, "display.compact.json", &display_snapshot);
         let _ = self.write_run_blob(run, "context.state.json", &artifacts.state);
         if let Some(environment_state) = artifacts.environment_state.as_ref() {

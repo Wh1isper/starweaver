@@ -36,7 +36,7 @@ fn shell_review_adjusted_approval_removes_shell_entries_only_when_enabled() {
 #[test]
 fn default_registry_uses_scoped_context_and_host_io_toolset_names() {
     let config = test_config();
-    let registry = default_registry(&config, &AgentSpec::default()).unwrap();
+    let registry = default_registry(&config, &AgentSpec::default(), None).unwrap();
 
     assert!(registry.resolve_toolset("context").is_some());
     assert!(registry.resolve_toolset("host_io").is_some());
@@ -56,7 +56,7 @@ fn configured_mcp_tools_are_namespaced_directly_by_default() {
         }
     });
 
-    let names = default_toolsets(&config)
+    let names = default_toolsets(&config, None)
         .unwrap()
         .into_iter()
         .flat_map(|toolset| toolset.get_tools())
@@ -72,7 +72,7 @@ fn configured_mcp_tools_are_namespaced_directly_by_default() {
 #[test]
 fn configured_mcp_proxy_mode_keeps_fixed_tool_surface() {
     let mut config = test_config();
-    config.mcp_mode = crate::config::McpExposureMode::Proxy;
+    config.tools_config = json!({"tools": {"mcp_mode": "proxy"}});
     config.mcp_config = json!({
         "servers": {
             "docs": {
@@ -83,7 +83,7 @@ fn configured_mcp_proxy_mode_keeps_fixed_tool_surface() {
         }
     });
 
-    let names = default_toolsets(&config)
+    let names = default_toolsets(&config, None)
         .unwrap()
         .into_iter()
         .flat_map(|toolset| toolset.get_tools())
@@ -113,7 +113,7 @@ fn configured_mcp_tools_reject_exposed_name_collisions() {
         }
     });
 
-    let Err(error) = default_toolsets(&config) else {
+    let Err(error) = default_toolsets(&config, None) else {
         panic!("colliding MCP tools must fail closed");
     };
 
@@ -121,6 +121,139 @@ fn configured_mcp_tools_reject_exposed_name_collisions() {
         error
             .to_string()
             .contains("configured MCP tool name \"a_b_c\" conflicts")
+    );
+}
+
+#[test]
+fn computer_use_injection_is_idempotent_for_name_stable_id_and_all_toolsets() {
+    let mut named = AgentSpec {
+        toolsets: vec!["computer_use".to_string()],
+        ..AgentSpec::default()
+    };
+    inject_computer_use_toolset(&mut named, true);
+    assert_eq!(named.toolsets, ["computer_use"]);
+
+    let mut stable_id = AgentSpec {
+        toolsets: vec![starweaver_computer_use::COMPUTER_USE_TOOLSET_ID.to_string()],
+        ..AgentSpec::default()
+    };
+    inject_computer_use_toolset(&mut stable_id, true);
+    assert_eq!(stable_id.toolsets.len(), 1);
+
+    let mut all = AgentSpec {
+        all_toolsets: true,
+        ..AgentSpec::default()
+    };
+    inject_computer_use_toolset(&mut all, true);
+    assert!(all.toolsets.is_empty());
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn computer_use_is_default_denied_and_enabled_config_auto_injects_full_tools() {
+    let mut config = test_config();
+    assert!(
+        crate::computer_use::CliComputerUseCoordinator::from_config(&config.computer_use())
+            .unwrap()
+            .is_none()
+    );
+    let disabled =
+        resolve_profile_with_computer_use(&config, Some("approval_model"), None).unwrap();
+    assert!(
+        !disabled
+            .spec
+            .toolsets
+            .iter()
+            .any(|name| name == "computer_use")
+    );
+
+    config.set_computer_use(&crate::config::CliComputerUseConfig {
+        enabled: true,
+        ..crate::config::CliComputerUseConfig::default()
+    });
+    let coordinator =
+        crate::computer_use::CliComputerUseCoordinator::from_config(&config.computer_use())
+            .unwrap()
+            .unwrap();
+    let registry = default_registry(&config, &AgentSpec::default(), Some(&coordinator)).unwrap();
+    let toolset = registry.resolve_toolset("computer_use").unwrap();
+    let tool_names = toolset
+        .get_tools()
+        .into_iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<Vec<_>>();
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            tool_names,
+            [
+                "computer_status",
+                "computer_observe",
+                "computer_click",
+                "computer_move_pointer",
+                "computer_drag",
+                "computer_scroll",
+                "computer_type_text",
+                "computer_press_keys",
+            ]
+        );
+    } else {
+        assert!(tool_names.is_empty());
+    }
+
+    let profile =
+        resolve_profile_with_computer_use(&config, Some("approval_model"), Some(coordinator))
+            .unwrap();
+    assert!(
+        profile
+            .spec
+            .toolsets
+            .iter()
+            .any(|name| name == "computer_use")
+    );
+    let materialization = profile
+        .spec
+        .resolved_materialization(&profile.registry, "test-policy", "test-environment")
+        .unwrap();
+    assert!(
+        materialization
+            .toolset_ids
+            .iter()
+            .any(|id| id == starweaver_computer_use::COMPUTER_USE_TOOLSET_ID)
+    );
+    let agent = profile.build_agent().unwrap();
+    assert_eq!(
+        agent.tools().contains("computer_status"),
+        cfg!(target_os = "macos")
+    );
+    assert_eq!(
+        agent.tools().contains("computer_observe"),
+        cfg!(target_os = "macos")
+    );
+    let mut context = AgentContext::default();
+    profile.configure_context(&mut context);
+    assert_eq!(
+        context
+            .named_dependency::<starweaver_agent::ComputerObserveHandle>(
+                starweaver_agent::COMPUTER_OBSERVE_CAPABILITY,
+            )
+            .is_some(),
+        cfg!(target_os = "macos")
+    );
+    assert_eq!(
+        context
+            .named_dependency::<starweaver_agent::ComputerPointerHandle>(
+                starweaver_agent::COMPUTER_POINTER_CAPABILITY,
+            )
+            .is_some(),
+        cfg!(target_os = "macos")
+    );
+    assert_eq!(
+        context
+            .named_dependency::<starweaver_agent::ComputerKeyboardHandle>(
+                starweaver_agent::COMPUTER_KEYBOARD_CAPABILITY,
+            )
+            .is_some(),
+        cfg!(target_os = "macos")
     );
 }
 

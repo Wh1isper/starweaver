@@ -74,7 +74,7 @@ GitHub Release assets are component-scoped. Current release artifacts provide th
 | --------- | ------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------- |
 | CLI       | `starweaver-cli-<tag>-<target>` | `starweaver`, `starweaver-cli`, `sw`, `starweaver-rpc` | `starweaver update`, `starweaver update cli`, `starweaver cli update` |
 
-The installer reads `STARWEAVER_COMPONENTS` as a comma-separated component list. Default installs use `cli`. CLI update commands invoke the installer with `STARWEAVER_COMPONENTS=cli`.
+The installer defaults to every component available for the detected platform: `cli` everywhere and `computer-use` additionally on macOS. `STARWEAVER_EXCLUDE_COMPONENTS` is the primary comma-separated opt-out boundary. `STARWEAVER_COMPONENTS` remains a compatibility-only explicit selection. The default update target is `all`; explicit `cli` and `computer-use` update targets constrain the installer to one component. Installing the Computer Use MCP binary does not enable the separate default-denied in-process CLI/RPC Toolset.
 
 The launcher update path checks the current CLI package version before installing. For `latest`, it compares against the selected GitHub release for the same repository override used by the installer and returns `status=up-to-date` when the selected release is not newer. For pinned `STARWEAVER_VERSION` installs, it skips only when the pinned version matches the current package version so explicit rollbacks still work. `--force` and `STARWEAVER_UPDATE_FORCE=1` bypass the skip check.
 
@@ -191,12 +191,17 @@ flowchart TD
     environment[Shared environment provider]
     envd_client[Envd client]
     envd[Envd service]
+    computer_tools[Computer Use Toolset]
+    computer[Computer Use library]
 
     command --> coordinator
     tui --> coordinator
     coordinator --> agent
+    coordinator --> computer
     coordinator --> storage
     coordinator --> environment
+    agent --> computer_tools
+    computer_tools --> computer
     environment --> envd_client
     envd_client --> envd
 ```
@@ -207,6 +212,7 @@ The CLI product may share these lower-level abstractions with the standalone RPC
 - session, stream, replay, and atomic storage contracts;
 - display and AGUI projection helpers;
 - environment providers, run bindings, and envd clients;
+- the planned Computer Use library and first-party Toolset, with separate process coordinators in each product; and
 - protocol-neutral conformance fixtures.
 
 It must not share product command dispatch, active-run registries, client state, authorization, or transport lifecycle with RPC. Shared helpers that currently carry CLI or RPC names must move to the lower owning crate before reuse.
@@ -216,6 +222,16 @@ It must not share product command dispatch, active-run registries, client state,
 CLI/TUI resolves local, virtual, composite, and envd-backed providers directly. Envd may run in-process through `LocalEnvd`, as a child stdio service, or at an authenticated HTTP endpoint. Selection and mount state belong to the CLI run and are translated into one SDK-facing environment provider.
 
 The standalone RPC product performs the same kind of resolution independently. The products may use the same `EnvironmentProvider` factories and `EnvdRpcClient`, but they do not share attachment registries or active-run mount state.
+
+### Computer Use Composition
+
+When explicitly enabled by CLI-owned `[computer_use]` configuration, CLI creates one process-local Computer Use service/router coordinator and automatically attaches the opt-in first-party `ComputerUseToolset` to every effective profile and authorized agent context. Profiles do not repeat this product-level Toolset selection. The CLI executable is the native OS permission identity and owns session probing, attended-presence state, cancellation, cleanup, and shutdown.
+
+CLI MUST NOT start or attach `starweaver-computer-use-mcp` for its own Computer Use tools, including through the generic MCP client bundle. That stdio binary is reserved as the supported boundary for non-Starweaver harnesses. CLI does not depend on or assume a graphical Starweaver Desktop product.
+
+Computer Use is disabled unless CLI configuration and per-tool grants explicitly enable it. Automatic profile materialization occurs only after the process-level setting is enabled and does not widen the compiled capability ceiling. Observe, pointer, and keyboard remain separate grants; model input, restored session state, tool inheritance, or a configured model cannot create native authority. Live native session/observation handles are never restored from CLI durability.
+
+The normative service, Toolset, MCP, security, and platform contracts are under [`../computer-use/`](../computer-use/README.md).
 
 ### Standalone RPC Packaging
 
@@ -243,6 +259,7 @@ One-shot headless CLI retains blocking delegation because the process cannot pro
 - CLI/TUI can run against local providers and authenticated envd endpoints without starting the Starweaver host RPC server.
 - CLI/TUI sessions, replay, cancellation, steering, and approval behavior use shared contracts while retaining CLI-owned application state.
 - CLI model tools expose session query only; mutation/control definitions and handles are absent and guessed calls fail closed.
+- Computer Use tests prove CLI attaches one in-process coordinator only under explicit configuration/grants, never launches the MCP binary, and invalidates native authority on shutdown/restore.
 - TUI async subagent results return to their original supervisor/session scope, parent continuations are serialized, and shutdown leaves no detached child tasks.
 - The CLI manifest does not depend on `starweaver-rpc`; any optional use of `starweaver-rpc-core` is limited to product-neutral projection or client contracts.
 

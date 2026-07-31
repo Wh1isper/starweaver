@@ -732,8 +732,8 @@ pub struct ResetCommand {
 /// Update command.
 #[derive(Clone, Debug, Args)]
 pub struct UpdateCommand {
-    /// Update target, defaults to cli.
-    #[arg(default_value = "cli")]
+    /// Update target, defaults to all available components.
+    #[arg(default_value = "all")]
     pub target: String,
     /// Print the update plan without downloading or installing.
     #[arg(long)]

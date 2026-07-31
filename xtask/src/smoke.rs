@@ -51,8 +51,11 @@ pub fn check_install_script() -> Result<(), String> {
     let install_script = fs::read_to_string(&install_path).map_err(|error| error.to_string())?;
     for required in [
         "STARWEAVER_VERSION:-latest",
-        "STARWEAVER_COMPONENTS:-cli",
-        "set -- $COMPONENTS",
+        "STARWEAVER_COMPONENTS:-",
+        "STARWEAVER_EXCLUDE_COMPONENTS:-",
+        "components=\"cli,computer-use\"",
+        "component_is_excluded",
+        "set -- $components",
         "STARWEAVER_INSTALL_DIR",
         "STARWEAVER_NO_MODIFY_PATH",
         "https://github.com/$REPO/releases",
@@ -251,7 +254,7 @@ pub fn smoke_cli_release() -> Result<(), String> {
                 .env("STARWEAVER_INSTALL_DIR", tmp.join("install"))
                 .arg("update"),
         )?;
-        if !update.contains("status=dry-run") || !update.contains("target=cli") {
+        if !update.contains("status=dry-run") || !update.contains("target=all") {
             return Err("release update dry-run smoke failed".to_string());
         }
         Ok(())

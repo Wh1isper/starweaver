@@ -1,7 +1,7 @@
 //! Product launcher for `starweaver` and `sw`.
 
 use std::{
-    env,
+    env, fs,
     io::Write as _,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -309,7 +309,9 @@ pub(crate) fn update_component_with_options(
     options: UpdateOptions,
 ) -> CliResult<String> {
     let normalized = match component {
+        "all" => "all",
         "cli" | "starweaver-cli" | "starweaver" | "launcher" | "rpc" | "starweaver-rpc" => "cli",
+        "computer-use" | "computer-use-mcp" | "starweaver-computer-use-mcp" => "computer-use",
         other => return Err(CliError::Usage(format!("unknown update target {other}"))),
     };
     let command = update_shell_command(normalized, install_dir);
@@ -326,6 +328,7 @@ pub(crate) fn update_component_with_options(
     if !options.force
         && let Some(target_version) = &target_version
         && update_should_skip(current_version, target_version)
+        && update_installation_satisfies(normalized, Path::new(install_dir), target_version)
     {
         return Ok(update_output_prefix(
             normalized,
@@ -336,8 +339,13 @@ pub(crate) fn update_component_with_options(
         ));
     }
     let script = fetch_install_script()?;
-    let mut child = Command::new("sh")
-        .env("STARWEAVER_COMPONENTS", normalized)
+    let mut command = Command::new("sh");
+    if normalized == "all" {
+        command.env_remove("STARWEAVER_COMPONENTS");
+    } else {
+        command.env("STARWEAVER_COMPONENTS", normalized);
+    }
+    let mut child = command
         .env("STARWEAVER_INSTALL_DIR", install_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -415,13 +423,13 @@ fn update_component_from_args(program: &str, args: Vec<String>) -> CliResult<Str
 fn update_help(program: &str) -> String {
     format!(
         "\
-Update installed Starweaver CLI artifacts.
+Update installed Starweaver components.
 
 Usage:
   {program} update [TARGET] [--dry-run] [--force]
 
 Arguments:
-  TARGET       Update target, defaults to cli
+  TARGET       Update target, defaults to all available components
 
 Options:
   --dry-run    Print the update plan without downloading or installing
@@ -448,7 +456,7 @@ fn parse_update_args(args: Vec<String>) -> CliResult<ParsedUpdateCommand> {
         }
     }
     Ok(ParsedUpdateCommand {
-        target: target.unwrap_or_else(|| "cli".to_string()),
+        target: target.unwrap_or_else(|| "all".to_string()),
         options,
     })
 }
@@ -487,6 +495,83 @@ fn update_should_skip(current_version: &str, target_version: &UpdateTargetVersio
     }
 }
 
+fn update_installation_satisfies(
+    normalized: &str,
+    install_dir: &Path,
+    target_version: &UpdateTargetVersion,
+) -> bool {
+    selected_update_components(normalized)
+        .into_iter()
+        .all(|component| component_installation_satisfies(component, install_dir, target_version))
+}
+
+fn selected_update_components(normalized: &str) -> Vec<&'static str> {
+    match normalized {
+        "cli" => vec!["cli"],
+        "computer-use" => vec!["computer-use"],
+        "all" => {
+            let mut components = Vec::new();
+            if !component_excluded("cli") {
+                components.push("cli");
+            }
+            if cfg!(target_os = "macos") && !component_excluded("computer-use") {
+                components.push("computer-use");
+            }
+            components
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn component_excluded(component: &str) -> bool {
+    env::var("STARWEAVER_EXCLUDE_COMPONENTS")
+        .ok()
+        .is_some_and(|excluded| {
+            excluded.split(',').any(|candidate| {
+                let candidate = candidate.trim();
+                matches!(
+                    (component, candidate),
+                    ("cli", "cli" | "starweaver-cli")
+                        | (
+                            "computer-use",
+                            "computer-use" | "computer-use-mcp" | "starweaver-computer-use-mcp"
+                        )
+                )
+            })
+        })
+}
+
+fn component_installation_satisfies(
+    component: &str,
+    install_dir: &Path,
+    target_version: &UpdateTargetVersion,
+) -> bool {
+    let binary_names: &[&str] = match component {
+        "cli" => &["starweaver", "starweaver-cli", "sw", "starweaver-rpc"],
+        "computer-use" => &["starweaver-computer-use-mcp"],
+        _ => return false,
+    };
+    if binary_names
+        .iter()
+        .any(|name| !installed_binary_path(install_dir, name).exists())
+    {
+        return false;
+    }
+    let manifest = install_dir.join(format!(".starweaver-{component}.version"));
+    let Ok(installed_version) = fs::read_to_string(manifest) else {
+        return false;
+    };
+    update_should_skip(installed_version.trim(), target_version)
+}
+
+fn installed_binary_path(install_dir: &Path, name: &str) -> PathBuf {
+    if cfg!(target_os = "windows") {
+        install_dir.join(format!("{name}.exe"))
+    } else {
+        install_dir.join(name)
+    }
+}
+
 fn update_output_prefix(
     normalized: &str,
     current_version: &str,
@@ -514,7 +599,9 @@ fn update_output_prefix(
 
 fn update_shell_command(normalized: &str, install_dir: &str) -> String {
     let mut env_parts = inherited_update_env();
-    env_parts.push(format!("STARWEAVER_COMPONENTS={normalized}"));
+    if normalized != "all" {
+        env_parts.push(format!("STARWEAVER_COMPONENTS={normalized}"));
+    }
     env_parts.push(format!(
         "STARWEAVER_INSTALL_DIR={}",
         shell_quote(install_dir)
@@ -527,6 +614,7 @@ fn inherited_update_env() -> Vec<String> {
         "STARWEAVER_VERSION",
         "STARWEAVER_GITHUB_REPO",
         "STARWEAVER_REPO",
+        "STARWEAVER_EXCLUDE_COMPONENTS",
     ]
     .iter()
     .filter_map(|key| {
@@ -690,8 +778,17 @@ mod tests {
     }
 
     #[test]
-    fn cli_update_uses_cli_target() {
+    fn updates_support_all_available_and_individual_components() {
         let temp = tempfile::tempdir().unwrap();
+        let all = update_component_with_options(
+            "all",
+            &temp.path().display().to_string(),
+            dry_run_options(),
+        )
+        .unwrap();
+        assert!(all.contains("target=all"));
+        assert!(!all.contains("STARWEAVER_COMPONENTS="));
+
         let output = update_component_with_options(
             "starweaver-cli",
             &temp.path().display().to_string(),
@@ -711,6 +808,14 @@ mod tests {
             update_component_with_options("starweaver-rpc", "/tmp/install", dry_run_options())
                 .unwrap();
         assert!(rpc.contains("target=cli"));
+        let computer_use = update_component_with_options(
+            "starweaver-computer-use-mcp",
+            "/tmp/install",
+            dry_run_options(),
+        )
+        .unwrap();
+        assert!(computer_use.contains("target=computer-use"));
+        assert!(computer_use.contains("STARWEAVER_COMPONENTS=computer-use"));
         assert!(matches!(
             update_component_with_options("unknown", "/tmp/install", dry_run_options()),
             Err(CliError::Usage(message)) if message.contains("unknown update target unknown")
@@ -722,7 +827,7 @@ mod tests {
         assert_eq!(
             parse_update_args(vec!["--dry-run".to_string(), "--force".to_string()]).unwrap(),
             ParsedUpdateCommand {
-                target: "cli".to_string(),
+                target: "all".to_string(),
                 options: UpdateOptions {
                     dry_run: true,
                     force: true,
@@ -775,6 +880,61 @@ mod tests {
         assert!(!update_should_skip("0.0.1", &latest_newer));
         assert!(update_should_skip("0.0.1", &pinned_same));
         assert!(!update_should_skip("0.0.1", &pinned_older));
+    }
+
+    #[test]
+    fn update_skip_requires_complete_component_manifest_and_binaries() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = UpdateTargetVersion {
+            version: "1.2.3".to_string(),
+            source: "env",
+            explicit: true,
+        };
+        assert!(!component_installation_satisfies(
+            "cli",
+            temp.path(),
+            &target
+        ));
+        for name in ["starweaver", "starweaver-cli", "sw", "starweaver-rpc"] {
+            fs::write(installed_binary_path(temp.path(), name), b"fixture").unwrap();
+        }
+        fs::write(temp.path().join(".starweaver-cli.version"), "1.2.3\n").unwrap();
+        assert!(component_installation_satisfies(
+            "cli",
+            temp.path(),
+            &target
+        ));
+
+        assert!(!component_installation_satisfies(
+            "computer-use",
+            temp.path(),
+            &target
+        ));
+        fs::write(
+            installed_binary_path(temp.path(), "starweaver-computer-use-mcp"),
+            b"fixture",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join(".starweaver-computer-use.version"),
+            "1.2.2\n",
+        )
+        .unwrap();
+        assert!(!component_installation_satisfies(
+            "computer-use",
+            temp.path(),
+            &target
+        ));
+        fs::write(
+            temp.path().join(".starweaver-computer-use.version"),
+            "1.2.3\n",
+        )
+        .unwrap();
+        assert!(component_installation_satisfies(
+            "computer-use",
+            temp.path(),
+            &target
+        ));
     }
 
     #[test]

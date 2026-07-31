@@ -96,6 +96,18 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --exclude starweaver-desktop --all-targets --all-features --locked
 
+      - name: Build and inspect macOS Computer Use MCP release binary
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          cargo build --release --locked \
+            -p starweaver-computer-use \
+            --features mcp-server \
+            --bin starweaver-computer-use-mcp
+          version_output="$(target/release/starweaver-computer-use-mcp --version)"
+          printf '%s\n' "$version_output" | grep -Fqx "features mcp-server,observe,pointer,keyboard"
+          printf '%s\n' "$version_output" | grep -Eq '^target (x86_64|aarch64)-apple-darwin$'
+
       - name: Validate RPC transports and CLI interoperability
         run: make rpc-integration-check
 

@@ -16,7 +16,7 @@ use crate::{
     },
 };
 
-use super::policy::media_policy_from_state_and_context;
+use super::policy::{geometry_bound_media, media_policy_from_state_and_context};
 
 pub(in crate::filters) fn media_compress_filter(
     state: &AgentRunState,
@@ -38,12 +38,25 @@ pub(in crate::filters) fn media_compress_filter(
         if let ModelMessage::Request(request) = message {
             for part in &mut request.parts {
                 match part {
-                    ModelRequestPart::UserPrompt { content, .. } => {
+                    ModelRequestPart::UserPrompt {
+                        content, metadata, ..
+                    } => {
+                        if geometry_bound_media(metadata) {
+                            continue;
+                        }
                         for item in content {
                             outcome.merge(compress_content_part(item, limits));
                         }
                     }
                     ModelRequestPart::ToolReturn(tool_return) => {
+                        if tool_return
+                            .private_metadata
+                            .get("starweaver_geometry_bound_immutable_media")
+                            .and_then(Value::as_bool)
+                            == Some(true)
+                        {
+                            continue;
+                        }
                         outcome.merge(compress_tool_value(&mut tool_return.content, limits));
                         if let Some(user_content) = &mut tool_return.user_content {
                             outcome.merge(compress_tool_value(user_content, limits));

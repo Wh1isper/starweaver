@@ -664,6 +664,10 @@ enabled = false
 on_needs_approval = "defer"
 risk_threshold = "high"
 
+[computer_use]
+enabled = false
+desktop_scope = "primary_display"
+
 [update]
 channel = "stable"
 "#
@@ -680,6 +684,10 @@ provider = "local"
 files_policy = "read_write"
 shell_enabled = true
 workspace_root = ".."
+
+[computer_use]
+enabled = false
+desktop_scope = "primary_display"
 
 [tui]
 render_mode = "concise"

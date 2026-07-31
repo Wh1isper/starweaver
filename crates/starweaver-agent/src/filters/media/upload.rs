@@ -12,7 +12,7 @@ use starweaver_runtime::AgentRunState;
 
 use crate::filters::message::request_metadata_mut;
 
-use super::policy::media_policy_from_state_and_context;
+use super::policy::{geometry_bound_media, media_policy_from_state_and_context};
 
 /// Media upload request passed to upload adapters.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,7 +58,12 @@ pub(in crate::filters) async fn media_upload_filter(
         if let ModelMessage::Request(request) = message {
             for part in &mut request.parts {
                 match part {
-                    ModelRequestPart::UserPrompt { content, .. } => {
+                    ModelRequestPart::UserPrompt {
+                        content, metadata, ..
+                    } => {
+                        if geometry_bound_media(metadata) {
+                            continue;
+                        }
                         for item in content {
                             match upload_content_part(item, &policy, targets, media_uploader).await
                             {
@@ -72,6 +77,14 @@ pub(in crate::filters) async fn media_upload_filter(
                         }
                     }
                     ModelRequestPart::ToolReturn(tool_return) => {
+                        if tool_return
+                            .private_metadata
+                            .get("starweaver_geometry_bound_immutable_media")
+                            .and_then(Value::as_bool)
+                            == Some(true)
+                        {
+                            continue;
+                        }
                         let outcome = upload_tool_value(
                             &mut tool_return.content,
                             &policy,

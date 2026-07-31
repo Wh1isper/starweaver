@@ -42,7 +42,8 @@ pub fn assemble_tool_dependencies_for_name(
     } else {
         context.tool_capability_grant(tool_name)
     };
-    let authorized_host_capabilities = if requirements.profile == ToolDependencyProfile::Strict {
+    let grant_intersected = requirements.profile == ToolDependencyProfile::Strict;
+    let authorized_host_capabilities = if grant_intersected {
         requirements
             .host_capabilities
             .intersection(&strict_grant.host_capabilities)
@@ -51,7 +52,7 @@ pub fn assemble_tool_dependencies_for_name(
     } else {
         requirements.host_capabilities.clone()
     };
-    let authorized_context_capabilities = if requirements.profile == ToolDependencyProfile::Strict {
+    let authorized_context_capabilities = if grant_intersected {
         requirements
             .context_capabilities
             .intersection(&strict_grant.context_capabilities)
@@ -60,9 +61,8 @@ pub fn assemble_tool_dependencies_for_name(
     } else {
         requirements.context_capabilities.clone()
     };
-    let shell_environment_authorized = requirements.shell_environment
-        && (requirements.profile != ToolDependencyProfile::Strict
-            || strict_grant.shell_environment);
+    let shell_environment_authorized =
+        requirements.shell_environment && (!grant_intersected || strict_grant.shell_environment);
     let context_mutations = ContextMutationHandles::from_context(context);
     let legacy_context = (requirements.profile == ToolDependencyProfile::Legacy)
         .then(|| AgentContextHandle::new(context.clone()));
@@ -116,4 +116,55 @@ fn absorb_legacy_context(context: &mut AgentContext, snapshot: &AgentContext) {
         .runtime
         .wrapper_metadata
         .clone_from(&snapshot.runtime.wrapper_metadata);
+}
+
+#[cfg(test)]
+mod tests {
+    use starweaver_context::{AgentContext, HostCapabilities, ToolCapabilityGrant};
+    use starweaver_core::AgentId;
+    use starweaver_tools::ToolDependencyRequirements;
+
+    use super::assemble_tool_dependencies_for_name;
+
+    #[derive(Debug)]
+    struct AllowedCapability;
+
+    #[derive(Debug)]
+    struct AmbientProductDependency;
+
+    #[test]
+    fn granted_filtered_intersects_named_grants_and_excludes_ambient_dependencies() {
+        let mut context = AgentContext::new(AgentId::from_string("test"));
+        context.insert_named_dependency("allowed", AllowedCapability);
+        context.insert_named_dependency("ambient", AmbientProductDependency);
+        context.grant_tool_capabilities(
+            "safe_tool",
+            ToolCapabilityGrant::new().with_host_capabilities(["allowed"]),
+        );
+        let requirements =
+            ToolDependencyRequirements::granted_filtered(["allowed", "ambient"], false);
+
+        let assembly = assemble_tool_dependencies_for_name(
+            &context,
+            "safe_tool",
+            &requirements,
+            &ToolCapabilityGrant::new(),
+        );
+        let Some(host) = assembly.dependencies.get::<HostCapabilities>() else {
+            panic!("generated host capabilities should exist");
+        };
+
+        assert!(host.get_named::<AllowedCapability>("allowed").is_some());
+        assert!(
+            host.get_named::<AmbientProductDependency>("ambient")
+                .is_none()
+        );
+        assert!(assembly.dependencies.get::<AllowedCapability>().is_none());
+        assert!(
+            assembly
+                .dependencies
+                .get::<AmbientProductDependency>()
+                .is_none()
+        );
+    }
 }

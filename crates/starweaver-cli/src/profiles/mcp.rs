@@ -26,7 +26,7 @@ pub(super) fn configured_mcp_server_specs(config: &CliConfig) -> Vec<McpServerSp
 pub(super) fn configured_mcp_toolsets(config: &CliConfig) -> Vec<DynToolset> {
     let mut descriptions = BTreeMap::new();
     let toolsets = configured_mcp_toolsets_with_descriptions(config, &mut descriptions);
-    match config.mcp_mode {
+    match config.mcp_mode() {
         McpExposureMode::Direct => toolsets,
         McpExposureMode::Proxy if toolsets.is_empty() => Vec::new(),
         McpExposureMode::Proxy => {
@@ -54,7 +54,7 @@ fn configured_mcp_toolsets_with_descriptions(
             let mut toolset_config = McpToolsetConfig::new(toolset_id.clone(), transport);
             if let Some(prefix) = value.get("tool_prefix").and_then(serde_json::Value::as_str) {
                 toolset_config = toolset_config.with_tool_prefix(prefix);
-            } else if config.mcp_mode == McpExposureMode::Direct {
+            } else if config.mcp_mode() == McpExposureMode::Direct {
                 toolset_config = toolset_config.with_tool_prefix(&name);
             }
             if value

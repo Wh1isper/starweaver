@@ -1,0 +1,62 @@
+[package]
+name = "starweaver-computer-use"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Current active desktop Computer Use service for Starweaver"
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = []
+mcp-server = ["dep:base64", "dep:clap", "dep:rmcp", "tokio/signal"]
+
+[[bin]]
+name = "starweaver-computer-use-mcp"
+path = "src/bin/starweaver-computer-use-mcp.rs"
+required-features = ["mcp-server"]
+
+[dependencies]
+async-trait.workspace = true
+base64 = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+image.workspace = true
+rmcp = { version = "1.7.0", optional = true, default-features = false, features = ["server", "transport-io"] }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+starweaver-core.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-std", "io-util", "process"] }
+uuid.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["user"] }
+objc2-application-services = { version = "0.3.2", default-features = false, features = ["AXError", "AXUIElement", "AXValue", "HIServices", "objc2-core-graphics"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFCGTypes", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-graphics = { version = "0.3.2", default-features = true }
+xcap = { version = "0.9.7", default-features = false }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-std", "io-util", "process", "signal"] }
+
+# Native Accessibility, Unicode input, and typed session-property sampling
+# require small audited unsafe FFI boundaries in
+# `platform::macos_accessibility`, `platform::macos_input`, and
+# `platform::macos_session`; the rest of this crate remains unsafe-denied.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+unwrap_used = "warn"
+expect_used = "warn"

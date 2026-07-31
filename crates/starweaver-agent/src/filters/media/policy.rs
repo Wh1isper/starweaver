@@ -1,10 +1,19 @@
 //! Media filter policy helpers.
 
+use serde_json::{Map, Value};
 use starweaver_context::AgentContext;
 use starweaver_model::{ContentPart, MediaPolicy};
 use starweaver_runtime::AgentRunState;
 
 const MEDIA_POLICY_METADATA: &str = "starweaver_media_policy";
+const GEOMETRY_BOUND_MEDIA_METADATA: &str = "starweaver_geometry_bound_immutable_media";
+
+pub(super) fn geometry_bound_media(metadata: &Map<String, Value>) -> bool {
+    metadata
+        .get(GEOMETRY_BOUND_MEDIA_METADATA)
+        .and_then(Value::as_bool)
+        == Some(true)
+}
 
 pub(super) fn media_policy_from_state_and_context(
     state: &AgentRunState,

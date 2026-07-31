@@ -39,6 +39,7 @@ flowchart TD
 | `10-session-search-evidence.md`             | Phase 1 session-search implementation and boundary evidence              |
 | `11-tui-ui-ux-completion.md`                | Complete TUI interaction, status, task, history, and test implementation |
 | `12-rpc-host-readiness.md`                  | RPC host contract, durability, recovery, and interoperability readiness  |
+| `13-computer-use-macos-evidence.md`         | macOS observe/pointer/keyboard Computer Use implementation evidence      |
 
 ## Remaining Theme
 
