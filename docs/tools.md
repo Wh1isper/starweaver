@@ -2,6 +2,8 @@
 
 Tools are provider-neutral function definitions with typed JSON arguments and JSON results. Runtime tool execution uses `starweaver-tools`; SDK tool implementation bundles live above the core runtime.
 
+For bounded programmatic composition and file-backed high-level tools, see [CodeAct and Recipes](codeact.md).
+
 ## Typed function tools
 
 Use `typed_tool` when your tool arguments can be represented as a Rust struct. Starweaver derives the model-facing JSON Schema from that type with `schemars` and validates model-provided JSON with Serde before executing the tool function.

@@ -6,6 +6,8 @@ pub mod error;
 pub mod execution_hooks;
 pub mod instruction;
 pub mod mcp;
+/// Runtime-brokered constrained nested tool invocation contracts.
+pub mod nested;
 pub mod prefixed;
 pub mod registry;
 pub mod tool;
@@ -28,10 +30,14 @@ pub use mcp::{
     McpServerConfig, McpSubscriptionSpec, McpToolSpec, McpToolset, McpToolsetConfig, McpTransport,
     NativeMcpServer, tool_definition_from_mcp_spec,
 };
+pub use nested::{
+    CodeToolBridge, NestedToolError, NestedToolInvoker, NestedToolRequest, NestedToolResult,
+    TOOL_METADATA_NESTED_CALL_LIMIT_KEY, TOOL_METADATA_NESTED_INVOKER_KEY,
+};
 pub use prefixed::{PrefixedTool, PrefixedToolset};
 pub use registry::{ToolAvailabilityReport, ToolRegistry};
 pub use tool::{
-    DynTool, EmptyToolArgs, FunctionTool, TOOL_METADATA_CONTEXT_MANAGEMENT_KEY,
+    CodeActEligibility, DynTool, EmptyToolArgs, FunctionTool, TOOL_METADATA_CONTEXT_MANAGEMENT_KEY,
     TOOL_METADATA_HIDDEN_BY_TAGS_KEY, TOOL_METADATA_KIND_KEY, TOOL_METADATA_SELF_MANAGED_HITL_KEY,
     TOOL_METADATA_TAGS_KEY, Tool, ToolKind, ToolResult, ToolUserInputPreprocessResult,
     TypedFunctionTool, extend_tool_metadata_hidden_by_tags, extend_tool_metadata_tags, json_tool,
@@ -40,7 +46,8 @@ pub use tool::{
 };
 pub use tool_dependency::{
     TOOL_METADATA_DEPENDENCIES_KEY, ToolDependencyProfile, ToolDependencyRequirements,
-    tool_dependency_requirements,
+    ToolDependencyRequirementsError, tool_dependency_requirements,
+    try_tool_dependency_requirements,
 };
 pub use tool_proxy::{
     TOOL_SEARCH_FAILED_EVENT_KIND, TOOL_SEARCH_INVALIDATED_EVENT_KIND,

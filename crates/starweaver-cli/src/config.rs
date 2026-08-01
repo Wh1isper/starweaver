@@ -143,6 +143,23 @@ impl CliConfig {
         resolve_user_input_timeout_seconds(&self.tools_config).unwrap_or(120)
     }
 
+    /// Return the default-enabled constrained `CodeAct` configuration.
+    #[must_use]
+    pub fn codeact(&self) -> CliCodeActConfig {
+        self.unmapped_metadata
+            .get("codeact")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn set_codeact(&mut self, codeact: &CliCodeActConfig) {
+        merge_json_value(
+            &mut self.unmapped_metadata,
+            serde_json::json!({"codeact": codeact}),
+        );
+    }
+
     /// Return the opt-in current-active-desktop Computer Use configuration.
     #[must_use]
     pub fn computer_use(&self) -> CliComputerUseConfig {
@@ -200,6 +217,7 @@ struct FileConfig {
     general: Option<GeneralConfig>,
     storage: Option<StorageConfig>,
     environment: Option<EnvironmentConfig>,
+    codeact: Option<FileCodeActConfig>,
     computer_use: Option<FileComputerUseConfig>,
     security: Option<FileSecurityConfig>,
     update: Option<UpdateConfig>,
@@ -312,6 +330,37 @@ struct SubagentsConfig {
 struct StorageConfig {
     database_path: Option<String>,
     file_store_path: Option<String>,
+}
+
+/// CLI-owned default-enabled constrained `CodeAct` configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CliCodeActConfig {
+    /// Install the bounded synchronous JavaScript orchestration toolset.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for CliCodeActConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct FileCodeActConfig {
+    enabled: Option<bool>,
+}
+
+impl FileCodeActConfig {
+    const fn merge_into(self, config: &mut CliCodeActConfig) {
+        if let Some(enabled) = self.enabled {
+            config.enabled = enabled;
+        }
+    }
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// CLI-owned opt-in Computer Use configuration.
@@ -881,6 +930,11 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
         if let Some(shell_enabled) = environment.shell_enabled {
             config.shell_enabled = shell_enabled;
         }
+    }
+    if let Some(codeact) = parsed.codeact {
+        let mut effective = config.codeact();
+        codeact.merge_into(&mut effective);
+        config.set_codeact(&effective);
     }
     if let Some(computer_use) = parsed.computer_use {
         let mut effective = config.computer_use();

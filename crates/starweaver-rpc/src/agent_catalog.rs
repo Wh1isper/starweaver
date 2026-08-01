@@ -7,10 +7,10 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use starweaver_agent::materialization::STARWEAVER_AGENT_POLICY_VERSION;
 use starweaver_agent::{
-    AgentRuntimeBuilder, AgentSpec, AgentSpecRegistry, DynToolset, McpServerSpec, ModelPreset,
-    ResolvedAgentMaterialization, RmcpLiveMcpClient, SubagentConfig, SubagentToolInheritancePolicy,
-    agent_session_control_tools, agent_session_query_tools, core_toolsets, lazy_live_mcp_toolset,
-    user_input_tools,
+    AgentRuntimeBuilder, AgentSpec, AgentSpecRegistry, CodeActConfig, DynToolset, McpServerSpec,
+    ModelPreset, ResolvedAgentMaterialization, RmcpLiveMcpClient, SubagentConfig,
+    SubagentToolInheritancePolicy, agent_session_control_tools, agent_session_query_tools,
+    codeact_tools, core_toolsets, lazy_live_mcp_toolset, recipe_tools, user_input_tools,
 };
 use starweaver_model::{
     HttpModelConfig, MaxTokensParameter, ModelAdapter, ModelProfile, ProtocolFamily,
@@ -60,6 +60,18 @@ impl RpcAgentCatalog {
     /// Returns an error when the default profile is missing or a profile contains an unsupported
     /// model id or toolset.
     pub fn new(mut config: RpcConfig) -> RpcHostResult<Self> {
+        for profile in config.profiles.values_mut() {
+            profile.toolsets.retain(|key| {
+                !matches!(key.as_str(), "codeact" | "recipes")
+                    && key != starweaver_agent::CODEACT_TOOLSET_ID
+                    && key != starweaver_agent::RECIPE_TOOLSET_ID
+            });
+            if config.codeact.enabled {
+                profile
+                    .toolsets
+                    .extend(["codeact".to_string(), "recipes".to_string()]);
+            }
+        }
         if config.computer_use.enabled {
             for profile in config.profiles.values_mut() {
                 profile.toolsets.retain(|key| {
@@ -236,6 +248,11 @@ impl RpcAgentCatalog {
                 RpcComputerUseCoordinator::toolset(),
             ])
             .collect::<Vec<_>>();
+        if self.config.codeact.enabled {
+            let codeact = CodeActConfig::default();
+            toolsets.push(codeact_tools(codeact.clone()));
+            toolsets.push(recipe_tools(codeact));
+        }
         if self.clarifying_questions_enabled() {
             toolsets.push(user_input_tools());
         }
@@ -336,6 +353,17 @@ impl RpcAgentCatalog {
                 agent_session_control_tools(),
                 RpcComputerUseCoordinator::toolset(),
             ])
+            .chain(
+                self.config
+                    .codeact
+                    .enabled
+                    .then(|| {
+                        let codeact = CodeActConfig::default();
+                        vec![codeact_tools(codeact.clone()), recipe_tools(codeact)]
+                    })
+                    .into_iter()
+                    .flatten(),
+            )
             .chain(self.clarifying_questions_enabled().then(user_input_tools))
             .flat_map(|toolset| {
                 let mut keys = vec![toolset.name().to_string()];
@@ -848,6 +876,61 @@ mod tests {
         let catalog = RpcAgentCatalog::new(config).unwrap();
         assert_eq!(catalog.profiles()[0].source, "builtin");
         assert!(catalog.runtime_builder("default").is_ok());
+    }
+
+    #[test]
+    fn codeact_defaults_enabled_and_explicit_disable_removes_runtime_tools() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        let enabled = RpcAgentCatalog::new(config.clone()).unwrap();
+        assert!(enabled.grants_toolset("default", "codeact"));
+        assert!(enabled.grants_toolset("default", "recipes"));
+        let toolset_ids = enabled
+            .materialization("default", "local:read_write", "sha256:workspace")
+            .unwrap()
+            .toolset_ids;
+        assert!(
+            toolset_ids
+                .iter()
+                .any(|id| id == starweaver_agent::CODEACT_TOOLSET_ID)
+        );
+        assert!(
+            toolset_ids
+                .iter()
+                .any(|id| id == starweaver_agent::RECIPE_TOOLSET_ID)
+        );
+        let runtime = enabled.runtime_builder("default").unwrap().build();
+        assert!(
+            runtime
+                .app()
+                .agent()
+                .tools()
+                .contains(starweaver_agent::RUN_CODE_TOOL_NAME)
+        );
+
+        let mut disabled_config = config;
+        disabled_config.codeact.enabled = false;
+        disabled_config
+            .profiles
+            .get_mut("default")
+            .unwrap()
+            .toolsets = vec![
+            "codeact".to_string(),
+            "recipes".to_string(),
+            starweaver_agent::CODEACT_TOOLSET_ID.to_string(),
+            starweaver_agent::RECIPE_TOOLSET_ID.to_string(),
+        ];
+        let disabled = RpcAgentCatalog::new(disabled_config).unwrap();
+        assert!(!disabled.grants_toolset("default", "codeact"));
+        assert!(!disabled.grants_toolset("default", "recipes"));
+        let runtime = disabled.runtime_builder("default").unwrap().build();
+        assert!(
+            !runtime
+                .app()
+                .agent()
+                .tools()
+                .contains(starweaver_agent::RUN_CODE_TOOL_NAME)
+        );
     }
 
     #[test]

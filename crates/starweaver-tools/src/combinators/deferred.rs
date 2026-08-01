@@ -252,6 +252,10 @@ impl Tool for DeclaredDeferredTool {
         metadata
     }
 
+    fn codeact_eligibility(&self, _context: &AgentContext) -> crate::CodeActEligibility {
+        crate::CodeActEligibility::Deny
+    }
+
     async fn call(
         &self,
         _context: ToolContext,
@@ -329,6 +333,14 @@ impl Tool for DeferredTool {
 
     fn is_available(&self, context: &AgentContext) -> bool {
         self.inner.is_available(context)
+    }
+
+    fn capability_grant_name(&self) -> &str {
+        self.inner.capability_grant_name()
+    }
+
+    fn codeact_eligibility(&self, context: &AgentContext) -> crate::CodeActEligibility {
+        self.inner.codeact_eligibility(context)
     }
 
     fn prepare_definition(

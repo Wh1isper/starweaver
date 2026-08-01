@@ -86,6 +86,14 @@ impl Tool for PrefixedTool {
         self.tool.is_available(context)
     }
 
+    fn capability_grant_name(&self) -> &str {
+        self.tool.capability_grant_name()
+    }
+
+    fn codeact_eligibility(&self, context: &AgentContext) -> crate::CodeActEligibility {
+        self.tool.codeact_eligibility(context)
+    }
+
     fn prepare_definition(
         &self,
         context: &AgentContext,

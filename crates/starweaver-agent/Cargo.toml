@@ -25,6 +25,7 @@ async-trait.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
 image.workspace = true
+jsonschema.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
@@ -32,6 +33,7 @@ sha2.workspace = true
 yaml_serde.workspace = true
 thiserror.workspace = true
 reqwest.workspace = true
+rquickjs.workspace = true
 rmcp = { version = "1.7.0", default-features = false, features = ["client", "server", "transport-child-process", "transport-io", "transport-streamable-http-client-reqwest"] }
 rustls.workspace = true
 uuid.workspace = true
@@ -47,6 +49,7 @@ starweaver-stream.workspace = true
 starweaver-usage = { workspace = true, features = ["pricing"] }
 starweaver-tools.workspace = true
 tokio.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 axum = "0.8.7"

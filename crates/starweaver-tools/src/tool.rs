@@ -209,6 +209,18 @@ where
 /// Metadata key for tools that own their HITL control flow and must not receive an outer approval gate.
 pub const TOOL_METADATA_SELF_MANAGED_HITL_KEY: &str = "starweaver_self_managed_hitl";
 
+/// Context-aware eligibility of a tool as a constrained `CodeAct` target.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CodeActEligibility {
+    /// Defer to the installing product's target policy.
+    #[default]
+    Inherit,
+    /// Declare that the tool is suitable when all host policy and authority checks pass.
+    Allow,
+    /// Prohibit invocation from constrained code.
+    Deny,
+}
+
 /// Provider-neutral function tool trait.
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -254,6 +266,22 @@ pub trait Tool: Send + Sync {
     /// Return whether this tool should be exposed for the current agent context.
     fn is_available(&self, _context: &AgentContext) -> bool {
         true
+    }
+
+    /// Return the stable name used to look up this tool's exact capability grant.
+    ///
+    /// Name-changing wrappers preserve the inner authority identity while changing only the
+    /// model-facing dispatch name.
+    fn capability_grant_name(&self) -> &str {
+        self.name()
+    }
+
+    /// Return whether this tool may be selected as a constrained `CodeAct` target.
+    ///
+    /// This declaration never grants authority and remains subject to product policy,
+    /// prepared-definition visibility, strict dependency projection, and exact target grants.
+    fn codeact_eligibility(&self, _context: &AgentContext) -> CodeActEligibility {
+        CodeActEligibility::Inherit
     }
 
     /// Execute a tool call.

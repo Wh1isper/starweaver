@@ -98,6 +98,7 @@ Current docs:
 - `docs/models.md` — test models, function models, and production-request guard
 - `docs/direct.md` — direct model, stream, and tool APIs
 - `docs/tools.md` — function tools, registries, toolsets, and retry metadata
+- `docs/codeact.md` — constrained JavaScript composition, Strict tool eligibility, recipes, limits, and CLI/RPC defaults
 - `docs/output.md` — structured output schemas and typed parsing
 - `docs/message-history.md` — history continuation and new messages
 - `docs/dependencies.md` — typed dependencies in context and tools
@@ -137,6 +138,7 @@ Current specs:
 - `spec/sdk/04-subagents-skills.md` — serializable subagent specs, delegation lifecycle, inherited tools, skills, and nested coordination
 - `spec/sdk/05-sdk-integration-map.md` — SDK integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
 - `spec/sdk/06-async-subagent-execution.md` — async-only model-visible delegation, steering, cancellation, bounded fan-in, host continuation, durability, and product lifetime policy
+- `spec/sdk/07-codeact-tool-composition.md` — constrained CodeAct composition, canonical nested tool invocation, reusable recipes, security, durability, and Computer Use integration
 - `spec/computer-use/README.md` — current-active-desktop Computer Use boundary, implemented macOS observe, pointer, keyboard, and bounded Accessibility subset, fixed exclusions, package shape, and reading order
 - `spec/computer-use/01-product-boundaries-and-ownership.md` — CLI/RPC in-process and external-harness MCP topology, ownership, dependency direction, lifecycle, and non-goals
 - `spec/computer-use/02-service-contract-and-state-machine.md` — typed service, observation/geometry/action contracts, receipts, errors, cancellation, and state machine

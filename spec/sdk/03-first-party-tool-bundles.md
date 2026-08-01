@@ -242,7 +242,15 @@ Tools:
 - expose ranked tool metadata
 - route large dynamic toolsets through a stable two-tool model-facing surface
 
-This bundle keeps large tool surfaces manageable through a stable two-tool proxy. Tool schemas are returned in search results, and provider/private built-in tool search stays in the model native-tool layer. `ToolProxyToolset` lives in the core tool crate as a generic toolset combinator; SDK users can wrap it with `PrefixedToolset` when they need multiple proxy surfaces.
+This bundle keeps large tool surfaces manageable through a stable two-tool proxy. Tool schemas are returned in search results, and provider/private built-in tool search stays in the model native-tool layer. `ToolProxyToolset` lives in the core tool crate as a generic toolset combinator; SDK users can wrap it with `PrefixedToolset` when they need multiple proxy surfaces. Its catalog and discovery machinery may inform CodeAct tool catalogs, but its current direct wrapped-tool call path is not the canonical nested runtime dispatcher.
+
+### CodeAct and Recipe Bundle
+
+The opt-in SDK CodeAct bundle exposes constrained code execution as an orchestration frontend over tools from the active run-step snapshot. A runtime-owned broker routes every child call through the same target grants, dependency projection, hooks, retry, timeout, cancellation, usage, tracing, and evidence path as direct model tool calls. The sandbox receives no ambient filesystem, network, process, environment, credentials, registry, or mutable context authority. CLI and standalone RPC install the bundle by default with an explicit product-local disable switch.
+
+Provider-visible recipe resources can be registered as typed high-level tools. Saving source does not save authority: preparation pins the source digest and declared interface, while every invocation rechecks the prepared code-tool projection, exact target grants, approval policy, and limits. Recipe re-execution is distinct from read-only historical replay and from unsupported initial-profile VM continuation.
+
+The normative manager, broker, sandbox, recipe, security, durability, and Computer Use contract is [`07-codeact-tool-composition.md`](07-codeact-tool-composition.md).
 
 ## Capability Integration
 

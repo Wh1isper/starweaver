@@ -10,8 +10,9 @@ use starweaver_model::{
     INSTRUCTION_ORIGIN_AGENT, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION, INSTRUCTION_ORIGIN_METADATA,
     INSTRUCTION_ORIGIN_TOOLSET, ModelMessage, ModelRequest, ModelRequestParameters,
     ModelRequestPart, ModelSettings, OpenAiChatSettings, OpenAiResponsesSettings,
-    PreparedInstruction, ProtocolFamily, ProviderSettings, attach_prepared_instructions,
-    format_openai_prompt_cache_key, supports_automatic_openai_prompt_cache_key,
+    PreparedInstruction, ProtocolFamily, ProviderSettings, ToolDefinition,
+    attach_prepared_instructions, format_openai_prompt_cache_key,
+    supports_automatic_openai_prompt_cache_key,
 };
 use starweaver_tools::{ToolKind, ToolRegistry, set_tool_metadata_kind};
 
@@ -31,6 +32,7 @@ use crate::{
 
 const HISTORY_COMPACTION_TRACE_RECORDED_METADATA: &str =
     "starweaver.history.compaction.trace_recorded";
+const MAX_CODEACT_CATALOG_BYTES: usize = 32 * 1024;
 
 impl Agent {
     fn attach_static_instruction_parts(&self, request: &mut ModelRequest) {
@@ -346,6 +348,118 @@ impl Agent {
         Ok(messages)
     }
 
+    pub(in crate::agent) fn codeact_denied_names(tools: &ToolRegistry) -> BTreeSet<String> {
+        let mut denied = [
+            "run_code",
+            "run_recipe",
+            "ask_user_question",
+            "summarize",
+            "delegate",
+            "spawn_delegate",
+            "wait_subagent",
+            "steer_subagent",
+            "cancel_subagent",
+            "mcp_call_tool",
+            "list_sessions",
+            "get_session",
+            "list_session_runs",
+            "get_session_run",
+            "replay_session_run",
+            "create_session",
+            "update_session",
+            "delete_session",
+            "start_session_run",
+            "steer_session_run",
+            "interrupt_session_run",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+        denied.extend(
+            tools
+                .names()
+                .into_iter()
+                .filter(|name| tools.requires_nested_invoker(name)),
+        );
+        denied
+    }
+
+    fn codeact_catalog_instruction(context: &mut AgentContext) -> Option<PreparedInstruction> {
+        if !context.runtime.prepared_tool_names.contains("run_code") {
+            return None;
+        }
+        let catalog = context
+            .runtime
+            .prepared_codeact_target_names
+            .iter()
+            .filter_map(|name| context.runtime.prepared_tool_definitions.get(name))
+            .map(|definition| {
+                serde_json::json!({
+                    "name": definition.name,
+                    "description": definition.description,
+                    "parameters": definition.parameters,
+                    "return_schema": definition.return_schema,
+                })
+            })
+            .collect::<Vec<_>>();
+        let rendered = serde_json::to_string(&catalog).unwrap_or_else(|_| "[]".to_string());
+        let bounded = if rendered.len() <= MAX_CODEACT_CATALOG_BYTES {
+            rendered
+        } else {
+            let omitted_targets = context.runtime.prepared_codeact_target_names.len();
+            context.runtime.prepared_codeact_target_names.clear();
+            context.publish_event(AgentEvent::new(
+                "codeact_catalog_exceeded_limit",
+                serde_json::json!({
+                    "max_bytes": MAX_CODEACT_CATALOG_BYTES,
+                    "omitted_targets": omitted_targets,
+                }),
+            ));
+            "[]".to_string()
+        };
+        let mut metadata = serde_json::Map::new();
+        metadata.insert(
+            INSTRUCTION_ORIGIN_METADATA.to_string(),
+            serde_json::json!(INSTRUCTION_ORIGIN_TOOLSET),
+        );
+        metadata.insert(
+            "starweaver_toolset_group".to_string(),
+            serde_json::json!("codeact_catalog"),
+        );
+        Some(PreparedInstruction {
+            text: format!(
+                "<codeact_catalog>Use only these exact canonical targets from synchronous tools.call(name, arguments): {bounded}</codeact_catalog>"
+            ),
+            dynamic: true,
+            metadata,
+        })
+    }
+
+    fn freeze_prepared_tool_snapshot(
+        context: &mut AgentContext,
+        tools: &ToolRegistry,
+        definitions: &[ToolDefinition],
+    ) {
+        context.runtime.prepared_tool_definitions = definitions
+            .iter()
+            .filter(|definition| tools.contains(&definition.name))
+            .cloned()
+            .map(|definition| (definition.name.clone(), definition))
+            .collect();
+        context.runtime.prepared_tool_names = context
+            .runtime
+            .prepared_tool_definitions
+            .keys()
+            .cloned()
+            .collect();
+        context.runtime.prepared_codeact_target_names = tools
+            .codeact_definitions_for_context(context, &Self::codeact_denied_names(tools))
+            .into_iter()
+            .map(|definition| definition.name)
+            .filter(|name| context.runtime.prepared_tool_names.contains(name))
+            .collect();
+    }
+
     pub(in crate::agent) async fn effective_request_params(
         &self,
         state: &AgentRunState,
@@ -420,6 +534,10 @@ impl Agent {
             }
         }
         params.tools = self.prepare_tools(state, context, params.tools).await?;
+        Self::freeze_prepared_tool_snapshot(context, tools, &params.tools);
+        if let Some(instruction) = Self::codeact_catalog_instruction(context) {
+            params.instructions.push(instruction);
+        }
         for instruction in tools.instructions() {
             let mut metadata = serde_json::Map::new();
             metadata.insert(

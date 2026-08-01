@@ -11,11 +11,12 @@ use serde::Serialize;
 use serde_json::json;
 use starweaver_agent::{
     AgentBuilder, AgentSessionQueryHandle, AgentSpec, AgentSpecRegistry, ApprovalRequiredToolset,
-    BackgroundSubagentSupervisor, DynToolset, HostMediaUnderstandingClient, ShellReviewAction,
-    ShellReviewConfig, ShellReviewHandle, ShellReviewRiskLevel, SkillPackage, SkillRegistry,
-    StaticToolset, SubagentConfig, SubagentDelegationMode, SubagentToolInheritancePolicy,
-    agent_session_query_tools, attach_agent_session_query, core_toolsets, load_subagents_from_dir,
-    parse_skill_markdown, user_input_tools,
+    BackgroundSubagentSupervisor, CodeActConfig, DynToolset, HostMediaUnderstandingClient,
+    ShellReviewAction, ShellReviewConfig, ShellReviewHandle, ShellReviewRiskLevel, SkillPackage,
+    SkillRegistry, StaticToolset, SubagentConfig, SubagentDelegationMode,
+    SubagentToolInheritancePolicy, agent_session_query_tools, attach_agent_session_query,
+    attach_codeact_standard_grants, codeact_tools, core_toolsets, load_subagents_from_dir,
+    parse_skill_markdown, recipe_tools, user_input_tools,
 };
 use starweaver_model::{
     HttpModelConfig, ModelAdapter, ModelProfile, ModelSettings, OpenAiResponsesSettings,
@@ -164,6 +165,7 @@ impl ResolvedProfile {
             ),
         );
         attach_agent_session_query(context, self.session_query.clone());
+        attach_codeact_standard_grants(context);
         if let Some(computer_use) = self.computer_use.as_ref() {
             let result = computer_use.configure_context(context);
             debug_assert!(result.is_ok());
@@ -282,6 +284,7 @@ pub(crate) fn resolve_profile_with_computer_use(
     let requested = requested.unwrap_or(&config.default_profile);
     let (mut spec, source) = load_profile_spec(config, requested)?;
     inject_computer_use_toolset(&mut spec, computer_use.is_some());
+    inject_codeact_toolset(&mut spec, config.codeact().enabled);
     let name = spec.name.clone();
     let registry = default_registry(config, &spec, computer_use.as_ref())?;
     let skills = configured_skill_registry(config);
@@ -320,6 +323,33 @@ pub(crate) fn resolve_profile_with_computer_use(
         session_query,
         computer_use,
     })
+}
+
+fn inject_codeact_toolset(spec: &mut AgentSpec, enabled: bool) {
+    let identities = [
+        ("codeact", starweaver_agent::CODEACT_TOOLSET_ID),
+        ("recipes", starweaver_agent::RECIPE_TOOLSET_ID),
+    ];
+    if !enabled {
+        spec.toolsets.retain(|key| {
+            !identities
+                .iter()
+                .any(|(alias, stable_id)| key == alias || key == stable_id)
+        });
+        return;
+    }
+    if spec.all_toolsets {
+        return;
+    }
+    for (alias, stable_id) in identities {
+        let already_selected = spec
+            .toolsets
+            .iter()
+            .any(|key| key == alias || key == stable_id);
+        if !already_selected {
+            spec.toolsets.push(alias.to_string());
+        }
+    }
 }
 
 fn inject_computer_use_toolset(spec: &mut AgentSpec, enabled: bool) {
@@ -421,6 +451,12 @@ fn default_registry(
             "skills" => {
                 registry = registry.with_toolset_alias("skills", toolset);
             }
+            "codeact" => {
+                registry = registry.with_toolset_alias("codeact", toolset);
+            }
+            "recipes" => {
+                registry = registry.with_toolset_alias("recipes", toolset);
+            }
             other if other.starts_with("mcp_") => {
                 registry = registry.with_toolset_alias(other, toolset);
             }
@@ -466,6 +502,11 @@ fn default_toolsets(
         agent_session_query_tools(),
         policy_toolset(user_input_tools(), &approval),
     ];
+    if config.codeact().enabled {
+        let codeact = CodeActConfig::default();
+        toolsets.push(policy_toolset(codeact_tools(codeact.clone()), &approval));
+        toolsets.push(policy_toolset(recipe_tools(codeact), &approval));
+    }
     for toolset in core_toolsets() {
         let selected_approval = if toolset.name() == "shell" {
             &shell_review_approval

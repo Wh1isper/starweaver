@@ -6,15 +6,21 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
+use starweaver_context::AgentContext;
 use starweaver_core::Metadata;
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
     ModelRequestParameters, ModelRequestPart, ModelResponse, ModelResponseEventStream,
     ModelResponsePart, ModelRunSession, ModelSettings, ProtocolFamily, ToolCallPart,
+    ToolDefinition, ToolReturnPart,
 };
-use starweaver_runtime::{Agent, AgentRuntimePolicy, AgentToolExecutionMode};
+use starweaver_runtime::{
+    Agent, AgentCapability, AgentRunState, AgentRuntimePolicy, AgentStreamEvent, AgentStreamRecord,
+    AgentToolExecutionMode, CapabilityResult,
+};
 use starweaver_tools::{
-    FunctionTool, TOOL_METADATA_DEPENDENCIES_KEY, ToolContext, ToolDependencyRequirements,
+    CodeActEligibility, DynTool, FunctionTool, NestedToolInvoker, TOOL_METADATA_DEPENDENCIES_KEY,
+    TOOL_METADATA_NESTED_INVOKER_KEY, ToolContext, ToolDependencyRequirements, ToolError,
     ToolRegistry, ToolResult,
 };
 
@@ -221,6 +227,14 @@ fn request_tool_return_names(messages: &[ModelMessage]) -> Vec<String> {
 fn record_tool_start(current: &AtomicUsize, max_seen: &AtomicUsize) {
     let active = current.fetch_add(1, Ordering::SeqCst) + 1;
     max_seen.fetch_max(active, Ordering::SeqCst);
+}
+
+fn strict_metadata() -> Metadata {
+    Metadata::from_iter([(
+        TOOL_METADATA_DEPENDENCIES_KEY.to_string(),
+        ToolDependencyRequirements::strict(Vec::<String>::new(), Vec::<String>::new(), false)
+            .to_metadata_value(),
+    )])
 }
 
 fn record_tool_finish(current: &AtomicUsize) {
@@ -497,4 +511,425 @@ async fn agent_passes_registered_tool_definitions_to_model() {
     let params = model.captured_params.lock().unwrap()[0].clone();
     assert_eq!(params.tools.len(), 1);
     assert_eq!(params.tools[0].name, "lookup");
+}
+
+fn constrained_orchestrator_registry(
+    target: DynTool,
+    outer_timeout_ms: Option<u64>,
+) -> ToolRegistry {
+    constrained_registry_with_outer_name(target, outer_timeout_ms, "orchestrate")
+}
+
+fn constrained_registry_with_outer_name(
+    target: DynTool,
+    outer_timeout_ms: Option<u64>,
+    outer_name: &'static str,
+) -> ToolRegistry {
+    let mut outer_metadata = strict_metadata();
+    outer_metadata.insert(
+        TOOL_METADATA_NESTED_INVOKER_KEY.to_string(),
+        serde_json::json!(true),
+    );
+    let mut orchestrator = FunctionTool::new(
+        outer_name,
+        Some("synthetic constrained orchestrator".to_string()),
+        serde_json::json!({"type": "object"}),
+        |context: ToolContext, _arguments: serde_json::Value| async move {
+            let invoker =
+                context
+                    .dependency::<NestedToolInvoker>()
+                    .ok_or_else(|| ToolError::UserError {
+                        tool: "orchestrate".to_string(),
+                        message: "missing nested invoker".to_string(),
+                    })?;
+            let result = invoker
+                .invoke("nested_target", serde_json::json!({"value": 7}))
+                .await
+                .map_err(|error| ToolError::UserError {
+                    tool: "orchestrate".to_string(),
+                    message: error.to_string(),
+                })?;
+            Ok(ToolResult::new(result.content))
+        },
+    )
+    .with_metadata(outer_metadata)
+    .with_max_retries(0)
+    .with_sequential(true)
+    .with_codeact(false);
+    if let Some(timeout_ms) = outer_timeout_ms {
+        orchestrator = orchestrator.with_timeout_ms(timeout_ms);
+    }
+    ToolRegistry::new()
+        .with_tool(target)
+        .with_tool(Arc::new(orchestrator))
+}
+
+fn orchestrator_model() -> Arc<ScriptedModel> {
+    Arc::new(ScriptedModel::new(vec![
+        ModelResponse {
+            parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_orchestrate".to_string(),
+                name: "orchestrate".to_string(),
+                arguments: serde_json::json!({}).into(),
+            })],
+            ..ModelResponse::text("")
+        },
+        ModelResponse::text("done"),
+    ]))
+}
+
+#[tokio::test]
+async fn constrained_orchestrator_reenters_canonical_tool_pipeline_without_child_history() {
+    let model = Arc::new(ScriptedModel::new(vec![
+        ModelResponse {
+            parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_orchestrate".to_string(),
+                name: "orchestrate".to_string(),
+                arguments: serde_json::json!({}).into(),
+            })],
+            ..ModelResponse::text("")
+        },
+        ModelResponse::text("done"),
+    ]));
+    let effects = Arc::new(AtomicUsize::new(0));
+    let target_effects = Arc::clone(&effects);
+    let target = FunctionTool::new(
+        "nested_target",
+        Some("nested target".to_string()),
+        serde_json::json!({"type": "object"}),
+        move |_context: ToolContext, arguments: serde_json::Value| {
+            let target_effects = Arc::clone(&target_effects);
+            async move {
+                target_effects.fetch_add(1, Ordering::SeqCst);
+                Ok(ToolResult::new(serde_json::json!({
+                    "nested": true,
+                    "arguments": arguments,
+                })))
+            }
+        },
+    )
+    .with_metadata(strict_metadata());
+    let result = Agent::new(model.clone())
+        .with_tools(constrained_orchestrator_registry(Arc::new(target), None))
+        .run("compose")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "done");
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    let second_request = format!("{:?}", model.captured.lock().unwrap()[1]);
+    assert!(second_request.contains("orchestrate"));
+    assert!(!second_request.contains("nested_target"));
+}
+
+#[tokio::test]
+async fn oversized_codeact_catalog_fails_closed_to_an_empty_nested_allowlist() {
+    let model = Arc::new(ScriptedModel::new(vec![ModelResponse::text("done")]));
+    let target = FunctionTool::new(
+        "nested_target",
+        Some("x".repeat(40 * 1024)),
+        serde_json::json!({"type": "object"}),
+        |_context: ToolContext, arguments: serde_json::Value| async move {
+            Ok(ToolResult::new(arguments))
+        },
+    )
+    .with_metadata(strict_metadata());
+    let mut context = AgentContext::default();
+
+    let result = Agent::new(model.clone())
+        .with_tools(constrained_registry_with_outer_name(
+            Arc::new(target),
+            None,
+            "run_code",
+        ))
+        .run_with_context("compose", &mut context)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "done");
+    assert!(context.runtime.prepared_codeact_target_names.is_empty());
+    let params = model.captured_params.lock().unwrap()[0].clone();
+    let catalog = params
+        .instructions
+        .iter()
+        .find(|instruction| instruction.text.contains("<codeact_catalog>"))
+        .unwrap();
+    assert!(catalog.text.contains(": []</codeact_catalog>"));
+}
+
+#[derive(Clone, Copy)]
+enum HangingNestedHookPhase {
+    Before,
+    After,
+}
+
+struct HangingNestedHook {
+    phase: HangingNestedHookPhase,
+}
+
+#[async_trait]
+impl AgentCapability for HangingNestedHook {
+    async fn before_tool_execution(
+        &self,
+        _state: &mut AgentRunState,
+        _tool_context: &mut ToolContext,
+        call: &ToolCallPart,
+    ) -> CapabilityResult<()> {
+        if call.name == "nested_target" && matches!(self.phase, HangingNestedHookPhase::Before) {
+            std::future::pending().await
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn after_tool_result(
+        &self,
+        _state: &mut AgentRunState,
+        call: &ToolCallPart,
+        _tool_return: &mut ToolReturnPart,
+    ) -> CapabilityResult<()> {
+        if call.name == "nested_target" && matches!(self.phase, HangingNestedHookPhase::After) {
+            std::future::pending().await
+        } else {
+            Ok(())
+        }
+    }
+}
+
+struct HangingNestedStreamObserver;
+
+#[async_trait]
+impl AgentCapability for HangingNestedStreamObserver {
+    async fn on_stream_event(
+        &self,
+        _state: &AgentRunState,
+        record: &AgentStreamRecord,
+    ) -> CapabilityResult<()> {
+        if matches!(
+            &record.event,
+            AgentStreamEvent::ToolCall { call, .. } if call.name == "nested_target"
+        ) {
+            std::future::pending().await
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn immediate_nested_target() -> DynTool {
+    Arc::new(
+        FunctionTool::new(
+            "nested_target",
+            Some("nested target".to_string()),
+            serde_json::json!({"type": "object"}),
+            |_context: ToolContext, arguments: serde_json::Value| async move {
+                Ok(ToolResult::new(arguments))
+            },
+        )
+        .with_metadata(strict_metadata()),
+    )
+}
+
+#[tokio::test]
+async fn outer_tool_timeout_interrupts_hanging_nested_before_hook() {
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        Agent::new(orchestrator_model())
+            .with_tools(constrained_orchestrator_registry(
+                immediate_nested_target(),
+                Some(20),
+            ))
+            .with_capability(Arc::new(HangingNestedHook {
+                phase: HangingNestedHookPhase::Before,
+            }))
+            .run("compose"),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("outer timeout was blocked by the nested before hook: {error}"))
+    .unwrap();
+
+    assert_eq!(result.output, "done");
+}
+
+#[tokio::test]
+async fn outer_tool_timeout_interrupts_hanging_nested_after_hook() {
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        Agent::new(orchestrator_model())
+            .with_tools(constrained_orchestrator_registry(
+                immediate_nested_target(),
+                Some(20),
+            ))
+            .with_capability(Arc::new(HangingNestedHook {
+                phase: HangingNestedHookPhase::After,
+            }))
+            .run("compose"),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("outer timeout was blocked by the nested after hook: {error}"))
+    .unwrap();
+
+    assert_eq!(result.output, "done");
+}
+
+#[tokio::test]
+async fn outer_tool_timeout_interrupts_hanging_nested_stream_observer() {
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        Agent::new(orchestrator_model())
+            .with_tools(constrained_orchestrator_registry(
+                immediate_nested_target(),
+                Some(20),
+            ))
+            .with_stream_observer(Arc::new(HangingNestedStreamObserver))
+            .run_stream("compose"),
+    )
+    .await
+    .unwrap_or_else(|error| {
+        panic!("outer timeout was blocked by the nested stream observer: {error}")
+    })
+    .unwrap();
+
+    assert_eq!(result.result.output, "done");
+}
+
+struct PreparedSchemaCapability;
+
+#[async_trait]
+impl AgentCapability for PreparedSchemaCapability {
+    async fn prepare_tools(
+        &self,
+        _state: &AgentRunState,
+        mut tools: Vec<ToolDefinition>,
+    ) -> CapabilityResult<Vec<ToolDefinition>> {
+        if let Some(target) = tools.iter_mut().find(|tool| tool.name == "nested_target") {
+            target.description = Some("prepared nested target".to_string());
+            target.parameters = serde_json::json!({
+                "type": "object",
+                "properties": {"value": {"type": "integer", "const": 7}},
+                "required": ["value"],
+                "additionalProperties": false
+            });
+        }
+        Ok(tools)
+    }
+}
+
+struct EligibilityFlippingModel {
+    eligible: Arc<std::sync::atomic::AtomicBool>,
+    requests: AtomicUsize,
+    captured: Arc<Mutex<Vec<ModelRequestParameters>>>,
+}
+
+#[async_trait]
+impl ModelAdapter for EligibilityFlippingModel {
+    fn model_name(&self) -> &'static str {
+        "eligibility-flipping"
+    }
+
+    fn provider_name(&self) -> Option<&'static str> {
+        Some("test")
+    }
+
+    fn profile(&self) -> &ModelProfile {
+        static PROFILE: LazyLock<ModelProfile> =
+            LazyLock::new(|| ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions));
+        &PROFILE
+    }
+
+    fn default_settings(&self) -> Option<&ModelSettings> {
+        None
+    }
+
+    async fn request(
+        &self,
+        _messages: Vec<ModelMessage>,
+        _settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        _context: ModelRequestContext,
+    ) -> Result<ModelResponse, ModelError> {
+        self.captured.lock().unwrap().push(params);
+        if self.requests.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.eligible.store(false, Ordering::SeqCst);
+            Ok(ModelResponse {
+                parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
+                    id: "call_run_code".to_string(),
+                    name: "run_code".to_string(),
+                    arguments: serde_json::json!({}).into(),
+                })],
+                ..ModelResponse::text("")
+            })
+        } else {
+            Ok(ModelResponse::text("done"))
+        }
+    }
+}
+
+#[tokio::test]
+async fn nested_admission_and_catalog_use_the_frozen_prepared_request_snapshot() {
+    let eligible = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let model = Arc::new(EligibilityFlippingModel {
+        eligible: Arc::clone(&eligible),
+        requests: AtomicUsize::new(0),
+        captured: Arc::clone(&captured),
+    });
+    let effects = Arc::new(AtomicUsize::new(0));
+    let target_effects = Arc::clone(&effects);
+    let eligibility = Arc::clone(&eligible);
+    let target = FunctionTool::new(
+        "nested_target",
+        Some("unprepared nested target".to_string()),
+        serde_json::json!({"type": "object"}),
+        move |_context: ToolContext, arguments: serde_json::Value| {
+            let target_effects = Arc::clone(&target_effects);
+            async move {
+                target_effects.fetch_add(1, Ordering::SeqCst);
+                Ok(ToolResult::new(arguments))
+            }
+        },
+    )
+    .with_metadata(strict_metadata())
+    .with_codeact_availability(move |_| {
+        if eligibility.load(Ordering::SeqCst) {
+            CodeActEligibility::Allow
+        } else {
+            CodeActEligibility::Deny
+        }
+    });
+
+    let result = Agent::new(model)
+        .with_tools(constrained_registry_with_outer_name(
+            Arc::new(target),
+            None,
+            "run_code",
+        ))
+        .with_capability(Arc::new(PreparedSchemaCapability))
+        .run("compose")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "done");
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    let first_params = captured.lock().unwrap()[0].clone();
+    let prepared_target = first_params
+        .tools
+        .iter()
+        .find(|tool| tool.name == "nested_target")
+        .unwrap();
+    assert_eq!(
+        prepared_target.description.as_deref(),
+        Some("prepared nested target")
+    );
+    assert_eq!(
+        prepared_target.parameters["properties"]["value"]["const"],
+        7
+    );
+    let catalog = first_params
+        .instructions
+        .iter()
+        .find(|instruction| instruction.text.contains("<codeact_catalog>"))
+        .unwrap();
+    assert!(catalog.text.contains("prepared nested target"));
+    assert!(catalog.text.contains("\"const\":7"));
 }

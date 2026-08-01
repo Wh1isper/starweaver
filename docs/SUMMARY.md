@@ -30,6 +30,7 @@
 - [Agents](agent.md)
 - [Models](models.md)
 - [Tools](tools.md)
+- [CodeAct and Recipes](codeact.md)
 - [Structured Output](output.md)
 - [Message History](message-history.md)
 - [Dependencies](dependencies.md)

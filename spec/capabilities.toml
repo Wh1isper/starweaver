@@ -101,6 +101,15 @@ implementation = ["crates/starweaver-agent/src/subagent/supervisor.rs", "crates/
 contract_tests = ["crates/starweaver-agent/tests/delegation_tool.rs", "crates/starweaver-session/tests/session_store_contract.rs", "crates/starweaver-storage/tests/session_store_contract.rs", "crates/starweaver-cli/src/lib.rs", "crates/starweaver-rpc/src/coordinator.rs"]
 
 [[capability]]
+id = "agent.codeact_recipes"
+owner = "starweaver-agent"
+stability = "provisional"
+status = "implemented"
+normative_spec = "spec/sdk/07-codeact-tool-composition.md"
+implementation = ["crates/starweaver-tools/src/nested.rs", "crates/starweaver-tools/src/registry.rs", "crates/starweaver-runtime/src/agent/run_loop.rs", "crates/starweaver-agent/src/bundles/codeact.rs", "crates/starweaver-cli/src/profiles.rs", "crates/starweaver-rpc/src/agent_catalog.rs"]
+contract_tests = ["crates/starweaver-tools/tests/registry_extra.rs", "crates/starweaver-runtime/tests/tool_loop.rs", "crates/starweaver-agent/tests/codeact.rs", "crates/starweaver-cli/src/profiles/tests.rs", "crates/starweaver-rpc/src/agent_catalog.rs"]
+
+[[capability]]
 id = "session.atomic_storage"
 owner = "starweaver-storage"
 stability = "stable"

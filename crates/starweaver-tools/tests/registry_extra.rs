@@ -3,12 +3,15 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::json;
-use starweaver_context::AgentContext;
-use starweaver_core::{CancellationToken, ConversationId, RunId};
+use starweaver_context::{AgentContext, ToolCapabilityGrant};
+use starweaver_core::{CancellationToken, ConversationId, Metadata, RunId};
 use starweaver_model::ToolCallPart;
 use starweaver_tools::{
-    DynTool, DynToolset, FunctionTool, StaticToolset, ToolContext, ToolError, ToolExecutionHook,
-    ToolExecutionOutcome, ToolInstruction, ToolRegistry, ToolResult, Toolset, json_tool,
+    DynTool, DynToolset, FunctionTool, StaticToolset, TOOL_METADATA_DEPENDENCIES_KEY,
+    TOOL_METADATA_NESTED_CALL_LIMIT_KEY, TOOL_METADATA_NESTED_INVOKER_KEY, ToolContext,
+    ToolDependencyRequirements, ToolError, ToolExecutionHook, ToolExecutionOutcome,
+    ToolInstruction, ToolKind, ToolRegistry, ToolResult, Toolset, json_tool,
+    set_tool_metadata_kind,
 };
 use tokio::time::{Duration, sleep};
 
@@ -670,4 +673,90 @@ async fn registry_cancels_running_tool_when_context_token_is_cancelled() {
             .unwrap()
             .contains("new run")
     );
+}
+
+#[test]
+fn codeact_projection_requires_valid_strict_metadata_and_respects_explicit_denial() {
+    fn tool(name: &str, metadata: Metadata, codeact: bool) -> DynTool {
+        Arc::new(
+            FunctionTool::new(
+                name,
+                Some(format!("{name} test tool")),
+                json!({"type": "object"}),
+                |_context: ToolContext, input: serde_json::Value| async move {
+                    Ok(ToolResult::new(input))
+                },
+            )
+            .with_metadata(metadata)
+            .with_codeact(codeact),
+        )
+    }
+
+    let mut strict = Metadata::new();
+    strict.insert(
+        TOOL_METADATA_DEPENDENCIES_KEY.to_string(),
+        ToolDependencyRequirements::strict(Vec::<String>::new(), Vec::<String>::new(), false)
+            .to_metadata_value(),
+    );
+    let mut strict_granted = Metadata::new();
+    strict_granted.insert(
+        TOOL_METADATA_DEPENDENCIES_KEY.to_string(),
+        ToolDependencyRequirements::strict(["test.host.capability"], Vec::<String>::new(), false)
+            .to_metadata_value(),
+    );
+    let mut filtered = Metadata::new();
+    filtered.insert(
+        TOOL_METADATA_DEPENDENCIES_KEY.to_string(),
+        ToolDependencyRequirements::filtered(Vec::<String>::new(), false).to_metadata_value(),
+    );
+    let mut malformed = Metadata::new();
+    malformed.insert(
+        TOOL_METADATA_DEPENDENCIES_KEY.to_string(),
+        json!({"profile": "strict"}),
+    );
+    let mut output = strict.clone();
+    set_tool_metadata_kind(&mut output, ToolKind::Output);
+    let mut approval = strict.clone();
+    set_tool_metadata_kind(&mut approval, ToolKind::Unapproved);
+    let mut nested = strict.clone();
+    nested.insert(TOOL_METADATA_NESTED_INVOKER_KEY.to_string(), json!(true));
+    nested.insert(TOOL_METADATA_NESTED_CALL_LIMIT_KEY.to_string(), json!(7));
+
+    let registry = ToolRegistry::new()
+        .with_tool(tool("strict_allowed", strict.clone(), true))
+        .with_tool(tool("strict_denied", strict, false))
+        .with_tool(tool("strict_granted", strict_granted, true))
+        .with_tool(tool("filtered_allowed", filtered, true))
+        .with_tool(tool("malformed_allowed", malformed, true))
+        .with_tool(tool("output_allowed", output, true))
+        .with_tool(tool("approval_allowed", approval, true))
+        .with_tool(tool("nested", nested, false));
+    let definitions = registry.codeact_definitions_for_context(
+        &AgentContext::default(),
+        &std::collections::BTreeSet::new(),
+    );
+
+    assert_eq!(
+        definitions
+            .iter()
+            .map(|definition| definition.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["strict_allowed"]
+    );
+    let mut granted_context = AgentContext::default();
+    granted_context.grant_tool_capabilities(
+        "strict_granted",
+        ToolCapabilityGrant::new().with_host_capabilities(["test.host.capability"]),
+    );
+    assert_eq!(
+        registry
+            .codeact_definitions_for_context(&granted_context, &std::collections::BTreeSet::new(),)
+            .iter()
+            .map(|definition| definition.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["strict_allowed", "strict_granted"]
+    );
+    assert!(registry.requires_nested_invoker("nested"));
+    assert_eq!(registry.nested_call_limit_for("nested"), 7);
+    assert_eq!(registry.nested_call_limit_for("missing"), 0);
 }

@@ -25,6 +25,7 @@ SDK layer:
 - `sdk/04-subagents-skills.md` — serializable subagent specs, delegation lifecycle, inherited tools, skills, and nested coordination
 - `sdk/05-sdk-integration-map.md` — SDK integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
 - `sdk/06-async-subagent-execution.md` — async-only model-visible delegation, steering, cancellation, bounded fan-in, host continuation, durability, and product lifetime policy
+- `sdk/07-codeact-tool-composition.md` — constrained CodeAct composition, canonical nested tool invocation, reusable recipes, security, durability, and Computer Use integration
 - `sdk/python/README.md` - Python SDK product contract, in-process tools, sessions, streams, active control, ecosystem integration, and validation
 
 Native current-desktop Computer Use:

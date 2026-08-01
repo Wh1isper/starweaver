@@ -308,6 +308,30 @@ pub enum RpcComputerUseDesktopScope {
     VisibleDesktop,
 }
 
+/// RPC-owned default-enabled constrained `CodeAct` policy.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RpcCodeActConfig {
+    /// Install bounded synchronous JavaScript orchestration for standalone RPC profiles.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl RpcCodeActConfig {
+    const fn disabled() -> Self {
+        Self { enabled: false }
+    }
+
+    const fn is_disabled(&self) -> bool {
+        !self.enabled
+    }
+}
+
+impl Default for RpcCodeActConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// RPC-owned process-local Computer Use policy.
 ///
 /// Enabling this policy makes the full Computer Use toolset available to otherwise authorized
@@ -434,6 +458,8 @@ pub struct RpcConfig {
     pub client_capabilities: RpcClientCapabilitiesConfig,
     /// HTTP transport authentication and request-origin policy.
     pub http_auth: RpcHttpAuthConfig,
+    /// Default-enabled constrained `CodeAct` policy for standalone RPC.
+    pub codeact: RpcCodeActConfig,
     /// Process-local, separately authorized Computer Use policy.
     pub computer_use: RpcComputerUseConfig,
     /// Optional RPC-owned session-search provider configuration.
@@ -450,6 +476,11 @@ pub(crate) struct RpcRuntimeMaterialization {
     pub(crate) subagents: BTreeMap<String, RpcSubagentConfig>,
     pub(crate) mcp_servers: BTreeMap<String, starweaver_tools::McpServerConfig>,
     pub(crate) client_capabilities: RpcClientCapabilitiesConfig,
+    #[serde(
+        default = "RpcCodeActConfig::disabled",
+        skip_serializing_if = "RpcCodeActConfig::is_disabled"
+    )]
+    pub(crate) codeact: RpcCodeActConfig,
     #[cfg(test)]
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     test_responses: BTreeMap<String, String>,
@@ -601,6 +632,7 @@ struct FileConfig {
     environments: Option<BTreeMap<String, RpcEnvironmentConfig>>,
     subagents: Option<BTreeMap<String, RpcSubagentConfig>>,
     client_capabilities: Option<RpcClientCapabilitiesConfig>,
+    codeact: Option<RpcCodeActConfig>,
     computer_use: Option<RpcComputerUseConfig>,
 }
 
@@ -723,6 +755,7 @@ impl RpcConfig {
         let subagents = file.subagents.unwrap_or_default();
         let client_capabilities = file.client_capabilities.unwrap_or_default();
         client_capabilities.validate()?;
+        let codeact = file.codeact.unwrap_or_default();
         let computer_use = file.computer_use.unwrap_or_default();
         computer_use.validate()?;
         Ok(Self {
@@ -740,6 +773,7 @@ impl RpcConfig {
             mcp_servers,
             client_capabilities,
             http_auth,
+            codeact,
             computer_use,
             session_search,
         })
@@ -868,6 +902,7 @@ impl RpcConfig {
                 clarifying_questions: envelope.capability_caps.clarifying_questions,
             },
             http_auth: RpcHttpAuthConfig::default(),
+            codeact: RpcCodeActConfig { enabled: false },
             computer_use: RpcComputerUseConfig::default(),
             session_search: RpcSessionSearchConfig::default(),
         })
@@ -901,6 +936,7 @@ impl RpcConfig {
             mcp_servers: BTreeMap::new(),
             client_capabilities: RpcClientCapabilitiesConfig::default(),
             http_auth: RpcHttpAuthConfig::default(),
+            codeact: RpcCodeActConfig::default(),
             computer_use: RpcComputerUseConfig::default(),
             session_search: RpcSessionSearchConfig::default(),
         }
@@ -923,6 +959,7 @@ impl RpcConfig {
             subagents: self.subagents.clone(),
             mcp_servers: self.mcp_servers.clone(),
             client_capabilities: self.client_capabilities.clone(),
+            codeact: self.codeact.clone(),
             #[cfg(test)]
             test_responses: self
                 .profiles
@@ -960,6 +997,7 @@ impl RpcConfig {
         candidate
             .client_capabilities
             .clone_from(&materialization.client_capabilities);
+        candidate.codeact.clone_from(&materialization.codeact);
         #[cfg(test)]
         for (name, response) in &materialization.test_responses {
             if let Some(profile) = candidate.profiles.get_mut(name) {
@@ -1000,6 +1038,7 @@ impl RpcConfig {
             .unwrap_or_default();
         let client_capabilities = file.client_capabilities.unwrap_or_default();
         client_capabilities.validate()?;
+        let codeact = file.codeact.unwrap_or_default();
         let candidate = RpcRuntimeMaterialization {
             default_profile: server
                 .default_profile
@@ -1010,6 +1049,7 @@ impl RpcConfig {
             subagents: file.subagents.unwrap_or_default(),
             mcp_servers,
             client_capabilities,
+            codeact,
             #[cfg(test)]
             test_responses: BTreeMap::new(),
         };
@@ -1510,6 +1550,9 @@ workspace_root = "workspace"
 hitl = true
 clarifying_questions = true
 
+[codeact]
+enabled = false
+
 [computer_use]
 enabled = true
 desktop_scope = "visible_desktop"
@@ -1540,6 +1583,7 @@ base_url = "https://models.example.test/v1"
                 clarifying_questions: true,
             })
         );
+        assert_eq!(file.codeact, Some(RpcCodeActConfig { enabled: false }));
         assert_eq!(
             file.computer_use,
             Some(RpcComputerUseConfig {
@@ -1568,6 +1612,35 @@ base_url = "https://models.example.test/v1"
             file.providers.unwrap()["homelab"].api_key_env.as_deref(),
             Some("HOMELAB_API_KEY")
         );
+    }
+
+    #[test]
+    fn codeact_defaults_enabled_and_runtime_materialization_pins_overrides() {
+        let root = tempfile::tempdir().unwrap();
+        let base = RpcConfig::for_tests(root.path());
+        assert!(base.codeact.enabled);
+        assert!(base.runtime_materialization().unwrap().codeact.enabled);
+
+        let mut disabled = base.clone();
+        disabled.codeact.enabled = false;
+        let materialization = disabled.runtime_materialization().unwrap();
+        assert!(!materialization.codeact.enabled);
+        let restored = base.with_runtime_materialization(&materialization).unwrap();
+        assert!(!restored.codeact.enabled);
+    }
+
+    #[test]
+    fn legacy_runtime_materialization_without_codeact_fails_closed_and_roundtrips() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = RpcConfig::for_tests(root.path());
+        config.codeact.enabled = false;
+        let materialization = config.runtime_materialization().unwrap();
+        let legacy = serde_json::to_value(&materialization).unwrap();
+        assert!(legacy.get("codeact").is_none());
+
+        let decoded: RpcRuntimeMaterialization = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(!decoded.codeact.enabled);
+        assert_eq!(serde_json::to_value(decoded).unwrap(), legacy);
     }
 
     #[test]
@@ -1668,6 +1741,7 @@ base_url = "https://models.example.test/v1"
         assert_eq!(config.launch.mode, "workspace_execution");
         assert_eq!(config.default_profile, "desktop");
         assert!(config.client_capabilities.clarifying_questions);
+        assert!(!config.codeact.enabled);
         assert_eq!(config.computer_use, RpcComputerUseConfig::default());
         assert!(config.launch.envelope_digest.starts_with("sha256:"));
 

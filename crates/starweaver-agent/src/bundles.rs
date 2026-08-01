@@ -1,5 +1,6 @@
 //! First-party SDK tool bundles.
 
+mod codeact;
 mod computer_use;
 mod context_tools;
 mod environment;
@@ -16,6 +17,12 @@ use std::sync::Arc;
 
 use starweaver_tools::{DynToolset, PrefixedToolset};
 
+pub use codeact::{
+    CODEACT_TOOLSET_ID, CodeActConfig, CodeExecutionError, CodeExecutionLimits,
+    CodeExecutionRequest, CodeExecutionResult, CodeExecutor, DynCodeExecutor, QuickJsCodeExecutor,
+    RECIPE_TOOLSET_ID, RUN_CODE_TOOL_NAME, RecipeError, RecipeManifest, RecipeToolset, RunCodeArgs,
+    attach_codeact_standard_grants, codeact_tools, recipe_tools,
+};
 pub use computer_use::{
     COMPUTER_KEYBOARD_CAPABILITY, COMPUTER_OBSERVE_CAPABILITY, COMPUTER_POINTER_CAPABILITY,
     COMPUTER_USE_GEOMETRY_BOUND_MEDIA_KEY, ComputerKeyboardHandle, ComputerObserveHandle,
@@ -48,6 +55,7 @@ pub use skills::{
     skill_tools,
 };
 pub use starweaver_tools::{ToolProxyNamePrefixError, ToolProxyToolset, dynamic_tool_proxy};
+pub(crate) use task::attach_task_tool_grants;
 pub use task::task_tools;
 pub use user_input::{
     ASK_USER_QUESTION_TOOL_NAME, AskUserQuestionArgs, AskUserQuestionResult,

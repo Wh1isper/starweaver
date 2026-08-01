@@ -40,7 +40,47 @@ fn default_registry_uses_scoped_context_and_host_io_toolset_names() {
 
     assert!(registry.resolve_toolset("context").is_some());
     assert!(registry.resolve_toolset("host_io").is_some());
+    assert!(registry.resolve_toolset("codeact").is_some());
+    assert!(registry.resolve_toolset("recipes").is_some());
     assert!(registry.resolve_toolset("tools").is_none());
+}
+
+#[test]
+fn codeact_is_default_enabled_and_explicit_disable_removes_the_toolset() {
+    let mut config = test_config();
+    let enabled_names = default_toolsets(&config, None)
+        .unwrap()
+        .into_iter()
+        .flat_map(|toolset| toolset.get_tools())
+        .map(|tool| tool.name().to_string())
+        .collect::<BTreeSet<_>>();
+    assert!(enabled_names.contains(starweaver_agent::RUN_CODE_TOOL_NAME));
+
+    config.set_codeact(&crate::config::CliCodeActConfig { enabled: false });
+    let disabled_registry = default_registry(&config, &AgentSpec::default(), None).unwrap();
+    assert!(disabled_registry.resolve_toolset("codeact").is_none());
+    assert!(disabled_registry.resolve_toolset("recipes").is_none());
+    let disabled_names = default_toolsets(&config, None)
+        .unwrap()
+        .into_iter()
+        .flat_map(|toolset| toolset.get_tools())
+        .map(|tool| tool.name().to_string())
+        .collect::<BTreeSet<_>>();
+    assert!(!disabled_names.contains(starweaver_agent::RUN_CODE_TOOL_NAME));
+
+    let mut selective = AgentSpec::default();
+    inject_codeact_toolset(&mut selective, true);
+    inject_codeact_toolset(&mut selective, true);
+    assert_eq!(selective.toolsets, ["codeact", "recipes"]);
+    inject_codeact_toolset(&mut selective, false);
+    assert!(selective.toolsets.is_empty());
+
+    selective.toolsets = vec![
+        starweaver_agent::CODEACT_TOOLSET_ID.to_string(),
+        starweaver_agent::RECIPE_TOOLSET_ID.to_string(),
+    ];
+    inject_codeact_toolset(&mut selective, false);
+    assert!(selective.toolsets.is_empty());
 }
 
 #[test]

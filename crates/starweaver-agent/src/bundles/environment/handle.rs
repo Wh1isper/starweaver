@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use starweaver_context::{AgentContext, HostCapabilities};
+use starweaver_context::{AgentContext, HostCapabilities, ToolCapabilityGrant};
 use starweaver_environment::{DynEnvironmentProvider, DynProcessShellProvider};
 use starweaver_model::{
     CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
@@ -206,15 +206,39 @@ const fn is_instruction_prefix_part(part: &ModelRequestPart) -> bool {
     )
 }
 
+/// Stable named host capability used by strict filesystem tools.
+pub const ENVIRONMENT_HOST_CAPABILITY: &str = "starweaver.environment";
+
+const FILESYSTEM_TOOL_NAMES: &[&str] = &[
+    "view",
+    "ls",
+    "write",
+    "edit",
+    "multi_edit",
+    "glob",
+    "grep",
+    "mkdir",
+    "delete",
+    "move",
+    "copy",
+    "resource_ref",
+];
+
 /// Attach the active environment to an `AgentContext`.
 ///
 /// Process-capable environment providers also expose the background shell handle
 /// from the same attachment point, so callers do not need a separate injection
 /// path for foreground and background shell operations.
 pub fn attach_environment(context: &mut AgentContext, provider: DynEnvironmentProvider) {
-    context
-        .dependencies
-        .insert(EnvironmentHandle::new(provider.clone()));
+    let handle = EnvironmentHandle::new(provider.clone());
+    context.dependencies.insert(handle.clone());
+    context.insert_named_dependency(ENVIRONMENT_HOST_CAPABILITY, handle);
+    for tool_name in FILESYSTEM_TOOL_NAMES {
+        context.grant_tool_capabilities(
+            *tool_name,
+            ToolCapabilityGrant::new().with_host_capabilities([ENVIRONMENT_HOST_CAPABILITY]),
+        );
+    }
     if let Some(process_provider) = provider.process_shell_provider() {
         super::shell::attach_process_shell(context, process_provider);
     }

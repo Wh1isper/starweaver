@@ -43,10 +43,10 @@ pub use agent_catalog::{RpcAgentCatalog, RpcProfileSummary};
 pub use auth::{RpcHttpAuthConfig, RpcHttpScope};
 pub use config::{
     ResolvedRpcEnvironmentResource, ResolvedRpcEnvironmentSource, RpcClientCapabilitiesConfig,
-    RpcComputerUseConfig, RpcComputerUseDesktopScope, RpcConfig, RpcEnvironmentCatalogEntry,
-    RpcEnvironmentConfig, RpcEnvironmentResourceConfig, RpcEnvironmentSourceConfig,
-    RpcLaunchEvidence, RpcProfileConfig, RpcProviderConfig, RpcSessionSearchBackend,
-    RpcSessionSearchConfig, RpcSubagentConfig,
+    RpcCodeActConfig, RpcComputerUseConfig, RpcComputerUseDesktopScope, RpcConfig,
+    RpcEnvironmentCatalogEntry, RpcEnvironmentConfig, RpcEnvironmentResourceConfig,
+    RpcEnvironmentSourceConfig, RpcLaunchEvidence, RpcProfileConfig, RpcProviderConfig,
+    RpcSessionSearchBackend, RpcSessionSearchConfig, RpcSubagentConfig,
 };
 pub use coordinator::{
     RpcHitlResumeRequest, RpcRunRequest, RpcRunStatus, RpcRuntimeCoordinator, RpcStartedRun,

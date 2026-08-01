@@ -10,6 +10,10 @@ model_settings = "openai_responses_high"
 model_cfg = "gpt5_270k"
 max_requests = 1000
 
+# CodeAct and file-backed recipes are enabled by default. Set false to disable both.
+[codeact]
+enabled = true
+
 [model_profiles.coding]
 label = "Coding"
 model = "openai-responses:gpt-5"

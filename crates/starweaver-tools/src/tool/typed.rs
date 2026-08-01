@@ -11,14 +11,15 @@ use starweaver_model::ToolDefinition;
 use crate::{ToolContext, ToolError};
 
 use super::{
-    Tool, ToolKind, ToolResult, ToolUserInputPreprocessResult, extend_tool_metadata_hidden_by_tags,
-    extend_tool_metadata_tags, set_tool_metadata_kind,
+    CodeActEligibility, Tool, ToolKind, ToolResult, ToolUserInputPreprocessResult,
+    extend_tool_metadata_hidden_by_tags, extend_tool_metadata_tags, set_tool_metadata_kind,
 };
 
 type ArgumentValidator =
     Arc<dyn Fn(&ToolContext, &mut Value) -> Result<(), ToolError> + Send + Sync>;
 type PrepareDefinition =
     Arc<dyn Fn(&AgentContext, ToolDefinition) -> Option<ToolDefinition> + Send + Sync>;
+type CodeActAvailability = Arc<dyn Fn(&AgentContext) -> CodeActEligibility + Send + Sync>;
 type UserInputPreprocessor = Arc<
     dyn Fn(
             ToolContext,
@@ -41,6 +42,7 @@ pub struct TypedFunctionTool<Args, F> {
     strict_schema: Option<bool>,
     sequential: Option<bool>,
     is_available: Arc<dyn Fn(&AgentContext) -> bool + Send + Sync>,
+    codeact_availability: CodeActAvailability,
     prepare_definition: PrepareDefinition,
     argument_validators: Vec<ArgumentValidator>,
     user_input_preprocessor: UserInputPreprocessor,
@@ -103,6 +105,7 @@ where
             strict_schema: None,
             sequential: None,
             is_available: Arc::new(|_| true),
+            codeact_availability: Arc::new(|_| CodeActEligibility::Inherit),
             prepare_definition: Arc::new(|_, definition| Some(definition)),
             argument_validators: Vec::new(),
             user_input_preprocessor: Arc::new(|_, _| {
@@ -208,6 +211,29 @@ where
         self
     }
 
+    /// Explicitly allow or deny this tool as a constrained `CodeAct` target.
+    #[must_use]
+    pub fn with_codeact(mut self, enabled: bool) -> Self {
+        self.codeact_availability = Arc::new(move |_| {
+            if enabled {
+                CodeActEligibility::Allow
+            } else {
+                CodeActEligibility::Deny
+            }
+        });
+        self
+    }
+
+    /// Set context-aware constrained `CodeAct` eligibility.
+    #[must_use]
+    pub fn with_codeact_availability(
+        mut self,
+        availability: impl Fn(&AgentContext) -> CodeActEligibility + Send + Sync + 'static,
+    ) -> Self {
+        self.codeact_availability = Arc::new(availability);
+        self
+    }
+
     /// Set a context-aware model-facing definition prepare hook.
     #[must_use]
     pub fn with_prepare_definition(
@@ -289,6 +315,10 @@ where
 
     fn is_available(&self, context: &AgentContext) -> bool {
         (self.is_available)(context)
+    }
+
+    fn codeact_eligibility(&self, context: &AgentContext) -> CodeActEligibility {
+        (self.codeact_availability)(context)
     }
 
     fn prepare_definition(

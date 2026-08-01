@@ -8,6 +8,7 @@ This spec maps application-facing agent concepts into Starweaver's first-party S
 - Environment modules are `EnvironmentProvider` implementations and environment-backed tool bundles.
 - Context helpers are `AgentContext` state, notes, messages, tasks, usage, and typed dependencies.
 - Subagent configuration is `SubagentSpec`, `SubagentConfig`, registry entries, and delegation tools.
+- CodeAct and recipe composition use a runtime-owned prepared tool manager and narrow nested invocation broker rather than direct wrapped-tool calls.
 - First-party SDK features remain extensible through traits, capabilities, toolsets, typed dependencies, and host-provided handles.
 
 ## Module Map
@@ -25,6 +26,7 @@ This spec maps application-facing agent concepts into Starweaver's first-party S
 | filters               | named policy filter capabilities                           | —                               | this spec; `core/03-tools-output-capabilities.md`                          | SDK filter order tests           |
 | toolsets              | first-party bundles, MCP, proxy                            | —                               | `sdk/03-first-party-tool-bundles.md`                                       | toolset/proxy/MCP tests          |
 | toolset wrappers      | filtered/prepared/renamed/approval/dynamic/deferred        | —                               | `core/03-tools-output-capabilities.md`                                     | wrapper tests                    |
+| code composition      | constrained CodeAct execution and reusable recipe tools    | —                               | `sdk/07-codeact-tool-composition.md`                                       | manager/broker/sandbox tests     |
 | deferred tools        | SDK requests/results and inline handlers                   | —                               | `ops/03`, `core/03`                                                        | control-flow and service tests   |
 | subagents             | specs, registry, inherited tools, async supervisor         | —                               | `sdk/04-subagents-skills.md`; `sdk/06-async-subagent-execution.md`         | subagent lifecycle/product tests |
 | agent session tools   | query/control bundles over host-injected capabilities      | —                               | `sdk/03-first-party-tool-bundles.md`; `ops/08-agent-session-management.md` | bundle and product tests         |
