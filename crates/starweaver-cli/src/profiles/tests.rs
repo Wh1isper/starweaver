@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use starweaver_agent::{SubagentRegistry, SubagentTask};
+use starweaver_agent::{SubagentRegistry, SubagentTask, ToolContext, ToolError};
+use starweaver_core::{ConversationId, RunId};
 
 use crate::config::ConfigResolver;
 
@@ -109,8 +110,8 @@ fn configured_mcp_tools_are_namespaced_directly_by_default() {
     assert!(!names.contains("mcp_call_tool"));
 }
 
-#[test]
-fn configured_mcp_proxy_mode_keeps_fixed_tool_surface() {
+#[tokio::test]
+async fn configured_mcp_proxy_mode_keeps_fixed_surface_and_native_inner_names() {
     let mut config = test_config();
     config.tools_config = json!({"tools": {"mcp_mode": "proxy"}});
     config.mcp_config = json!({
@@ -118,21 +119,147 @@ fn configured_mcp_proxy_mode_keeps_fixed_tool_surface() {
             "docs": {
                 "transport": "stdio",
                 "command": "docs-mcp",
+                "prefix": "ignored_in_proxy_mode",
+                "tools": [{"name": "lookup", "parameters": {"type": "object"}}]
+            },
+            "legacy": {
+                "transport": "stdio",
+                "command": "legacy-mcp",
+                "tool_prefix": "legacy_ignored",
+                "tools": [{"name": "read", "parameters": {"type": "object"}}]
+            }
+        }
+    });
+
+    let proxy = configured_mcp_toolsets(&config).into_iter().next().unwrap();
+    let tools = proxy.get_tools();
+    let names = tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(
+        names,
+        BTreeSet::from(["mcp_call_tool".to_string(), "mcp_search_tool".to_string()])
+    );
+
+    let search = tools
+        .iter()
+        .find(|tool| tool.name() == "mcp_search_tool")
+        .unwrap();
+    let docs = search
+        .call(
+            ToolContext::new(RunId::new(), ConversationId::new(), 0),
+            json!({"query": "lookup"}),
+        )
+        .await
+        .unwrap()
+        .content["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(docs.contains("name=\"lookup\""), "{docs}");
+    assert!(docs.contains("namespace=\"mcp_docs\""), "{docs}");
+    assert!(!docs.contains("ignored_in_proxy_mode_lookup"), "{docs}");
+
+    let legacy = search
+        .call(
+            ToolContext::new(RunId::new(), ConversationId::new(), 1),
+            json!({"query": "read"}),
+        )
+        .await
+        .unwrap()
+        .content["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(legacy.contains("name=\"read\""), "{legacy}");
+    assert!(legacy.contains("namespace=\"mcp_legacy\""), "{legacy}");
+    assert!(!legacy.contains("legacy_ignored_read"), "{legacy}");
+
+    let call = tools
+        .iter()
+        .find(|tool| tool.name() == "mcp_call_tool")
+        .unwrap()
+        .call(
+            ToolContext::new(RunId::new(), ConversationId::new(), 2),
+            json!({"name": "lookup", "arguments": {}}),
+        )
+        .await;
+    let Err(ToolError::CallDeferred { tool, metadata }) = call else {
+        panic!("proxy call should preserve the deferred MCP control flow: {call:?}");
+    };
+    assert_eq!(tool, "lookup");
+    assert_eq!(metadata["server_id"], "mcp_docs");
+    assert_eq!(metadata["tool_name"], "lookup");
+    assert_eq!(metadata["exposed_name"], "lookup");
+}
+
+#[test]
+fn configured_mcp_tools_honor_custom_empty_and_null_prefixes() {
+    let mut config = test_config();
+    config.mcp_config = json!({
+        "servers": {
+            "custom": {
+                "command": "custom-mcp",
+                "prefix": "docs",
+                "tools": [{"name": "search", "parameters": {"type": "object"}}]
+            },
+            "unprefixed": {
+                "command": "local-mcp",
+                "prefix": "",
+                "tools": [{"name": "lookup", "parameters": {"type": "object"}}]
+            },
+            "defaulted": {
+                "command": "default-mcp",
+                "prefix": null,
+                "tools": [{"name": "read", "parameters": {"type": "object"}}]
+            }
+        }
+    });
+
+    let toolsets = configured_mcp_toolsets(&config);
+    let names = toolsets
+        .iter()
+        .flat_map(|toolset| toolset.get_tools())
+        .map(|tool| tool.name().to_string())
+        .collect::<BTreeSet<_>>();
+    let ids = toolsets
+        .iter()
+        .filter_map(|toolset| toolset.id().map(str::to_string))
+        .collect::<BTreeSet<_>>();
+
+    assert!(names.contains("docs_search"));
+    assert!(names.contains("lookup"));
+    assert!(names.contains("defaulted_read"));
+    assert!(!names.contains("custom_search"));
+    assert!(!names.contains("unprefixed_lookup"));
+    assert!(!names.contains("_lookup"));
+    assert!(ids.contains("mcp_custom"));
+    assert!(ids.contains("mcp_unprefixed"));
+    assert!(ids.contains("mcp_defaulted"));
+}
+
+#[test]
+fn configured_mcp_tools_preserve_legacy_tool_prefix_spelling() {
+    let mut config = test_config();
+    config.mcp_config = json!({
+        "servers": {
+            "docs": {
+                "command": "docs-mcp",
+                "tool_prefix": "legacy",
                 "tools": [{"name": "lookup", "parameters": {"type": "object"}}]
             }
         }
     });
 
-    let names = default_toolsets(&config, None)
-        .unwrap()
+    let names = configured_mcp_toolsets(&config)
         .into_iter()
         .flat_map(|toolset| toolset.get_tools())
         .map(|tool| tool.name().to_string())
         .collect::<BTreeSet<_>>();
 
-    assert!(names.contains("mcp_search_tool"));
-    assert!(names.contains("mcp_call_tool"));
-    assert!(!names.contains("docs_lookup"));
+    assert!(names.contains("legacy_lookup"));
 }
 
 #[test]

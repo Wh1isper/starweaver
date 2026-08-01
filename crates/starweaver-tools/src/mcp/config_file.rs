@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
@@ -16,7 +16,7 @@ pub struct McpConfigDocument {
 }
 
 /// One MCP server entry from a standalone configuration file.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     /// `stdio`, `streamable_http` (`http` alias), or `sse`.
@@ -40,8 +40,11 @@ pub struct McpServerConfig {
     /// String-valued HTTP request headers.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub headers: Map<String, Value>,
-    /// Optional prefix applied to discovered tool names.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional model-facing prefix applied to discovered tool names.
+    ///
+    /// JSON input accepts `prefix` while retaining the existing `tool_prefix` spelling for
+    /// compatibility. An empty string exposes native tool names without a prefix.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_prefix: Option<String>,
     /// Whether server instructions are added to model instructions.
     #[serde(default)]
@@ -62,6 +65,107 @@ pub struct McpServerConfig {
     /// and metadata are merged by tool name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<McpToolSpec>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpServerConfigWire {
+    #[serde(default = "default_transport")]
+    transport: String,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    env: Map<String, Value>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    headers: Map<String, Value>,
+    #[serde(default, deserialize_with = "deserialize_present_value")]
+    prefix: Option<Value>,
+    #[serde(default, deserialize_with = "deserialize_present_value")]
+    tool_prefix: Option<Value>,
+    #[serde(default)]
+    include_instructions: bool,
+    #[serde(default)]
+    instructions: Option<String>,
+    #[serde(default)]
+    read_timeout_ms: Option<u64>,
+    #[serde(default)]
+    init_timeout_ms: Option<u64>,
+    #[serde(default)]
+    exit_timeout_ms: Option<u64>,
+    #[serde(default)]
+    tools: Vec<McpToolSpec>,
+}
+
+impl<'de> Deserialize<'de> for McpServerConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = McpServerConfigWire::deserialize(deserializer)?;
+        if wire.prefix.is_some() && wire.tool_prefix.is_some() {
+            return Err(de::Error::custom(
+                "MCP server fields `prefix` and `tool_prefix` cannot both be set",
+            ));
+        }
+        let tool_prefix = if let Some(value) = wire.prefix {
+            let prefix = optional_string::<D::Error>("prefix", value)?;
+            if prefix
+                .as_deref()
+                .is_some_and(|prefix| !prefix.is_empty() && !valid_identifier(prefix))
+            {
+                return Err(de::Error::custom(
+                    "MCP server field `prefix` contains unsupported characters",
+                ));
+            }
+            prefix
+        } else if let Some(value) = wire.tool_prefix {
+            optional_string::<D::Error>("tool_prefix", value)?
+        } else {
+            None
+        };
+        Ok(Self {
+            transport: wire.transport,
+            command: wire.command,
+            args: wire.args,
+            cwd: wire.cwd,
+            env: wire.env,
+            url: wire.url,
+            headers: wire.headers,
+            tool_prefix,
+            include_instructions: wire.include_instructions,
+            instructions: wire.instructions,
+            read_timeout_ms: wire.read_timeout_ms,
+            init_timeout_ms: wire.init_timeout_ms,
+            exit_timeout_ms: wire.exit_timeout_ms,
+            tools: wire.tools,
+        })
+    }
+}
+
+fn deserialize_present_value<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
+}
+
+fn optional_string<E>(field: &str, value: Value) -> Result<Option<String>, E>
+where
+    E: de::Error,
+{
+    match value {
+        Value::Null => Ok(None),
+        Value::String(value) => Ok(Some(value)),
+        _ => Err(E::custom(format!(
+            "MCP server field `{field}` must be a string or null"
+        ))),
+    }
 }
 
 impl McpConfigDocument {
@@ -161,7 +265,7 @@ impl McpServerConfig {
             if !valid_identifier(prefix) {
                 return Err(McpConfigFileError::InvalidServer {
                     server: name.to_string(),
-                    message: "tool_prefix contains unsupported characters".to_string(),
+                    message: "prefix contains unsupported characters".to_string(),
                 });
             }
             config = config.with_tool_prefix(prefix);
@@ -317,8 +421,8 @@ mod tests {
         let document = McpConfigDocument::from_slice(
             br#"{
               "servers": {
-                "docs": {"command":"npx","args":["-y","docs-mcp"]},
-                "remote": {"transport":"http","url":"https://example.test/mcp","headers":{"Authorization":"Bearer test"}}
+                "docs": {"command":"npx","args":["-y","docs-mcp"],"prefix":"reference"},
+                "remote": {"transport":"http","url":"https://example.test/mcp","headers":{"Authorization":"Bearer test"},"prefix":""}
               }
             }"#,
         )
@@ -341,6 +445,65 @@ mod tests {
                 .kind(),
             "streamable_http"
         );
+        assert_eq!(
+            document.servers["docs"].tool_prefix.as_deref(),
+            Some("reference")
+        );
+        assert_eq!(document.servers["remote"].tool_prefix.as_deref(), Some(""));
+        assert_eq!(
+            document.servers["docs"]
+                .to_toolset_config("docs")
+                .unwrap()
+                .tool_prefix
+                .as_deref(),
+            Some("reference")
+        );
+        assert!(
+            document.servers["remote"]
+                .to_toolset_config("remote")
+                .unwrap()
+                .tool_prefix
+                .is_none()
+        );
+        let round_trip = serde_json::from_value::<McpServerConfig>(
+            serde_json::to_value(&document.servers["remote"]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(round_trip, document.servers["remote"]);
+    }
+
+    #[test]
+    fn accepts_legacy_tool_prefix_alias() {
+        let document = McpConfigDocument::from_slice(
+            br#"{"servers":{"docs":{"command":"docs-mcp","tool_prefix":"legacy"}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            document.servers["docs"].tool_prefix.as_deref(),
+            Some("legacy")
+        );
+
+        let whitespace = McpConfigDocument::from_slice(
+            br#"{"servers":{"docs":{"command":"docs-mcp","tool_prefix":"   "}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            whitespace.servers["docs"].tool_prefix.as_deref(),
+            Some("   ")
+        );
+        assert!(
+            whitespace.servers["docs"]
+                .to_toolset_config("docs")
+                .unwrap()
+                .tool_prefix
+                .is_none()
+        );
+        let round_trip = serde_json::from_value::<McpServerConfig>(
+            serde_json::to_value(&whitespace.servers["docs"]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(round_trip, whitespace.servers["docs"]);
     }
 
     #[test]
@@ -368,6 +531,10 @@ mod tests {
             br#"{"servers":{"bad":{"transport":"http","url":"https://example.test","headers":{"x":1}}}}"#.as_slice(),
             br#"{"servers":{"bad":{"command":"x","url":"https://unexpected.test"}}}"#.as_slice(),
             br#"{"servers":{"bad":{"transport":"http","url":"https://example.test","command":"unexpected"}}}"#.as_slice(),
+            br#"{"servers":{"bad":{"command":"x","prefix":1}}}"#.as_slice(),
+            br#"{"servers":{"bad":{"command":"x","prefix":"new","tool_prefix":"legacy"}}}"#.as_slice(),
+            br#"{"servers":{"bad":{"command":"x","prefix":null,"tool_prefix":"legacy"}}}"#.as_slice(),
+            br#"{"servers":{"bad":{"command":"x","prefix":"   "}}}"#.as_slice(),
             br#"{"servers":{"bad":{"command":"x","init_timeout_ms":0}}}"#.as_slice(),
             br#"{"servers":{"bad":{"command":"x","exit_timeout_ms":0}}}"#.as_slice(),
             br#"{"servers":{"bad":{"command":"x","unexpected":true}}}"#.as_slice(),

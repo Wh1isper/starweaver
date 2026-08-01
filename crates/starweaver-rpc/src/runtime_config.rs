@@ -940,6 +940,47 @@ mod tests {
     }
 
     #[test]
+    fn mcp_prefix_snapshot_round_trips_across_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = RpcConfig::for_tests(temp.path());
+        fs::create_dir_all(config.workspace_root_for_tests()).unwrap();
+        config.mcp_servers = starweaver_tools::McpConfigDocument::from_slice(
+            br#"{
+                "servers": {
+                    "canonical-empty": {"command":"canonical-mcp","prefix":""},
+                    "legacy-whitespace": {"command":"legacy-mcp","tool_prefix":"   "}
+                }
+            }"#,
+        )
+        .unwrap()
+        .servers;
+        let expected = config.mcp_servers.clone();
+        let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
+        let manager =
+            RuntimeConfigManager::load_or_create(temp.path(), config.clone(), catalog).unwrap();
+        assert_eq!(
+            manager
+                .active_snapshot()
+                .unwrap()
+                .materialization
+                .mcp_servers,
+            expected
+        );
+        drop(manager);
+
+        let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
+        let reopened = RuntimeConfigManager::load_or_create(temp.path(), config, catalog).unwrap();
+        assert_eq!(
+            reopened
+                .active_snapshot()
+                .unwrap()
+                .materialization
+                .mcp_servers,
+            expected
+        );
+    }
+
+    #[test]
     fn startup_removes_unpublished_orphan_snapshot_generation() {
         let temp = tempfile::tempdir().unwrap();
         let config = RpcConfig::for_tests(temp.path());

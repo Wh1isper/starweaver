@@ -5,7 +5,7 @@
       "command": "docs-mcp",
       "args": ["--serve"],
       "cwd": "workspace",
-      "tool_prefix": "docs",
+      "prefix": "reference",
       "include_instructions": true,
       "instructions": "Prefer documentation evidence for documentation questions.",
       "init_timeout_ms": 10000,

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use starweaver_core::{ConversationId, RunId};
 use starweaver_tools::{
     DynToolset, McpPromptSpec, McpResourceSpec, McpSamplingSpec, McpSubscriptionSpec, McpToolSpec,
-    McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer, ToolRegistry,
+    McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer, ToolRegistry, Toolset,
 };
 
 #[test]
@@ -69,6 +69,24 @@ fn mcp_toolset_exposes_declared_tools_and_instructions() {
     assert_eq!(instructions.len(), 1);
     assert_eq!(instructions[0].group, "mcp:weather");
     assert_eq!(instructions[0].content, "Use weather MCP tools.");
+}
+
+#[test]
+fn empty_mcp_tool_prefix_exposes_native_name_without_leading_underscore() {
+    let toolset = McpToolset::new(
+        McpToolsetConfig::new("local", McpTransport::stdio("local-mcp"))
+            .with_tool_prefix("")
+            .with_tool(McpToolSpec::new(
+                "lookup",
+                serde_json::json!({"type": "object"}),
+            )),
+    );
+
+    let tool = toolset.get_tools().into_iter().next().unwrap();
+    assert_eq!(tool.name(), "lookup");
+    assert_ne!(tool.name(), "_lookup");
+    assert_eq!(tool.metadata()["mcp_server_id"], "local");
+    assert_eq!(tool.metadata()["mcp_tool_name"], "lookup");
 }
 
 #[tokio::test]

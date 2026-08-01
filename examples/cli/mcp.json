@@ -5,6 +5,7 @@
       "command": "npx",
       "args": ["-y", "@example/docs-mcp"],
       "env": {},
+      "prefix": "reference",
       "include_instructions": true,
       "instructions": "Prefer documentation evidence for documentation questions.",
       "tools": [
