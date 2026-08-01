@@ -9,7 +9,10 @@ use starweaver_model::{
     ModelRequestPart, ModelResponse, ModelResponseStreamEvent, ModelSettings, ToolCallPart,
     ToolReturnPart,
 };
-use starweaver_tools::{ToolContext, ToolDependencyProfile, ToolRegistry};
+use starweaver_tools::{
+    NestedToolError, NestedToolInvoker, NestedToolResult, ToolContext, ToolDependencyProfile,
+    ToolRegistry,
+};
 use starweaver_usage::pricing::known_model_pricing_profile;
 
 const DEFAULT_MODEL_ERROR_RETRIES: usize = 2;
@@ -548,6 +551,16 @@ impl Agent {
         }
     }
 
+    fn codeact_target_names(run_tools: &ToolRegistry, context: &AgentContext) -> BTreeSet<String> {
+        context
+            .runtime
+            .prepared_codeact_target_names
+            .iter()
+            .filter(|name| run_tools.contains(name))
+            .cloned()
+            .collect()
+    }
+
     fn should_execute_tool_calls_sequentially(
         &self,
         run_tools: &ToolRegistry,
@@ -604,11 +617,14 @@ impl Agent {
             "tool_execution_dropped",
         );
         let dependency_requirements = run_tools.dependency_requirements_for(&call.name);
+        let grant_name = run_tools
+            .capability_grant_name_for(&call.name)
+            .unwrap_or(&call.name);
         let initial_assembly = assemble_tool_dependencies_for_name(
             context,
-            &call.name,
+            grant_name,
             &dependency_requirements,
-            &context.tool_capability_grant(&call.name),
+            &context.tool_capability_grant(grant_name),
         );
         let mut tool_dependencies = initial_assembly.dependencies.clone();
         tool_dependencies.insert(TraceRecorderHandle::new(self.trace_recorder.clone()));
@@ -634,9 +650,9 @@ impl Agent {
         initial_assembly.apply_to(context);
         let dependency_assembly = assemble_tool_dependencies_for_name(
             context,
-            &call.name,
+            grant_name,
             &dependency_requirements,
-            &context.tool_capability_grant(&call.name),
+            &context.tool_capability_grant(grant_name),
         );
         tool_context
             .dependencies
@@ -1606,6 +1622,13 @@ impl Agent {
                 ClassifyResponseTransition::ValidateOutput => None,
             };
             if let Some(tool_calls) = tool_calls {
+                let run_tools = run_tools.select(
+                    context
+                        .runtime
+                        .prepared_tool_names
+                        .iter()
+                        .map(String::as_str),
+                );
                 let tools_transition = match self
                     .prepare_tools_phase(
                         &mut state,
@@ -1703,7 +1726,7 @@ impl Agent {
                         let PreparedToolExecution {
                             index: _,
                             call,
-                            tool_context,
+                            mut tool_context,
                             dependency_assembly,
                             stream_sink,
                             tool_span,
@@ -1722,13 +1745,22 @@ impl Agent {
                                 stream_events.is_some(),
                             )
                             .await?;
+                        let mut nested_receiver = None;
+                        let nested_call_limit = run_tools.nested_call_limit_for(&call.name);
+                        if run_tools.requires_nested_invoker(&call.name) {
+                            let allowed = Self::codeact_target_names(&run_tools, context);
+                            let (invoker, receiver) = NestedToolInvoker::channel(allowed, 1);
+                            tool_context.dependencies.insert(invoker);
+                            nested_receiver = Some(receiver);
+                        }
                         let mut tool_return_future =
                             Box::pin(run_tools.execute_call(tool_context, &call));
                         let mut child_stream_tick =
                             tokio::time::interval(std::time::Duration::from_millis(50));
                         child_stream_tick
                             .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                        let tool_return = loop {
+                        let mut nested_call_sequence = 0usize;
+                        let tool_return = 'outer_tool: loop {
                             tokio::select! {
                                 tool_return = &mut tool_return_future => {
                                     if let Some(stream_sink) = &stream_sink {
@@ -1738,10 +1770,297 @@ impl Agent {
                                     }
                                     break tool_return;
                                 }
+                                request = async {
+                                    match nested_receiver.as_mut() {
+                                        Some(receiver) => receiver.recv().await,
+                                        None => std::future::pending().await,
+                                    }
+                                }, if nested_receiver.is_some() => {
+                                    let Some(request) = request else {
+                                        continue;
+                                    };
+                                    nested_call_sequence = nested_call_sequence.saturating_add(1);
+                                    if nested_call_sequence > nested_call_limit {
+                                        let _ = request.response.send(Err(NestedToolError::CallLimit));
+                                        continue;
+                                    }
+                                    self.check_tool_calls(&state, 1)?;
+                                    let nested_call = ToolCallPart {
+                                        id: format!("{}:nested:{nested_call_sequence}", call.id),
+                                        name: request.tool_name.clone(),
+                                        arguments: request.arguments.clone().into(),
+                                    };
+                                    tokio::select! {
+                                        emitted = async {
+                                            stream_event!(
+                                                &state,
+                                                AgentStreamEvent::ToolCall {
+                                                    step: state.run_step,
+                                                    call: nested_call.clone(),
+                                                }
+                                            );
+                                            Ok::<(), AgentError>(())
+                                        } => emitted?,
+                                        outer_return = &mut tool_return_future => {
+                                            let _ = request.response.send(Err(
+                                                NestedToolError::BrokerUnavailable,
+                                            ));
+                                            context.publish_event(AgentEvent::new(
+                                                "nested_tool_execution_abandoned",
+                                                serde_json::json!({
+                                                    "parent_tool_call_id": call.id,
+                                                    "child_tool_call_id": nested_call.id,
+                                                    "reason": "outer execution completed during child call emission",
+                                                }),
+                                            ));
+                                            break 'outer_tool outer_return;
+                                        }
+                                    }
+                                    let prepared_child = tokio::select! {
+                                        prepared = self.prepare_tool_execution(
+                                            nested_call_sequence,
+                                            &mut state,
+                                            context,
+                                            &run_tools,
+                                            &nested_call,
+                                            tool_span.context(),
+                                            &run_id,
+                                            &conversation_id,
+                                            &tool_retries,
+                                            stream_events.is_some(),
+                                        ) => prepared,
+                                        outer_return = &mut tool_return_future => {
+                                            let _ = request.response.send(Err(
+                                                NestedToolError::BrokerUnavailable,
+                                            ));
+                                            context.publish_event(AgentEvent::new(
+                                                "nested_tool_execution_abandoned",
+                                                serde_json::json!({
+                                                    "parent_tool_call_id": call.id,
+                                                    "child_tool_call_id": nested_call.id,
+                                                    "reason": "outer execution completed during child preparation",
+                                                }),
+                                            ));
+                                            break 'outer_tool outer_return;
+                                        }
+                                    }?;
+                                    let PreparedToolExecution {
+                                        index: _,
+                                        call: child_call,
+                                        tool_context: child_context,
+                                        dependency_assembly: child_assembly,
+                                        stream_sink: child_sink,
+                                        tool_span: mut child_span,
+                                        started_at: child_started_at,
+                                    } = prepared_child;
+                                    let child_call_id = child_call.id.clone();
+                                    let mut child_execution = Box::pin(
+                                        run_tools.execute_call(child_context, &child_call),
+                                    );
+                                    let mut child_return = tokio::select! {
+                                        child_return = &mut child_execution => child_return,
+                                        outer_return = &mut tool_return_future => {
+                                            let _ = request.response.send(Err(
+                                                NestedToolError::BrokerUnavailable,
+                                            ));
+                                            context.publish_event(AgentEvent::new(
+                                                "nested_tool_execution_abandoned",
+                                                serde_json::json!({
+                                                    "parent_tool_call_id": call.id,
+                                                    "child_tool_call_id": child_call_id,
+                                                    "reason": "outer execution completed before child",
+                                                }),
+                                            ));
+                                            break 'outer_tool outer_return;
+                                        }
+                                    };
+                                    tokio::select! {
+                                        emitted = async {
+                                            if let Some(child_sink) = &child_sink {
+                                                for child_record in child_sink.drain() {
+                                                    stream_record!(&state, child_record);
+                                                }
+                                            }
+                                            Ok::<(), AgentError>(())
+                                        } => emitted?,
+                                        outer_return = &mut tool_return_future => {
+                                            let _ = request.response.send(Err(
+                                                NestedToolError::BrokerUnavailable,
+                                            ));
+                                            context.publish_event(AgentEvent::new(
+                                                "nested_tool_execution_abandoned",
+                                                serde_json::json!({
+                                                    "parent_tool_call_id": call.id,
+                                                    "child_tool_call_id": child_call_id,
+                                                    "reason": "outer execution completed during child stream emission",
+                                                    "effect_may_have_completed": true,
+                                                }),
+                                            ));
+                                            break 'outer_tool outer_return;
+                                        }
+                                    }
+                                    let child_duration = child_started_at.elapsed();
+                                    let duration_ms = u64::try_from(child_duration.as_millis())
+                                        .unwrap_or(u64::MAX);
+                                    child_return.metadata.insert(
+                                        "duration_ms".to_string(),
+                                        serde_json::json!(duration_ms),
+                                    );
+                                    child_return.metadata.insert(
+                                        "duration_seconds".to_string(),
+                                        serde_json::json!(child_duration.as_secs_f64()),
+                                    );
+                                    child_return.metadata.insert(
+                                        "nested_parent_tool_call_id".to_string(),
+                                        serde_json::json!(call.id.clone()),
+                                    );
+                                    self.trace_recorder.record_event(
+                                        &child_span,
+                                        SpanEvent::new("starweaver.tool.return")
+                                            .with_attribute(
+                                                "gen_ai.tool.call.result",
+                                                serde_json::json!({
+                                                    "redacted": true,
+                                                    "is_error": child_return.is_error,
+                                                }),
+                                            )
+                                            .with_attribute(
+                                                "starweaver.tool.duration_ms",
+                                                serde_json::json!(duration_ms),
+                                            )
+                                            .with_attribute(
+                                                "starweaver.tool.is_error",
+                                                serde_json::json!(child_return.is_error),
+                                            )
+                                            .with_attribute(
+                                                "starweaver.nested.parent_tool_call_id",
+                                                serde_json::json!(call.id.clone()),
+                                            ),
+                                    );
+                                    if child_return.is_error
+                                        && tool_return_control_flow(&child_return).is_none()
+                                    {
+                                        child_span.close(SpanStatus::Error {
+                                            error_type: child_return
+                                                .metadata
+                                                .get("error_kind")
+                                                .and_then(serde_json::Value::as_str)
+                                                .unwrap_or("nested_tool_error")
+                                                .to_string(),
+                                        });
+                                    } else {
+                                        child_span.close(SpanStatus::Ok);
+                                    }
+                                    child_assembly.apply_to(context);
+                                    state.usage.clone_from(&context.usage);
+                                    tokio::select! {
+                                        after_result = self.call_after_tool_result(
+                                            &mut state,
+                                            context,
+                                            &child_call,
+                                            &mut child_return,
+                                        ) => after_result?,
+                                        outer_return = &mut tool_return_future => {
+                                            let _ = request.response.send(Err(
+                                                NestedToolError::BrokerUnavailable,
+                                            ));
+                                            context.publish_event(AgentEvent::new(
+                                                "nested_tool_execution_abandoned",
+                                                serde_json::json!({
+                                                    "parent_tool_call_id": call.id,
+                                                    "child_tool_call_id": child_call.id,
+                                                    "reason": "outer execution completed during child result hooks",
+                                                    "effect_may_have_completed": true,
+                                                }),
+                                            ));
+                                            break 'outer_tool outer_return;
+                                        }
+                                    }
+                                    if is_successful_tool_return(&child_return) {
+                                        state.usage.tool_calls =
+                                            state.usage.tool_calls.saturating_add(1);
+                                        context.usage.tool_calls =
+                                            context.usage.tool_calls.saturating_add(1);
+                                    }
+                                    self.check_usage(&state)?;
+                                    tokio::select! {
+                                        emitted = async {
+                                            stream_event!(
+                                                &state,
+                                                AgentStreamEvent::ToolReturn {
+                                                    step: state.run_step,
+                                                    tool_return: child_return.clone(),
+                                                }
+                                            );
+                                            stream_context_events!(&state, context_event_cursor);
+                                            Ok::<(), AgentError>(())
+                                        } => emitted?,
+                                        outer_return = &mut tool_return_future => {
+                                            let _ = request.response.send(Err(
+                                                NestedToolError::BrokerUnavailable,
+                                            ));
+                                            context.publish_event(AgentEvent::new(
+                                                "nested_tool_execution_abandoned",
+                                                serde_json::json!({
+                                                    "parent_tool_call_id": call.id,
+                                                    "child_tool_call_id": child_call.id,
+                                                    "reason": "outer execution completed during child result emission",
+                                                    "effect_may_have_completed": true,
+                                                }),
+                                            ));
+                                            break 'outer_tool outer_return;
+                                        }
+                                    }
+                                    let nested_result = if let Some(control_flow) =
+                                        tool_return_control_flow(&child_return)
+                                    {
+                                        Err(NestedToolError::NonResumableControlFlow {
+                                            message: format!(
+                                                "target {} requested {control_flow}",
+                                                child_call.name
+                                            ),
+                                        })
+                                    } else if child_return.is_error {
+                                        let message = child_return
+                                            .metadata
+                                            .get("message")
+                                            .and_then(serde_json::Value::as_str)
+                                            .unwrap_or("target execution failed")
+                                            .to_string();
+                                        Err(NestedToolError::ToolFailed { message })
+                                    } else {
+                                        Ok(NestedToolResult {
+                                            content: child_return.content,
+                                            metadata: serde_json::Map::new(),
+                                        })
+                                    };
+                                    if request.response.send(nested_result).is_err() {
+                                        context.publish_event(AgentEvent::new(
+                                            "nested_tool_result_abandoned",
+                                            serde_json::json!({
+                                                "parent_tool_call_id": call.id,
+                                                "child_tool_call_id": child_call.id,
+                                            }),
+                                        ));
+                                    }
+                                }
                                 _ = child_stream_tick.tick(), if stream_sink.is_some() => {
-                                    if let Some(stream_sink) = &stream_sink {
-                                        for child_record in stream_sink.drain() {
-                                            stream_record!(&state, child_record);
+                                    tokio::select! {
+                                        emitted = async {
+                                            if let Some(stream_sink) = &stream_sink {
+                                                for child_record in stream_sink.drain() {
+                                                    stream_record!(&state, child_record);
+                                                }
+                                            }
+                                            Ok::<(), AgentError>(())
+                                        } => emitted?,
+                                        outer_return = &mut tool_return_future => {
+                                            if let Some(stream_sink) = &stream_sink {
+                                                for child_record in stream_sink.drain() {
+                                                    stream_record!(&state, child_record);
+                                                }
+                                            }
+                                            break 'outer_tool outer_return;
                                         }
                                     }
                                 }

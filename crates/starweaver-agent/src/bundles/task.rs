@@ -10,7 +10,7 @@ mod tests;
 
 use std::sync::Arc;
 
-use starweaver_context::CONTEXT_TASKS_CAPABILITY;
+use starweaver_context::{AgentContext, CONTEXT_TASKS_CAPABILITY, ToolCapabilityGrant};
 use starweaver_tools::{DynToolset, StaticToolset, ToolDependencyRequirements};
 
 use super::helpers::{
@@ -20,6 +20,16 @@ use super::helpers::{
 use instructions::task_manager_instructions;
 use operations::{task_create, task_get, task_list, task_update};
 
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn attach_task_tool_grants(context: &mut AgentContext) {
+    for tool_name in ["task_create", "task_get", "task_update", "task_list"] {
+        context.grant_tool_capabilities(
+            tool_name,
+            ToolCapabilityGrant::new().with_context_capabilities([CONTEXT_TASKS_CAPABILITY]),
+        );
+    }
+}
+
 /// Create task operation tools.
 #[must_use]
 pub fn task_tools() -> DynToolset {
@@ -27,8 +37,11 @@ pub fn task_tools() -> DynToolset {
         "task",
         true,
         false,
-        &ToolDependencyRequirements::filtered(Vec::<String>::new(), false)
-            .with_context_capabilities([CONTEXT_TASKS_CAPABILITY]),
+        &ToolDependencyRequirements::strict(
+            Vec::<String>::new(),
+            [CONTEXT_TASKS_CAPABILITY],
+            false,
+        ),
     );
     Arc::new(
         StaticToolset::new("task")

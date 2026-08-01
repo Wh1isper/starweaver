@@ -141,55 +141,75 @@ impl ToolDependencyRequirements {
     }
 }
 
-/// Parse tool dependency requirements.
+/// Error returned when reserved dependency metadata is malformed.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("invalid {TOOL_METADATA_DEPENDENCIES_KEY} metadata")]
+pub struct ToolDependencyRequirementsError;
+
+/// Parse and validate tool dependency requirements.
 ///
-/// Absence preserves the Legacy compatibility profile. A present but malformed reserved value
-/// fails closed to a Strict profile with no requested authority.
-#[must_use]
-pub fn tool_dependency_requirements(metadata: &Metadata) -> ToolDependencyRequirements {
+/// Missing metadata is a valid Legacy declaration. Unlike the compatibility parser, malformed
+/// metadata remains distinguishable and therefore cannot be mistaken for `CodeAct`-safe Strict
+/// metadata.
+///
+/// # Errors
+///
+/// Returns an error when the reserved metadata value is malformed.
+pub fn try_tool_dependency_requirements(
+    metadata: &Metadata,
+) -> Result<ToolDependencyRequirements, ToolDependencyRequirementsError> {
     let Some(raw) = metadata.get(TOOL_METADATA_DEPENDENCIES_KEY) else {
-        return ToolDependencyRequirements::default();
+        return Ok(ToolDependencyRequirements::default());
     };
     let Value::Object(value) = raw else {
-        return denied_requirements();
+        return Err(ToolDependencyRequirementsError);
     };
     let profile = match value.get("profile").and_then(Value::as_str) {
         Some("legacy") => ToolDependencyProfile::Legacy,
         Some("filtered") => ToolDependencyProfile::Filtered,
         Some("strict") => ToolDependencyProfile::Strict,
-        _ => return denied_requirements(),
+        _ => return Err(ToolDependencyRequirementsError),
     };
     let Some(host_capabilities) = value.get("host_capabilities").and_then(Value::as_array) else {
-        return denied_requirements();
+        return Err(ToolDependencyRequirementsError);
     };
     let Some(shell_environment) = value.get("shell_environment").and_then(Value::as_bool) else {
-        return denied_requirements();
+        return Err(ToolDependencyRequirementsError);
     };
     let mut names = BTreeSet::new();
     for name in host_capabilities {
         let Some(name) = name.as_str() else {
-            return denied_requirements();
+            return Err(ToolDependencyRequirementsError);
         };
         names.insert(name.to_string());
     }
     let mut context_capabilities = BTreeSet::new();
     if let Some(values) = value.get("context_capabilities") {
         let Some(values) = values.as_array() else {
-            return denied_requirements();
+            return Err(ToolDependencyRequirementsError);
         };
         for name in values {
             let Some(name) = name.as_str() else {
-                return denied_requirements();
+                return Err(ToolDependencyRequirementsError);
             };
             context_capabilities.insert(name.to_string());
         }
     }
-    ToolDependencyRequirements {
+    Ok(ToolDependencyRequirements {
         profile,
         host_capabilities: names,
         context_capabilities,
         shell_environment,
-    }
+    })
+}
+
+/// Parse tool dependency requirements with compatibility fail-closed behavior.
+///
+/// Absence preserves the Legacy compatibility profile. A present but malformed reserved value
+/// fails closed to a Strict profile with no requested authority.
+#[must_use]
+pub fn tool_dependency_requirements(metadata: &Metadata) -> ToolDependencyRequirements {
+    try_tool_dependency_requirements(metadata).unwrap_or_else(|_| denied_requirements())
 }
 
 fn denied_requirements() -> ToolDependencyRequirements {

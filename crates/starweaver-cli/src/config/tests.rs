@@ -23,6 +23,7 @@ fn tools_config_defaults_to_direct_mcp_and_bounded_user_input() {
 
     assert_eq!(config.mcp_mode(), McpExposureMode::Direct);
     assert_eq!(config.user_input_timeout_seconds(), 120);
+    assert!(config.codeact().enabled);
 }
 
 #[test]
@@ -198,6 +199,37 @@ system_prompt = "Review safely."
         get_config_value(&config, "security.shell_review.risk_threshold").unwrap(),
         "extra_high\n"
     );
+}
+
+#[test]
+fn codeact_config_layers_and_can_be_explicitly_disabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let global_dir = temp.path().join("global");
+    let project_dir = temp.path().join("project");
+    fs::create_dir_all(&global_dir).unwrap();
+    fs::create_dir_all(&project_dir).unwrap();
+    fs::write(
+        global_dir.join("config.toml"),
+        "[codeact]\nenabled = false\n",
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("config.toml"),
+        "[codeact]\nenabled = true\n",
+    )
+    .unwrap();
+    let cli =
+        crate::args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+    let resolver = ConfigResolver {
+        global_dir: Some(global_dir),
+        project_dir: Some(project_dir.clone()),
+        shared_agents_dir: Some(temp.path().join("shared-agents")),
+        current_dir: Some(temp.path().to_path_buf()),
+    };
+
+    assert!(resolver.resolve(&cli).unwrap().codeact().enabled);
+    fs::remove_file(project_dir.join("config.toml")).unwrap();
+    assert!(!resolver.resolve(&cli).unwrap().codeact().enabled);
 }
 
 #[test]

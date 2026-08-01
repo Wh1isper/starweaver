@@ -10,9 +10,9 @@ use starweaver_context::AgentContext;
 use starweaver_model::{ToolCallPart, ToolDefinition, ToolReturnPart};
 
 use crate::{
-    DynTool, DynToolExecutionHook, DynToolset, ToolContext, ToolError, ToolExecutionHooks,
-    ToolExecutionOutcome, ToolInstruction, ToolResult, ToolsetLifecycleError,
-    ToolsetLifecycleReport, ToolsetPreparation, error_return,
+    CodeActEligibility, DynTool, DynToolExecutionHook, DynToolset, ToolContext,
+    ToolDependencyProfile, ToolError, ToolExecutionHooks, ToolExecutionOutcome, ToolInstruction,
+    ToolResult, ToolsetLifecycleError, ToolsetLifecycleReport, ToolsetPreparation, error_return,
 };
 
 /// Default retry budget for unexpected/internal tool execution failures.
@@ -427,6 +427,49 @@ impl ToolRegistry {
         (definitions, report)
     }
 
+    /// Return the prepared strict tools eligible for constrained code in this context.
+    ///
+    /// `denied_names` is product-owned hard policy. Eligibility never upgrades dependency
+    /// profiles or grants authority; only tools already using `Strict` projection are returned.
+    #[must_use]
+    pub fn codeact_definitions_for_context(
+        &self,
+        context: &AgentContext,
+        denied_names: &BTreeSet<String>,
+    ) -> Vec<ToolDefinition> {
+        self.tools
+            .values()
+            .filter(|tool| !denied_names.contains(tool.name()))
+            .filter(|tool| tool.is_available(context))
+            .filter(|tool| {
+                let metadata = tool.metadata();
+                tool.codeact_eligibility(context) != CodeActEligibility::Deny
+                    && !matches!(
+                        crate::tool_metadata_kind(&metadata),
+                        Some(
+                            crate::ToolKind::Output
+                                | crate::ToolKind::Unapproved
+                                | crate::ToolKind::Deferred
+                        )
+                    )
+                    && crate::try_tool_dependency_requirements(&metadata).is_ok_and(
+                        |requirements| {
+                            let grant = context.tool_capability_grant(tool.capability_grant_name());
+                            requirements.profile == ToolDependencyProfile::Strict
+                                && requirements
+                                    .host_capabilities
+                                    .is_subset(&grant.host_capabilities)
+                                && requirements
+                                    .context_capabilities
+                                    .is_subset(&grant.context_capabilities)
+                                && (!requirements.shell_environment || grant.shell_environment)
+                        },
+                    )
+            })
+            .filter_map(|tool| tool.prepare_definition(context, tool.definition()))
+            .collect()
+    }
+
     /// Return context-aware availability diagnostics without model definitions.
     #[must_use]
     pub fn availability_report(&self, context: &AgentContext) -> ToolAvailabilityReport {
@@ -621,6 +664,48 @@ impl ToolRegistry {
             .get(name)
             .and_then(|tool| tool.sequential())
             .unwrap_or(false)
+    }
+
+    /// Return the stable exact-grant lookup name for a registered dispatch name.
+    #[must_use]
+    pub fn capability_grant_name_for(&self, name: &str) -> Option<&str> {
+        self.tools
+            .get(name)
+            .map(|tool| tool.capability_grant_name())
+    }
+
+    /// Return whether a registered tool requires the runtime-owned nested invocation broker.
+    #[must_use]
+    pub fn requires_nested_invoker(&self, name: &str) -> bool {
+        self.tools
+            .get(name)
+            .and_then(|tool| {
+                tool.metadata()
+                    .get(crate::TOOL_METADATA_NESTED_INVOKER_KEY)
+                    .cloned()
+            })
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// Return the host-enforced child-call limit declared by a nested orchestration tool.
+    ///
+    /// Older tools carrying only the invoker marker retain the compatibility limit of 64 calls.
+    /// A malformed explicit limit fails closed to zero calls.
+    #[must_use]
+    pub fn nested_call_limit_for(&self, name: &str) -> usize {
+        let Some(tool) = self.tools.get(name) else {
+            return 0;
+        };
+        let metadata = tool.metadata();
+        match metadata.get(crate::TOOL_METADATA_NESTED_CALL_LIMIT_KEY) {
+            Some(value) => value
+                .as_u64()
+                .and_then(|limit| usize::try_from(limit).ok())
+                .unwrap_or(0),
+            None if self.requires_nested_invoker(name) => 64,
+            None => 0,
+        }
     }
 
     /// Return whether a tool is registered by name.

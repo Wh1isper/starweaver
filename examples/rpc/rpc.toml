@@ -4,6 +4,10 @@ database_path = "starweaver.sqlite"
 workspace_root = "."
 mcp_config_path = "mcp.json"
 
+# CodeAct and file-backed recipes are enabled by default. Set false to disable both.
+[codeact]
+enabled = true
+
 # Disabled by default. Enable to expose the full macOS Computer Use toolset to
 # otherwise authorized runs in every effective profile.
 [computer_use]

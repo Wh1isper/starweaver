@@ -18,7 +18,7 @@ one workspace.
 - Structured output through JSON Schema, typed parsing, output functions, and validation retry.
 - Runtime extension hooks for prompt preparation, request shaping, tool policy, output validation, usage, and trace recording.
 - Durable execution foundations: context export/restore, checkpoints, session records, replay streams, and SQLite storage adapters.
-- First-party SDK bundles for filesystem, shell, skills, task tracking, host search/scrape/media adapters, MCP, subagents, and opt-in macOS Computer Use observation, pointer/keyboard input, and bounded Accessibility metadata.
+- First-party SDK bundles for filesystem, shell, skills, task tracking, host search/scrape/media adapters, MCP, subagents, bounded CodeAct composition, reusable recipes, and opt-in macOS Computer Use observation, pointer/keyboard input, and bounded Accessibility metadata.
 - A CLI launcher with profile-based local runs, install/update flow, display messages, local storage, and release artifacts.
 - An experimental, maintenance-paused Tauri 2 Desktop foundation retained as WIP source code.
 

@@ -19,7 +19,7 @@ use starweaver_agent::{
     AgentStreamOptions, BackgroundSubagentSupervisor, BackgroundSubagentTaskResult,
     ContinuationMaterialization, ContinuationMaterializationMode, ResolvedAgentMaterialization,
     SubagentDelegationMode, attach_agent_session_control, attach_agent_session_query,
-    environment_binding_class,
+    attach_codeact_standard_grants, environment_binding_class,
 };
 use starweaver_core::{ConversationId, RunId, SessionId, SubagentAttemptId};
 use starweaver_model::ModelResponseStreamEvent;
@@ -1399,6 +1399,7 @@ impl RpcRuntimeCoordinator {
                     );
                 }
             }
+            attach_codeact_standard_grants(&mut context);
             let computer_use_lease = self.computer_use.attach_run(
                 &mut context,
                 &target,

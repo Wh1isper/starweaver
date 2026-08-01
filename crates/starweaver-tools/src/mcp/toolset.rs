@@ -120,6 +120,13 @@ impl Tool for McpTool {
         metadata
     }
 
+    fn codeact_eligibility(
+        &self,
+        _context: &starweaver_context::AgentContext,
+    ) -> crate::CodeActEligibility {
+        crate::CodeActEligibility::Deny
+    }
+
     async fn call(&self, _context: ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         Err(ToolError::CallDeferred {
             tool: self.name.clone(),

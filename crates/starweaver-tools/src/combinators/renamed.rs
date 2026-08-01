@@ -210,6 +210,14 @@ impl Tool for RenamedTool {
         self.inner.is_available(context)
     }
 
+    fn capability_grant_name(&self) -> &str {
+        self.inner.capability_grant_name()
+    }
+
+    fn codeact_eligibility(&self, context: &AgentContext) -> crate::CodeActEligibility {
+        self.inner.codeact_eligibility(context)
+    }
+
     fn prepare_definition(
         &self,
         context: &AgentContext,

@@ -7,7 +7,7 @@ use starweaver_tools::{
 };
 
 use super::helpers::{
-    static_sequential_tool_with_metadata, static_tool_with_metadata, tool_metadata,
+    static_sequential_tool_with_metadata, static_tool_with_metadata,
     tool_metadata_with_dependencies,
 };
 
@@ -152,20 +152,29 @@ fn context_tool_definitions() -> Vec<starweaver_tools::DynTool> {
         static_tool_with_metadata(
             "note",
             "Create, update, or delete a note entry.",
-            tool_metadata("context", true, false),
+            strict_context_tool_metadata(),
             note_set,
         ),
         static_tool_with_metadata(
             "note_get",
             "Read note entries by key, or list all note entries.",
-            tool_metadata("context", true, false),
+            strict_context_tool_metadata(),
             note_get,
         ),
         static_tool_with_metadata(
             "thinking",
             "Think about something without obtaining new information or making changes.",
-            tool_metadata("context", true, false),
+            strict_context_tool_metadata(),
             thinking,
         ),
     ]
+}
+
+fn strict_context_tool_metadata() -> starweaver_core::Metadata {
+    tool_metadata_with_dependencies(
+        "context",
+        true,
+        false,
+        &ToolDependencyRequirements::strict(Vec::<String>::new(), Vec::<String>::new(), false),
+    )
 }

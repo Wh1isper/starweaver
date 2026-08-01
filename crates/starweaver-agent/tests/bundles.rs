@@ -17,7 +17,7 @@ use starweaver_agent::{
     dynamic_tool_proxy, filesystem_tools, host_io_tools, json_tool, namespaced_toolset,
     shell_tools, task_tools, user_input_tools,
 };
-use starweaver_context::{ContextHandoffHandle, DependencyStore, ToolConfig};
+use starweaver_context::{ContextHandoffHandle, DependencyStore, TaskContextHandle, ToolConfig};
 use starweaver_core::{CancellationToken, ConversationId, Metadata, RunId};
 use starweaver_environment::{
     EnvironmentPolicy, EnvironmentProvider, FilePolicy, LocalEnvironmentProvider,
@@ -2197,17 +2197,23 @@ async fn summarize_sets_context_handoff_and_auto_load_files() {
 #[tokio::test]
 async fn task_bundle_creates_operation_envelopes() {
     let toolset = task_tools();
+    let mut agent_context = AgentContext::default();
+    let handle = TaskContextHandle::from_context(&agent_context);
+    let mut dependencies = DependencyStore::new();
+    dependencies.insert(handle.clone());
     let task = toolset
         .get_tools()
         .into_iter()
         .find(|tool| tool.name() == "task_create")
         .unwrap()
         .call(
-            ToolContext::new(RunId::default(), ConversationId::default(), 7),
+            ToolContext::new(RunId::default(), ConversationId::default(), 7)
+                .with_dependencies(dependencies),
             serde_json::json!({"subject": "ship", "description": "Ship the release"}),
         )
         .await
         .unwrap();
+    handle.apply_to(&mut agent_context);
 
     assert_eq!(task.content["operation"], "task_create");
     assert_eq!(task.content["payload"]["task"]["subject"], "ship");
@@ -2215,6 +2221,41 @@ async fn task_bundle_creates_operation_envelopes() {
         task.content["payload"]["task"]["description"],
         "Ship the release"
     );
+    assert_eq!(agent_context.tasks().len(), 1);
+}
+
+#[tokio::test]
+async fn task_bundle_persists_through_a_generic_agent_session_context() {
+    let responses = vec![
+        tool_call_response(
+            "task-create",
+            "task_create",
+            serde_json::json!({
+                "subject": "ship",
+                "description": "Ship the release"
+            }),
+        ),
+        ModelResponse::text("created"),
+        tool_call_response("task-list", "task_list", serde_json::json!({})),
+        ModelResponse::text("listed"),
+    ];
+    let mut session = AgentSession::new(
+        starweaver_agent::AgentBuilder::new(Arc::new(starweaver_agent::TestModel::with_responses(
+            responses,
+        )))
+        .toolset(&task_tools())
+        .build(),
+    );
+
+    assert_eq!(session.run("create task").await.unwrap().output, "created");
+    let tasks = session.context().tasks();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].subject, "ship");
+
+    assert_eq!(session.run("list tasks").await.unwrap().output, "listed");
+    let tasks = session.context().tasks();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].description, "Ship the release");
 }
 
 #[tokio::test]
@@ -2338,6 +2379,14 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
     assert_eq!(summarize_metadata["starweaver_context_management"], true);
     assert_eq!(
         task_metadata["starweaver_tool_dependencies"]["profile"],
+        "strict"
+    );
+    assert_eq!(
+        note_metadata["starweaver_tool_dependencies"]["profile"],
+        "strict"
+    );
+    assert_eq!(
+        summarize_metadata["starweaver_tool_dependencies"]["profile"],
         "filtered"
     );
     assert_eq!(
@@ -2352,15 +2401,38 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
         shell_metadata["starweaver_tool_dependencies"]["shell_environment"],
         true
     );
-    for toolset in [&filesystem, &shell, &task, &context, &host_io] {
+    for toolset in [&filesystem, &task] {
+        for tool in toolset.get_tools() {
+            assert_eq!(
+                tool.definition().metadata["starweaver_tool_dependencies"]["profile"],
+                "strict",
+                "CodeAct-safe first-party tool {} must use strict dependencies",
+                tool.name()
+            );
+        }
+    }
+    for toolset in [&shell, &host_io] {
         for tool in toolset.get_tools() {
             assert_eq!(
                 tool.definition().metadata["starweaver_tool_dependencies"]["profile"],
                 "filtered",
-                "first-party tool {} must use filtered dependencies",
+                "model-only first-party tool {} must use filtered dependencies",
                 tool.name()
             );
         }
+    }
+    for tool in context.get_tools() {
+        let expected = if tool.name() == "summarize" {
+            "filtered"
+        } else {
+            "strict"
+        };
+        assert_eq!(
+            tool.definition().metadata["starweaver_tool_dependencies"]["profile"],
+            expected,
+            "context tool {} must use its intended dependency profile",
+            tool.name()
+        );
     }
 
     let filesystem_instructions = filesystem.get_instructions();

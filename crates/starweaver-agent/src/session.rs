@@ -582,7 +582,8 @@ impl AgentSession {
 
     /// Create a session from a runtime agent and caller-provided context.
     #[must_use]
-    pub const fn with_context(agent: RuntimeAgent, context: AgentContext) -> Self {
+    pub fn with_context(agent: RuntimeAgent, mut context: AgentContext) -> Self {
+        crate::bundles::attach_task_tool_grants(&mut context);
         let durable_hitl_effects_require_preparation = agent.requires_durable_hitl_preparation();
         Self {
             agent,
@@ -632,7 +633,8 @@ impl AgentSession {
     }
 
     /// Replace the session context.
-    pub fn replace_context(&mut self, context: AgentContext) {
+    pub fn replace_context(&mut self, mut context: AgentContext) {
+        crate::bundles::attach_task_tool_grants(&mut context);
         self.context = context;
         self.last_run_state = None;
     }

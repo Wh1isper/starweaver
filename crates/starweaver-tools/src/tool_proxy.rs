@@ -1035,6 +1035,14 @@ impl Tool for SearchLoadedTool {
         self.inner.tool.is_available(context) && self.is_loaded(context)
     }
 
+    fn capability_grant_name(&self) -> &str {
+        self.inner.tool.capability_grant_name()
+    }
+
+    fn codeact_eligibility(&self, context: &AgentContext) -> crate::CodeActEligibility {
+        self.inner.tool.codeact_eligibility(context)
+    }
+
     fn prepare_definition(
         &self,
         context: &AgentContext,

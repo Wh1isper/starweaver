@@ -9,9 +9,10 @@ use starweaver_tools::{
     ToolResult, typed_json_tool,
 };
 
-pub fn static_tool<Args, F, Fut>(
+pub fn static_strict_tool<Args, F, Fut>(
     name: &'static str,
     description: &'static str,
+    host_capabilities: impl IntoIterator<Item = &'static str>,
     function: F,
 ) -> DynTool
 where
@@ -19,15 +20,18 @@ where
     F: Send + Sync + 'static + Fn(ToolContext, Args) -> Fut,
     Fut: Send + Future<Output = Result<ToolResult, ToolError>> + 'static,
 {
+    let requirements = ToolDependencyRequirements::granted_filtered(host_capabilities, false);
     Arc::new(
-        typed_json_tool::<Args, _, _>(name, Some(description.to_string()), function)
-            .with_metadata(first_party_dependency_metadata()),
+        typed_json_tool::<Args, _, _>(name, Some(description.to_string()), function).with_metadata(
+            tool_metadata_with_dependencies("first_party", false, false, &requirements),
+        ),
     )
 }
 
-pub fn static_sequential_tool<Args, F, Fut>(
+pub fn static_strict_sequential_tool<Args, F, Fut>(
     name: &'static str,
     description: &'static str,
+    host_capabilities: impl IntoIterator<Item = &'static str>,
     function: F,
 ) -> DynTool
 where
@@ -35,9 +39,15 @@ where
     F: Send + Sync + 'static + Fn(ToolContext, Args) -> Fut,
     Fut: Send + Future<Output = Result<ToolResult, ToolError>> + 'static,
 {
+    let requirements = ToolDependencyRequirements::granted_filtered(host_capabilities, false);
     Arc::new(
         typed_json_tool::<Args, _, _>(name, Some(description.to_string()), function)
-            .with_metadata(first_party_dependency_metadata())
+            .with_metadata(tool_metadata_with_dependencies(
+                "first_party",
+                false,
+                false,
+                &requirements,
+            ))
             .with_sequential(true),
     )
 }

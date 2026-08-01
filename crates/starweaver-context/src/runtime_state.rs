@@ -1,9 +1,10 @@
 //! Ephemeral state used only while an agent context is executing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use starweaver_core::Metadata;
+use starweaver_model::ToolDefinition;
 
 use crate::{
     AgentStreamQueueRegistry, ContextLifecycleState, ToolCapabilityGrant, ToolIdWrapper,
@@ -47,6 +48,15 @@ pub struct RuntimeEphemeralState {
     /// Current runtime run step for context-aware preparation.
     #[serde(skip)]
     pub current_run_step: usize,
+    /// Canonical tool names that survived the active request's complete prepare pipeline.
+    #[serde(skip)]
+    pub prepared_tool_names: BTreeSet<String>,
+    /// Exact final definitions committed to the active model request, keyed by canonical name.
+    #[serde(skip)]
+    pub prepared_tool_definitions: BTreeMap<String, ToolDefinition>,
+    /// Exact `CodeAct` targets admitted from that immutable prepared request snapshot.
+    #[serde(skip)]
+    pub prepared_codeact_target_names: BTreeSet<String>,
     /// Host-authorized per-tool grants, never persisted in resumable state.
     #[serde(skip)]
     pub tool_capability_grants: BTreeMap<String, ToolCapabilityGrant>,
@@ -65,6 +75,9 @@ impl Default for RuntimeEphemeralState {
             lifecycle: ContextLifecycleState::default(),
             run_toolsets_closed: true,
             current_run_step: 0,
+            prepared_tool_names: BTreeSet::new(),
+            prepared_tool_definitions: BTreeMap::new(),
+            prepared_codeact_target_names: BTreeSet::new(),
             tool_capability_grants: BTreeMap::new(),
         }
     }

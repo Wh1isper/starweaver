@@ -37,6 +37,7 @@ flowchart TD
 - Provide application sessions with context export/restore.
 - Provide policy presets for model, tools, approval, output, streaming, observability, and durability.
 - Assemble first-party capability bundles and toolsets.
+- Provide opt-in CodeAct composition over the canonical runtime tool path and promote stable compositions into reusable recipes.
 - Bind environment providers to filesystem, shell, process, resource, and sandbox tools.
 - Keep environment-backed bundles implementation-neutral so local, virtual,
   envd-backed, sandbox, and composite providers can share the same tool surface.
@@ -63,10 +64,11 @@ flowchart TD
 | notes/tasks/bus      | context stores and first-party tool bundles               |
 | skills               | serializable skill specs and tool bundles                 |
 | tool proxy           | first-party proxy toolset features                        |
+| code composition     | constrained CodeAct execution and reusable recipe tools   |
 | Python SDK           | `starweaver-py` in-process bindings and Python tools      |
 | observability        | OTel GenAI spans, Langfuse metadata, trace propagation    |
 
-Async model delegation and its product lifetime contract are specified in `06-async-subagent-execution.md`; the base registry, inheritance, and skill contract remains in `04-subagents-skills.md`. Agent-facing durable session query/control is specified separately in `../ops/08-agent-session-management.md`.
+Async model delegation and its product lifetime contract are specified in `06-async-subagent-execution.md`; the base registry, inheritance, and skill contract remains in `04-subagents-skills.md`. CodeAct composition, the canonical nested-tool path, and reusable recipes are specified in `07-codeact-tool-composition.md`. Agent-facing durable session query/control is specified separately in `../ops/08-agent-session-management.md`.
 
 ## Python SDK Subspecs
 
@@ -92,4 +94,6 @@ The Python SDK product and architecture contract lives under `python/`:
 - subagent lifecycle tests pass
 - environment provider fakes cover file and shell operations
 - first-party tool bundles register through capabilities
+- CodeAct child calls retain canonical target grants, hooks, usage, and evidence
+- recipe re-execution remains distinct from read-only evidence replay
 - runtime kernel behavior remains owned by core crates

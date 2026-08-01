@@ -1,5 +1,7 @@
 //! Task tool operations.
 
+use std::sync::Arc;
+
 use serde_json::Value;
 use starweaver_context::{Task, TaskContextHandle, TaskStatus};
 use starweaver_core::Metadata;
@@ -16,15 +18,9 @@ pub(super) async fn task_create(
     let description = arguments.description;
     let active_form = arguments.active_form;
     let metadata = value_to_metadata(arguments.metadata);
-    let handle = context.dependency::<TaskContextHandle>();
-    let (task, snapshot) = if let Some(handle) = handle {
-        handle.update(|manager| manager.create(subject, description, active_form, metadata))
-    } else {
-        let mut task = Task::new("1", subject, description);
-        task.active_form = active_form;
-        task.metadata = metadata;
-        (task.clone(), vec![task])
-    };
+    let handle = task_handle(&context, "task_create")?;
+    let (task, snapshot) =
+        handle.update(|manager| manager.create(subject, description, active_form, metadata));
     Ok(task_result(
         "task_create",
         serde_json::json!({"task": task, "tasks": snapshot}),
@@ -37,7 +33,7 @@ pub(super) async fn task_get(
     arguments: TaskIdArgs,
 ) -> Result<ToolResult, ToolError> {
     let requested_id = normalize_task_id(&arguments.task_id);
-    let tasks = with_task_snapshot_event(&context);
+    let tasks = with_task_snapshot_event(&context, "task_get")?;
     let task = tasks
         .iter()
         .find(|task| normalize_task_id(&task.id) == requested_id)
@@ -59,9 +55,7 @@ pub(super) async fn task_update(
     arguments: TaskUpdateArgs,
 ) -> Result<ToolResult, ToolError> {
     let requested_id = normalize_task_id(&arguments.task_id);
-    let handle = context.dependency::<TaskContextHandle>();
-    let mut updated = None;
-    let mut snapshot = Vec::new();
+    let handle = task_handle(&context, "task_update")?;
     let update_metadata = value_to_metadata(arguments.metadata.clone());
     let parsed_status = match arguments
         .status
@@ -81,21 +75,19 @@ pub(super) async fn task_update(
         None => None,
     };
 
-    if let Some(handle) = handle {
-        (updated, snapshot) = handle.update(|manager| {
-            manager.update(
-                &requested_id,
-                parsed_status.clone(),
-                arguments.subject.clone(),
-                arguments.description.clone(),
-                arguments.active_form.clone().map(Some),
-                arguments.owner.clone().map(Some),
-                arguments.add_blocks.as_deref(),
-                arguments.add_blocked_by.as_deref(),
-                Some(&update_metadata),
-            )
-        });
-    }
+    let (updated, snapshot) = handle.update(|manager| {
+        manager.update(
+            &requested_id,
+            parsed_status.clone(),
+            arguments.subject.clone(),
+            arguments.description.clone(),
+            arguments.active_form.clone().map(Some),
+            arguments.owner.clone().map(Some),
+            arguments.add_blocks.as_deref(),
+            arguments.add_blocked_by.as_deref(),
+            Some(&update_metadata),
+        )
+    });
 
     let payload = serde_json::json!({
         "task_id": requested_id,
@@ -113,7 +105,7 @@ pub(super) async fn task_list(
     context: ToolContext,
     _arguments: EmptyToolArgs,
 ) -> Result<ToolResult, ToolError> {
-    let tasks = with_task_snapshot_event(&context);
+    let tasks = with_task_snapshot_event(&context, "task_list")?;
     let user_content = task_list_text(&tasks);
     Ok(task_result(
         "task_list",
@@ -122,10 +114,23 @@ pub(super) async fn task_list(
     ))
 }
 
-fn with_task_snapshot_event(context: &ToolContext) -> Vec<Task> {
+fn with_task_snapshot_event(
+    context: &ToolContext,
+    tool_name: &str,
+) -> Result<Vec<Task>, ToolError> {
+    Ok(task_handle(context, tool_name)?.snapshot())
+}
+
+fn task_handle(
+    context: &ToolContext,
+    tool_name: &str,
+) -> Result<Arc<TaskContextHandle>, ToolError> {
     context
         .dependency::<TaskContextHandle>()
-        .map_or_else(Vec::new, |handle| handle.snapshot())
+        .ok_or_else(|| ToolError::Execution {
+            tool: tool_name.to_string(),
+            message: "task context capability was not installed for this tool".to_string(),
+        })
 }
 
 fn normalize_task_id(id: &str) -> String {

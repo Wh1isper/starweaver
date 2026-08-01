@@ -155,6 +155,17 @@ Deterministic local model ids remain available for tests and offline validation:
 
 Use `openai-responses-ws:<model>` only when you want to opt in to Responses WebSocket streaming. Starweaver will prefer WebSocket for streaming requests and automatically fall back to HTTP server-sent events for retryable pre-event WebSocket failures. Plain `openai-responses:<model>` remains HTTP-first because most Responses-compatible endpoints do not support WebSocket streaming.
 
+## CodeAct and recipes
+
+CLI profiles include bounded `run_code` composition and file-backed recipe tools by default. Recipes are loaded from `.starweaver/recipes` through the active environment provider. The same global/project configuration layering used by other CLI settings can disable both surfaces:
+
+```toml
+[codeact]
+enabled = false
+```
+
+The independent standalone RPC host uses the same default and the same explicit `rpc.toml` switch. Its runtime configuration snapshots pin the effective setting. Supervised launch-envelope hosts remain disabled. Enabling the surface does not make Legacy, plain Filtered, ungranted, unavailable, or product-denied tools callable from code. See [CodeAct and Recipes](codeact.md) for the sandbox and recipe contracts.
+
 ## Provider configuration
 
 Initialize config, then export provider API keys:

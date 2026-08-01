@@ -93,7 +93,11 @@ on product-specific implementations:
 - `context_tools()` for context handoff, notes, and explicit thinking tools.
 - `host_io_tools()` for host-backed search, fetch, scrape, download, and remote media reading.
 - `skill_tools(...)` for discovered skill packages.
+- `codeact_tools(...)` for bounded synchronous JavaScript composition over eligible Strict tools.
+- `recipe_tools(...)` for context-prepared, file-backed high-level recipes pinned through the active environment provider.
 - `live_mcp_toolset(...)` for host-backed live MCP discovery and calls.
+
+See [CodeAct and Recipes](codeact.md) for executor limits, tool eligibility, recipe layout, and product defaults.
 
 ## Choosing the entry point
 
