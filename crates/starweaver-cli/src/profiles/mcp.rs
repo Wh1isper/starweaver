@@ -52,10 +52,10 @@ fn configured_mcp_toolsets_with_descriptions(
             let transport = parse_mcp_transport(&value)?;
             let toolset_id = format!("mcp_{name}");
             let mut toolset_config = McpToolsetConfig::new(toolset_id.clone(), transport);
-            if let Some(prefix) = value.get("tool_prefix").and_then(serde_json::Value::as_str) {
+            if config.mcp_mode() == McpExposureMode::Direct
+                && let Some(prefix) = direct_mcp_tool_prefix(&name, &value)
+            {
                 toolset_config = toolset_config.with_tool_prefix(prefix);
-            } else if config.mcp_mode() == McpExposureMode::Direct {
-                toolset_config = toolset_config.with_tool_prefix(&name);
             }
             if value
                 .get("include_instructions")
@@ -80,6 +80,21 @@ fn configured_mcp_toolsets_with_descriptions(
             Some(Arc::new(McpToolset::new(toolset_config)) as DynToolset)
         })
         .collect()
+}
+
+fn direct_mcp_tool_prefix<'a>(name: &'a str, value: &'a serde_json::Value) -> Option<&'a str> {
+    match value.get("prefix") {
+        Some(serde_json::Value::String(prefix)) => (!prefix.is_empty()).then_some(prefix.as_str()),
+        // Explicit null has the same behavior as omitting the new field: use the server name.
+        Some(_) => Some(name),
+        // Preserve the pre-existing Starweaver spelling for existing configurations.
+        None => match value.get("tool_prefix") {
+            Some(serde_json::Value::String(prefix)) => {
+                (!prefix.is_empty()).then_some(prefix.as_str())
+            }
+            _ => Some(name),
+        },
+    }
 }
 
 fn mcp_namespace_description(value: &serde_json::Value) -> Option<String> {

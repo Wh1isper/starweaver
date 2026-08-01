@@ -101,6 +101,7 @@ Current landed CLI foundations:
 - `clap` command surface, launcher dispatch, `sw` alias, installer/update paths, diagnostics, setup templates, auth status/logout, profile and catalog commands
 - headless prompt runs, local SQLite sessions/runs, display JSONL replay, approval/deferred commands, resume, trim, current-session pointer, and retained TUI renderer
 - config parser for global/project roots, model profiles, selected environment values, tools/MCP metadata, skill/subagent directories, and unmapped metadata
+- direct MCP exposure uses `<server>_<tool>` by default; per-server `prefix` replaces the server namespace, `""` exposes the native name, and omitted/`null` retains the default, while proxy exposure ignores per-server prefixes and retains the fixed `mcp_search_tool`/`mcp_call_tool` surface and stable `mcp_<server>` namespaces derived from server keys
 - global config bootstrap under `~/.starweaver`, including `skills`, `subagents`, and `tui` state directories
 - responsive TUI state/render/terminal modules, active-run steering, session restore, inline durable HITL decisions, `/help`, `/clear`, `/cost`, `/display`, `/model`, `/session`, `/goal`, asynchronous environment-backed bang-shell execution, streamed tool-call rendering, process-level provider session affinity, and model/display persistence under `~/.starweaver/tui/state.json`
 - partial worktree parsing and run metadata support

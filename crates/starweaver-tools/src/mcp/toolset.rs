@@ -78,10 +78,7 @@ struct McpTool {
 
 impl McpTool {
     fn new(config: McpToolsetConfig, spec: McpToolSpec) -> Self {
-        let name = config.tool_prefix.as_ref().map_or_else(
-            || spec.name.clone(),
-            |prefix| format!("{prefix}_{}", spec.name),
-        );
+        let name = config.exposed_tool_name(&spec.name);
         Self { config, spec, name }
     }
 }

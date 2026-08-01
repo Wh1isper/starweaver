@@ -127,7 +127,7 @@ mcp_servers = ["docs"]
       "command": "docs-mcp",
       "args": ["--serve"],
       "cwd": "workspace",
-      "tool_prefix": "docs",
+      "prefix": "reference",
       "include_instructions": true,
       "init_timeout_ms": 10000,
       "read_timeout_ms": 30000,
@@ -142,7 +142,7 @@ mcp_servers = ["docs"]
 }
 ```
 
-`mcp_config_path` is relative to `rpc.toml`. `STARWEAVER_RPC_MCP_CONFIG` overrides it; a relative environment value is relative to the process working directory. A relative stdio `cwd` is relative to the MCP JSON file. Profile `mcp_servers` is a duplicate-free set; omitting it selects every server in the explicit file. RPC supports stdio and streamable HTTP and rejects standalone SSE before starting a run.
+`mcp_config_path` is relative to `rpc.toml`. `STARWEAVER_RPC_MCP_CONFIG` overrides it; a relative environment value is relative to the process working directory. A relative stdio `cwd` is relative to the MCP JSON file. Profile `mcp_servers` is a duplicate-free set; omitting it selects every server in the explicit file. The optional `prefix` changes only model-facing tool names; `""` exposes native names, while an omitted or `null` value leaves names unprefixed in the product-neutral/RPC configuration path. The server key remains the MCP identity. The legacy `tool_prefix` spelling is accepted when reading existing files, but new configuration should use `prefix`. RPC supports stdio and streamable HTTP and rejects standalone SSE before starting a run.
 
 The document is strict: unknown or transport-mismatched fields, missing commands or URLs, non-string environment/header values, invalid URLs, and zero timeouts fail startup. `init_timeout_ms` bounds connection and discovery, `read_timeout_ms` bounds each tool call, and `exit_timeout_ms` bounds transport cleanup. Cleanup defaults to 10 seconds when omitted. Do not commit credentials in the JSON file; header values are literal strings and are not variable-expanded. Deferred records and events expose only the transport kind and never serialize URLs, headers, commands, arguments, working directories, or environment values.
 

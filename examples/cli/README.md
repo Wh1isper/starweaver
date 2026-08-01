@@ -54,6 +54,8 @@ starweaver-cli tools list
 starweaver-cli mcp list
 ```
 
+Direct MCP tools use `<server>_<tool>` names by default. In `mcp.json`, `prefix` may replace the server namespace, `""` exposes native tool names, and omitted or `null` keeps the default. Proxy mode ignores this field.
+
 Skills and subagents are loaded from configured directories. Default skill discovery includes `~/.starweaver/skills`, shared Agent Skills in `~/.agents/skills`, and project `.starweaver/skills`:
 
 ```toml

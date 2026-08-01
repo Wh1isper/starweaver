@@ -323,7 +323,7 @@ starweaver-cli tools list
 starweaver-cli tools doctor
 ```
 
-MCP servers are read from global and project `mcp.json`. By default, each server's declared tools are exposed directly with namespaced `<server>_<tool>` names. Set `tools.mcp_mode = "proxy"` to expose only `mcp_search_tool` and `mcp_call_tool`, which keeps the model-facing tool surface stable when many MCP tools are configured. Servers that omit declared tools or cannot be materialized are tolerated in both modes. Calls defer to the host MCP runtime with server, transport, exposed tool name, and arguments recorded in the deferred-call metadata. Profiles can also validate MCP server names through `mcp_servers` in `AgentSpec`.
+MCP servers are read from global and project `mcp.json`. By default, each server's declared tools are exposed directly with namespaced `<server>_<tool>` names. In direct mode, set a server's optional `prefix` to replace `<server>`, or set it to `""` to expose native tool names without a prefix. Omitting `prefix` or setting it to `null` preserves the server-name default. Set `tools.mcp_mode = "proxy"` to expose only `mcp_search_tool` and `mcp_call_tool`, which keeps the model-facing tool surface stable when many MCP tools are configured; proxy mode ignores per-server prefixes and continues to use stable `mcp_<server>` toolset namespaces derived from server keys. Servers that omit declared tools or cannot be materialized are tolerated in both modes. Calls defer to the host MCP runtime with server, transport, exposed tool name, and arguments recorded in the deferred-call metadata. Profiles can also validate MCP server names through `mcp_servers` in `AgentSpec`.
 
 ```json
 {
@@ -332,6 +332,7 @@ MCP servers are read from global and project `mcp.json`. By default, each server
       "transport": "stdio",
       "command": "npx",
       "args": ["-y", "@example/docs-mcp"],
+      "prefix": "reference",
       "tools": [
         {
           "name": "lookup",

@@ -88,10 +88,24 @@ impl McpToolsetConfig {
     }
 
     /// Set a tool prefix.
+    ///
+    /// An empty prefix exposes the native MCP tool name without a leading underscore.
     #[must_use]
     pub fn with_tool_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.tool_prefix = Some(prefix.into());
         self
+    }
+
+    /// Resolve the model-facing name for one native MCP tool name.
+    #[must_use]
+    pub fn exposed_tool_name(&self, tool_name: &str) -> String {
+        self.tool_prefix
+            .as_deref()
+            .filter(|prefix| !prefix.is_empty())
+            .map_or_else(
+                || tool_name.to_string(),
+                |prefix| format!("{prefix}_{tool_name}"),
+            )
     }
 
     /// Set read timeout.

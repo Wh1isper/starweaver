@@ -28,7 +28,7 @@ use starweaver_agent::{
     LiveMcpServerSnapshot, McpPromptSpec, McpResourceSpec, McpSamplingSpec, McpSubscriptionSpec,
     McpToolSpec, McpToolsetConfig, McpTransport, RmcpLiveMcpClient, TOOLSET_CLOSED_EVENT_KIND,
     TOOLSET_INITIALIZED_EVENT_KIND, TestModel, ToolContext, ToolRegistry, ToolResult,
-    lazy_live_mcp_toolset, live_mcp_toolset,
+    lazy_live_mcp_toolset, live_mcp_toolset, live_mcp_toolset_with_config,
 };
 use starweaver_core::{AgentId, ConversationId, RunId};
 use starweaver_model::ToolCallPart;
@@ -36,7 +36,7 @@ use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
-async fn live_mcp_adapter_discovers_toolset() {
+async fn live_mcp_adapter_discovers_toolset_and_honors_prefixes() {
     struct FakeMcp;
 
     #[async_trait]
@@ -69,6 +69,27 @@ async fn live_mcp_adapter_discovers_toolset() {
     assert_eq!(toolset.name(), "local");
     assert_eq!(toolset.get_tools()[0].name(), "lookup");
     assert_eq!(toolset.get_instructions().len(), 1);
+
+    let custom = live_mcp_toolset_with_config(
+        Arc::new(FakeMcp),
+        McpToolsetConfig::new("custom", McpTransport::stdio("fake-server"))
+            .with_tool_prefix("docs"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(custom.get_tools()[0].name(), "docs_lookup");
+    assert_eq!(custom.get_tools()[0].metadata()["mcp_server_id"], "custom");
+    assert_eq!(custom.get_tools()[0].metadata()["mcp_tool_name"], "lookup");
+
+    let unprefixed = live_mcp_toolset_with_config(
+        Arc::new(FakeMcp),
+        McpToolsetConfig::new("unprefixed", McpTransport::stdio("fake-server"))
+            .with_tool_prefix(""),
+    )
+    .await
+    .unwrap();
+    assert_eq!(unprefixed.get_tools()[0].name(), "lookup");
+    assert_ne!(unprefixed.get_tools()[0].name(), "_lookup");
 }
 
 #[tokio::test]

@@ -4267,7 +4267,7 @@ mod tests {
             let run_id = run_id.clone();
             tokio::spawn(async move {
                 coordinator
-                    .await_terminal(&session_id, &run_id, Some(Duration::from_millis(500)))
+                    .await_terminal(&session_id, &run_id, Some(TEST_RUN_COMPLETION_TIMEOUT))
                     .await
             })
         };
@@ -4287,7 +4287,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let terminal = tokio::time::timeout(Duration::from_secs(1), awaiting)
+        let terminal = tokio::time::timeout(TEST_RUN_COMPLETION_TIMEOUT, awaiting)
             .await
             .unwrap()
             .unwrap()
