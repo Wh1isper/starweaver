@@ -235,11 +235,15 @@ make ci
 
 `make rpc-contracts-check` remains the complete standalone in-process/stdio/HTTP contract gate. The aggregate `make ci` uses the ordered `rpc-ci-check` composition so workspace tests provide typed in-process coverage before `rpc-integration-check` builds one normal dev-profile CLI/RPC binary pair and reuses it across the stdio/HTTP and bidirectional subprocess gates.
 
-Before a release, also run the Rust semver and classified Python API gate:
+Before a release, also run the Rust semver and classified Python API gate for the candidate tag:
 
 ```bash
-make release-api-check
+make release-api-check TAG=vX.Y.Z
 ```
+
+The semver gate compares the permanent `0.0.0-dev.0` workspace against
+`spec/capabilities.toml:last_verified_release` and derives the allowed release type from the candidate
+tag.
 
 For Python package validation, run:
 

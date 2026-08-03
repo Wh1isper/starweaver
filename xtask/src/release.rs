@@ -66,6 +66,13 @@ struct ParsedReleaseTag<'a> {
     channel: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+struct SemverCheckPlan {
+    baseline_version: String,
+    release_version: String,
+    release_type: &'static str,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ReleaseManifest {
@@ -177,6 +184,63 @@ pub fn release_tag(args: &[String]) -> Result<(), String> {
         serde_json::to_string(&parsed).map_err(|error| error.to_string())?
     );
     Ok(())
+}
+
+pub fn semver_check_plan(args: &[String]) -> Result<(), String> {
+    if args.len() != 1 {
+        return Err("usage: semver-check-plan <tag>".to_string());
+    }
+    let parsed = parse_release_tag(&args[0])?;
+    let release_version = parse_publish_version(parsed.version)?;
+    let repository = root()?;
+    let baseline_version = read_last_verified_release(&repository)?;
+    let plan = SemverCheckPlan {
+        release_type: classify_semver_release_type(&baseline_version, &release_version)?,
+        baseline_version: baseline_version.to_string(),
+        release_version: release_version.to_string(),
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&plan).map_err(|error| error.to_string())?
+    );
+    Ok(())
+}
+
+fn read_last_verified_release(repository: &Path) -> Result<Version, String> {
+    let path = repository.join("spec/capabilities.toml");
+    let source =
+        fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let document = source
+        .parse::<toml::Value>()
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let value = document
+        .get("last_verified_release")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| format!("{} has no last_verified_release", path.display()))?;
+    Version::parse(value).map_err(|error| {
+        format!(
+            "{} has invalid last_verified_release {value}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn classify_semver_release_type(
+    baseline: &Version,
+    release: &Version,
+) -> Result<&'static str, String> {
+    if release <= baseline {
+        return Err(format!(
+            "release version {release} must be newer than semver baseline {baseline}"
+        ));
+    }
+    if release.major > baseline.major {
+        Ok("major")
+    } else if release.minor > baseline.minor {
+        Ok("minor")
+    } else {
+        Ok("patch")
+    }
 }
 
 pub fn release_manifest(args: &[String]) -> Result<(), String> {
@@ -1316,6 +1380,27 @@ mod tests {
         }
         assert!(parse_release_tag("python-v1.2.3-rc.1").is_ok());
         assert!(parse_release_tag("sdk-v1.2.3-foo.1").is_ok());
+    }
+
+    #[test]
+    fn semver_check_plan_classifies_the_candidate_against_the_public_baseline() {
+        let baseline = Version::parse("0.13.0").unwrap_or_else(|error| panic!("{error}"));
+        for (candidate, expected) in [
+            ("1.0.0", "major"),
+            ("0.14.0", "minor"),
+            ("0.13.1", "patch"),
+            ("0.13.1-rc.1", "patch"),
+        ] {
+            let candidate = Version::parse(candidate).unwrap_or_else(|error| panic!("{error}"));
+            assert_eq!(
+                classify_semver_release_type(&baseline, &candidate),
+                Ok(expected)
+            );
+        }
+        let same = Version::parse("0.13.0").unwrap_or_else(|error| panic!("{error}"));
+        let older = Version::parse("0.12.9").unwrap_or_else(|error| panic!("{error}"));
+        assert!(classify_semver_release_type(&baseline, &same).is_err());
+        assert!(classify_semver_release_type(&baseline, &older).is_err());
     }
 
     #[test]
