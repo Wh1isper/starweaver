@@ -1,17 +1,43 @@
 # Release
 
-Starweaver uses one workspace version for maintained Rust crates, CLI artifacts, and Python distributions. The repository development version should stay on a pre-release version such as `X.Y.Z-dev.0`. A release commit promotes that version to the public release version `X.Y.Z`.
+Starweaver keeps all checked-in maintained Rust and Python package metadata at the permanent development
+version `0.0.0-dev.0`. A release tag points directly at reviewed source on `main`; no release-version
+commit, release branch, automated commit, or version pull request is created. Release jobs prepare the
+selected public version only inside their isolated checkout.
 
 > [!WARNING]
 > Desktop is WIP. Desktop version updates, validation, packaging, Desktop-managed RPC update assets,
-> and publication are paused and are not part of the maintained release workflow.
+> and publication remain paused and are not part of the maintained release workflow.
 
-Publishing a GitHub Release for a `vX.Y.Z` tag is the publishing trigger. The tag must point at a
-commit whose workspace version is exactly `X.Y.Z`.
+## Release scopes and tags
+
+Each canonical tag selects one release scope:
+
+| Scope        | Tag                   | Published components                                                                  |
+| ------------ | --------------------- | ------------------------------------------------------------------------------------- |
+| Full         | `vX.Y.Z`              | CLI suite, host protocol, Computer Use MCP, Rust SDK crates, and Python distributions |
+| CLI          | `cli-vX.Y.Z`          | CLI suite and host protocol                                                           |
+| Computer Use | `computer-use-vX.Y.Z` | macOS Computer Use MCP archives                                                       |
+| Rust SDK     | `sdk-vX.Y.Z`          | maintained crates on crates.io                                                        |
+| Python       | `python-vX.Y.Z`       | Python sdist and wheels on PyPI                                                       |
+
+SemVer prerelease tags such as `cli-v1.2.0-beta.1` produce prerelease GitHub Releases. Build metadata is
+not accepted. Full and Python prereleases must use exactly one canonical PEP 440-compatible spelling:
+`alpha.N`, `beta.N`, `rc.N`, or `dev.N`. Full stable releases are the only releases allowed to become
+GitHub's `Latest` release; component and prerelease releases set `latest=false`.
+
+The first release made after adopting this component contract must be a full `vX.Y.Z` release. This
+preserves the existing `/releases/latest` bootstrap path while newer launchers learn to discover both
+full and component releases.
 
 ## 0.7 boundary migration
 
-The architecture consolidation intentionally changes released 0.6 contracts: CLI and standalone RPC are independent products, protocol and durable DTOs use their new typed/versioned owners, runtime checkpoint/stream contracts moved to lower owning crates, and `AgentContext` fields moved under explicit components. These are accepted as a pre-1.0 minor-version break, so the unified workspace and Python distribution version advances to `0.7.0`; prohibited CLI/RPC coupling and broad mutable context fields are not restored as compatibility shims.
+The architecture consolidation intentionally changes released 0.6 contracts: CLI and standalone RPC
+are independent products, protocol and durable DTOs use their new typed/versioned owners, runtime
+checkpoint/stream contracts moved to lower owning crates, and `AgentContext` fields moved under
+explicit components. These are accepted as a pre-1.0 minor-version break, so the unified workspace and
+Python distribution version advances to `0.7.0`; prohibited CLI/RPC coupling and broad mutable context
+fields are not restored as compatibility shims.
 
 ## Current context migration notes
 
@@ -44,80 +70,92 @@ serialization. Direct Rust field access must be updated to `context.runtime.<exe
 `context.tools.<tool_state_field>`. These changes must be called out in release notes and reviewed
 under the workspace semver policy.
 
-## Prepare release
+## Validate before tagging
 
-Prepare a release branch from the repository root:
-
-```bash
-gh workflow run prepare-release.yml -f version=X.Y.Z
-```
-
-The workflow:
-
-1. validates the requested semver version,
-2. installs the pinned `cargo-semver-checks` `0.48.0`,
-3. runs `make upversion VERSION=X.Y.Z`, updating maintained Rust and Python metadata,
-4. runs maintained IDL, RPC, independent-client, Python, documentation, publish-dry-run, and `make release-api-check` gates,
-5. pushes `release/vX.Y.Z`,
-6. writes the manual pull request URL to the workflow summary.
-
-After the release pull request is merged into `main`, publish the GitHub Release:
+Release automation packages and publishes; it does not replace the pre-tag validation gate. From a
+clean `main` checkout, run:
 
 ```bash
-merge_commit=$(gh pr view <release-pr-number> --json mergeCommit --jq .mergeCommit.oid)
-gh release create vX.Y.Z --target "$merge_commit" --title "Starweaver vX.Y.Z" --generate-notes
-```
-
-Use the release pull request merge commit as the release target, not the mutable `main` branch, so
-the tag always points at the reviewed release commit.
-
-`make release-api-check` verifies three reviewed boundaries: the `starweaver-agent` root,
-`prelude`, and `advanced` allowlist snapshot; the classified Python top-level export snapshot; and
-Rust semver compatibility against the latest release. `starweaver-storage` is excluded from the
-registry comparison for 0.7 because no 0.6 crate was published; remove that first-publication
-exception after 0.7 becomes its baseline. The gate also smoke-tests the built Python wheel.
-Intentional Rust facade changes are accepted with `cargo run -p xtask -- check-agent-api --bless`
-after review; intentional Python changes update `tests/fixtures/api/top-level-v1.json` in the same
-review.
-
-For fully local preparation, install the same checker version used by CI first:
-
-```bash
-cargo install cargo-semver-checks --version 0.48.0 --locked
-make upversion VERSION=X.Y.Z
 make ci
 make release-api-check
 make cli-smoke
 make py-wheel-smoke
 make publish-dry-run
-git add Cargo.toml Cargo.lock pyproject.toml uv.lock packages/starweaver-py
-git commit -m "Prepare release vX.Y.Z"
-git push
-gh release create vX.Y.Z --target "$(git rev-parse HEAD)" --title "Starweaver vX.Y.Z" --generate-notes
 ```
 
-## Release workflow
+`make release-api-check` verifies the reviewed Rust facade, classified Python exports, semver
+compatibility, and a built-wheel smoke test. Intentional Rust facade changes are accepted with
+`cargo run -p xtask -- check-agent-api --bless` after review; intentional Python changes update
+`tests/fixtures/api/top-level-v1.json` in the same review.
 
-Publishing the GitHub Release triggers `.github/workflows/release.yml`:
+Validate the intended tag before pushing it:
 
-1. build CLI launcher archives, including the standalone RPC binary,
-2. build the input-capable `starweaver-computer-use-mcp` binary for both macOS Rust targets,
-3. package the self-contained public host OpenRPC bundle, generated manifest, and canonical source schemas,
-4. build Python source and wheel distributions for `packages/starweaver-py`,
-5. upload maintained core assets with `checksums.txt`,
-6. publish maintained workspace crates, including `starweaver-computer-use`, in dependency order through the `Release` environment, and
-7. publish the Python package to PyPI through the `Release` environment.
+```bash
+make release-tag-check TAG=cli-vX.Y.Z
+```
 
-The retained Desktop installer and Desktop-managed runtime update jobs are statically disabled while
-Desktop remains WIP. They do not build, sign, attest, or upload release assets.
+For a local rehearsal of the exact metadata transform, use a disposable checkout and do not commit its
+changes:
 
-Release-event publishing is packaging-only. Run validation before merging the release pull request,
-not inside `.github/workflows/release.yml`. Published core asset names are immutable: release jobs
-refuse to replace an existing asset and publish payloads before checksums. A transient failure before
-any upload may be rerun. If
-an upload stops after creating only part of a lane, maintainers must inspect and explicitly remove the
-partial assets before retrying, or publish a new version; automation never deletes a previously
-published asset on its own.
+```bash
+git worktree add --detach ../starweaver-release-rehearsal HEAD
+make -C ../starweaver-release-rehearsal release-prepare SCOPE=cli VERSION=X.Y.Z
+# Run any scope-specific build or validation commands, then remove the worktree.
+git worktree remove ../starweaver-release-rehearsal
+```
+
+`release-prepare` requires the checked-in development version and updates only the selected scope. A
+full or SDK rehearsal rewrites workspace versions and internal dependency constraints; a Python
+rehearsal rewrites Python package metadata; CLI and Computer Use releases retain source package
+metadata and inject their public distribution identity at build time. None of these rehearsal changes
+belong on `main`.
+
+## Create a release
+
+After validation succeeds, create one canonical tag on the exact reviewed commit and push only that
+tag:
+
+```bash
+git switch main
+git pull --ff-only
+git tag -a vX.Y.Z -m "Starweaver vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+Use the corresponding component tag for a component-only release. Tags are immutable and must point
+to a commit reachable from `main`; do not move or recreate a release tag.
+
+`.github/workflows/release-components.yml` is the maintained tag router. It parses the tag with
+`xtask release-tag` and invokes only the selected reusable lanes:
+
+- `.github/workflows/release-cli.yml` builds four CLI/RPC archives and three protocol assets;
+- `.github/workflows/release-computer-use.yml` builds the two macOS MCP archives;
+- `.github/workflows/release-python.yml` builds the sdist and wheels;
+- `.github/workflows/release-sdk.yml` publishes maintained crates in dependency order; and
+- `.github/workflows/release-python-publish.yml` publishes prepared Python distributions.
+
+Every build checkout pins the source SHA parsed by the router, rather than resolving the tag again,
+and runs the reviewed scoped `release-prepare` transform. Binary builds receive
+`STARWEAVER_RELEASE_VERSION` and the exact tagged commit through `STARWEAVER_BUILD_REVISION`, so
+runtime diagnostics report the public distribution version, source revision, and Rust target even
+though checked-in package metadata remains `0.0.0-dev.0`.
+
+The router enforces this publication order:
+
+1. build every downloadable asset selected by the scope;
+2. generate and verify `starweaver-release.json`, including exact asset sizes and SHA-256 digests;
+3. generate `checksums.txt` covering primary assets and the release manifest;
+4. create a private draft GitHub Release, or verify that a retained draft has byte-identical assets;
+5. publish crates.io when the scope is `full` or `sdk`;
+6. publish PyPI when the scope is `full` or `python` (after crates.io for `full`); and
+7. publish the verified GitHub Release last.
+
+A failure leaves a draft rather than a partially public release. Reruns accept only a draft whose
+complete asset set is byte-identical. Once public, assets are immutable and automation refuses to
+replace them. The dormant `.github/workflows/release.yml` remains only as a reference container for
+frozen Desktop/runtime jobs and is not called by the maintained release path.
+
+## Release assets
 
 CLI archives are built for:
 
@@ -126,111 +164,79 @@ CLI archives are built for:
 - `starweaver-cli-vX.Y.Z-aarch64-apple-darwin.tar.gz`
 - `starweaver-cli-vX.Y.Z-x86_64-pc-windows-msvc.zip`
 
-Unix archives contain:
+Unix archives contain `starweaver`, `starweaver-cli`, `sw`, and `starweaver-rpc`; Windows archives
+contain the corresponding `.exe` files.
 
-```text
-starweaver
-starweaver-cli
-sw
-starweaver-rpc
-```
+CLI and full releases also include:
 
-Windows archives contain:
+- `starweaver-host-X.Y.Z.openrpc.json`;
+- `starweaver-host-X.Y.Z.manifest.json`; and
+- `starweaver-host-X.Y.Z-schemas.tar.gz`.
 
-```text
-starweaver.exe
-starweaver-cli.exe
-sw.exe
-starweaver-rpc.exe
-```
+Computer Use and full releases include:
 
-The release also includes:
+- `starweaver-computer-use-mcp-vX.Y.Z-x86_64-apple-darwin.tar.gz`; and
+- `starweaver-computer-use-mcp-vX.Y.Z-aarch64-apple-darwin.tar.gz`.
 
-- `starweaver-computer-use-mcp-vX.Y.Z-x86_64-apple-darwin.tar.gz`;
-- `starweaver-computer-use-mcp-vX.Y.Z-aarch64-apple-darwin.tar.gz`;
-- `starweaver-host-X.Y.Z.openrpc.json`, the self-contained public OpenRPC bundle;
-- `starweaver-host-X.Y.Z.manifest.json`, the generated protocol identity and inventory manifest;
-- `starweaver-host-X.Y.Z-schemas.tar.gz`, the canonical split source schemas and pinned tooling profile; and
-- `checksums.txt` for maintained CLI, protocol, and Python release assets.
+Computer Use MCP archives contain only `starweaver-computer-use-mcp`. Windows and Linux Computer Use
+release binaries remain unavailable. The macOS binaries are checksum-covered but are not Apple
+Developer ID signed or notarized. See [Computer Use](computer-use.md) for permission and local-policy
+boundaries.
 
-Computer Use MCP archives contain only `starweaver-computer-use-mcp`. Windows and Linux Computer
-Use release binaries are TBD and are not built or published. On macOS, launching the stdio server
-explicitly enables the canonical observe, pointer, and keyboard family, subject to Screen Recording,
-Accessibility/post-event permission, and active same-user unlocked-session checks. The binaries are
-checksum-covered but are not Apple Developer ID signed or notarized. Signing and notarization affect
-Gatekeeper warnings, stable TCC identity, and permission continuity across updates; they are not an
-input-availability gate. See [Computer Use](computer-use.md) for the permission and local-policy
-boundary.
+Python and full releases include one sdist and wheels for CPython 3.11, 3.12, and 3.13 on the
+configured Linux, macOS, and Windows targets. Every scope also publishes `starweaver-release.json`
+and `checksums.txt`; an SDK-only release has no component download payload beyond those metadata
+files.
 
-External TypeScript consumers generate complete bindings from the public contract with
+External TypeScript consumers generate complete bindings from the public host contract with
 `make rpc-typescript-generate OUTPUT=<empty-or-generator-owned-directory>`. Starweaver does not
-publish or maintain a separate TypeScript package.
+publish a separate TypeScript package.
 
-Python distributions include an sdist plus wheels for CPython 3.11, 3.12, and 3.13 on the configured
-Linux, macOS, and Windows targets.
+## Registry publication and recovery
 
-`make py-wheel-smoke` installs the locally built wheel into a clean virtual
-environment, runs a deterministic in-process agent smoke, and runs the
-Claw-like Python library-path and minimal product-runtime smoke examples
-against the installed artifact.
-
-## Publish crates
-
-Manual dry-run:
+Manual crate dry-run and publication commands remain:
 
 ```bash
 make publish-dry-run
-```
-
-Dependent crates cannot always be fully dry-run against crates.io before the matching Starweaver
-dependency versions are published. The dry-run target validates the release package lists, including
-`starweaver-computer-use`, and dry-runs the dependency-free first-wave crates:
-`starweaver-core`, `starweaver-usage`, and
-`starweaver-oauth`.
-
-Manual publish after validation and approval:
-
-```bash
 make publish
 ```
 
-## Recover interrupted crate publishing
+`make publish` is idempotent at the package-version level: already-published versions are skipped and
+remaining crates continue in dependency order.
 
-If the release workflow published release assets or Python distributions but failed before all crates
-reached crates.io, do not rerun the original release workflow from an outdated release tag. First
-merge a reviewed publishing fix, then dispatch the dedicated crate-publish workflow from that commit:
+If crates.io publication is interrupted after a tag exists, dispatch the recovery workflow against
+that immutable full or SDK tag:
 
 ```bash
-gh workflow run publish-crates.yml -f version=X.Y.Z
+gh workflow run publish-crates.yml -f tag=sdk-vX.Y.Z
 ```
 
-The workflow requires the `Release` environment approval, verifies that the checked-out workspace
-has exactly the requested version, and runs the idempotent `make publish` command. Already-published
-crate versions are skipped; remaining crates are published in dependency order. Preserve the existing
-GitHub Release tag during recovery; do not move, delete, or recreate it.
+The recovery job checks out the tag, parses its scope/version, applies the same ephemeral metadata
+transform, requires the `Release` environment, and publishes only missing crates. Do not move the tag
+or create a new version commit. PyPI and GitHub draft failures are recovered by rerunning the failed
+jobs in the original tag workflow; `uv publish --check-url` skips distributions already visible on
+PyPI.
 
 ## Required repository settings
 
-- `CARGO_REGISTRY_TOKEN` secret is configured.
-- `PYPI_API_TOKEN` secret is configured with a PyPI API token for the `starweaver` package.
-- Desktop updater signing variables may remain configured, but the frozen Desktop/runtime jobs do not consume them.
-- The `Release` environment exists and requires the intended approval policy.
-- Before the initial GitHub Release is created, the target tag, such as `vX.Y.Z`, does not already
-  exist. Recovery publishing reuses the existing release tag without changing it.
-- GitHub Actions has `contents: write` permission so release assets can be uploaded.
-
-The release workflow maps `PYPI_API_TOKEN` to `UV_PUBLISH_TOKEN` for `uv publish`.
-It publishes with `uv publish --check-url https://pypi.org/simple/starweaver/` so reruns skip
-distribution files that are already visible on PyPI.
+- `CARGO_REGISTRY_TOKEN` is available to the `Release` environment.
+- `PYPI_API_TOKEN` is available to the `Release` environment.
+- The `Release` environment has the intended approval policy.
+- GitHub Actions can create and edit Releases with job-scoped `contents: write` permission.
+- A repository tag ruleset prevents canonical release tags from being updated or deleted; immutable
+  GitHub Releases should also be enabled. Workflow SHA pinning remains authoritative during a run.
+- Frozen Desktop updater variables may remain configured but are not consumed by maintained release
+  lanes.
 
 ## After publishing
 
-Verify the public install path:
+Verify the public install and update paths:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh \
   | STARWEAVER_VERSION=vX.Y.Z sh
 
 starweaver version
+starweaver update --dry-run
 sw cli -p "hello" --output text
 ```

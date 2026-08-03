@@ -1,16 +1,15 @@
 //! Product launcher for `starweaver` and `sw`.
 
 use std::{
-    env, fs,
-    io::Write as _,
+    env,
+    fmt::Write as _,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    time::Duration,
+    process::Command,
 };
 
 use starweaver_core::sdk_name;
 
-use crate::{CliError, CliResult, update_check};
+use crate::{CliError, CliResult, build_info, update_check};
 
 const INSTALL_SCRIPT_URL: &str =
     "https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh";
@@ -46,7 +45,7 @@ pub(crate) struct UpdateOptions {
 }
 
 impl UpdateOptions {
-    fn with_env(self) -> Self {
+    pub(crate) fn with_env(self) -> Self {
         Self {
             dry_run: self.dry_run || env::var_os("STARWEAVER_UPDATE_DRY_RUN").is_some(),
             force: self.force || env::var_os("STARWEAVER_UPDATE_FORCE").is_some(),
@@ -58,13 +57,6 @@ impl UpdateOptions {
 struct ParsedUpdateCommand {
     target: String,
     options: UpdateOptions,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct UpdateTargetVersion {
-    version: String,
-    source: &'static str,
-    explicit: bool,
 }
 
 enum LauncherDispatch<'a> {
@@ -241,7 +233,14 @@ fn version_output(program: &str, args: &[String]) -> CliResult<String> {
         return Ok(version_help(program));
     }
     if args.is_empty() {
-        Ok(format!("{}\n", sdk_name()))
+        Ok(format!(
+            "{} {} (sdk {}, revision {}, target {})\n",
+            sdk_name(),
+            build_info::VERSION,
+            build_info::SDK_VERSION,
+            build_info::REVISION,
+            build_info::TARGET
+        ))
     } else {
         Err(CliError::Usage(
             "version does not accept positional arguments".to_string(),
@@ -273,8 +272,12 @@ fn doctor_output(program: &str, args: &[String]) -> CliResult<String> {
         ));
     }
     Ok(format!(
-        "sdk={}\nlauncher=starweaver\ncli=starweaver-cli\ninstall_script={}\n",
+        "sdk={}\ndistribution_version={}\nsdk_version={}\nrevision={}\ntarget={}\nlauncher=starweaver\ncli=starweaver-cli\ninstall_script={}\n",
         sdk_name(),
+        build_info::VERSION,
+        build_info::SDK_VERSION,
+        build_info::REVISION,
+        build_info::TARGET,
         INSTALL_SCRIPT_URL
     ))
 }
@@ -308,105 +311,80 @@ pub(crate) fn update_component_with_options(
     install_dir: &str,
     options: UpdateOptions,
 ) -> CliResult<String> {
-    let normalized = match component {
-        "all" => "all",
-        "cli" | "starweaver-cli" | "starweaver" | "launcher" | "rpc" | "starweaver-rpc" => "cli",
-        "computer-use" | "computer-use-mcp" | "starweaver-computer-use-mcp" => "computer-use",
-        other => return Err(CliError::Usage(format!("unknown update target {other}"))),
-    };
-    let command = update_shell_command(normalized, install_dir);
-    let current_version = env!("CARGO_PKG_VERSION");
-    if options.dry_run {
-        let mut output =
-            update_output_prefix(normalized, current_version, None, options, "dry-run");
-        output.push_str("command=");
-        output.push_str(&command);
-        output.push('\n');
-        return Ok(output);
+    let channel = env::var("STARWEAVER_UPDATE_CHANNEL").unwrap_or_else(|_| "stable".to_string());
+    update_component_with_channel(component, Path::new(install_dir), options, &channel)
+}
+
+pub(crate) fn update_component_with_channel(
+    component: &str,
+    install_dir: &Path,
+    options: UpdateOptions,
+    channel: &str,
+) -> CliResult<String> {
+    let normalized = normalize_update_target(component)?;
+    let components = selected_update_components(normalized);
+    if components.is_empty() {
+        return Err(CliError::Usage(
+            "no update components are selected for this platform".to_string(),
+        ));
     }
-    let target_version = resolve_update_target_version();
-    if !options.force
-        && let Some(target_version) = &target_version
-        && update_should_skip(current_version, target_version)
-        && update_installation_satisfies(normalized, Path::new(install_dir), target_version)
-    {
-        return Ok(update_output_prefix(
+    let requested = requested_version_from_env();
+    if options.dry_run {
+        return Ok(update_dry_run_output(
             normalized,
-            current_version,
-            Some(target_version),
+            &components,
+            install_dir,
+            channel,
+            requested.as_deref(),
+            options,
+        ));
+    }
+    let releases = crate::updater::resolve_releases(&components, channel, requested.as_deref())?;
+    let _install_lock = crate::updater::acquire_install_lock(install_dir)?;
+    let mut pending = Vec::new();
+    for release in &releases {
+        let installed = crate::updater::installed_version(release.component, install_dir);
+        let complete = crate::updater::component_is_complete(release.component, install_dir);
+        let exact_release = crate::updater::installed_release_matches(release, install_dir);
+        let should_install = options.force
+            || !complete
+            || if requested.is_some() {
+                !exact_release
+            } else {
+                installed.as_deref().is_none_or(|installed| {
+                    update_check::update_is_newer(installed, &release.version)
+                        || (update_check::versions_match(installed, &release.version)
+                            && !exact_release)
+                })
+            };
+        if should_install {
+            pending.push(release.clone());
+        }
+    }
+    if pending.is_empty() {
+        return Ok(update_result_output(
+            normalized,
+            &releases,
+            channel,
             options,
             "up-to-date",
         ));
     }
-    let script = fetch_install_script()?;
-    let mut command = Command::new("sh");
-    if normalized == "all" {
-        command.env_remove("STARWEAVER_COMPONENTS");
-    } else {
-        command.env("STARWEAVER_COMPONENTS", normalized);
-    }
-    let mut child = command
-        .env("STARWEAVER_INSTALL_DIR", install_dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| CliError::Run(error.to_string()))?;
-    child
-        .stdin
-        .as_mut()
-        .ok_or_else(|| CliError::Run("installer stdin unavailable".to_string()))?
-        .write_all(script.as_bytes())
-        .map_err(|error| CliError::Run(error.to_string()))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|error| CliError::Run(error.to_string()))?;
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut update = update_output_prefix(
-            normalized,
-            current_version,
-            target_version.as_ref(),
-            options,
-            "updated",
-        );
-        update.push_str(&stdout);
-        Ok(update)
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(CliError::Run(format!(
-            "update target {normalized} exited with status {}: {stderr}",
-            output.status
-        )))
-    }
+    crate::updater::install_releases(&pending, install_dir)?;
+    Ok(update_result_output(
+        normalized, &releases, channel, options, "updated",
+    ))
 }
 
-fn fetch_install_script() -> CliResult<String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| CliError::Run(error.to_string()))?;
-    runtime.block_on(async {
-        let response = reqwest::Client::new()
-            .get(INSTALL_SCRIPT_URL)
-            .header(reqwest::header::USER_AGENT, "starweaver-cli")
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-            .map_err(|error| CliError::Run(error.to_string()))?;
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|error| CliError::Run(error.to_string()))?;
-        if status.is_success() {
-            Ok(body)
-        } else {
-            Err(CliError::Run(format!(
-                "failed to download installer from {INSTALL_SCRIPT_URL}: {body}"
-            )))
+fn normalize_update_target(component: &str) -> CliResult<&'static str> {
+    match component {
+        "all" => Ok("all"),
+        "cli" | "starweaver-cli" | "starweaver" | "launcher" | "rpc" | "starweaver-rpc" => {
+            Ok("cli")
         }
-    })
+        "computer-use" | "computer-use-mcp" | "starweaver-computer-use-mcp" => Ok("computer-use"),
+        other => Err(CliError::Usage(format!("unknown update target {other}"))),
+    }
 }
 
 fn update_component_from_args(program: &str, args: Vec<String>) -> CliResult<String> {
@@ -461,61 +439,29 @@ fn parse_update_args(args: Vec<String>) -> CliResult<ParsedUpdateCommand> {
     })
 }
 
-fn resolve_update_target_version() -> Option<UpdateTargetVersion> {
-    if let Some(version) = requested_version_from_env() {
-        return Some(UpdateTargetVersion {
-            version,
-            source: "env",
-            explicit: true,
-        });
-    }
-    let cache = update_check::fetch_latest_release().ok()?;
-    cache.latest_version.map(|version| UpdateTargetVersion {
-        version,
-        source: "latest",
-        explicit: false,
-    })
-}
-
 fn requested_version_from_env() -> Option<String> {
     let version = env::var("STARWEAVER_VERSION").ok()?;
     let version = version.trim();
     if version.is_empty() || version == "latest" {
         None
     } else {
-        Some(version.trim_start_matches('v').to_string())
+        Some(version.to_string())
     }
 }
 
-fn update_should_skip(current_version: &str, target_version: &UpdateTargetVersion) -> bool {
-    if target_version.explicit {
-        update_check::versions_match(current_version, &target_version.version)
-    } else {
-        !update_check::update_is_newer(current_version, &target_version.version)
-    }
-}
+fn selected_update_components(normalized: &str) -> Vec<crate::updater::UpdateComponent> {
+    use crate::updater::UpdateComponent;
 
-fn update_installation_satisfies(
-    normalized: &str,
-    install_dir: &Path,
-    target_version: &UpdateTargetVersion,
-) -> bool {
-    selected_update_components(normalized)
-        .into_iter()
-        .all(|component| component_installation_satisfies(component, install_dir, target_version))
-}
-
-fn selected_update_components(normalized: &str) -> Vec<&'static str> {
     match normalized {
-        "cli" => vec!["cli"],
-        "computer-use" => vec!["computer-use"],
+        "cli" => vec![UpdateComponent::Cli],
+        "computer-use" => vec![UpdateComponent::ComputerUse],
         "all" => {
             let mut components = Vec::new();
             if !component_excluded("cli") {
-                components.push("cli");
+                components.push(UpdateComponent::Cli);
             }
             if cfg!(target_os = "macos") && !component_excluded("computer-use") {
-                components.push("computer-use");
+                components.push(UpdateComponent::ComputerUse);
             }
             components
         }
@@ -541,91 +487,66 @@ fn component_excluded(component: &str) -> bool {
         })
 }
 
-fn component_installation_satisfies(
-    component: &str,
-    install_dir: &Path,
-    target_version: &UpdateTargetVersion,
-) -> bool {
-    let binary_names: &[&str] = match component {
-        "cli" => &["starweaver", "starweaver-cli", "sw", "starweaver-rpc"],
-        "computer-use" => &["starweaver-computer-use-mcp"],
-        _ => return false,
-    };
-    if binary_names
-        .iter()
-        .any(|name| !installed_binary_path(install_dir, name).exists())
-    {
-        return false;
-    }
-    let manifest = install_dir.join(format!(".starweaver-{component}.version"));
-    let Ok(installed_version) = fs::read_to_string(manifest) else {
-        return false;
-    };
-    update_should_skip(installed_version.trim(), target_version)
-}
-
-fn installed_binary_path(install_dir: &Path, name: &str) -> PathBuf {
-    if cfg!(target_os = "windows") {
-        install_dir.join(format!("{name}.exe"))
-    } else {
-        install_dir.join(name)
-    }
-}
-
-fn update_output_prefix(
+fn update_dry_run_output(
     normalized: &str,
-    current_version: &str,
-    target_version: Option<&UpdateTargetVersion>,
+    components: &[crate::updater::UpdateComponent],
+    install_dir: &Path,
+    channel: &str,
+    requested: Option<&str>,
     options: UpdateOptions,
-    status: &str,
 ) -> String {
-    let mut output =
-        format!("update=github-release\ntarget={normalized}\ncurrent_version={current_version}\n");
-    if let Some(target_version) = target_version {
-        output.push_str("target_version=");
-        output.push_str(&target_version.version);
-        output.push_str("\ntarget_version_source=");
-        output.push_str(target_version.source);
-        output.push('\n');
+    let mut output = format!(
+        "update=github-release\ntarget={normalized}\nchannel={channel}\ncurrent_version={}\ninstall_dir={}\n",
+        build_info::VERSION,
+        install_dir.display()
+    );
+    output.push_str("components=");
+    output.push_str(
+        &components
+            .iter()
+            .map(|component| component.name())
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    output.push('\n');
+    if let Some(requested) = requested {
+        let _ = writeln!(output, "requested_release={requested}");
+    } else {
+        output.push_str("requested_release=latest\n");
     }
     if options.force {
         output.push_str("force=true\n");
     }
-    output.push_str("status=");
-    output.push_str(status);
-    output.push('\n');
+    output.push_str("status=dry-run\n");
     output
 }
 
-fn update_shell_command(normalized: &str, install_dir: &str) -> String {
-    let mut env_parts = inherited_update_env();
-    if normalized != "all" {
-        env_parts.push(format!("STARWEAVER_COMPONENTS={normalized}"));
+fn update_result_output(
+    normalized: &str,
+    releases: &[crate::updater::ComponentRelease],
+    channel: &str,
+    options: UpdateOptions,
+    status: &str,
+) -> String {
+    let mut output = format!(
+        "update=github-release\ntarget={normalized}\nchannel={channel}\ncurrent_version={}\n",
+        build_info::VERSION
+    );
+    for release in releases {
+        let _ = writeln!(
+            output,
+            "component.{}.version={}\ncomponent.{}.tag={}",
+            release.component.name(),
+            release.version,
+            release.component.name(),
+            release.tag
+        );
     }
-    env_parts.push(format!(
-        "STARWEAVER_INSTALL_DIR={}",
-        shell_quote(install_dir)
-    ));
-    format!("download {INSTALL_SCRIPT_URL} | {} sh", env_parts.join(" "))
-}
-
-fn inherited_update_env() -> Vec<String> {
-    [
-        "STARWEAVER_VERSION",
-        "STARWEAVER_GITHUB_REPO",
-        "STARWEAVER_REPO",
-        "STARWEAVER_EXCLUDE_COMPONENTS",
-    ]
-    .iter()
-    .filter_map(|key| {
-        let value = env::var(key).ok()?;
-        (!value.is_empty()).then(|| format!("{key}={}", shell_quote(&value)))
-    })
-    .collect()
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+    if options.force {
+        output.push_str("force=true\n");
+    }
+    let _ = writeln!(output, "status={status}");
+    output
 }
 
 fn default_install_dir() -> String {
@@ -707,10 +628,9 @@ mod tests {
 
     #[test]
     fn launcher_reports_version_doctor_and_update_plan() {
-        assert_eq!(
-            command_output(["sw".to_string(), "version".to_string()]).unwrap(),
-            "starweaver-agent-sdk\n"
-        );
+        let version = command_output(["sw".to_string(), "version".to_string()]).unwrap();
+        assert!(version.starts_with("starweaver-agent-sdk "));
+        assert!(version.contains("revision development"));
         let windows_help = command_output(["sw.exe".to_string(), "--help".to_string()]).unwrap();
         assert!(windows_help.contains("Use `sw cli --help`"));
         let help = command_output(["sw".to_string()]).unwrap();
@@ -741,7 +661,7 @@ mod tests {
         let quoted =
             update_component_with_options("cli", "dir with ' quote", dry_run_options()).unwrap();
         assert!(quoted.contains("target=cli"));
-        assert!(quoted.contains("'\\''"));
+        assert!(quoted.contains("install_dir=dir with ' quote"));
         let update_help =
             command_output(["sw".to_string(), "update".to_string(), "--help".to_string()]).unwrap();
         assert!(update_help.contains("sw update [TARGET]"));
@@ -787,7 +707,7 @@ mod tests {
         )
         .unwrap();
         assert!(all.contains("target=all"));
-        assert!(!all.contains("STARWEAVER_COMPONENTS="));
+        assert!(all.contains("components=cli"));
 
         let output = update_component_with_options(
             "starweaver-cli",
@@ -796,7 +716,7 @@ mod tests {
         )
         .unwrap();
         assert!(output.contains("target=cli"));
-        assert!(output.contains("STARWEAVER_COMPONENTS=cli"));
+        assert!(output.contains("components=cli"));
 
         let starweaver =
             update_component_with_options("starweaver", "/tmp/install", dry_run_options()).unwrap();
@@ -815,7 +735,7 @@ mod tests {
         )
         .unwrap();
         assert!(computer_use.contains("target=computer-use"));
-        assert!(computer_use.contains("STARWEAVER_COMPONENTS=computer-use"));
+        assert!(computer_use.contains("components=computer-use"));
         assert!(matches!(
             update_component_with_options("unknown", "/tmp/install", dry_run_options()),
             Err(CliError::Usage(message)) if message.contains("unknown update target unknown")
@@ -851,89 +771,6 @@ mod tests {
         assert!(matches!(
             parse_update_args(vec!["cli".to_string(), "rpc".to_string()]),
             Err(CliError::Usage(message)) if message.contains("at most one target")
-        ));
-    }
-
-    #[test]
-    fn launcher_update_skip_rule_distinguishes_latest_from_pinned_versions() {
-        let latest_same = UpdateTargetVersion {
-            version: "0.0.1".to_string(),
-            source: "latest",
-            explicit: false,
-        };
-        let latest_newer = UpdateTargetVersion {
-            version: "0.0.2".to_string(),
-            source: "latest",
-            explicit: false,
-        };
-        let pinned_same = UpdateTargetVersion {
-            version: "0.0.1".to_string(),
-            source: "env",
-            explicit: true,
-        };
-        let pinned_older = UpdateTargetVersion {
-            version: "0.0.0".to_string(),
-            source: "env",
-            explicit: true,
-        };
-        assert!(update_should_skip("0.0.1", &latest_same));
-        assert!(!update_should_skip("0.0.1", &latest_newer));
-        assert!(update_should_skip("0.0.1", &pinned_same));
-        assert!(!update_should_skip("0.0.1", &pinned_older));
-    }
-
-    #[test]
-    fn update_skip_requires_complete_component_manifest_and_binaries() {
-        let temp = tempfile::tempdir().unwrap();
-        let target = UpdateTargetVersion {
-            version: "1.2.3".to_string(),
-            source: "env",
-            explicit: true,
-        };
-        assert!(!component_installation_satisfies(
-            "cli",
-            temp.path(),
-            &target
-        ));
-        for name in ["starweaver", "starweaver-cli", "sw", "starweaver-rpc"] {
-            fs::write(installed_binary_path(temp.path(), name), b"fixture").unwrap();
-        }
-        fs::write(temp.path().join(".starweaver-cli.version"), "1.2.3\n").unwrap();
-        assert!(component_installation_satisfies(
-            "cli",
-            temp.path(),
-            &target
-        ));
-
-        assert!(!component_installation_satisfies(
-            "computer-use",
-            temp.path(),
-            &target
-        ));
-        fs::write(
-            installed_binary_path(temp.path(), "starweaver-computer-use-mcp"),
-            b"fixture",
-        )
-        .unwrap();
-        fs::write(
-            temp.path().join(".starweaver-computer-use.version"),
-            "1.2.2\n",
-        )
-        .unwrap();
-        assert!(!component_installation_satisfies(
-            "computer-use",
-            temp.path(),
-            &target
-        ));
-        fs::write(
-            temp.path().join(".starweaver-computer-use.version"),
-            "1.2.3\n",
-        )
-        .unwrap();
-        assert!(component_installation_satisfies(
-            "computer-use",
-            temp.path(),
-            &target
         ));
     }
 

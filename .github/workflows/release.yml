@@ -1,8 +1,9 @@
-name: Release
+name: Legacy Release Reference (Disabled)
 
+# Retained only because frozen Desktop release jobs still live below. The maintained
+# tag-driven release path is release-components.yml; no workflow calls this file.
 on:
-  release:
-    types: [published]
+  workflow_call:
 
 permissions:
   contents: write

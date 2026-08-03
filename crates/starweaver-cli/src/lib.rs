@@ -5,6 +5,7 @@
 
 mod args;
 mod atomic_file;
+mod build_info;
 mod client_state;
 mod clipboard;
 mod command_catalog;
@@ -25,6 +26,7 @@ pub mod session_management;
 mod slash_commands;
 mod tui;
 mod update_check;
+mod updater;
 
 use std::env;
 

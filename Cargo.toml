@@ -38,7 +38,7 @@ debug = "line-tables-only"
 incremental = false
 
 [workspace.package]
-version = "0.13.0"
+version = "0.0.0-dev.0"
 edition = "2024"
 rust-version = "1.96"
 authors = ["wh1isper"]
@@ -51,25 +51,25 @@ keywords = ["agent", "sdk", "ai", "runtime"]
 categories = ["development-tools"]
 
 [workspace.dependencies]
-starweaver-agent = { path = "crates/starweaver-agent", version = "0.13.0" }
-starweaver-context = { path = "crates/starweaver-context", version = "0.13.0" }
-starweaver-core = { path = "crates/starweaver-core", version = "0.13.0" }
-starweaver-model = { path = "crates/starweaver-model", version = "0.13.0" }
-starweaver-oauth = { path = "crates/starweaver-oauth", version = "0.13.0" }
-starweaver-oauth-provider = { path = "crates/starweaver-oauth-provider", version = "0.13.0" }
-starweaver-runtime = { path = "crates/starweaver-runtime", version = "0.13.0" }
-starweaver-tools = { path = "crates/starweaver-tools", version = "0.13.0" }
-starweaver-usage = { path = "crates/starweaver-usage", version = "0.13.0" }
-starweaver-environment = { path = "crates/starweaver-environment", version = "0.13.0" }
-starweaver-envd-core = { path = "crates/starweaver-envd-core", version = "0.13.0" }
-starweaver-envd = { path = "crates/starweaver-envd", version = "0.13.0" }
-starweaver-envd-client = { path = "crates/starweaver-envd-client", version = "0.13.0" }
-starweaver-session = { path = "crates/starweaver-session", version = "0.13.0" }
-starweaver-stream = { path = "crates/starweaver-stream", version = "0.13.0" }
-starweaver-storage = { path = "crates/starweaver-storage", version = "0.13.0" }
-starweaver-cli = { path = "crates/starweaver-cli", version = "0.13.0" }
-starweaver-computer-use = { path = "crates/starweaver-computer-use", version = "0.13.0", default-features = false }
-starweaver-rpc-core = { path = "crates/starweaver-rpc-core", version = "0.13.0" }
+starweaver-agent = { path = "crates/starweaver-agent", version = "0.0.0-dev.0" }
+starweaver-context = { path = "crates/starweaver-context", version = "0.0.0-dev.0" }
+starweaver-core = { path = "crates/starweaver-core", version = "0.0.0-dev.0" }
+starweaver-model = { path = "crates/starweaver-model", version = "0.0.0-dev.0" }
+starweaver-oauth = { path = "crates/starweaver-oauth", version = "0.0.0-dev.0" }
+starweaver-oauth-provider = { path = "crates/starweaver-oauth-provider", version = "0.0.0-dev.0" }
+starweaver-runtime = { path = "crates/starweaver-runtime", version = "0.0.0-dev.0" }
+starweaver-tools = { path = "crates/starweaver-tools", version = "0.0.0-dev.0" }
+starweaver-usage = { path = "crates/starweaver-usage", version = "0.0.0-dev.0" }
+starweaver-environment = { path = "crates/starweaver-environment", version = "0.0.0-dev.0" }
+starweaver-envd-core = { path = "crates/starweaver-envd-core", version = "0.0.0-dev.0" }
+starweaver-envd = { path = "crates/starweaver-envd", version = "0.0.0-dev.0" }
+starweaver-envd-client = { path = "crates/starweaver-envd-client", version = "0.0.0-dev.0" }
+starweaver-session = { path = "crates/starweaver-session", version = "0.0.0-dev.0" }
+starweaver-stream = { path = "crates/starweaver-stream", version = "0.0.0-dev.0" }
+starweaver-storage = { path = "crates/starweaver-storage", version = "0.0.0-dev.0" }
+starweaver-cli = { path = "crates/starweaver-cli", version = "0.0.0-dev.0" }
+starweaver-computer-use = { path = "crates/starweaver-computer-use", version = "0.0.0-dev.0", default-features = false }
+starweaver-rpc-core = { path = "crates/starweaver-rpc-core", version = "0.0.0-dev.0" }
 async-trait = "0.1.89"
 command-group = "5.0.1"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "serde", "std"] }
@@ -78,8 +78,12 @@ regex = "1.12.4"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 semver = "1.0.27"
+self-replace = "1.5.0"
 schemars = { version = "1.2.1", features = ["derive"] }
 sha2 = "0.10.9"
+flate2 = "1.1.9"
+tar = "0.4.46"
+zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
 hmac = "0.12.1"
 globset = "0.4.16"
 grep-matcher = "0.1.8"

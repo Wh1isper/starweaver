@@ -1,0 +1,135 @@
+name: Release Python Component
+
+on:
+  workflow_call:
+    inputs:
+      scope:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+      source_revision:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-sdist:
+    name: Build Python source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout immutable release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_revision }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-python-sdist
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.3.2
+
+      - name: Prepare ephemeral release metadata
+        run: |
+          cargo run --locked -p xtask -- release-prepare "${{ inputs.scope }}" "${{ inputs.version }}"
+          uv lock
+
+      - name: Build source distribution
+        run: uv build --package starweaver --sdist -o dist/python
+
+      - name: Upload Python source distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-python-sdist
+          path: dist/python/*
+          if-no-files-found: error
+
+  build-wheels:
+    name: Build Python wheel (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            manylinux: "2014"
+            args: --manifest-path packages/starweaver-py/Cargo.toml --release --locked --out dist/python --interpreter python3.11 python3.12 python3.13 --compatibility pypi
+          - os: macos-latest
+            name: macos-x86_64
+            target: x86_64-apple-darwin
+            manylinux: auto
+            args: --manifest-path packages/starweaver-py/Cargo.toml --release --locked --out dist/python --find-interpreter --compatibility pypi
+          - os: macos-latest
+            name: macos-aarch64
+            target: aarch64-apple-darwin
+            manylinux: auto
+            args: --manifest-path packages/starweaver-py/Cargo.toml --release --locked --out dist/python --find-interpreter --compatibility pypi
+          - os: windows-latest
+            name: windows-x64
+            target: x86_64-pc-windows-msvc
+            manylinux: auto
+            args: --manifest-path packages/starweaver-py/Cargo.toml --release --locked --out dist/python --find-interpreter --compatibility pypi
+    steps:
+      - name: Checkout immutable release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_revision }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Set up Python interpreters
+        if: runner.os != 'Linux'
+        uses: actions/setup-python@v6
+        with:
+          python-version: |
+            3.11
+            3.12
+            3.13
+
+      - name: Prepare ephemeral release metadata
+        run: cargo run --locked -p xtask -- release-prepare "${{ inputs.scope }}" "${{ inputs.version }}"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          maturin-version: v1.11.5
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: ${{ matrix.args }}
+          sccache: "true"
+
+      - name: Upload Python wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-python-wheel-${{ matrix.name }}
+          path: dist/python/*
+          if-no-files-found: error

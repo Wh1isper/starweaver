@@ -1,0 +1,77 @@
+name: Release Computer Use Component
+
+on:
+  workflow_call:
+    inputs:
+      scope:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+      source_revision:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  STARWEAVER_RELEASE_VERSION: ${{ inputs.version }}
+  STARWEAVER_BUILD_REVISION: ${{ inputs.source_revision }}
+
+jobs:
+  build:
+    name: Build Computer Use MCP (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    steps:
+      - name: Checkout immutable release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_revision }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-computer-use-${{ matrix.target }}
+
+      - name: Prepare ephemeral release metadata
+        run: cargo run --locked -p xtask -- release-prepare "${{ inputs.scope }}" "${{ inputs.version }}"
+
+      - name: Build and archive Computer Use MCP
+        run: |
+          set -euo pipefail
+          cargo build --release --locked \
+            -p starweaver-computer-use \
+            --features mcp-server \
+            --bin starweaver-computer-use-mcp \
+            --target "${{ matrix.target }}"
+          archive="starweaver-computer-use-mcp-v${{ inputs.version }}-${{ matrix.target }}.tar.gz"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/starweaver-computer-use-mcp" \
+            dist/starweaver-computer-use-mcp
+          tar -czf "$archive" -C dist starweaver-computer-use-mcp
+
+      - name: Upload Computer Use archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-computer-use-${{ matrix.target }}
+          path: starweaver-computer-use-mcp-v${{ inputs.version }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error

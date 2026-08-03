@@ -1,9 +1,10 @@
 use std::{collections::BTreeSet, fmt::Write as _, fs, path::Path, process::Command};
 
+use semver::Version;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::common::root;
+use crate::{common::root, release::DEVELOPMENT_VERSION};
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 const GENERATED_STATUS: &str = "spec/capability-status.md";
@@ -263,12 +264,7 @@ fn validate_registry(
             registry.schema_version
         ));
     }
-    if registry.last_verified_release != workspace_version {
-        return Err(format!(
-            "capability registry last_verified_release {} does not match workspace version {workspace_version}",
-            registry.last_verified_release
-        ));
-    }
+    validate_verified_release(&registry.last_verified_release, workspace_version)?;
 
     let mut ids = BTreeSet::new();
     for capability in &registry.capability {
@@ -279,6 +275,29 @@ fn validate_registry(
     }
     if ids.is_empty() {
         return Err("capability registry cannot be empty".to_string());
+    }
+    Ok(())
+}
+
+fn validate_verified_release(
+    last_verified_release: &str,
+    workspace_version: &str,
+) -> Result<(), String> {
+    let verified = Version::parse(last_verified_release).map_err(|error| {
+        format!("capability registry last_verified_release is not valid SemVer: {error}")
+    })?;
+    if workspace_version == DEVELOPMENT_VERSION {
+        if verified.to_string() == DEVELOPMENT_VERSION {
+            return Err(format!(
+                "capability registry last_verified_release must identify a public release, not {DEVELOPMENT_VERSION}"
+            ));
+        }
+        return Ok(());
+    }
+    if last_verified_release != workspace_version {
+        return Err(format!(
+            "capability registry last_verified_release {last_verified_release} does not match release workspace version {workspace_version}"
+        ));
     }
     Ok(())
 }
@@ -445,7 +464,20 @@ fn validate_evidence_path(
 
 #[cfg(test)]
 mod tests {
-    use super::{replace_verified_release, valid_id};
+    use super::{replace_verified_release, valid_id, validate_verified_release};
+
+    #[test]
+    fn development_workspace_retains_the_last_public_capability_release() {
+        assert!(validate_verified_release("0.13.0", "0.0.0-dev.0").is_ok());
+        assert!(validate_verified_release("0.0.0-dev.0", "0.0.0-dev.0").is_err());
+    }
+
+    #[test]
+    fn release_workspace_requires_matching_capability_evidence() {
+        assert!(validate_verified_release("0.14.0", "0.14.0").is_ok());
+        assert!(validate_verified_release("0.13.0", "0.14.0").is_err());
+        assert!(validate_verified_release("not-semver", "0.0.0-dev.0").is_err());
+    }
 
     #[test]
     fn replaces_verified_release_without_changing_capabilities() {

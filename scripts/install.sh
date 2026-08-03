@@ -54,7 +54,8 @@ fetch_stdout() {
 resolve_version() {
   if [ "$VERSION" != "latest" ]; then
     case "$VERSION" in
-      v*) printf '%s\n' "$VERSION" ;;
+      v*|cli-v*|computer-use-v*) printf '%s\n' "$VERSION" ;;
+      sdk-v*|python-v*) fail "release tag $VERSION has no installable binary component" ;;
       *) printf 'v%s\n' "$VERSION" ;;
     esac
     return
@@ -89,17 +90,13 @@ detect_target() {
   esac
 }
 
-verify_checksum_if_available() {
+verify_checksum() {
   archive="$1"
   checksum_file="$2"
-  if [ ! -f "$checksum_file" ]; then
-    return
-  fi
+  [ -f "$checksum_file" ] || fail "release is missing checksums.txt"
   base="$(basename "$archive")"
   expected="$(awk -v name="$base" '$2 == name {print $1}' "$checksum_file" | head -n 1)"
-  if [ -z "$expected" ]; then
-    return
-  fi
+  [ -n "$expected" ] || fail "checksums.txt has no entry for $base"
   if command -v sha256sum >/dev/null 2>&1; then
     actual="$(sha256sum "$archive" | awk '{print $1}')"
   elif command -v shasum >/dev/null 2>&1; then
@@ -144,7 +141,8 @@ write_component_version() {
   tag="$2"
   manifest="$INSTALL_DIR/.starweaver-$component.version"
   tmp="$INSTALL_DIR/.$(basename "$manifest").tmp.$$"
-  version="${tag#v}"
+  version="$(release_asset_version "$tag")"
+  version="${version#v}"
   printf '%s\n' "$version" > "$tmp" || { rm -f "$tmp"; fail "failed to stage component version: $component"; }
   chmod 0644 "$tmp" 2>/dev/null || true
   mv -f "$tmp" "$manifest" || { rm -f "$tmp"; fail "failed to record component version: $component"; }
@@ -208,13 +206,25 @@ component_is_excluded() {
   return 1
 }
 
+release_asset_version() {
+  case "$1" in
+    cli-v*) printf 'v%s\n' "${1#cli-v}" ;;
+    computer-use-v*) printf 'v%s\n' "${1#computer-use-v}" ;;
+    sdk-v*) printf 'v%s\n' "${1#sdk-v}" ;;
+    python-v*) printf 'v%s\n' "${1#python-v}" ;;
+    v*) printf '%s\n' "$1" ;;
+    *) fail "unsupported release tag: $1" ;;
+  esac
+}
+
 install_component() {
   component="$1"
   target="$2"
   tag="$3"
+  asset_version="$(release_asset_version "$tag")"
   case "$component" in
     cli)
-      asset="starweaver-cli-$tag-$target"
+      asset="starweaver-cli-$asset_version-$target"
       install_names="starweaver starweaver-cli sw starweaver-rpc"
       ;;
     computer-use)
@@ -222,7 +232,7 @@ install_component() {
         *-apple-darwin) ;;
         *) fail "Computer Use MCP release binaries are currently available only for macOS" ;;
       esac
-      asset="starweaver-computer-use-mcp-$tag-$target"
+      asset="starweaver-computer-use-mcp-$asset_version-$target"
       install_names="starweaver-computer-use-mcp"
       ;;
     *) fail "unknown component: $component" ;;
@@ -237,8 +247,8 @@ install_component() {
   log "downloading $archive_url"
   fetch "$archive_url" "$archive"
   checksum="$TMP_DIR/checksums.txt"
-  fetch "https://github.com/$REPO/releases/download/$tag/checksums.txt" "$checksum" 2>/dev/null || true
-  verify_checksum_if_available "$archive" "$checksum"
+  fetch "https://github.com/$REPO/releases/download/$tag/checksums.txt" "$checksum"
+  verify_checksum "$archive" "$checksum"
   extract_dir="$TMP_DIR/$asset"
   mkdir -p "$extract_dir"
   extract_archive "$archive" "$extract_dir"
@@ -265,9 +275,15 @@ main() {
   if [ -n "$REQUESTED_COMPONENTS" ]; then
     components="$REQUESTED_COMPONENTS"
   else
-    case "$target" in
-      *-apple-darwin) components="cli,computer-use" ;;
-      *) components="cli" ;;
+    case "$tag" in
+      cli-v*) components="cli" ;;
+      computer-use-v*) components="computer-use" ;;
+      *)
+        case "$target" in
+          *-apple-darwin) components="cli,computer-use" ;;
+          *) components="cli" ;;
+        esac
+        ;;
     esac
   fi
   mkdir -p "$TMP_DIR" "$INSTALL_DIR"

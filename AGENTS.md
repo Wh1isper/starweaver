@@ -110,7 +110,7 @@ Current docs:
 - `docs/mcp.md` — MCP foundations and official `rmcp` direction
 - `docs/computer-use.md` — macOS observe, pointer, keyboard, and bounded Accessibility support, CLI/RPC opt-in, permissions, external MCP use, and platform limits
 - `docs/testing.md` — deterministic testing, request guard, scripts, and coverage
-- `docs/release.md` — release, upversion, crate publishing, and binary artifact workflow
+- `docs/release.md` — permanent development versions, tag-scoped release preparation, registry publishing, and binary artifact workflow
 - `docs/session-stream.md` — shared session, display stream, replay, and storage contracts
 - `docs/session-search.md` — pluggable discovery contracts, local bounded search, CLI, and RPC usage
 - `docs/session-management.md` — agent-facing session query/control tools and product policy
@@ -278,17 +278,30 @@ For repository automation, run:
 make scripts-check
 ```
 
-To ask the assistant to prepare a unified-version release, use GitHub CLI from the repository root:
+Checked-in maintained Rust and Python package metadata stays at `0.0.0-dev.0`. Releases never create
+automatic version commits, release branches, or version pull requests. After all pre-tag validation
+passes on a clean `main`, validate and push exactly one canonical tag:
 
 ```bash
-gh workflow run prepare-release.yml -f version=X.Y.Z
+make release-tag-check TAG=vX.Y.Z
+git tag -a vX.Y.Z -m "Starweaver vX.Y.Z"
+git push origin vX.Y.Z
 ```
 
-This pushes `release/vX.Y.Z` for review. After the release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release. The `release.yml` workflow runs from the published Release event for maintained core assets, crates.io, and PyPI. Desktop installers and Desktop-managed RPC runtime update assets remain disabled while Desktop is WIP. Core release assets remain immutable: automation refuses name collisions and publishes payloads before checksums rather than using `--clobber`.
+Canonical scopes are `vX.Y.Z` (full), `cli-vX.Y.Z`, `computer-use-vX.Y.Z`, `sdk-vX.Y.Z`, and
+`python-vX.Y.Z`. `.github/workflows/release-components.yml` parses the tag and invokes the selected
+reusable lanes. Each lane applies `release-prepare` only inside its isolated tagged checkout. The
+router stages complete, manifest-verified assets in a draft Release, publishes crates.io before PyPI
+for a full release, and publishes the immutable GitHub Release last. Only stable full releases become
+GitHub Latest. Canonical release tags must be protected against update/deletion by a repository
+ruleset, and every lane checks out the router-validated source SHA rather than resolving the tag again.
+Desktop installers and Desktop-managed RPC runtime update assets remain disabled while Desktop is WIP;
+the dormant `.github/workflows/release.yml` is retained only as their frozen reference container.
 
 Use squash merge only for GitHub pull requests. Do not merge pull requests with merge commits into `main`.
 
-Keep release-event publishing packaging-only. Do not run CI, smoke checks, or publish dry-runs inside `.github/workflows/release.yml`; run validation before merging the release pull request.
+Keep tag-driven publication packaging-only. Run CI, smoke, API, and publish dry-run validation before
+creating the tag; do not add those broad gates to the release workflows.
 
 For repository-wide hooks, run:
 

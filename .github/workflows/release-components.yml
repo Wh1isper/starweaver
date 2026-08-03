@@ -1,0 +1,326 @@
+name: Component Release Router
+
+on:
+  push:
+    tags:
+      - "v[0-9]*"
+      - "cli-v[0-9]*"
+      - "computer-use-v[0-9]*"
+      - "sdk-v[0-9]*"
+      - "python-v[0-9]*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: component-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  route:
+    name: Validate and route release tag
+    runs-on: ubuntu-latest
+    outputs:
+      scope: ${{ steps.release.outputs.scope }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      channel: ${{ steps.release.outputs.channel }}
+      source_revision: ${{ steps.release.outputs.source_revision }}
+    steps:
+      - name: Checkout immutable release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate canonical tag and source
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          parsed="$(cargo run --quiet --locked -p xtask -- release-tag "$tag")"
+          scope="$(jq -r .scope <<<"$parsed")"
+          version="$(jq -r .version <<<"$parsed")"
+          channel="$(jq -r .channel <<<"$parsed")"
+          git show-ref --verify "refs/tags/$tag"
+          source_revision="$(git rev-parse "refs/tags/${tag}^{commit}")"
+          test "$source_revision" = "$(git rev-parse HEAD)"
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$source_revision" origin/main; then
+            echo "release tag $tag must point to a commit reachable from main" >&2
+            exit 1
+          fi
+          alternate_tags=()
+          case "$scope" in
+            full) alternate_tags=("sdk-v${version}" "python-v${version}") ;;
+            sdk|python) alternate_tags=("v${version}") ;;
+          esac
+          for alternate in "${alternate_tags[@]}"; do
+            metadata_dir="$(mktemp -d)"
+            api_url="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${alternate}"
+            if ! http_status="$(curl --silent --show-error --location \
+              --output "$metadata_dir/release.json" \
+              --write-out '%{http_code}' \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "$api_url")"; then
+              rm -rf "$metadata_dir"
+              echo "failed to query alternate release $alternate" >&2
+              exit 1
+            fi
+            if [[ "$http_status" == "404" ]]; then
+              rm -rf "$metadata_dir"
+              continue
+            fi
+            if [[ "$http_status" != "200" ]]; then
+              rm -rf "$metadata_dir"
+              echo "alternate release query for $alternate returned HTTP $http_status" >&2
+              exit 1
+            fi
+            gh release download "$alternate" --repo "$GITHUB_REPOSITORY" \
+              --pattern starweaver-release.json --dir "$metadata_dir"
+            cargo run --quiet --locked -p xtask -- release-manifest-verify \
+              "$metadata_dir/starweaver-release.json"
+            alternate_source="$(jq -r .release.source_revision "$metadata_dir/starweaver-release.json")"
+            rm -rf "$metadata_dir"
+            if [[ "$alternate_source" != "$source_revision" ]]; then
+              echo "registry version $version is already bound to source $alternate_source by $alternate" >&2
+              exit 1
+            fi
+          done
+          {
+            echo "scope=$scope"
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "channel=$channel"
+            echo "source_revision=$source_revision"
+          } >> "$GITHUB_OUTPUT"
+
+  cli:
+    name: CLI release lane
+    needs: route
+    if: needs.route.outputs.scope == 'full' || needs.route.outputs.scope == 'cli'
+    uses: ./.github/workflows/release-cli.yml
+    with:
+      scope: ${{ needs.route.outputs.scope }}
+      version: ${{ needs.route.outputs.version }}
+      tag: ${{ needs.route.outputs.tag }}
+      source_revision: ${{ needs.route.outputs.source_revision }}
+
+  computer-use:
+    name: Computer Use release lane
+    needs: route
+    if: needs.route.outputs.scope == 'full' || needs.route.outputs.scope == 'computer-use'
+    uses: ./.github/workflows/release-computer-use.yml
+    with:
+      scope: ${{ needs.route.outputs.scope }}
+      version: ${{ needs.route.outputs.version }}
+      tag: ${{ needs.route.outputs.tag }}
+      source_revision: ${{ needs.route.outputs.source_revision }}
+
+  python:
+    name: Python build lane
+    needs: route
+    if: needs.route.outputs.scope == 'full' || needs.route.outputs.scope == 'python'
+    uses: ./.github/workflows/release-python.yml
+    with:
+      scope: ${{ needs.route.outputs.scope }}
+      version: ${{ needs.route.outputs.version }}
+      tag: ${{ needs.route.outputs.tag }}
+      source_revision: ${{ needs.route.outputs.source_revision }}
+
+  stage-release:
+    name: Stage verified draft Release
+    needs: [route, cli, computer-use, python]
+    if: >-
+      always() &&
+      needs.route.result == 'success' &&
+      (needs.cli.result == 'success' || needs.cli.result == 'skipped') &&
+      (needs.computer-use.result == 'success' || needs.computer-use.result == 'skipped') &&
+      (needs.python.result == 'success' || needs.python.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout validated release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.route.outputs.source_revision }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Download CLI artifacts
+        if: needs.route.outputs.scope == 'full' || needs.route.outputs.scope == 'cli'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-cli-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download Computer Use artifacts
+        if: needs.route.outputs.scope == 'full' || needs.route.outputs.scope == 'computer-use'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-computer-use-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download Python artifacts
+        if: needs.route.outputs.scope == 'full' || needs.route.outputs.scope == 'python'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-python-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate and verify release manifest
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cargo run --quiet --locked -p xtask -- release-manifest \
+            "${{ needs.route.outputs.scope }}" \
+            "${{ needs.route.outputs.version }}" \
+            "${{ needs.route.outputs.tag }}" \
+            "${{ needs.route.outputs.source_revision }}" \
+            dist dist/starweaver-release.json
+          cargo run --quiet --locked -p xtask -- release-manifest-verify \
+            dist/starweaver-release.json dist
+          (
+            cd dist
+            find . -maxdepth 1 -type f ! -name checksums.txt -printf '%P\n' \
+              | LC_ALL=C sort \
+              | xargs sha256sum > checksums.txt
+          )
+
+      - name: Retain verified release payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-payload
+          path: dist/*
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Create or verify draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SCOPE: ${{ needs.route.outputs.scope }}
+          RELEASE_VERSION: ${{ needs.route.outputs.version }}
+          RELEASE_TAG: ${{ needs.route.outputs.tag }}
+          RELEASE_CHANNEL: ${{ needs.route.outputs.channel }}
+        run: |
+          set -euo pipefail
+          if release_json="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft 2>/dev/null)"; then
+            if [[ "$(jq -r .isDraft <<<"$release_json")" != "true" ]]; then
+              echo "published GitHub Release $RELEASE_TAG already exists and is immutable" >&2
+              exit 1
+            fi
+            mkdir existing
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir existing
+            diff \
+              <(cd dist && sha256sum * | LC_ALL=C sort -k2) \
+              <(cd existing && sha256sum * | LC_ALL=C sort -k2)
+            exit 0
+          fi
+          title="Starweaver ${RELEASE_SCOPE} ${RELEASE_VERSION}"
+          args=(
+            "$RELEASE_TAG"
+            dist/*
+            --repo "$GITHUB_REPOSITORY"
+            --verify-tag
+            --title "$title"
+            --generate-notes
+            --draft
+            --latest=false
+          )
+          if [[ "$RELEASE_CHANNEL" == "prerelease" ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${args[@]}"
+
+  publish-sdk:
+    name: Publish Rust SDK registry component
+    needs: [route, stage-release]
+    if: needs.route.outputs.scope == 'full' || needs.route.outputs.scope == 'sdk'
+    uses: ./.github/workflows/release-sdk.yml
+    with:
+      scope: ${{ needs.route.outputs.scope }}
+      version: ${{ needs.route.outputs.version }}
+      tag: ${{ needs.route.outputs.tag }}
+      source_revision: ${{ needs.route.outputs.source_revision }}
+    secrets: inherit
+
+  publish-python:
+    name: Publish Python registry component
+    needs: [route, stage-release, publish-sdk]
+    if: >-
+      always() &&
+      needs.route.result == 'success' &&
+      needs.stage-release.result == 'success' &&
+      (needs.route.outputs.scope == 'python' ||
+       (needs.route.outputs.scope == 'full' && needs.publish-sdk.result == 'success'))
+    uses: ./.github/workflows/release-python-publish.yml
+    secrets: inherit
+
+  publish-release:
+    name: Publish immutable GitHub Release last
+    needs: [route, stage-release, publish-sdk, publish-python]
+    if: >-
+      always() &&
+      needs.route.result == 'success' &&
+      needs.stage-release.result == 'success' &&
+      (needs.publish-sdk.result == 'success' || needs.publish-sdk.result == 'skipped') &&
+      (needs.publish-python.result == 'success' || needs.publish-python.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release payload
+        uses: actions/download-artifact@v4
+        with:
+          name: release-payload
+          path: expected
+
+      - name: Reverify and publish draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SCOPE: ${{ needs.route.outputs.scope }}
+          RELEASE_TAG: ${{ needs.route.outputs.tag }}
+          RELEASE_CHANNEL: ${{ needs.route.outputs.channel }}
+        run: |
+          set -euo pipefail
+          release_json="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease)"
+          mkdir published-assets
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir published-assets
+          diff \
+            <(cd expected && sha256sum * | LC_ALL=C sort -k2) \
+            <(cd published-assets && sha256sum * | LC_ALL=C sort -k2)
+          expected_prerelease=false
+          if [[ "$RELEASE_CHANNEL" == "prerelease" ]]; then expected_prerelease=true; fi
+          test "$(jq -r .isPrerelease <<<"$release_json")" = "$expected_prerelease"
+          if [[ "$(jq -r .isDraft <<<"$release_json")" != "true" ]]; then
+            echo "GitHub Release $RELEASE_TAG is already public with the verified immutable payload"
+            exit 0
+          fi
+          args=("$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false)
+          if [[ "$RELEASE_CHANNEL" == "prerelease" ]]; then
+            args+=(--prerelease --latest=false)
+          elif [[ "$RELEASE_SCOPE" == "full" ]]; then
+            args+=(--prerelease=false --latest)
+          else
+            args+=(--prerelease=false --latest=false)
+          fi
+          gh release edit "${args[@]}"

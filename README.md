@@ -30,8 +30,8 @@ Install the latest public release:
 curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
 ```
 
-The installer downloads all components available for the current platform and verifies
-`checksums.txt` when available. It installs `starweaver`, `starweaver-cli`, `sw`, and
+The installer downloads all components available for the current platform and requires a valid
+`checksums.txt` entry for every archive. It installs `starweaver`, `starweaver-cli`, `sw`, and
 `starweaver-rpc`; on macOS it also installs the full-family external-harness
 `starweaver-computer-use-mcp` binary. It installs into `$HOME/.local/bin` for normal users and
 `/usr/local/bin` for root. Override the location when needed:
@@ -72,9 +72,10 @@ Update all installed components available for the current platform from GitHub r
 starweaver update
 ```
 
-The update command checks the current CLI package version before invoking the installer. When the
-selected release is already installed it exits with `status=up-to-date`; pass `--force` to reinstall
-the same version.
+The native update command discovers full and component Releases, verifies the exact Release manifest,
+target, byte size, and SHA-256 before extraction, and never downloads or executes the mutable bootstrap
+installer. It exits with `status=up-to-date` only when every selected component is complete at the
+selected version; pass `--force` to reinstall the same version.
 
 Run from a checkout:
 
@@ -215,13 +216,21 @@ make ci
 
 ## Release
 
-Prepare a release:
+Checked-in Rust and Python package metadata stays at `0.0.0-dev.0`. After validating a clean `main`,
+push one canonical tag such as `vX.Y.Z`, `cli-vX.Y.Z`, `computer-use-vX.Y.Z`, `sdk-vX.Y.Z`, or
+`python-vX.Y.Z`:
 
 ```bash
-gh workflow run prepare-release.yml -f version=X.Y.Z
+make release-tag-check TAG=vX.Y.Z
+git tag -a vX.Y.Z -m "Starweaver vX.Y.Z"
+git push origin vX.Y.Z
 ```
 
-The workflow pushes `release/vX.Y.Z` for review. After that release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release. The published Release event packages the maintained CLI/protocol, Rust crates, Python distribution, and separate macOS Computer Use MCP archives. Desktop installers and Desktop-managed runtime update assets are not published while Desktop remains WIP.
+The tag router prepares the selected public version only in isolated CI checkouts, stages verified
+assets in a draft Release, publishes the selected registries, and publishes the immutable GitHub
+Release last. It does not create a release commit or branch. Desktop installers and Desktop-managed
+runtime update assets remain disabled while Desktop is WIP. See [Release](docs/release.md) for scope,
+asset, recovery, and validation details.
 
 ## Acknowledgements
 
