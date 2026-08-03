@@ -5,17 +5,23 @@ use starweaver_model::{
     ToolReturnPart,
 };
 
+pub(in crate::agent) const TOOL_RETURN_CONTENT_PARTS_KEY: &str =
+    "starweaver_tool_return_content_parts";
+pub(in crate::agent) const TOOL_RETURN_MEDIA_PROMPT_KEY: &str = "starweaver_tool_return_prompt";
+pub(in crate::agent) const GEOMETRY_BOUND_MEDIA_KEY: &str =
+    "starweaver_geometry_bound_immutable_media";
+
 pub(in crate::agent) fn tool_return_media_prompt(
     tool_return: &ToolReturnPart,
 ) -> Option<ModelRequestPart> {
     let value = tool_return
         .private_metadata
-        .get("starweaver_tool_return_content_parts")?
+        .get(TOOL_RETURN_CONTENT_PARTS_KEY)?
         .clone();
     let mut content = Vec::new();
     let prompt = tool_return
         .private_metadata
-        .get("starweaver_tool_return_prompt")
+        .get(TOOL_RETURN_MEDIA_PROMPT_KEY)
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map_or_else(
@@ -48,12 +54,12 @@ pub(in crate::agent) fn tool_return_media_prompt(
     );
     if tool_return
         .private_metadata
-        .get("starweaver_geometry_bound_immutable_media")
+        .get(GEOMETRY_BOUND_MEDIA_KEY)
         .and_then(serde_json::Value::as_bool)
         == Some(true)
     {
         metadata.insert(
-            "starweaver_geometry_bound_immutable_media".to_string(),
+            GEOMETRY_BOUND_MEDIA_KEY.to_string(),
             serde_json::Value::Bool(true),
         );
     }
@@ -69,7 +75,7 @@ mod tests {
     use serde_json::json;
     use starweaver_model::ToolReturnPart;
 
-    use super::tool_return_media_prompt;
+    use super::{GEOMETRY_BOUND_MEDIA_KEY, tool_return_media_prompt};
 
     #[test]
     fn geometry_bound_marker_is_propagated_to_media_prompt() {
@@ -101,7 +107,7 @@ mod tests {
         };
         assert_eq!(
             metadata
-                .get("starweaver_geometry_bound_immutable_media")
+                .get(GEOMETRY_BOUND_MEDIA_KEY)
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );

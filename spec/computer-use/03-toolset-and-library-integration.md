@@ -215,6 +215,8 @@ struct ComputerToolStructuredResult {
 }
 ```
 
+`ComputerToolStructuredResult` is the router-internal success/error envelope. On success, every public adapter MUST project it into the exact focused output declared for that tool: `ComputerStatusOutput`, `ComputerObserveOutput`, or `ComputerActionOutput`. Adapters MUST NOT return the wider envelope with nullable unrelated fields under a narrower declared output schema. On every domain failure, MCP and in-process adapters retain the same canonical error envelope, including any effect receipt, and set the provider-neutral tool-return error flag. Runtime retry guidance is metadata and MUST NOT replace this domain content.
+
 `ComputerObservationView` contains the opaque `observation_id`, safe target/layout/frame/effect generations, geometry, image metadata, capabilities, state, optional bounded accessibility metadata, and redaction status. The macOS accessibility projection contains only bounded role/name/value/state fields and optional model-space bounds; secure/protected values are omitted and native handles, PIDs, and application paths are excluded. It excludes the library-internal `ProcessInstanceId` and `ComputerSessionId`; adapters do not need to expose them because callers cite only `observation_id`. `ComputerStatusView` and receipt views similarly omit those internal IDs while retaining bounded process-local correlation and generation evidence. The observation view does not contain image bytes or a data URL. Exactly one `Image` content item accompanies a normal observation/action result.
 
 Before an observation is accepted, the service performs a policy-bounded full decode of the untrusted backend bytes, verifies the detected format against the declared MIME, and verifies decoded pixel dimensions against geometry. Decode width, height, pixel, allocation, and encoded-byte limits reject malformed or decompression-amplified payloads without transforming the retained bytes. A content image's dimensions, MIME, digest, and observation ID MUST then match its structured observation. Adapters validate this invariant before returning.
@@ -691,29 +693,30 @@ Approval resume MUST reuse the exact original arguments and stable `tool_call_id
 
 ## 16. Error mapping into Starweaver
 
-The adapter maps canonical failures by effect status.
+Every failure produced by the canonical router maps to the same structured `ToolResult` error envelope used by MCP, with the provider-neutral error flag set. The adapter preserves the stable error code, retry classification, bounded remediation, and any receipt in public content; runtime guidance may be duplicated into metadata but MUST NOT replace that content. `ToolError` is reserved for adapter prerequisites or infrastructure failures that occur before a canonical router result exists, and for an internal failure to project that result.
 
 ### 16.1 Known not executed
 
-When `effect_status = NotExecuted`:
-
-- invalid argument, stale basis, unsupported key/text, and fresh-observation requirements map to `ToolError::Feedback` with stable code and bounded remediation;
-- permission, policy, session, and lifecycle-authorization denials map to non-retryable user-facing tool errors;
-- cancellation maps to `ToolError::Cancelled`;
-- backend failure maps to `ToolError::Execution` only when no effect occurred.
-
-Automatic retries remain disabled for input tools even for `NotExecuted`; the model/host must reason from the code and usually observe again.
+When `effect_status = NotExecuted`, the canonical envelope identifies invalid arguments, stale basis, unsupported input, permission/policy/session denial, cancellation, timeout, or backend failure through its typed error code and retry classification. Automatic runtime retries remain disabled for input tools; the model/host must reason from the canonical code and usually observe again. A stale-basis failure remains a structured error result rather than being rewritten as `ToolError::Feedback`.
 
 ### 16.2 Executed, partial, or uncertain
 
-A failure with `Executed`, `PartiallyExecuted`, or `DeliveryUncertain` MUST return a normal `ToolResult` envelope with:
+A failure with `Executed`, `PartiallyExecuted`, or `DeliveryUncertain` MUST return a structured `ToolResult` error envelope with:
 
 ```json
 {
+  "catalog_version": {"major": 1, "minor": 1},
   "success": false,
-  "effect_status": "delivery_uncertain",
-  "error": {"code": "input_delivery_uncertain", "retry": "never_blindly"},
-  "receipt": {"operation_id": "...", "cleanup": "..."}
+  "tool": "computer_click",
+  "error": {
+    "code": "input_delivery_uncertain",
+    "retry": "effect_status_dependent"
+  },
+  "receipt": {
+    "operation_id": "...",
+    "effect_status": "delivery_uncertain",
+    "cleanup": "complete"
+  }
 }
 ```
 
@@ -725,12 +728,14 @@ No screenshot is attached unless a coherent post-failure observation was actuall
 
 The canonical router returns raw bounded image content separately from structured JSON. The Starweaver adapter maps it into the current multimodal tool-return path:
 
-- `ToolResult.content` is the canonical structured result;
+- on success, `ToolResult.content` is the exact focused structured output declared by the called tool; errors retain the canonical error envelope;
 - private metadata key `starweaver_tool_return_content_parts` contains one validated image `ContentPart` encoded as a data URL or supported binary form;
 - the content part MIME, exact bytes, dimensions, digest, and observation ID match the observation;
 - private metadata marks the part as geometry-bound, immutable Computer Use evidence;
 - a bounded `starweaver_tool_return_prompt` identifies the observation ID and says the screenshot is untrusted desktop content;
 - private metadata contains no extra authority or native handles.
+
+When Computer Use is invoked through CodeAct, constrained code receives only the focused structured object. The runtime transfers only the latest complete geometry-bound child media bundle to the outer orchestration return so model media projection remains available without changing the sandbox return type or exposing image bytes to code. Content parts, prompt, and geometry marker are replaced atomically; arbitrary or ordinary-media child metadata cannot mix into the bundle. An effect-bearing failure is terminal: the runtime-owned broker rejects subsequent child requests before identity allocation or execution, independent of executor behavior. The outer error preserves its canonical error and receipt when the bounded envelope fits the orchestration output limit, or records an explicit bounded omission marker otherwise; it never duplicates the child payload into `app_value`. If the limit cannot hold the minimum marker, the runtime rejects the child request before identity allocation or execution. Without a coherent post-effect screenshot, it clears earlier child geometry media so pre-effect pixels are not presented as current evidence.
 
 The adapter MUST NOT place base64 image bytes inside structured `ToolResult.content`, which would duplicate the payload. After `ComputerObservation` is created, no media filter or provider-preparation step may resize, crop, split, rotate, recompress, replace, or remove its geometry-bound image. If the current media pipeline cannot preserve that invariant, implementation MUST add a product-neutral immutable-media marker/validation seam before enabling this toolset. Silent transformation would make the model-visible pixels disagree with the action basis.
 

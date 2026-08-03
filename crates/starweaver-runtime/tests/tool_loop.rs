@@ -1,8 +1,11 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::sync::{
-    Arc, LazyLock, Mutex,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    collections::BTreeSet,
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use async_trait::async_trait;
@@ -620,6 +623,50 @@ async fn constrained_orchestrator_reenters_canonical_tool_pipeline_without_child
     let second_request = format!("{:?}", model.captured.lock().unwrap()[1]);
     assert!(second_request.contains("orchestrate"));
     assert!(!second_request.contains("nested_target"));
+}
+
+#[tokio::test]
+async fn oversized_codeact_return_schema_uses_explicit_compact_catalog() {
+    let model = Arc::new(ScriptedModel::new(vec![ModelResponse::text("done")]));
+    let target = FunctionTool::new(
+        "nested_target",
+        Some("Compact schema target".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_context: ToolContext, arguments: serde_json::Value| async move {
+            Ok(ToolResult::new(arguments))
+        },
+    )
+    .with_return_schema(serde_json::json!({
+        "type": "object",
+        "description": "x".repeat(40 * 1024)
+    }))
+    .with_metadata(strict_metadata());
+    let mut context = AgentContext::default();
+
+    let result = Agent::new(model.clone())
+        .with_tools(constrained_registry_with_outer_name(
+            Arc::new(target),
+            None,
+            "run_code",
+        ))
+        .run_with_context("compose", &mut context)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "done");
+    assert_eq!(
+        context.runtime.prepared_codeact_target_names,
+        BTreeSet::from(["nested_target".to_string()])
+    );
+    let params = model.captured_params.lock().unwrap()[0].clone();
+    let catalog = params
+        .instructions
+        .iter()
+        .find(|instruction| instruction.text.contains("<codeact_catalog>"))
+        .unwrap();
+    assert!(catalog.text.contains("nested_target"));
+    assert!(catalog.text.contains("return_schema_omitted"));
+    assert!(!catalog.text.contains(&"x".repeat(40 * 1024)));
 }
 
 #[tokio::test]

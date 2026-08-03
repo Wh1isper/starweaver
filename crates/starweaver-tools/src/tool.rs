@@ -15,7 +15,7 @@ use starweaver_model::ToolDefinition;
 use crate::{ToolContext, ToolError};
 
 pub use function::FunctionTool;
-pub use result::{DynTool, ToolResult};
+pub use result::{DynTool, TOOL_RESULT_IS_ERROR_KEY, ToolResult};
 pub use typed::TypedFunctionTool;
 
 /// Metadata key for capability tags attached to a tool definition.

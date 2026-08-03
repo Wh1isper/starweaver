@@ -313,18 +313,24 @@ fn schema_object(value: &Value) -> Map<String, Value> {
 }
 
 fn map_call_result(result: &ComputerToolCallResult) -> CallToolResult {
-    let structured = serde_json::to_value(&result.structured).unwrap_or_else(|_| {
-        serde_json::json!({
-            "success": false,
-            "tool": "computer_use",
-            "error": {
-                "code": "internal",
-                "message": "failed to serialize canonical Computer Use result",
-                "retry": "never"
-            }
-        })
-    });
-    let mut mapped = if result.is_error {
+    let (structured, projection_failed) = result.output_value().map_or_else(
+        |_| {
+            (
+                serde_json::json!({
+                    "success": false,
+                    "tool": "computer_use",
+                    "error": {
+                        "code": "internal",
+                        "message": "failed to project canonical Computer Use output",
+                        "retry": "never"
+                    }
+                }),
+                true,
+            )
+        },
+        |value| (value, false),
+    );
+    let mut mapped = if result.is_error || projection_failed {
         CallToolResult::structured_error(structured)
     } else {
         CallToolResult::structured(structured)
@@ -355,7 +361,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        ComputerToolCatalog, ComputerUseErrorCode, ComputerUsePolicy, ComputerUseService,
+        COMPUTER_CLICK_TOOL, COMPUTER_OBSERVE_TOOL, ComputerCapabilityGrant, ComputerToolCatalog,
+        ComputerUseErrorCode, ComputerUsePolicy, ComputerUseService, EffectStatus,
         FakeComputerUseConfig, FakeComputerUseService, InputCleanupStatus,
     };
 
@@ -382,6 +389,114 @@ mod tests {
                 Some(definition.output_schema)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn mcp_failure_keeps_canonical_structured_envelope() {
+        let service = Arc::new(FakeComputerUseService::new(
+            ComputerUsePolicy::default(),
+            FakeComputerUseConfig::default(),
+        ));
+        let server = ComputerUseMcpServer::new(service, ComputerToolGrant::full());
+        let result = server
+            .router
+            .call(
+                ComputerToolInvocation::new(InvocationId::new(), InvocationSource::McpRequest),
+                COMPUTER_CLICK_TOOL,
+                serde_json::json!({
+                    "observation_id": crate::ObservationId::new().to_string(),
+                    "x": 10,
+                    "y": 20
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        let Ok(expected) = result.output_value() else {
+            panic!("canonical failure should project to structured JSON");
+        };
+
+        let mapped = map_call_result(&result);
+
+        assert_eq!(mapped.is_error, Some(true));
+        assert_eq!(mapped.structured_content.as_ref(), Some(&expected));
+        assert_eq!(
+            mapped
+                .structured_content
+                .as_ref()
+                .and_then(|value| value.pointer("/error/code")),
+            Some(&serde_json::json!("stale_observation"))
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_observe_then_click_returns_declared_structured_contracts() {
+        let policy = ComputerUsePolicy {
+            allowed_capabilities: ComputerCapabilityGrant {
+                observe: true,
+                pointer: true,
+                keyboard: true,
+                accessibility_snapshot: false,
+            },
+            post_action_settle: Duration::ZERO,
+            ..ComputerUsePolicy::default()
+        };
+        let service = Arc::new(FakeComputerUseService::new(
+            policy,
+            FakeComputerUseConfig::default(),
+        ));
+        let server = ComputerUseMcpServer::new(service, ComputerToolGrant::full());
+        let observed = server
+            .router
+            .call(
+                ComputerToolInvocation::new(InvocationId::new(), InvocationSource::McpRequest),
+                COMPUTER_OBSERVE_TOOL,
+                serde_json::json!({"include_accessibility": false}),
+                CancellationToken::new(),
+            )
+            .await;
+        let observed = map_call_result(&observed);
+        assert_eq!(observed.is_error, Some(false));
+        let observed_value = observed
+            .structured_content
+            .expect("MCP observation should retain structured content");
+        assert_eq!(
+            observed_value.as_object().map(serde_json::Map::len),
+            Some(2)
+        );
+        let observation_id = observed_value
+            .pointer("/observation/observation_id")
+            .and_then(Value::as_str)
+            .expect("MCP observation should expose its basis ID");
+
+        let clicked = server
+            .router
+            .call(
+                ComputerToolInvocation::new(InvocationId::new(), InvocationSource::McpRequest),
+                COMPUTER_CLICK_TOOL,
+                serde_json::json!({
+                    "observation_id": observation_id,
+                    "x": 10,
+                    "y": 20
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        let clicked = map_call_result(&clicked);
+        assert_eq!(clicked.is_error, Some(false));
+        let clicked_value = clicked
+            .structured_content
+            .expect("MCP action should retain structured content");
+        assert_eq!(clicked_value.as_object().map(serde_json::Map::len), Some(3));
+        assert_eq!(
+            clicked_value.pointer("/receipt/effect_status"),
+            Some(&serde_json::json!(EffectStatus::Executed))
+        );
+        assert!(
+            clicked_value
+                .pointer("/observation/observation_id")
+                .and_then(Value::as_str)
+                .is_some()
+        );
     }
 
     fn limited_server(limits: McpResourceLimits) -> ComputerUseMcpServer {

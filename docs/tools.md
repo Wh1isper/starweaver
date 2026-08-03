@@ -33,6 +33,8 @@ let tools = ToolRegistry::new().with_tool(Arc::new(lookup));
 assert!(!tools.is_empty());
 ```
 
+`ToolResult::new(value)` represents a successful result by default. A domain adapter that must preserve a structured failure payload can return `Ok(ToolResult::new(error_value).with_error())`; the registry retains that exact content while marking the provider-neutral tool return as an error. This path does not request an automatic runtime retry. Use `Err(ToolError::...)` when the runtime should apply ordinary tool-error projection or retry policy instead.
+
 Field doc comments and `#[schemars(description = "...")]` become per-argument descriptions in the tool schema. Use doc comments for ordinary fields and `#[schemars(...)]` when the schema description should differ from Rust docs.
 
 ```rust

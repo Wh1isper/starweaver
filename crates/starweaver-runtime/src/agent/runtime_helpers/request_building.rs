@@ -388,11 +388,14 @@ impl Agent {
         if !context.runtime.prepared_tool_names.contains("run_code") {
             return None;
         }
-        let catalog = context
+        let definitions = context
             .runtime
             .prepared_codeact_target_names
             .iter()
             .filter_map(|name| context.runtime.prepared_tool_definitions.get(name))
+            .collect::<Vec<_>>();
+        let catalog = definitions
+            .iter()
             .map(|definition| {
                 serde_json::json!({
                     "name": definition.name,
@@ -406,16 +409,44 @@ impl Agent {
         let bounded = if rendered.len() <= MAX_CODEACT_CATALOG_BYTES {
             rendered
         } else {
-            let omitted_targets = context.runtime.prepared_codeact_target_names.len();
-            context.runtime.prepared_codeact_target_names.clear();
-            context.publish_event(AgentEvent::new(
-                "codeact_catalog_exceeded_limit",
-                serde_json::json!({
-                    "max_bytes": MAX_CODEACT_CATALOG_BYTES,
-                    "omitted_targets": omitted_targets,
-                }),
-            ));
-            "[]".to_string()
+            // Return schemas can dominate otherwise-small catalogs (notably the
+            // geometry-rich Computer Use family). Keep every exact target and
+            // argument contract visible before failing closed, and mark the
+            // bounded omission explicitly rather than silently exposing tools.
+            let compact_catalog = definitions
+                .iter()
+                .map(|definition| {
+                    serde_json::json!({
+                        "name": definition.name,
+                        "description": definition.description,
+                        "parameters": definition.parameters,
+                        "return_schema_omitted": true,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let compact =
+                serde_json::to_string(&compact_catalog).unwrap_or_else(|_| "[]".to_string());
+            if compact.len() <= MAX_CODEACT_CATALOG_BYTES {
+                context.publish_event(AgentEvent::new(
+                    "codeact_catalog_return_schemas_omitted",
+                    serde_json::json!({
+                        "max_bytes": MAX_CODEACT_CATALOG_BYTES,
+                        "targets": definitions.len(),
+                    }),
+                ));
+                compact
+            } else {
+                let omitted_targets = context.runtime.prepared_codeact_target_names.len();
+                context.runtime.prepared_codeact_target_names.clear();
+                context.publish_event(AgentEvent::new(
+                    "codeact_catalog_exceeded_limit",
+                    serde_json::json!({
+                        "max_bytes": MAX_CODEACT_CATALOG_BYTES,
+                        "omitted_targets": omitted_targets,
+                    }),
+                ));
+                "[]".to_string()
+            }
         };
         let mut metadata = serde_json::Map::new();
         metadata.insert(

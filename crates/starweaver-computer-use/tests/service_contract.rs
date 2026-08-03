@@ -2,18 +2,31 @@
 
 //! Deterministic Computer Use service and router conformance tests.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use starweaver_computer_use::{
     AffineTransform2D, COMPUTER_CLICK_TOOL, COMPUTER_OBSERVE_TOOL, ClickAction, ComputerAction,
-    ComputerActionRequest, ComputerCapabilityGrant, ComputerSessionState, ComputerToolContent,
-    ComputerToolGrant, ComputerToolInvocation, ComputerToolRouter, ComputerUseError,
-    ComputerUseErrorCode, ComputerUseFailure, ComputerUsePolicy, ComputerUseService, EffectStatus,
-    FakeComputerUseConfig, FakeComputerUseService, InvocationId, InvocationSource, ModelPoint,
-    ObservationRef, ObserveRequest, OperationId, PermissionCapabilityStatus, PermissionRequest,
-    PointerButton, RetryClassification,
+    ComputerActionRequest, ComputerCapabilityGrant, ComputerSessionState, ComputerToolCallResult,
+    ComputerToolContent, ComputerToolGrant, ComputerToolInvocation, ComputerToolRouter,
+    ComputerUseError, ComputerUseErrorCode, ComputerUseFailure, ComputerUsePolicy,
+    ComputerUseService, EffectStatus, FakeComputerUseConfig, FakeComputerUseService, InvocationId,
+    InvocationSource, ModelPoint, ObservationRef, ObserveRequest, OperationId,
+    PermissionCapabilityStatus, PermissionRequest, PointerButton, RetryClassification,
 };
 use starweaver_core::CancellationToken;
+
+fn focused_output(result: &ComputerToolCallResult, keys: &[&str]) -> serde_json::Value {
+    let output = result
+        .output_value()
+        .expect("successful call should match its declared output contract");
+    assert_eq!(
+        output
+            .as_object()
+            .map(|object| object.keys().cloned().collect::<BTreeSet<_>>()),
+        Some(keys.iter().map(|key| (*key).to_string()).collect())
+    );
+    output
+}
 
 fn full_policy() -> ComputerUsePolicy {
     ComputerUsePolicy {
@@ -545,6 +558,11 @@ async fn router_rejects_unknown_fields_and_maps_exact_image() {
     assert_eq!((*width, *height), (view.image.width, view.image.height));
     assert_eq!(sha256, &view.image.sha256);
     assert_eq!(observation_id, &view.observation_id);
+    let observed_output = focused_output(&observed, &["catalog_version", "observation"]);
+    assert_eq!(
+        observed_output.pointer("/observation/observation_id"),
+        Some(&serde_json::json!(view.observation_id))
+    );
 
     let click = router
         .call(
@@ -567,6 +585,11 @@ async fn router_rejects_unknown_fields_and_maps_exact_image() {
             .as_ref()
             .map(|receipt| receipt.effect_status),
         Some(EffectStatus::Executed)
+    );
+    let click_output = focused_output(&click, &["catalog_version", "observation", "receipt"]);
+    assert_eq!(
+        click_output.pointer("/receipt/effect_status"),
+        Some(&serde_json::json!("executed"))
     );
 }
 

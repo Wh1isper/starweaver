@@ -582,6 +582,57 @@ pub struct ComputerToolCallResult {
 }
 
 impl ComputerToolCallResult {
+    /// Serialize the public value declared by the exact tool's output schema.
+    ///
+    /// Successful calls use the focused status, observation, or action DTO. Failed
+    /// calls retain the canonical error envelope, including any effect receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a successful canonical result is internally missing a
+    /// field required by its declared output contract, or JSON serialization fails.
+    pub fn output_value(&self) -> Result<serde_json::Value, String> {
+        if !self.structured.success {
+            return serde_json::to_value(&self.structured)
+                .map_err(|error| format!("failed to serialize Computer Use error: {error}"));
+        }
+        let value =
+            match self.structured.tool.as_str() {
+                COMPUTER_STATUS_TOOL => {
+                    serde_json::to_value(ComputerStatusOutput {
+                        catalog_version: self.structured.catalog_version,
+                        status: self.structured.status.clone().ok_or_else(|| {
+                            "successful computer_status omitted status".to_string()
+                        })?,
+                    })
+                }
+                COMPUTER_OBSERVE_TOOL => serde_json::to_value(ComputerObserveOutput {
+                    catalog_version: self.structured.catalog_version,
+                    observation: self.structured.observation.clone().ok_or_else(|| {
+                        "successful computer_observe omitted observation".to_string()
+                    })?,
+                }),
+                COMPUTER_CLICK_TOOL
+                | COMPUTER_MOVE_POINTER_TOOL
+                | COMPUTER_DRAG_TOOL
+                | COMPUTER_SCROLL_TOOL
+                | COMPUTER_TYPE_TEXT_TOOL
+                | COMPUTER_PRESS_KEYS_TOOL => {
+                    serde_json::to_value(ComputerActionOutput {
+                        catalog_version: self.structured.catalog_version,
+                        receipt: self.structured.receipt.clone().ok_or_else(|| {
+                            "successful computer action omitted receipt".to_string()
+                        })?,
+                        observation: self.structured.observation.clone().ok_or_else(|| {
+                            "successful computer action omitted observation".to_string()
+                        })?,
+                    })
+                }
+                name => return Err(format!("successful result named unknown tool {name:?}")),
+            };
+        value.map_err(|error| format!("failed to serialize Computer Use output: {error}"))
+    }
+
     /// Build a canonical fail-closed result for a revoked or absent product admission.
     #[must_use]
     pub fn admission_denied(tool: &str, message: impl Into<String>) -> Self {

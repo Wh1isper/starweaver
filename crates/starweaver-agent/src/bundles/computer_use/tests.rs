@@ -23,7 +23,7 @@ use tokio::sync::Semaphore;
 use super::{
     COMPUTER_OBSERVE_CAPABILITY, ComputerUseAdmissionGuard, ComputerUseAttachmentError,
     ComputerUseToolsetPolicy, attach_computer_use, attach_guarded_computer_use, computer_use_tools,
-    validate_model_image_limits,
+    map_result, validate_model_image_limits,
 };
 
 fn fake_router(grant: ComputerToolGrant) -> Arc<ComputerToolRouter> {
@@ -378,6 +378,51 @@ async fn dispatch_requires_exact_runtime_tool_call_id() {
         Err(ToolError::Execution { message, .. })
             if message.contains("stable tool_call_id is required")
     ));
+}
+
+#[tokio::test]
+async fn in_process_failure_keeps_canonical_structured_envelope() {
+    let grant = ComputerToolGrant::full();
+    let router = fake_router(grant);
+    let result = router
+        .call(
+            ComputerToolInvocation::new(
+                InvocationId::from_stable_parts("canonical-error", ["run", "click"]),
+                InvocationSource::StarweaverToolCall,
+            ),
+            COMPUTER_CLICK_TOOL,
+            json!({
+                "observation_id": starweaver_computer_use::ObservationId::new().to_string(),
+                "x": 10,
+                "y": 20
+            }),
+            CancellationToken::new(),
+        )
+        .await;
+    assert!(result.is_error);
+    let Ok(expected) = result.output_value() else {
+        panic!("canonical failure should project to structured JSON");
+    };
+
+    let mapped = map_result(
+        COMPUTER_CLICK_TOOL,
+        &image_tool_context(&AgentContext::default()),
+        result,
+    );
+    let Ok(mapped) = mapped else {
+        panic!("canonical domain failure should remain a structured tool result");
+    };
+
+    assert!(mapped.is_error());
+    assert_eq!(mapped.content, expected);
+    assert_eq!(
+        mapped.content.pointer("/error/code"),
+        Some(&json!("stale_observation"))
+    );
+    assert_eq!(
+        mapped.metadata.get("error_kind"),
+        Some(&json!("stale_observation"))
+    );
 }
 
 fn image_tool_context(context: &AgentContext) -> ToolContext {

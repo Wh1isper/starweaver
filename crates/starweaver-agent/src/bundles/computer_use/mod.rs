@@ -20,8 +20,8 @@ use starweaver_context::{
 use starweaver_core::Metadata;
 use starweaver_model::ToolDefinition;
 use starweaver_tools::{
-    DynTool, DynToolset, TOOL_METADATA_DEPENDENCIES_KEY, Tool, ToolContext,
-    ToolDependencyRequirements, ToolError, ToolInstruction, ToolResult, Toolset,
+    DynTool, DynToolset, TOOL_METADATA_DEPENDENCIES_KEY, TOOL_RESULT_NESTED_NON_RESUMABLE_KEY,
+    Tool, ToolContext, ToolDependencyRequirements, ToolError, ToolInstruction, ToolResult, Toolset,
     ToolsetLifecycleError, ToolsetPreparation,
 };
 
@@ -412,39 +412,21 @@ impl Tool for ComputerUseTool {
 fn map_result(
     tool: &str,
     context: &ToolContext,
-    result: ComputerToolCallResult,
+    mut result: ComputerToolCallResult,
 ) -> Result<ToolResult, ToolError> {
-    if result.is_error && !ambiguous_or_executed(result.structured.receipt.as_ref()) {
-        let error = result.structured.error.as_ref();
-        let code = error.map_or("computer_use_error", |error| error.code.as_str());
-        let message = error.map_or("computer operation failed", |error| error.message.as_str());
-        return Err(match code {
-            "cancelled" => ToolError::Cancelled {
-                tool: tool.into(),
-                reason: message.into(),
-            },
-            "stale_observation"
-            | "stale_layout"
-            | "stale_target"
-            | "observation_expired"
-            | "invalid_coordinate"
-            | "invalid_request"
-            | "unsupported_key"
-            | "unsupported_text" => ToolError::Feedback {
-                tool: tool.into(),
-                message: format!(
-                    "{code}: {message}. Call computer_observe before another input when the observation basis is stale."
-                ),
-            },
-            _ => unavailable(tool, format!("{code}: {message}")),
-        });
+    if let Err(error) = validate_model_image_limits(context, &result.content) {
+        if !result.is_error {
+            return Err(error);
+        }
+        // A failure receipt remains authoritative even when its optional coherent
+        // screenshot cannot be admitted to the active model. Drop only the media.
+        result.content.clear();
     }
-
-    validate_model_image_limits(context, &result.content)?;
-    let structured =
-        serde_json::to_value(&result.structured).map_err(|error| ToolError::Execution {
+    let structured = result
+        .output_value()
+        .map_err(|error| ToolError::Execution {
             tool: tool.into(),
-            message: format!("failed to serialize Computer Use result: {error}"),
+            message: format!("failed to project Computer Use output: {error}"),
         })?;
     let mut private_metadata = Metadata::new();
     if let Some(ComputerToolContent::Image {
@@ -481,7 +463,25 @@ fn map_result(
             Value::Bool(true),
         );
     }
-    Ok(ToolResult::new(structured).with_private_metadata(private_metadata))
+    let mut mapped = ToolResult::new(structured).with_private_metadata(private_metadata);
+    if result.is_error {
+        let error = result.structured.error.as_ref();
+        let code = error.map_or("computer_use_error", |error| error.code.as_str());
+        let message = error.map_or("computer operation failed", |error| error.message.as_str());
+        mapped.metadata.extend(Metadata::from_iter([
+            ("error_kind".into(), Value::String(code.to_string())),
+            ("message".into(), Value::String(message.to_string())),
+            ("runtime_retryable".into(), Value::Bool(false)),
+        ]));
+        if ambiguous_or_executed(result.structured.receipt.as_ref()) {
+            mapped.metadata.insert(
+                TOOL_RESULT_NESTED_NON_RESUMABLE_KEY.into(),
+                Value::Bool(true),
+            );
+        }
+        mapped = mapped.with_error();
+    }
+    Ok(mapped)
 }
 
 fn validate_model_image_limits(

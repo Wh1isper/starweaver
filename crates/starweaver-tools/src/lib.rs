@@ -33,16 +33,17 @@ pub use mcp::{
 pub use nested::{
     CodeToolBridge, NestedToolError, NestedToolInvoker, NestedToolRequest, NestedToolResult,
     TOOL_METADATA_NESTED_CALL_LIMIT_KEY, TOOL_METADATA_NESTED_INVOKER_KEY,
+    TOOL_METADATA_NESTED_RESULT_MAX_BYTES_KEY, TOOL_RESULT_NESTED_NON_RESUMABLE_KEY,
 };
 pub use prefixed::{PrefixedTool, PrefixedToolset};
 pub use registry::{ToolAvailabilityReport, ToolRegistry};
 pub use tool::{
     CodeActEligibility, DynTool, EmptyToolArgs, FunctionTool, TOOL_METADATA_CONTEXT_MANAGEMENT_KEY,
     TOOL_METADATA_HIDDEN_BY_TAGS_KEY, TOOL_METADATA_KIND_KEY, TOOL_METADATA_SELF_MANAGED_HITL_KEY,
-    TOOL_METADATA_TAGS_KEY, Tool, ToolKind, ToolResult, ToolUserInputPreprocessResult,
-    TypedFunctionTool, extend_tool_metadata_hidden_by_tags, extend_tool_metadata_tags, json_tool,
-    set_tool_metadata_kind, tool_metadata_hidden_by_tags, tool_metadata_kind, tool_metadata_tags,
-    typed_json_tool,
+    TOOL_METADATA_TAGS_KEY, TOOL_RESULT_IS_ERROR_KEY, Tool, ToolKind, ToolResult,
+    ToolUserInputPreprocessResult, TypedFunctionTool, extend_tool_metadata_hidden_by_tags,
+    extend_tool_metadata_tags, json_tool, set_tool_metadata_kind, tool_metadata_hidden_by_tags,
+    tool_metadata_kind, tool_metadata_tags, typed_json_tool,
 };
 pub use tool_dependency::{
     TOOL_METADATA_DEPENDENCIES_KEY, ToolDependencyProfile, ToolDependencyRequirements,
