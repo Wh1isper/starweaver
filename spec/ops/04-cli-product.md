@@ -68,17 +68,37 @@ The launcher prints help when run without arguments. Built-in commands include `
 
 ## Install and Update Semantics
 
-GitHub Release assets are component-scoped. Current release artifacts provide the CLI component.
+GitHub Release assets are component-scoped and every published scope carries an immutable
+`starweaver-release.json` manifest plus `checksums.txt`.
 
-| Component | Archive prefix                  | Installed binaries                                     | Update command                                                        |
-| --------- | ------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------- |
-| CLI       | `starweaver-cli-<tag>-<target>` | `starweaver`, `starweaver-cli`, `sw`, `starweaver-rpc` | `starweaver update`, `starweaver update cli`, `starweaver cli update` |
+| Component    | Archive prefix                                    | Installed binaries                                     | Update command                                                        |
+| ------------ | ------------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------- |
+| CLI          | `starweaver-cli-v<version>-<target>`              | `starweaver`, `starweaver-cli`, `sw`, `starweaver-rpc` | `starweaver update`, `starweaver update cli`, `starweaver cli update` |
+| Computer Use | `starweaver-computer-use-mcp-v<version>-<target>` | `starweaver-computer-use-mcp`                          | `starweaver update computer-use`                                      |
 
-The installer defaults to every component available for the detected platform: `cli` everywhere and `computer-use` additionally on macOS. `STARWEAVER_EXCLUDE_COMPONENTS` is the primary comma-separated opt-out boundary. `STARWEAVER_COMPONENTS` remains a compatibility-only explicit selection. The default update target is `all`; explicit `cli` and `computer-use` update targets constrain the installer to one component. Installing the Computer Use MCP binary does not enable the separate default-denied in-process CLI/RPC Toolset.
+The bootstrap installer defaults to every component available for the detected platform: `cli`
+everywhere and `computer-use` additionally on macOS. `STARWEAVER_EXCLUDE_COMPONENTS` is the primary
+comma-separated opt-out boundary. `STARWEAVER_COMPONENTS` remains a compatibility-only explicit
+selection. A component release tag defaults to its own component. Installing the Computer Use MCP
+binary does not enable the separate default-denied in-process CLI/RPC Toolset. Bootstrap archive
+installation requires a matching SHA-256 entry in `checksums.txt`.
 
-The launcher update path checks the current CLI package version before installing. For `latest`, it compares against the selected GitHub release for the same repository override used by the installer and returns `status=up-to-date` when the selected release is not newer. For pinned `STARWEAVER_VERSION` installs, it skips only when the pinned version matches the current package version so explicit rollbacks still work. `--force` and `STARWEAVER_UPDATE_FORCE=1` bypass the skip check.
+The native launcher updater does not download or execute `scripts/install.sh`. For each component it
+lists public GitHub Releases, parses only canonical full or matching component tags, applies the
+configured stable or prerelease channel, and chooses the highest semantic version with a
+component-specific tie-break. An explicit `STARWEAVER_VERSION` permits an exact pin or rollback.
+`--force` and `STARWEAVER_UPDATE_FORCE=1` bypass the up-to-date check.
 
-The launcher update path downloads `scripts/install.sh`, runs it through `sh` with environment variables passed through `Command::env`, and avoids shell interpolation for real updates. Dry-run output may render a shell command for copy/paste diagnostics and must shell-quote paths.
+The updater fetches the exact tag's manifest and verifies schema, tag, scope, version, channel, source
+revision, component inventory, target, bounded archive size, and SHA-256 before safe extraction. It
+paginates bounded GitHub Release discovery, rejects traversal, unexpected archive entries, missing
+binaries, and duplicate target assets, and uses separate metadata and artifact timeouts. All selected
+downloads are prepared before installation starts. One install-directory lock covers state inspection,
+staged replacement, and commit. A persistent pending marker makes process termination recoverable;
+exact JSON state records tag, source revision, target, and version only after running-executable
+replacement succeeds. Ordinary failures restore backups and remove newly created files. Dry-run is
+network-free and prints the selected target, channel, components, current distribution identity,
+requested release, and install directory.
 
 ### Planned RPC component contract
 
@@ -92,7 +112,7 @@ Desktop-managed SSH targets require this install/update path to become a stable 
 - no implicit database open or migration during binary installation;
 - a verified bootstrap asset for machines that do not yet have the component manager.
 
-The launcher/CLI and Desktop may both consume product-neutral installer/update mechanics, but Desktop does not link CLI handlers, parse CLI configuration, or use CLI run coordination. SSH-specific invocation and trust boundaries are specified in `../desktop/07-ssh-remote-workspaces.md`. The existing `cli` archive and optional-checksum installer remain current implementation evidence, not evidence that this stronger `rpc` contract is complete.
+The launcher/CLI and Desktop may both consume product-neutral installer/update mechanics, but Desktop does not link CLI handlers, parse CLI configuration, or use CLI run coordination. SSH-specific invocation and trust boundaries are specified in `../desktop/07-ssh-remote-workspaces.md`. The current manifest-verified `cli` and `computer-use` component updater is implementation evidence for native component management, but it does not create a separately published `rpc` component or complete that future contract.
 
 ## Current Implementation Status
 

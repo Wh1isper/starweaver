@@ -33,7 +33,7 @@ use super::{
 };
 
 const SESSION_HEADER_MAX_INNER_WIDTH: usize = 56;
-const STARWEAVER_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+const STARWEAVER_CLI_VERSION: &str = crate::build_info::VERSION;
 
 pub(super) fn snapshot_interactive_lines(snapshot: &TuiSnapshot) -> Vec<String> {
     if !snapshot.transcript_lines.is_empty() {

@@ -1,0 +1,35 @@
+name: Publish Python Component
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  publish:
+    name: Publish Python package
+    runs-on: ubuntu-latest
+    environment: Release
+    steps:
+      - name: Download prepared Python distributions
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-python-*
+          path: dist/python
+          merge-multiple: true
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.3.2
+
+      - name: Publish Python package
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish --check-url https://pypi.org/simple/starweaver/ dist/python/*

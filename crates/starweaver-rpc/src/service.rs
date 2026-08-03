@@ -3215,12 +3215,12 @@ impl RpcConnection {
                     .unwrap_or("source")
                     .to_string(),
                 target: env!("STARWEAVER_TARGET_TRIPLE").to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
+                version: env!("STARWEAVER_BUILD_VERSION").to_string(),
             },
             runtime_status: "ready".to_string(),
             server_info: host::ServerInfo {
                 name: "starweaver-rpc".to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
+                version: env!("STARWEAVER_BUILD_VERSION").to_string(),
             },
             startup_reconciliation: host::StartupReconciliation {
                 changed_run_state: self.service.startup_repaired_runs > 0,
@@ -3281,7 +3281,7 @@ impl RpcConnection {
             runtime_status: "ready".to_string(),
             sdk: starweaver_core::sdk_name().to_string(),
             storage_current: true,
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: env!("STARWEAVER_BUILD_VERSION").to_string(),
         })
     }
 

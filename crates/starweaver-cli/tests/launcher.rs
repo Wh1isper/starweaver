@@ -94,10 +94,9 @@ fn launcher_version_and_doctor_are_builtin() {
         .output()
         .unwrap();
     assert!(version.status.success());
-    assert_eq!(
-        String::from_utf8(version.stdout).unwrap().trim(),
-        "starweaver-agent-sdk"
-    );
+    let version = String::from_utf8(version.stdout).unwrap();
+    assert!(version.starts_with("starweaver-agent-sdk "));
+    assert!(version.contains("revision development"));
 
     let doctor = env_command(env!("CARGO_BIN_EXE_sw"), &temp)
         .arg("doctor")
@@ -162,6 +161,6 @@ fn launcher_update_quotes_install_dir_in_dry_run() {
     );
     let stdout = String::from_utf8(update.stdout).unwrap();
     assert!(stdout.contains("target=cli"));
-    assert!(stdout.contains("'\\''"));
-    assert!(stdout.contains("STARWEAVER_COMPONENTS=cli"));
+    assert!(stdout.contains(&format!("install_dir={}", install_dir.display())));
+    assert!(stdout.contains("components=cli"));
 }

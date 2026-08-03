@@ -396,12 +396,22 @@ docs-build: ## Build the static documentation site
 	@mdbook build
 	@$(XTASK) finalize-docs-site
 
-.PHONY: upversion
-upversion: ## Update workspace version; pass VERSION=x.y.z
-	@if [ -z "$(VERSION)" ]; then echo "VERSION is required, for example: make upversion VERSION=0.0.1"; exit 1; fi
-	@$(XTASK) upversion $(VERSION)
+.PHONY: release-prepare
+release-prepare: ## Prepare an ephemeral release checkout; pass SCOPE=full|cli|computer-use|sdk|python VERSION=x.y.z
+	@if [ -z "$(SCOPE)" ]; then echo "SCOPE is required"; exit 1; fi
+	@if [ -z "$(VERSION)" ]; then echo "VERSION is required, for example: make release-prepare SCOPE=full VERSION=0.14.0"; exit 1; fi
+	@$(XTASK) release-prepare $(SCOPE) $(VERSION)
 	@uv lock
-	@cargo check --workspace $(RUST_WORKSPACE_EXCLUDES) --all-targets --all-features --locked
+
+.PHONY: upversion
+upversion: ## Compatibility alias for full ephemeral release preparation; pass VERSION=x.y.z
+	@if [ -z "$(VERSION)" ]; then echo "VERSION is required, for example: make upversion VERSION=0.14.0"; exit 1; fi
+	@$(MAKE) release-prepare SCOPE=full VERSION=$(VERSION)
+
+.PHONY: release-tag-check
+release-tag-check: ## Parse and validate TAG using the canonical component release contract
+	@if [ -z "$(TAG)" ]; then echo "TAG is required"; exit 1; fi
+	@$(XTASK) release-tag $(TAG)
 
 .PHONY: semver-check
 semver-check: ## Check Rust public API compatibility against the latest release

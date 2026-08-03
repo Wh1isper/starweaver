@@ -35,7 +35,7 @@ GitHub archives are checksum-covered but are not Apple Developer ID signed or no
 - Durable screenshot projection and restore contracts: `crates/starweaver-context/tests/checkpoint_contracts.rs` and `crates/starweaver-context/tests/context_state.rs`
 - CLI configuration/profile/composition tests: `crates/starweaver-cli/src/computer_use.rs`, `crates/starweaver-cli/src/config.rs`, and `crates/starweaver-cli/src/profiles.rs`
 - RPC auto-materialization, admission, expiry, revocation, and composition tests: `crates/starweaver-rpc/src/agent_catalog.rs`, `crates/starweaver-rpc/src/computer_use.rs`, and `crates/starweaver-rpc/src/coordinator.rs`
-- Release and installer integration: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `scripts/install.sh`, and `xtask/src/release.rs`
+- Release and installer integration: `.github/workflows/ci.yml`, `.github/workflows/release-components.yml`, `.github/workflows/release-computer-use.yml`, `scripts/install.sh`, and `xtask/src/release.rs`
 
 ## Validation gates
 

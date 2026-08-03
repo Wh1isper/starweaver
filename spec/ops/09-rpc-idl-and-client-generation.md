@@ -845,7 +845,7 @@ The atomic major-1 replacement is implemented as one release unit:
 - `starweaver-rpc-core` and `starweaver-rpc` use the generated types, validators, server trait, dispatcher, client correlation, and metadata without a handwritten fallback registry;
 - the Desktop generator emits the reviewed safe Rust/TypeScript bridge, opaque backend pagination, supervisor-owned request fields, recursive safe projection, and generated Tauri permissions;
 - `.github/workflows/protocol-ci.yml` requires source/profile validation, generated drift on Linux/macOS/Windows, Rust, ephemeral TypeScript, cross-language fixtures, host transports, Desktop, and independent-client jobs;
-- `.github/workflows/release.yml` packages the bundle, generated manifest, and split schema/tooling archive as checksummed GitHub Release assets; and
+- `.github/workflows/release-cli.yml` packages the bundle, generated manifest, and split schema/tooling archive, while `.github/workflows/release-components.yml` records them in the verified checksummed release manifest before publication; and
 - `tests/protocol-client/client.py` reads only the public bundle and proves stdio and HTTP initialize, session mutation/query, typed errors, run lifecycle, replay, live subscription, unsubscribe, reconnect cursor use, and shutdown.
 
 The local acceptance commands include:

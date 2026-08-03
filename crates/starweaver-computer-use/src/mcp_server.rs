@@ -185,7 +185,7 @@ impl ServerHandler for ComputerUseMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(
-                Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION"))
+                Implementation::new(SERVER_NAME, env!("STARWEAVER_BUILD_VERSION"))
                     .with_title("Starweaver Computer Use")
                     .with_description(
                         "Attended current-active-desktop Computer Use over local stdio MCP",

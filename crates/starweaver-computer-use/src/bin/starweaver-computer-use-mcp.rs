@@ -133,7 +133,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         // Doctor is deliberately status-only: it must never invoke native prompt APIs.
         let status = service.status(CancellationToken::new()).await?;
         let report = DiagnosticReport {
-            package_version: env!("CARGO_PKG_VERSION"),
+            package_version: env!("STARWEAVER_BUILD_VERSION"),
             build_target: env!("STARWEAVER_BUILD_TARGET"),
             release_readiness: "native_current_desktop",
             service_contract: ComputerUseContractVersion::V1,
@@ -272,7 +272,7 @@ fn shutdown_timeout_error() -> io::Error {
 fn print_version() {
     println!(
         "starweaver-computer-use-mcp {}\ncomputer-use-contract {}.{}\ntool-catalog {}.{}\nfeatures mcp-server,observe,pointer,keyboard\nrelease-readiness native-current-desktop\ntarget {}",
-        env!("CARGO_PKG_VERSION"),
+        env!("STARWEAVER_BUILD_VERSION"),
         ComputerUseContractVersion::V1.major,
         ComputerUseContractVersion::V1.minor,
         ToolCatalogVersion::V1.major,

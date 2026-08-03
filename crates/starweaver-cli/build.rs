@@ -1,4 +1,4 @@
-//! Build-time target identity for release diagnostics.
+//! Build-time distribution identity for the CLI product.
 
 fn main() {
     let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown-target".to_owned());

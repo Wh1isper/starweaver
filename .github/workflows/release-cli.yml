@@ -1,0 +1,131 @@
+name: Release CLI Component
+
+on:
+  workflow_call:
+    inputs:
+      scope:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+      source_revision:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  STARWEAVER_RELEASE_VERSION: ${{ inputs.version }}
+  STARWEAVER_BUILD_REVISION: ${{ inputs.source_revision }}
+
+jobs:
+  build-binaries:
+    name: Build CLI (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            extension: tar.gz
+            bins: "starweaver starweaver-cli sw starweaver-rpc"
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            extension: tar.gz
+            bins: "starweaver starweaver-cli sw starweaver-rpc"
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            extension: tar.gz
+            bins: "starweaver starweaver-cli sw starweaver-rpc"
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            extension: zip
+            bins: "starweaver.exe starweaver-cli.exe sw.exe starweaver-rpc.exe"
+    steps:
+      - name: Checkout immutable release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_revision }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-cli-${{ matrix.target }}
+
+      - name: Prepare ephemeral release metadata
+        run: cargo run --locked -p xtask -- release-prepare "${{ inputs.scope }}" "${{ inputs.version }}"
+
+      - name: Build CLI suite
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p starweaver-cli --bins --target "${{ matrix.target }}"
+          cargo build --release --locked -p starweaver-rpc --bins --target "${{ matrix.target }}"
+          out_dir="target/${{ matrix.target }}/release"
+          mkdir -p dist
+          for bin in ${{ matrix.bins }}; do
+            cp "$out_dir/$bin" dist/
+          done
+
+      - name: Archive Unix binaries
+        if: runner.os != 'Windows'
+        run: |
+          archive="starweaver-cli-v${{ inputs.version }}-${{ matrix.target }}.tar.gz"
+          tar -czf "$archive" -C dist .
+
+      - name: Archive Windows binaries
+        if: runner.os == 'Windows'
+        run: |
+          archive="starweaver-cli-v${{ inputs.version }}-${{ matrix.target }}.zip"
+          powershell -NoProfile -Command "Compress-Archive -Path dist/* -DestinationPath '$archive'"
+
+      - name: Upload CLI archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-cli-${{ matrix.target }}
+          path: starweaver-cli-v${{ inputs.version }}-${{ matrix.target }}.${{ matrix.extension }}
+          if-no-files-found: error
+
+  build-protocol:
+    name: Package public host protocol
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout immutable release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_revision }}
+
+      - name: Package protocol artifacts
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          mkdir -p dist/protocol
+          cp protocol/host/generated/starweaver-host.openrpc.json \
+            "dist/protocol/starweaver-host-${version}.openrpc.json"
+          cp protocol/host/generated/manifest.json \
+            "dist/protocol/starweaver-host-${version}.manifest.json"
+          tar -czf "dist/protocol/starweaver-host-${version}-schemas.tar.gz" \
+            protocol/host/openrpc.yaml protocol/host/schemas protocol/tooling \
+            spec/ops/09-rpc-idl-and-client-generation.md
+
+      - name: Upload protocol artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-cli-protocol
+          path: dist/protocol/*
+          if-no-files-found: error

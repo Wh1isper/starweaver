@@ -1,13 +1,109 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
-    process::Command,
+    io::Read as _,
+    path::Path,
+    process::{Command, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use serde::Deserialize;
+use semver::Version;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 use crate::common::{root, run_capture, run_command};
+
+pub const DEVELOPMENT_VERSION: &str = "0.0.0-dev.0";
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ReleaseScope {
+    Full,
+    Cli,
+    ComputerUse,
+    Sdk,
+    Python,
+}
+
+impl ReleaseScope {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "full" => Ok(Self::Full),
+            "cli" => Ok(Self::Cli),
+            "computer-use" => Ok(Self::ComputerUse),
+            "sdk" => Ok(Self::Sdk),
+            "python" => Ok(Self::Python),
+            _ => Err(format!(
+                "unknown release scope {value}; expected full, cli, computer-use, sdk, or python"
+            )),
+        }
+    }
+
+    const fn tag_prefix(self) -> &'static str {
+        match self {
+            Self::Full => "v",
+            Self::Cli => "cli-v",
+            Self::ComputerUse => "computer-use-v",
+            Self::Sdk => "sdk-v",
+            Self::Python => "python-v",
+        }
+    }
+
+    const fn updates_workspace(self) -> bool {
+        matches!(self, Self::Full | Self::Sdk)
+    }
+
+    const fn updates_python(self) -> bool {
+        matches!(self, Self::Full | Self::Python)
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ParsedReleaseTag<'a> {
+    scope: ReleaseScope,
+    version: &'a str,
+    tag: &'a str,
+    channel: &'static str,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseManifest {
+    schema_version: u32,
+    release: ReleaseIdentity,
+    components: BTreeMap<String, ReleaseComponentManifest>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseIdentity {
+    scope: ReleaseScope,
+    version: String,
+    tag: String,
+    channel: String,
+    source_revision: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseComponentManifest {
+    version: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    registries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    assets: Vec<ReleaseAsset>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseAsset {
+    name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+    kind: String,
+    size: u64,
+    sha256: String,
+}
 
 const WORKSPACE_DEPENDENCIES: [&str; 19] = [
     "starweaver-agent",
@@ -71,15 +167,467 @@ struct CargoDependency {
     path: Option<String>,
 }
 
-pub fn upversion(args: &[String]) -> Result<(), String> {
-    let version = args
-        .first()
-        .ok_or_else(|| "usage: upversion x.y.z".to_string())?;
-    if args.len() != 1 || !valid_version(version) {
-        return Err("usage: upversion x.y.z".to_string());
+pub fn release_tag(args: &[String]) -> Result<(), String> {
+    if args.len() != 1 {
+        return Err("usage: release-tag <tag>".to_string());
     }
+    let parsed = parse_release_tag(&args[0])?;
+    println!(
+        "{}",
+        serde_json::to_string(&parsed).map_err(|error| error.to_string())?
+    );
+    Ok(())
+}
+
+pub fn release_manifest(args: &[String]) -> Result<(), String> {
+    if args.len() != 6 {
+        return Err(
+            "usage: release-manifest <scope> <version> <tag> <source-revision> <assets-dir> <output>"
+                .to_string(),
+        );
+    }
+    let scope = ReleaseScope::parse(&args[0])?;
+    let version = parse_publish_version(&args[1])?;
+    let parsed_tag = parse_release_tag(&args[2])?;
+    if parsed_tag.scope != scope || parsed_tag.version != version.to_string() {
+        return Err(format!(
+            "release tag {} does not match scope {} and version {}",
+            args[2], args[0], args[1]
+        ));
+    }
+    validate_source_revision(&args[3])?;
+    let assets_dir = Path::new(&args[4]);
+    let output = Path::new(&args[5]);
+    let manifest = build_release_manifest(
+        scope,
+        &args[1],
+        &args[2],
+        parsed_tag.channel,
+        &args[3],
+        assets_dir,
+    )?;
+    validate_release_manifest(&manifest, Some(assets_dir))?;
+    let payload = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
+    fs::write(output, payload).map_err(|error| format!("{}: {error}", output.display()))?;
+    println!("Generated {}", output.display());
+    Ok(())
+}
+
+pub fn release_manifest_verify(args: &[String]) -> Result<(), String> {
+    if !(1..=2).contains(&args.len()) {
+        return Err("usage: release-manifest-verify <manifest> [assets-dir]".to_string());
+    }
+    let path = Path::new(&args[0]);
+    let payload = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let manifest: ReleaseManifest =
+        serde_json::from_slice(&payload).map_err(|error| format!("{}: {error}", path.display()))?;
+    let assets_dir = args.get(1).map(Path::new);
+    validate_release_manifest(&manifest, assets_dir)?;
+    println!("Release manifest validated: {}", path.display());
+    Ok(())
+}
+
+fn build_release_manifest(
+    scope: ReleaseScope,
+    version: &str,
+    tag: &str,
+    channel: &str,
+    source_revision: &str,
+    assets_dir: &Path,
+) -> Result<ReleaseManifest, String> {
+    let mut components = release_components(scope, version);
+    let mut paths = fs::read_dir(assets_dir)
+        .map_err(|error| format!("{}: {error}", assets_dir.display()))?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.sort();
+    for path in paths {
+        if !path.is_file() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("release asset name is not UTF-8: {}", path.display()))?;
+        if matches!(name, "checksums.txt" | "starweaver-release.json") {
+            continue;
+        }
+        let (component, target, kind) = classify_release_asset(name, version)?;
+        let record = components.get_mut(component).ok_or_else(|| {
+            format!(
+                "asset {name} belongs to component {component}, which is not part of this release"
+            )
+        })?;
+        record.assets.push(ReleaseAsset {
+            name: name.to_string(),
+            target,
+            kind: kind.to_string(),
+            size: fs::metadata(&path)
+                .map_err(|error| format!("{}: {error}", path.display()))?
+                .len(),
+            sha256: sha256_file(&path)?,
+        });
+    }
+    for component in components.values_mut() {
+        component
+            .assets
+            .sort_by(|left, right| left.name.cmp(&right.name));
+    }
+    Ok(ReleaseManifest {
+        schema_version: 1,
+        release: ReleaseIdentity {
+            scope,
+            version: version.to_string(),
+            tag: tag.to_string(),
+            channel: channel.to_string(),
+            source_revision: source_revision.to_string(),
+        },
+        components,
+    })
+}
+
+fn release_components(
+    scope: ReleaseScope,
+    version: &str,
+) -> BTreeMap<String, ReleaseComponentManifest> {
+    let names: &[(&str, &[&str])] = match scope {
+        ReleaseScope::Full => &[
+            ("cli", &[]),
+            ("computer-use", &[]),
+            ("sdk", &["crates.io"]),
+            ("python", &["PyPI"]),
+        ],
+        ReleaseScope::Cli => &[("cli", &[])],
+        ReleaseScope::ComputerUse => &[("computer-use", &[])],
+        ReleaseScope::Sdk => &[("sdk", &["crates.io"])],
+        ReleaseScope::Python => &[("python", &["PyPI"])],
+    };
+    names
+        .iter()
+        .map(|(name, registries)| {
+            (
+                (*name).to_string(),
+                ReleaseComponentManifest {
+                    version: version.to_string(),
+                    registries: registries
+                        .iter()
+                        .map(|value| (*value).to_string())
+                        .collect(),
+                    assets: Vec::new(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn classify_release_asset(
+    name: &str,
+    version: &str,
+) -> Result<(&'static str, Option<String>, &'static str), String> {
+    let cli_prefix = format!("starweaver-cli-v{version}-");
+    if let Some(target) = archive_target(name, &cli_prefix) {
+        return Ok(("cli", Some(target), "binary-archive"));
+    }
+    let computer_use_prefix = format!("starweaver-computer-use-mcp-v{version}-");
+    if let Some(target) = archive_target(name, &computer_use_prefix) {
+        return Ok(("computer-use", Some(target), "binary-archive"));
+    }
+    if name.starts_with(&format!("starweaver-host-{version}."))
+        || name == format!("starweaver-host-{version}-schemas.tar.gz")
+    {
+        return Ok(("cli", None, "protocol"));
+    }
+    if name.ends_with(".whl") || (name.starts_with("starweaver-") && name.ends_with(".tar.gz")) {
+        return Ok(("python", None, "python-distribution"));
+    }
+    Err(format!("unrecognized release asset {name}"))
+}
+
+fn archive_target(name: &str, prefix: &str) -> Option<String> {
+    let suffix = name.strip_prefix(prefix)?;
+    let target = suffix
+        .strip_suffix(".tar.gz")
+        .or_else(|| suffix.strip_suffix(".zip"))?;
+    (!target.is_empty()).then(|| target.to_string())
+}
+
+fn validate_release_manifest(
+    manifest: &ReleaseManifest,
+    assets_dir: Option<&Path>,
+) -> Result<(), String> {
+    if manifest.schema_version != 1 {
+        return Err(format!(
+            "unsupported release manifest schema version {}",
+            manifest.schema_version
+        ));
+    }
+    let parsed = parse_release_tag(&manifest.release.tag)?;
+    if parsed.scope != manifest.release.scope || parsed.version != manifest.release.version {
+        return Err("release manifest tag, scope, and version do not match".to_string());
+    }
+    if parsed.channel != manifest.release.channel {
+        return Err("release manifest channel does not match tag prerelease state".to_string());
+    }
+    validate_source_revision(&manifest.release.source_revision)?;
+    let expected = release_components(manifest.release.scope, &manifest.release.version);
+    if expected.keys().collect::<Vec<_>>() != manifest.components.keys().collect::<Vec<_>>() {
+        return Err("release manifest component inventory does not match scope".to_string());
+    }
+    let mut names = BTreeSet::new();
+    for (name, component) in &manifest.components {
+        if component.version != manifest.release.version {
+            return Err(format!(
+                "component {name} version {} does not match release version {}",
+                component.version, manifest.release.version
+            ));
+        }
+        validate_component_asset_inventory(name, component)?;
+        for asset in &component.assets {
+            if !names.insert(asset.name.as_str()) {
+                return Err(format!("duplicate release asset {}", asset.name));
+            }
+            if asset.size == 0 || asset.sha256.len() != 64 {
+                return Err(format!("invalid release asset metadata for {}", asset.name));
+            }
+            if let Some(assets_dir) = assets_dir {
+                let path = assets_dir.join(&asset.name);
+                let metadata =
+                    fs::metadata(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+                if metadata.len() != asset.size || sha256_file(&path)? != asset.sha256 {
+                    return Err(format!(
+                        "release asset does not match manifest: {}",
+                        asset.name
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_component_asset_inventory(
+    name: &str,
+    component: &ReleaseComponentManifest,
+) -> Result<(), String> {
+    let targets: BTreeSet<_> = component
+        .assets
+        .iter()
+        .filter(|asset| asset.kind == "binary-archive")
+        .filter_map(|asset| asset.target.as_deref())
+        .collect();
+    match name {
+        "cli" => {
+            let expected = BTreeSet::from([
+                "aarch64-apple-darwin",
+                "x86_64-apple-darwin",
+                "x86_64-pc-windows-msvc",
+                "x86_64-unknown-linux-gnu",
+            ]);
+            if targets != expected {
+                return Err(format!(
+                    "CLI release targets must be {expected:?}, got {targets:?}"
+                ));
+            }
+            if component
+                .assets
+                .iter()
+                .filter(|asset| asset.kind == "protocol")
+                .count()
+                != 3
+            {
+                return Err("CLI release must include three host protocol assets".to_string());
+            }
+        }
+        "computer-use" => {
+            let expected = BTreeSet::from(["aarch64-apple-darwin", "x86_64-apple-darwin"]);
+            if targets != expected {
+                return Err(format!(
+                    "Computer Use release targets must be {expected:?}, got {targets:?}"
+                ));
+            }
+        }
+        "python" => {
+            let distributions: Vec<_> = component
+                .assets
+                .iter()
+                .filter(|asset| asset.kind == "python-distribution")
+                .collect();
+            if !distributions
+                .iter()
+                .any(|asset| asset.name.ends_with(".tar.gz"))
+                || !distributions
+                    .iter()
+                    .any(|asset| asset.name.ends_with(".whl"))
+            {
+                return Err(
+                    "Python release must include an sdist and at least one wheel".to_string(),
+                );
+            }
+        }
+        "sdk" => {
+            if !component.assets.is_empty() {
+                return Err("SDK registry release must not include downloadable assets".to_string());
+            }
+        }
+        _ => return Err(format!("unknown release component {name}")),
+    }
+    Ok(())
+}
+
+fn validate_source_revision(revision: &str) -> Result<(), String> {
+    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("source revision must be a 40-character Git object ID".to_string());
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+pub fn release_prepare(args: &[String]) -> Result<(), String> {
+    if args.len() != 2 {
+        return Err("usage: release-prepare <scope> <version>".to_string());
+    }
+    let scope = ReleaseScope::parse(&args[0])?;
+    parse_publish_version(&args[1])?;
+    let version = args[1].as_str();
     let root = root()?;
     validate_release_package_lists(&root)?;
+    ensure_development_versions(&root, scope)?;
+
+    if scope.updates_workspace() {
+        update_workspace_release_version(&root, version)?;
+        if scope == ReleaseScope::Full {
+            update_python_workspace_dependency_versions(&root, version)?;
+        }
+        crate::capabilities::update_verified_release(&root, version)?;
+        crate::capabilities::check_at(&root, true)?;
+        run_cargo_metadata(&root, None)?;
+    }
+    if scope.updates_python() {
+        update_python_package_version(&root, version)?;
+        run_cargo_metadata(&root, Some(&root.join("packages/starweaver-py/Cargo.toml")))?;
+    }
+
+    println!(
+        "Prepared {} release {version} from development version {DEVELOPMENT_VERSION}",
+        args[0]
+    );
+    Ok(())
+}
+
+pub fn upversion(args: &[String]) -> Result<(), String> {
+    if args.len() != 1 {
+        return Err("usage: upversion x.y.z".to_string());
+    }
+    release_prepare(&["full".to_string(), args[0].clone()])
+}
+
+fn parse_release_tag(tag: &str) -> Result<ParsedReleaseTag<'_>, String> {
+    let (scope, version) = [
+        (ReleaseScope::ComputerUse, ReleaseScope::ComputerUse.tag_prefix()),
+        (ReleaseScope::Python, ReleaseScope::Python.tag_prefix()),
+        (ReleaseScope::Cli, ReleaseScope::Cli.tag_prefix()),
+        (ReleaseScope::Sdk, ReleaseScope::Sdk.tag_prefix()),
+        (ReleaseScope::Full, ReleaseScope::Full.tag_prefix()),
+    ]
+    .into_iter()
+    .find_map(|(scope, prefix)| tag.strip_prefix(prefix).map(|version| (scope, version)))
+    .ok_or_else(|| {
+        format!(
+            "unsupported release tag {tag}; expected vX.Y.Z, cli-vX.Y.Z, computer-use-vX.Y.Z, sdk-vX.Y.Z, or python-vX.Y.Z"
+        )
+    })?;
+    let parsed = parse_publish_version(version)?;
+    if matches!(scope, ReleaseScope::Full | ReleaseScope::Python) {
+        validate_python_release_version(&parsed)?;
+    }
+    if tag != format!("{}{parsed}", scope.tag_prefix()) {
+        return Err(format!("release tag {tag} is not canonical"));
+    }
+    Ok(ParsedReleaseTag {
+        scope,
+        version,
+        tag,
+        channel: if parsed.pre.is_empty() {
+            "stable"
+        } else {
+            "prerelease"
+        },
+    })
+}
+
+fn validate_python_release_version(version: &Version) -> Result<(), String> {
+    if version.pre.is_empty() {
+        return Ok(());
+    }
+    let identifiers = version.pre.as_str().split('.').collect::<Vec<_>>();
+    if identifiers.len() == 2
+        && matches!(identifiers[0], "alpha" | "beta" | "rc" | "dev")
+        && !identifiers[1].is_empty()
+        && identifiers[1].bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "Python release version {version} must use a PEP 440-compatible prerelease such as beta.1, rc.1, or dev.1"
+    ))
+}
+
+fn parse_publish_version(version: &str) -> Result<Version, String> {
+    let parsed = Version::parse(version)
+        .map_err(|error| format!("invalid release version {version}: {error}"))?;
+    if !parsed.build.is_empty() {
+        return Err(format!(
+            "release version {version} must not contain build metadata"
+        ));
+    }
+    if parsed == Version::parse(DEVELOPMENT_VERSION).map_err(|error| error.to_string())? {
+        return Err(format!(
+            "release version must not equal development version {DEVELOPMENT_VERSION}"
+        ));
+    }
+    Ok(parsed)
+}
+
+fn ensure_development_versions(root: &std::path::Path, scope: ReleaseScope) -> Result<(), String> {
+    let actual = workspace_version_from_manifest(root)?;
+    if actual != DEVELOPMENT_VERSION {
+        return Err(format!(
+            "workspace version must be {DEVELOPMENT_VERSION} before release preparation, got {actual}"
+        ));
+    }
+    if scope.updates_python() {
+        let manifest = root.join("packages/starweaver-py/pyproject.toml");
+        let text = fs::read_to_string(&manifest).map_err(|error| error.to_string())?;
+        let actual = toml_table_version(&text, "[project]\n")?;
+        if actual != DEVELOPMENT_VERSION {
+            return Err(format!(
+                "Python package version must be {DEVELOPMENT_VERSION} before release preparation, got {actual}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn update_workspace_release_version(root: &std::path::Path, version: &str) -> Result<(), String> {
     let manifest = root.join("Cargo.toml");
     let mut text = fs::read_to_string(&manifest).map_err(|error| error.to_string())?;
     text = replace_workspace_version(&text, version)?;
@@ -87,30 +635,28 @@ pub fn upversion(args: &[String]) -> Result<(), String> {
         text = replace_workspace_dependency_version(&text, krate, version)?;
     }
     fs::write(&manifest, text).map_err(|error| error.to_string())?;
-    update_python_package_versions(&root, version)?;
-    run_command(
-        Command::new("cargo")
-            .arg("metadata")
-            .arg("--format-version")
-            .arg("1")
-            .current_dir(&root),
-    )?;
-    crate::capabilities::update_verified_release(&root, version)?;
-    crate::capabilities::check_at(&root, true)?;
-    println!("Updated workspace version to {version}");
     Ok(())
 }
 
-fn update_python_package_versions(root: &std::path::Path, version: &str) -> Result<(), String> {
+fn update_python_package_version(root: &std::path::Path, version: &str) -> Result<(), String> {
     let pyproject = root.join("packages/starweaver-py/pyproject.toml");
     let cargo_manifest = root.join("packages/starweaver-py/Cargo.toml");
     if !pyproject.exists() && !cargo_manifest.exists() {
         return Ok(());
     }
     update_toml_table_version(&pyproject, "[project]\n", version)?;
+    update_toml_table_version(&cargo_manifest, "[package]\n", version)
+}
+
+fn update_python_workspace_dependency_versions(
+    root: &std::path::Path,
+    version: &str,
+) -> Result<(), String> {
+    let cargo_manifest = root.join("packages/starweaver-py/Cargo.toml");
+    if !cargo_manifest.exists() {
+        return Ok(());
+    }
     let mut cargo_text = fs::read_to_string(&cargo_manifest).map_err(|error| error.to_string())?;
-    cargo_text = replace_toml_table_version(&cargo_text, "[package]\n", version)
-        .map_err(|error| format!("{}: {error}", cargo_manifest.display()))?;
     for krate in python_package_workspace_dependencies(&cargo_text)? {
         cargo_text = replace_path_dependency_version(
             &cargo_text,
@@ -120,16 +666,20 @@ fn update_python_package_versions(root: &std::path::Path, version: &str) -> Resu
         )?;
     }
     fs::write(&cargo_manifest, cargo_text).map_err(|error| error.to_string())?;
-    run_command(
-        Command::new("cargo")
-            .arg("metadata")
-            .arg("--manifest-path")
-            .arg(&cargo_manifest)
-            .arg("--format-version")
-            .arg("1")
-            .current_dir(root),
-    )?;
     Ok(())
+}
+
+fn run_cargo_metadata(
+    root: &std::path::Path,
+    manifest: Option<&std::path::Path>,
+) -> Result<(), String> {
+    let mut command = Command::new("cargo");
+    command.arg("metadata").arg("--format-version").arg("1");
+    if let Some(manifest) = manifest {
+        command.arg("--manifest-path").arg(manifest);
+    }
+    command.current_dir(root).stdout(Stdio::null());
+    run_command(&mut command)
 }
 
 fn update_toml_table_version(
@@ -166,21 +716,21 @@ fn replace_toml_table_version(text: &str, marker: &str, version: &str) -> Result
     Ok(output)
 }
 
-fn valid_version(version: &str) -> bool {
-    let mut parts = version.splitn(2, ['-', '+']);
-    let core = parts.next().unwrap_or_default();
-    let nums: Vec<_> = core.split('.').collect();
-    let suffix_ok = parts.next().is_none_or(|suffix| {
-        !suffix.is_empty()
-            && suffix
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '-')
-    });
-    nums.len() == 3
-        && nums
-            .iter()
-            .all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
-        && suffix_ok
+fn toml_table_version<'a>(text: &'a str, marker: &str) -> Result<&'a str, String> {
+    let start = text
+        .find(marker)
+        .ok_or_else(|| format!("missing {marker:?}"))?
+        + marker.len();
+    let line_start = text[start..]
+        .find("version = \"")
+        .ok_or_else(|| "missing package version".to_string())?
+        + start;
+    let value_start = line_start + "version = \"".len();
+    let value_end = text[value_start..]
+        .find('"')
+        .ok_or_else(|| "unterminated version".to_string())?
+        + value_start;
+    Ok(&text[value_start..value_end])
 }
 
 fn replace_workspace_version(text: &str, version: &str) -> Result<String, String> {
@@ -329,6 +879,7 @@ pub fn publish(args: &[String]) -> Result<(), String> {
     }
     let root = root()?;
     validate_release_package_lists(&root)?;
+    validate_ephemeral_publish_checkout(&root)?;
     let retries = env::var("PUBLISH_RETRIES")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -356,6 +907,7 @@ pub fn publish(args: &[String]) -> Result<(), String> {
                     .arg("-p")
                     .arg(package)
                     .arg("--locked")
+                    .arg("--allow-dirty")
                     .current_dir(&root),
             ) {
                 Ok(output) => {
@@ -385,6 +937,53 @@ pub fn publish(args: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn validate_ephemeral_publish_checkout(root: &std::path::Path) -> Result<(), String> {
+    let version = workspace_version_from_manifest(root)?;
+    if version == DEVELOPMENT_VERSION {
+        return Err(format!(
+            "refusing to publish the development workspace version {DEVELOPMENT_VERSION}"
+        ));
+    }
+    let output = run_capture(
+        Command::new("git")
+            .arg("status")
+            .arg("--porcelain=v1")
+            .arg("--untracked-files=all")
+            .current_dir(root),
+    )?;
+    let actual = parse_dirty_paths(&output)?;
+    let expected = BTreeSet::from([
+        "Cargo.lock".to_string(),
+        "Cargo.toml".to_string(),
+        "spec/capabilities.toml".to_string(),
+        "spec/capability-status.md".to_string(),
+    ]);
+    if actual != expected {
+        return Err(format!(
+            "ephemeral SDK publish checkout must contain only the reviewed release metadata changes; expected {expected:?}, got {actual:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_dirty_paths(output: &str) -> Result<BTreeSet<String>, String> {
+    output
+        .lines()
+        .map(|line| {
+            if line.len() < 4 || line.as_bytes().get(2) != Some(&b' ') {
+                return Err(format!("unexpected git status entry: {line}"));
+            }
+            let path = &line[3..];
+            if path.is_empty() || path.starts_with('"') || path.contains(" -> ") {
+                return Err(format!(
+                    "unsupported dirty path in release checkout: {line}"
+                ));
+            }
+            Ok(path.to_string())
+        })
+        .collect()
 }
 
 fn published_version_exists(root: &std::path::Path, package: &str, version: &str) -> bool {
@@ -689,6 +1288,76 @@ fn workspace_crates_from_manifest(manifest: &toml::Value) -> Result<BTreeSet<&st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_tags_define_component_scope_and_channel() {
+        let cli = parse_release_tag("cli-v1.2.3").unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(cli.scope, ReleaseScope::Cli);
+        assert_eq!(cli.version, "1.2.3");
+        assert_eq!(cli.channel, "stable");
+
+        let prerelease =
+            parse_release_tag("v2.0.0-beta.1").unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(prerelease.scope, ReleaseScope::Full);
+        assert_eq!(prerelease.channel, "prerelease");
+
+        for invalid in [
+            "release-v1.2.3",
+            "cli/v1.2.3",
+            "cli-v01.2.3",
+            "computer-use-v0.0.0-dev.0",
+            "sdk-v1.2.3+local",
+            "python-v1.2.3-foo.1",
+            "python-v1.2.3-a.1",
+            "v1.2.3-b.1",
+            "v1.2.3-preview.1",
+        ] {
+            assert!(parse_release_tag(invalid).is_err(), "accepted {invalid}");
+        }
+        assert!(parse_release_tag("python-v1.2.3-rc.1").is_ok());
+        assert!(parse_release_tag("sdk-v1.2.3-foo.1").is_ok());
+    }
+
+    #[test]
+    fn dirty_publish_paths_require_the_exact_ephemeral_sdk_overlay() {
+        let parsed = parse_dirty_paths(
+            " M Cargo.toml\n M Cargo.lock\n M spec/capabilities.toml\n M spec/capability-status.md\n",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(parsed.len(), 4);
+        assert!(parse_dirty_paths("?? unexpected.txt\n").is_ok());
+        assert!(parse_dirty_paths("R  old -> new\n").is_err());
+    }
+
+    #[test]
+    fn release_manifest_builds_and_verifies_component_inventory() {
+        let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let version = "1.2.3";
+        for name in [
+            "starweaver-cli-v1.2.3-x86_64-unknown-linux-gnu.tar.gz",
+            "starweaver-cli-v1.2.3-x86_64-apple-darwin.tar.gz",
+            "starweaver-cli-v1.2.3-aarch64-apple-darwin.tar.gz",
+            "starweaver-cli-v1.2.3-x86_64-pc-windows-msvc.zip",
+            "starweaver-host-1.2.3.openrpc.json",
+            "starweaver-host-1.2.3.manifest.json",
+            "starweaver-host-1.2.3-schemas.tar.gz",
+        ] {
+            fs::write(temp.path().join(name), name.as_bytes())
+                .unwrap_or_else(|error| panic!("{error}"));
+        }
+        let manifest = build_release_manifest(
+            ReleaseScope::Cli,
+            version,
+            "cli-v1.2.3",
+            "stable",
+            "0123456789012345678901234567890123456789",
+            temp.path(),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        validate_release_manifest(&manifest, Some(temp.path()))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(manifest.components["cli"].assets.len(), 7);
+    }
 
     #[test]
     fn workspace_version_parser_reads_workspace_package_version() {

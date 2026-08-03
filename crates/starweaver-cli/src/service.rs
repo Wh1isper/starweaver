@@ -512,7 +512,7 @@ impl CliService {
                 CliCommand::ReplayCheck => {
                     Ok("run `make replay-check` from the repository root\n".to_string())
                 }
-                CliCommand::Update(command) => Self::update(&command),
+                CliCommand::Update(command) => self.update(&command),
                 CliCommand::Run(command) => self.run_prompt(&command),
                 CliCommand::Session { command } => self.session(command),
                 CliCommand::Storage { command } => self.storage(command),

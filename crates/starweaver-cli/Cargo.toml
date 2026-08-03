@@ -31,6 +31,7 @@ clap_complete.workspace = true
 chrono.workspace = true
 crossterm.workspace = true
 fs2.workspace = true
+flate2.workspace = true
 pulldown-cmark.workspace = true
 syntect.workspace = true
 ring.workspace = true
@@ -61,8 +62,12 @@ toml.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
 semver.workspace = true
+self-replace.workspace = true
+sha2.workspace = true
+tar.workspace = true
 unicode-width.workspace = true
 unicode-segmentation.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 starweaver-context.workspace = true
