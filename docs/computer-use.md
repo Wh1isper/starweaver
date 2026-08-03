@@ -164,6 +164,12 @@ they do not determine whether pointer or keyboard tools are available. If Gateke
 standalone binary, inspect and verify the downloaded archive first, then apply any
 organization-approved per-application exception. Such an exception does not replace code signing.
 
+## CodeAct composition
+
+When an eligible Computer Use tool is called from `run_code`, the JavaScript bridge receives the same focused structured object declared by that tool's return schema. For example, `computer_observe` returns an object whose observation ID is at `result.observation.observation_id`; it is never replaced by a generic media list. Screenshot bytes stay outside sandbox JSON. The runtime carries only the newest complete geometry-bound child media bundle to the outer `run_code` return, so unrelated child media cannot mix bytes, prompts, and geometry markers. An observe and its dependent action execute through the same process-local router/session, so the observation registry remains valid unless an actual lifecycle, generation, effect, or age fence invalidates it.
+
+Computer Use domain failures retain the canonical structured error envelope and set the tool-return error flag in both in-process and MCP adapters. If an input receipt reports `executed`, `partially_executed`, or `delivery_uncertain`, CodeAct treats the child failure as terminal: the runtime-owned broker rejects every later child call before execution, independent of the executor. The outer error return preserves the structured child result and receipt when they fit the configured output bound, or an explicit bounded omission marker otherwise. A budget too small for that minimum marker prevents child execution entirely. When no coherent post-effect screenshot exists, earlier child geometry media is cleared rather than attached as if it represented the resulting desktop.
+
 ## Image and authority invariants
 
 Computer Use screenshots are geometry-bound evidence. Starweaver keeps the exact captured bytes,

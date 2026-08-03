@@ -3,21 +3,105 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use starweaver_context::{AgentContext, AgentEvent};
-use starweaver_core::{ConversationId, RunId, TraceContext};
+use starweaver_core::{ConversationId, Metadata, RunId, TraceContext};
 use starweaver_model::{
     ContentPart, ModelMessage, ModelRequest, ModelRequestContext, ModelRequestParameters,
     ModelRequestPart, ModelResponse, ModelResponseStreamEvent, ModelSettings, ToolCallPart,
     ToolReturnPart,
 };
 use starweaver_tools::{
-    NestedToolError, NestedToolInvoker, NestedToolResult, ToolContext, ToolDependencyProfile,
-    ToolRegistry,
+    NestedToolError, NestedToolInvoker, NestedToolResult, TOOL_RESULT_NESTED_NON_RESUMABLE_KEY,
+    ToolContext, ToolDependencyProfile, ToolRegistry,
 };
 use starweaver_usage::pricing::known_model_pricing_profile;
 
 const DEFAULT_MODEL_ERROR_RETRIES: usize = 2;
+const MIN_NESTED_TERMINAL_OUTPUT_BYTES: usize = 128;
 const DURABLE_RUN_ID_METADATA_KEY: &str = "starweaver.durable_run_id";
 const CLI_RUN_ID_METADATA_KEY: &str = "cli.run_id";
+
+fn geometry_bound_child_media(metadata: &Metadata) -> Option<Metadata> {
+    if metadata
+        .get(GEOMETRY_BOUND_MEDIA_KEY)
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        return None;
+    }
+    let content_parts = metadata.get(TOOL_RETURN_CONTENT_PARTS_KEY)?.clone();
+    let prompt = metadata.get(TOOL_RETURN_MEDIA_PROMPT_KEY)?.clone();
+    Some(Metadata::from_iter([
+        (TOOL_RETURN_CONTENT_PARTS_KEY.to_string(), content_parts),
+        (TOOL_RETURN_MEDIA_PROMPT_KEY.to_string(), prompt),
+        (
+            GEOMETRY_BOUND_MEDIA_KEY.to_string(),
+            serde_json::Value::Bool(true),
+        ),
+    ]))
+}
+
+fn bounded_nested_terminal_result(
+    tool: &str,
+    result: &serde_json::Value,
+    max_bytes: usize,
+) -> Option<serde_json::Value> {
+    let result_bytes = serde_json::to_vec(result).ok()?.len();
+    if result_bytes <= max_bytes {
+        let complete = serde_json::json!({"tool": tool, "result": result});
+        if serde_json::to_vec(&complete).ok()?.len() <= max_bytes {
+            return Some(complete);
+        }
+    }
+    for omitted in [
+        serde_json::json!({"tool": tool, "result_omitted": true}),
+        serde_json::json!({"result_omitted": true}),
+        serde_json::Value::Null,
+    ] {
+        if serde_json::to_vec(&omitted).ok()?.len() <= max_bytes {
+            return Some(omitted);
+        }
+    }
+    None
+}
+
+fn attach_bounded_nested_terminal_result(
+    content: &mut serde_json::Value,
+    terminal_result: serde_json::Value,
+    max_bytes: usize,
+) {
+    if !content.is_object() {
+        return;
+    }
+    for candidate in [
+        terminal_result,
+        serde_json::json!({"result_omitted": true}),
+        serde_json::Value::Null,
+    ] {
+        if let Some(object) = content.as_object_mut() {
+            object.insert("nested_tool_result".to_string(), candidate);
+        }
+        if serde_json::to_vec(content)
+            .ok()
+            .is_some_and(|encoded| encoded.len() <= max_bytes)
+        {
+            return;
+        }
+        if let Some(object) = content.as_object_mut() {
+            object.remove("nested_tool_result");
+        }
+    }
+    let fallback = serde_json::json!({
+        "success": false,
+        "error": "nested_effect_terminal",
+        "result_omitted": true,
+    });
+    if serde_json::to_vec(&fallback)
+        .ok()
+        .is_some_and(|encoded| encoded.len() <= max_bytes)
+    {
+        *content = fallback;
+    }
+}
 
 fn durable_run_id_from_context(context: &AgentContext) -> Option<RunId> {
     if context.parent_run_id.is_some() {
@@ -48,7 +132,10 @@ use crate::{
         run_loop_helpers::{
             agent_error_kind, agent_error_public_message, preserve_pending_tool_returns_for_resume,
         },
-        runtime_helpers::{request_instruction_insert_index, tool_return_media_prompt},
+        runtime_helpers::{
+            GEOMETRY_BOUND_MEDIA_KEY, TOOL_RETURN_CONTENT_PARTS_KEY, TOOL_RETURN_MEDIA_PROMPT_KEY,
+            request_instruction_insert_index, tool_return_media_prompt,
+        },
     },
     capability::{CapabilityError, RetryEventKind},
     dependency_assembly::{ToolDependencyAssembly, assemble_tool_dependencies_for_name},
@@ -1747,6 +1834,8 @@ impl Agent {
                             .await?;
                         let mut nested_receiver = None;
                         let nested_call_limit = run_tools.nested_call_limit_for(&call.name);
+                        let nested_result_max_bytes =
+                            run_tools.nested_result_max_bytes_for(&call.name);
                         if run_tools.requires_nested_invoker(&call.name) {
                             let allowed = Self::codeact_target_names(&run_tools, context);
                             let (invoker, receiver) = NestedToolInvoker::channel(allowed, 1);
@@ -1760,7 +1849,11 @@ impl Agent {
                         child_stream_tick
                             .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                         let mut nested_call_sequence = 0usize;
-                        let tool_return = 'outer_tool: loop {
+                        let mut nested_terminal_latched = false;
+                        let mut nested_geometry_media = None;
+                        let mut nested_geometry_media_changed = false;
+                        let mut nested_terminal_result = None;
+                        let mut tool_return = 'outer_tool: loop {
                             tokio::select! {
                                 tool_return = &mut tool_return_future => {
                                     if let Some(stream_sink) = &stream_sink {
@@ -1779,6 +1872,23 @@ impl Agent {
                                     let Some(request) = request else {
                                         continue;
                                     };
+                                    if nested_terminal_latched {
+                                        let _ = request.response.send(Err(
+                                            NestedToolError::NonResumableControlFlow {
+                                                message: "nested execution is terminal after a prior non-resumable child result".to_string(),
+                                            },
+                                        ));
+                                        continue;
+                                    }
+                                    if nested_result_max_bytes < MIN_NESTED_TERMINAL_OUTPUT_BYTES {
+                                        nested_terminal_latched = true;
+                                        let _ = request.response.send(Err(
+                                            NestedToolError::NonResumableControlFlow {
+                                                message: "nested execution output budget cannot retain terminal effect evidence".to_string(),
+                                            },
+                                        ));
+                                        continue;
+                                    }
                                     nested_call_sequence = nested_call_sequence.saturating_add(1);
                                     if nested_call_sequence > nested_call_limit {
                                         let _ = request.response.send(Err(NestedToolError::CallLimit));
@@ -2011,9 +2121,43 @@ impl Agent {
                                             break 'outer_tool outer_return;
                                         }
                                     }
-                                    let nested_result = if let Some(control_flow) =
+                                    // Transfer only a complete geometry-bound media bundle. Arbitrary
+                                    // child metadata must not overwrite one key of that atomic bundle or
+                                    // escape the nested-call projection. The latest complete bundle wins.
+                                    let child_geometry_media = geometry_bound_child_media(
+                                        &child_return.private_metadata,
+                                    );
+                                    let has_child_geometry_media = child_geometry_media.is_some();
+                                    if let Some(media) = child_geometry_media {
+                                        nested_geometry_media = Some(media);
+                                        nested_geometry_media_changed = true;
+                                    }
+                                    let non_resumable_effect = child_return
+                                        .metadata
+                                        .get(TOOL_RESULT_NESTED_NON_RESUMABLE_KEY)
+                                        .and_then(serde_json::Value::as_bool)
+                                        == Some(true);
+                                    let nested_result = if non_resumable_effect {
+                                        nested_terminal_latched = true;
+                                        if !has_child_geometry_media {
+                                            nested_geometry_media = None;
+                                            nested_geometry_media_changed = true;
+                                        }
+                                        nested_terminal_result = bounded_nested_terminal_result(
+                                            &child_call.name,
+                                            &child_return.content,
+                                            nested_result_max_bytes,
+                                        );
+                                        Err(NestedToolError::NonResumableControlFlow {
+                                            message: format!(
+                                                "target {} reported an effect-bearing failure",
+                                                child_call.name
+                                            ),
+                                        })
+                                    } else if let Some(control_flow) =
                                         tool_return_control_flow(&child_return)
                                     {
+                                        nested_terminal_latched = true;
                                         Err(NestedToolError::NonResumableControlFlow {
                                             message: format!(
                                                 "target {} requested {control_flow}",
@@ -2066,6 +2210,28 @@ impl Agent {
                                 }
                             }
                         };
+                        if nested_geometry_media_changed {
+                            for key in [
+                                TOOL_RETURN_CONTENT_PARTS_KEY,
+                                TOOL_RETURN_MEDIA_PROMPT_KEY,
+                                GEOMETRY_BOUND_MEDIA_KEY,
+                            ] {
+                                tool_return.private_metadata.remove(key);
+                            }
+                            if let Some(media) = nested_geometry_media {
+                                tool_return.private_metadata.extend(media);
+                            }
+                        }
+                        if nested_terminal_latched {
+                            tool_return.is_error = true;
+                            if let Some(terminal_result) = nested_terminal_result {
+                                attach_bounded_nested_terminal_result(
+                                    &mut tool_return.content,
+                                    terminal_result,
+                                    nested_result_max_bytes,
+                                );
+                            }
+                        }
                         let tool_duration = started_at.elapsed();
                         apply_tool_return!(
                             state,
@@ -2440,6 +2606,47 @@ mod tests {
             RunId::from_string("run-phase"),
             ConversationId::from_string("conversation-phase"),
         )
+    }
+
+    #[test]
+    fn nested_geometry_media_requires_and_returns_one_complete_atomic_bundle() {
+        let geometry = Metadata::from_iter([
+            (
+                TOOL_RETURN_CONTENT_PARTS_KEY.to_string(),
+                json!([{"kind": "image"}]),
+            ),
+            (
+                TOOL_RETURN_MEDIA_PROMPT_KEY.to_string(),
+                json!("geometry screenshot"),
+            ),
+            (GEOMETRY_BOUND_MEDIA_KEY.to_string(), json!(true)),
+            (
+                "unrelated_private_value".to_string(),
+                json!("must not escape"),
+            ),
+        ]);
+        let ordinary_media = Metadata::from_iter([
+            (
+                TOOL_RETURN_CONTENT_PARTS_KEY.to_string(),
+                json!([{"kind": "image"}]),
+            ),
+            (
+                TOOL_RETURN_MEDIA_PROMPT_KEY.to_string(),
+                json!("ordinary image"),
+            ),
+        ]);
+
+        let Some(projected) = geometry_bound_child_media(&geometry) else {
+            panic!("complete geometry-bound media should project");
+        };
+
+        assert_eq!(projected.len(), 3);
+        assert_eq!(
+            projected.get(TOOL_RETURN_MEDIA_PROMPT_KEY),
+            Some(&json!("geometry screenshot"))
+        );
+        assert!(!projected.contains_key("unrelated_private_value"));
+        assert!(geometry_bound_child_media(&ordinary_media).is_none());
     }
 
     #[test]

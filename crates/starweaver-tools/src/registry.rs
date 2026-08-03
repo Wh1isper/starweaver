@@ -19,6 +19,7 @@ use crate::{
 pub const DEFAULT_TOOL_MAX_RETRIES: usize = 3;
 
 fn success_return(call: &ToolCallPart, result: ToolResult) -> ToolReturnPart {
+    let is_error = result.is_error();
     let model_return_content = result
         .model_content
         .clone()
@@ -27,7 +28,7 @@ fn success_return(call: &ToolCallPart, result: ToolResult) -> ToolReturnPart {
         tool_call_id: call.id.clone(),
         name: call.name.clone(),
         content: model_return_content,
-        is_error: false,
+        is_error,
         metadata: result.metadata,
         app_value: result.app_value,
         user_content: result.user_content,
@@ -704,6 +705,26 @@ impl ToolRegistry {
                 .and_then(|limit| usize::try_from(limit).ok())
                 .unwrap_or(0),
             None if self.requires_nested_invoker(name) => 64,
+            None => 0,
+        }
+    }
+
+    /// Return the maximum public terminal child-result evidence size.
+    ///
+    /// Older orchestration tools retain a 64 KiB compatibility bound. A malformed
+    /// explicit limit fails closed to zero bytes.
+    #[must_use]
+    pub fn nested_result_max_bytes_for(&self, name: &str) -> usize {
+        let Some(tool) = self.tools.get(name) else {
+            return 0;
+        };
+        let metadata = tool.metadata();
+        match metadata.get(crate::TOOL_METADATA_NESTED_RESULT_MAX_BYTES_KEY) {
+            Some(value) => value
+                .as_u64()
+                .and_then(|limit| usize::try_from(limit).ok())
+                .unwrap_or(0),
+            None if self.requires_nested_invoker(name) => 64 * 1024,
             None => 0,
         }
     }

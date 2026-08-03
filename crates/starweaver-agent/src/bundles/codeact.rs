@@ -19,9 +19,9 @@ use starweaver_environment::FileListOptions;
 use starweaver_tools::{
     CodeActEligibility, DynTool, DynToolset, NestedToolInvoker, StaticToolset,
     TOOL_METADATA_DEPENDENCIES_KEY, TOOL_METADATA_NESTED_CALL_LIMIT_KEY,
-    TOOL_METADATA_NESTED_INVOKER_KEY, Tool, ToolContext, ToolDependencyRequirements, ToolError,
-    ToolResult, Toolset, ToolsetLifecycleError, ToolsetLifecyclePolicy, ToolsetLifecycleReport,
-    ToolsetLifecycleState, ToolsetPreparation,
+    TOOL_METADATA_NESTED_INVOKER_KEY, TOOL_METADATA_NESTED_RESULT_MAX_BYTES_KEY, Tool, ToolContext,
+    ToolDependencyRequirements, ToolError, ToolResult, Toolset, ToolsetLifecycleError,
+    ToolsetLifecyclePolicy, ToolsetLifecycleReport, ToolsetLifecycleState, ToolsetPreparation,
 };
 
 use super::EnvironmentHandle;
@@ -198,7 +198,13 @@ impl CodeExecutor for QuickJsCodeExecutor {
                     ctx.clone(),
                     move |name: String, arguments_json: String| -> rquickjs::Result<String> {
                         let envelope = if bridge_enabled_for_call.load(Ordering::Acquire) {
-                            match serde_json::from_str::<Value>(&arguments_json) {
+                            let retained_terminal = terminal_error_for_call
+                                .lock()
+                                .ok()
+                                .and_then(|retained| retained.clone());
+                            retained_terminal.map_or_else(
+                                || {
+                                    match serde_json::from_str::<Value>(&arguments_json) {
                             Ok(arguments) => {
                                 match handle.block_on(bridge.invoke(name, arguments)) {
                                     Ok(result) => match serde_json::to_vec(&result.content) {
@@ -246,11 +252,20 @@ impl CodeExecutor for QuickJsCodeExecutor {
                                     }
                                 }
                             }
-                                Err(error) => serde_json::json!({
-                                    "ok": false,
-                                    "error": format!("tool arguments are not JSON: {error}"),
-                                }),
-                            }
+                                        Err(error) => serde_json::json!({
+                                            "ok": false,
+                                            "error": format!("tool arguments are not JSON: {error}"),
+                                        }),
+                                    }
+                                },
+                                |message| {
+                                    serde_json::json!({
+                                        "ok": false,
+                                        "error": message,
+                                        "terminal": true,
+                                    })
+                                },
+                            )
                         } else {
                             pre_main_attempt_for_call.store(true, Ordering::Release);
                             serde_json::json!({
@@ -552,7 +567,11 @@ impl Tool for RunCodeTool {
     }
 
     fn metadata(&self) -> Metadata {
-        orchestration_metadata("codeact", self.config.limits.max_tool_calls)
+        orchestration_metadata(
+            "codeact",
+            self.config.limits.max_tool_calls,
+            self.config.limits.max_output_bytes,
+        )
     }
 
     fn max_retries(&self) -> Option<usize> {
@@ -616,7 +635,11 @@ impl Tool for RunCodeTool {
     }
 }
 
-fn orchestration_metadata(bundle: &str, max_tool_calls: usize) -> Metadata {
+fn orchestration_metadata(
+    bundle: &str,
+    max_tool_calls: usize,
+    max_result_bytes: usize,
+) -> Metadata {
     let mut metadata = Metadata::from_iter([
         ("bundle".to_string(), Value::String(bundle.to_string())),
         (
@@ -626,6 +649,10 @@ fn orchestration_metadata(bundle: &str, max_tool_calls: usize) -> Metadata {
         (
             TOOL_METADATA_NESTED_CALL_LIMIT_KEY.to_string(),
             serde_json::json!(max_tool_calls),
+        ),
+        (
+            TOOL_METADATA_NESTED_RESULT_MAX_BYTES_KEY.to_string(),
+            serde_json::json!(max_result_bytes),
         ),
     ]);
     metadata.insert(
@@ -957,7 +984,11 @@ impl Tool for RecipeTool {
     }
 
     fn metadata(&self) -> Metadata {
-        let mut metadata = orchestration_metadata("recipes", self.limits.max_tool_calls);
+        let mut metadata = orchestration_metadata(
+            "recipes",
+            self.limits.max_tool_calls,
+            self.limits.max_output_bytes,
+        );
         metadata.insert(
             "recipe_manifest_digest".to_string(),
             Value::String(self.manifest_digest.clone()),

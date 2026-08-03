@@ -9,6 +9,10 @@ use tokio::sync::{mpsc, oneshot};
 pub const TOOL_METADATA_NESTED_INVOKER_KEY: &str = "starweaver_nested_tool_invoker";
 /// Metadata key carrying the host-enforced maximum child-call count for one orchestration call.
 pub const TOOL_METADATA_NESTED_CALL_LIMIT_KEY: &str = "starweaver_nested_tool_call_limit";
+/// Metadata key carrying the maximum public terminal child-result evidence size.
+pub const TOOL_METADATA_NESTED_RESULT_MAX_BYTES_KEY: &str = "starweaver_nested_result_max_bytes";
+/// Result metadata marker for a failed child effect that constrained code must not resume past.
+pub const TOOL_RESULT_NESTED_NON_RESUMABLE_KEY: &str = "starweaver_nested_non_resumable_effect";
 
 /// A request submitted by a constrained orchestration tool to the active runtime broker.
 #[derive(Debug)]

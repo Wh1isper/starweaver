@@ -20,6 +20,41 @@ fn context() -> ToolContext {
 }
 
 #[tokio::test]
+async fn structured_tool_result_can_preserve_content_while_marking_failure() {
+    let tool = FunctionTool::new(
+        "structured_failure",
+        Some("Return a typed domain failure".to_string()),
+        json!({"type": "object"}),
+        |_context: ToolContext, _arguments: serde_json::Value| async move {
+            Ok(ToolResult::new(json!({
+                "success": false,
+                "error": {"code": "domain_failure"}
+            }))
+            .with_error()
+            .with_metadata(Metadata::from_iter([(
+                "owner".to_string(),
+                json!("domain"),
+            )])))
+        },
+    );
+    let registry = ToolRegistry::new().with_tool(Arc::new(tool));
+    let returned = registry
+        .execute_call(
+            context(),
+            &ToolCallPart {
+                id: "structured-failure-call".to_string(),
+                name: "structured_failure".to_string(),
+                arguments: json!({}).into(),
+            },
+        )
+        .await;
+
+    assert!(returned.is_error);
+    assert_eq!(returned.content["error"]["code"], "domain_failure");
+    assert_eq!(returned.metadata["owner"], "domain");
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn registry_dispatch_selects_removes_and_auto_inherits_tools() {
     let mut metadata = serde_json::Map::new();

@@ -6,6 +6,9 @@ use starweaver_core::Metadata;
 
 use super::Tool;
 
+/// Tool-result metadata marker for structured content that represents a typed failure.
+pub const TOOL_RESULT_IS_ERROR_KEY: &str = "starweaver_tool_result_is_error";
+
 /// Shared reference to a runtime tool.
 pub type DynTool = Arc<dyn Tool>;
 
@@ -47,7 +50,10 @@ impl ToolResult {
 
     /// Attach runtime metadata to this result.
     #[must_use]
-    pub fn with_metadata(mut self, metadata: Metadata) -> Self {
+    pub fn with_metadata(mut self, mut metadata: Metadata) -> Self {
+        if self.is_error() {
+            metadata.insert(TOOL_RESULT_IS_ERROR_KEY.to_string(), Value::Bool(true));
+        }
         self.metadata = metadata;
         self
     }
@@ -71,6 +77,23 @@ impl ToolResult {
     pub fn with_user_content(mut self, user_content: Value) -> Self {
         self.user_content = Some(user_content);
         self
+    }
+
+    /// Mark this structured result as a typed tool failure.
+    #[must_use]
+    pub fn with_error(mut self) -> Self {
+        self.metadata
+            .insert(TOOL_RESULT_IS_ERROR_KEY.to_string(), Value::Bool(true));
+        self
+    }
+
+    /// Return whether this structured result represents a typed tool failure.
+    #[must_use]
+    pub fn is_error(&self) -> bool {
+        self.metadata
+            .get(TOOL_RESULT_IS_ERROR_KEY)
+            .and_then(Value::as_bool)
+            == Some(true)
     }
 
     /// Attach private host metadata kept separate from model-visible content.
