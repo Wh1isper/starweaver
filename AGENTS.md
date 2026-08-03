@@ -308,7 +308,10 @@ RPC runtime update assets remain disabled while Desktop is WIP; the dormant
 Use squash merge only for GitHub pull requests. Do not merge pull requests with merge commits into `main`.
 
 Keep tag-driven publication packaging-only. Run CI, smoke, API, and publish dry-run validation before
-creating the tag; do not add those broad gates to the release workflows.
+creating the tag; do not add those broad gates to the release workflows. After a successful public
+release, update `spec/capabilities.toml:last_verified_release` and regenerate
+`spec/capability-status.md` in an ordinary reviewed pull request so the next semver gate uses the new
+public baseline; keep all package metadata at `0.0.0-dev.0`.
 
 For repository-wide hooks, run:
 
