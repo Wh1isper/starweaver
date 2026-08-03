@@ -242,6 +242,17 @@ PyPI.
 
 ## After publishing
 
+After a successful public release, update `spec/capabilities.toml:last_verified_release` to the
+published version in an ordinary reviewed pull request and regenerate `spec/capability-status.md`:
+
+```bash
+cargo run --locked -p xtask -- check-capabilities --bless
+make capability-check
+```
+
+This records the baseline for the next Rust semver check. It does not change the permanent
+`0.0.0-dev.0` package metadata and is not an automated release-version commit.
+
 Verify the public install and update paths:
 
 ```bash
