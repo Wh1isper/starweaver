@@ -154,8 +154,18 @@ The router enforces this publication order:
 
 A failure leaves a draft rather than a partially public release. Reruns accept only a draft whose
 complete asset set is byte-identical. Once public, assets are immutable and automation refuses to
-replace them. The dormant `.github/workflows/release.yml` remains only as a reference container for
-frozen Desktop/runtime jobs and is not called by the maintained release path.
+replace them. If recovery requires a workflow fix after the immutable tag was created, merge that fix
+to `main` and dispatch the router from `main` with the original tag:
+
+```bash
+gh workflow run release-components.yml --ref main -f tag=vX.Y.Z
+```
+
+The recovery run uses the reviewed workflow definitions from `main`, still checks out and validates
+the exact original tag source SHA for every build, and keeps the same manifest/source identity. Never
+move the tag to obtain newer workflow code. The dormant `.github/workflows/release.yml` remains only
+as a reference container for frozen Desktop/runtime jobs and is not called by the maintained release
+path.
 
 ## Release assets
 

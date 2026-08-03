@@ -299,8 +299,11 @@ router stages complete, manifest-verified assets in a draft Release, publishes c
 for a full release, and publishes the immutable GitHub Release last. Only stable full releases become
 GitHub Latest. Canonical release tags must be protected against update/deletion by a repository
 ruleset, and every lane checks out the router-validated source SHA rather than resolving the tag again.
-Desktop installers and Desktop-managed RPC runtime update assets remain disabled while Desktop is WIP;
-the dormant `.github/workflows/release.yml` is retained only as their frozen reference container.
+If recovery requires newer workflow code, merge the fix to `main` and dispatch
+`release-components.yml` from `main` with the original immutable tag; the recovery run must still build
+the router-validated original source SHA, never a moved tag. Desktop installers and Desktop-managed
+RPC runtime update assets remain disabled while Desktop is WIP; the dormant
+`.github/workflows/release.yml` is retained only as their frozen reference container.
 
 Use squash merge only for GitHub pull requests. Do not merge pull requests with merge commits into `main`.
 

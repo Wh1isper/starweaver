@@ -681,7 +681,7 @@ fn ensure_development_versions(root: &std::path::Path, scope: ReleaseScope) -> R
     if scope.updates_python() {
         let manifest = root.join("packages/starweaver-py/pyproject.toml");
         let text = fs::read_to_string(&manifest).map_err(|error| error.to_string())?;
-        let actual = toml_table_version(&text, "[project]\n")?;
+        let actual = toml_table_version(&text, "[project]")?;
         if actual != DEVELOPMENT_VERSION {
             return Err(format!(
                 "Python package version must be {DEVELOPMENT_VERSION} before release preparation, got {actual}"
@@ -708,8 +708,8 @@ fn update_python_package_version(root: &std::path::Path, version: &str) -> Resul
     if !pyproject.exists() && !cargo_manifest.exists() {
         return Ok(());
     }
-    update_toml_table_version(&pyproject, "[project]\n", version)?;
-    update_toml_table_version(&cargo_manifest, "[package]\n", version)
+    update_toml_table_version(&pyproject, "[project]", version)?;
+    update_toml_table_version(&cargo_manifest, "[package]", version)
 }
 
 fn update_python_workspace_dependency_versions(
@@ -759,10 +759,7 @@ fn update_toml_table_version(
 }
 
 fn replace_toml_table_version(text: &str, marker: &str, version: &str) -> Result<String, String> {
-    let start = text
-        .find(marker)
-        .ok_or_else(|| format!("missing {marker:?}"))?
-        + marker.len();
+    let start = toml_table_body_start(text, marker)?;
     let after = &text[start..];
     let line_start = after
         .find("version = \"")
@@ -781,10 +778,7 @@ fn replace_toml_table_version(text: &str, marker: &str, version: &str) -> Result
 }
 
 fn toml_table_version<'a>(text: &'a str, marker: &str) -> Result<&'a str, String> {
-    let start = text
-        .find(marker)
-        .ok_or_else(|| format!("missing {marker:?}"))?
-        + marker.len();
+    let start = toml_table_body_start(text, marker)?;
     let line_start = text[start..]
         .find("version = \"")
         .ok_or_else(|| "missing package version".to_string())?
@@ -797,12 +791,19 @@ fn toml_table_version<'a>(text: &'a str, marker: &str) -> Result<&'a str, String
     Ok(&text[value_start..value_end])
 }
 
+fn toml_table_body_start(text: &str, marker: &str) -> Result<usize, String> {
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        if line.trim_end_matches(['\r', '\n']) == marker {
+            return Ok(offset + line.len());
+        }
+        offset += line.len();
+    }
+    Err(format!("missing {marker}"))
+}
+
 fn replace_workspace_version(text: &str, version: &str) -> Result<String, String> {
-    let marker = "[workspace.package]\n";
-    let start = text
-        .find(marker)
-        .ok_or_else(|| "missing [workspace.package]".to_string())?
-        + marker.len();
+    let start = toml_table_body_start(text, "[workspace.package]")?;
     let after = &text[start..];
     let line_start = after
         .find("version = \"")
@@ -900,11 +901,7 @@ fn workspace_version_from_manifest(root: &std::path::Path) -> Result<String, Str
 }
 
 fn workspace_version_from_manifest_text(text: &str) -> Result<String, String> {
-    let marker = "[workspace.package]\n";
-    let start = text
-        .find(marker)
-        .ok_or_else(|| "missing [workspace.package]".to_string())?
-        + marker.len();
+    let start = toml_table_body_start(text, "[workspace.package]")?;
     let after = &text[start..];
     let line_start = after
         .find("version = \"")
@@ -1462,6 +1459,27 @@ version = "1.2.3"
     }
 
     #[test]
+    fn release_metadata_transform_accepts_crlf_manifests() {
+        let workspace = "[workspace]\r\nmembers = []\r\n\r\n[workspace.package]\r\nedition = \"2024\"\r\nversion = \"0.0.0-dev.0\"\r\n";
+        assert_eq!(
+            workspace_version_from_manifest_text(workspace),
+            Ok("0.0.0-dev.0".to_string())
+        );
+        let updated = replace_workspace_version(workspace, "0.14.0")
+            .unwrap_or_else(|error| panic!("workspace version should update: {error}"));
+        assert!(updated.contains("version = \"0.14.0\"\r\n"));
+
+        let pyproject = "[project]\r\nname = \"starweaver\"\r\nversion = \"0.0.0-dev.0\"\r\n";
+        assert_eq!(
+            toml_table_version(pyproject, "[project]"),
+            Ok("0.0.0-dev.0")
+        );
+        let updated = replace_toml_table_version(pyproject, "[project]", "0.14.0")
+            .unwrap_or_else(|error| panic!("Python version should update: {error}"));
+        assert!(updated.contains("version = \"0.14.0\"\r\n"));
+    }
+
+    #[test]
     fn toml_table_version_replacer_updates_selected_table_version() {
         let text = r#"
 [project]
@@ -1471,7 +1489,7 @@ version = "1.2.3"
 [tool.example]
 version = "9.9.9"
 "#;
-        let updated = match replace_toml_table_version(text, "[project]\n", "2.0.0") {
+        let updated = match replace_toml_table_version(text, "[project]", "2.0.0") {
             Ok(updated) => updated,
             Err(error) => panic!("project version should update: {error}"),
         };
