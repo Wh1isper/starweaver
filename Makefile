@@ -414,13 +414,20 @@ release-tag-check: ## Parse and validate TAG using the canonical component relea
 	@$(XTASK) release-tag $(TAG)
 
 .PHONY: semver-check
-semver-check: ## Check Rust public API compatibility against the latest release
+semver-check: ## Check Rust public API compatibility for TAG against the last verified release
+	@if [ -z "$(TAG)" ]; then echo "TAG is required"; exit 1; fi
 	@command -v cargo-semver-checks >/dev/null || { echo "cargo-semver-checks is required"; exit 1; }
-	@# First-release crates have no crates.io baseline; add them after their initial publication.
-	@cargo semver-checks check-release --workspace --exclude starweaver-storage --exclude starweaver-computer-use --exclude starweaver-desktop
+	@command -v jq >/dev/null || { echo "jq is required"; exit 1; }
+	@plan="$$($(XTASK) semver-check-plan "$(TAG)")"; \
+		baseline="$$(printf '%s' "$$plan" | jq -er .baseline_version)"; \
+		release_type="$$(printf '%s' "$$plan" | jq -er .release_type)"; \
+		echo "Checking Rust public API compatibility for $(TAG) against $$baseline ($$release_type release)"; \
+		cargo semver-checks check-release --workspace \
+			--baseline-version "$$baseline" --release-type "$$release_type" \
+			--exclude starweaver-storage --exclude starweaver-computer-use --exclude starweaver-desktop
 
 .PHONY: release-api-check
-release-api-check: agent-api-check py-api-check semver-check py-wheel-smoke ## Validate reviewed Rust/Python APIs and the built wheel before release
+release-api-check: agent-api-check py-api-check semver-check py-wheel-smoke ## Validate reviewed Rust/Python APIs and the built wheel for TAG
 
 .PHONY: publish-dry-run
 publish-dry-run: ## Dry-run first-wave crate publish packages

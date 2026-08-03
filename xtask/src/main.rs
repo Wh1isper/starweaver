@@ -68,6 +68,7 @@ fn run() -> Result<(), String> {
         "release-manifest-verify" => release::release_manifest_verify(&args),
         "release-prepare" => release::release_prepare(&args),
         "release-tag" => release::release_tag(&args),
+        "semver-check-plan" => release::semver_check_plan(&args),
         "record-model-cassette" => fixtures::record_model_cassette(&args),
         "scrub-model-cassette" => fixtures::scrub_model_cassette(&args),
         "summarize-model-fixtures" => fixtures::summarize_model_fixtures(&args),

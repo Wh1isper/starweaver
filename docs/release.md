@@ -77,14 +77,16 @@ clean `main` checkout, run:
 
 ```bash
 make ci
-make release-api-check
+make release-api-check TAG=vX.Y.Z
 make cli-smoke
 make py-wheel-smoke
 make publish-dry-run
 ```
 
-`make release-api-check` verifies the reviewed Rust facade, classified Python exports, semver
-compatibility, and a built-wheel smoke test. Intentional Rust facade changes are accepted with
+`make release-api-check TAG=vX.Y.Z` verifies the reviewed Rust facade, classified Python exports,
+semver compatibility, and a built-wheel smoke test. The semver check compares the permanent
+`0.0.0-dev.0` workspace against `last_verified_release` from `spec/capabilities.toml` and derives the
+allowed release type from the candidate tag. Intentional Rust facade changes are accepted with
 `cargo run -p xtask -- check-agent-api --bless` after review; intentional Python changes update
 `tests/fixtures/api/top-level-v1.json` in the same review.
 
