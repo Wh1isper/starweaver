@@ -100,6 +100,12 @@ jobs:
         with:
           ref: ${{ inputs.source_revision }}
 
+      - name: Normalize Windows source checkout
+        if: runner.os == 'Windows'
+        run: |
+          git config core.autocrlf false
+          git checkout-index --force --all
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

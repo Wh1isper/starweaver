@@ -8,12 +8,18 @@ on:
       - "computer-use-v[0-9]*"
       - "sdk-v[0-9]*"
       - "python-v[0-9]*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing immutable canonical release tag to recover"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: component-release-${{ github.ref_name }}
+  group: component-release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 defaults:
@@ -22,6 +28,7 @@ defaults:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   route:
@@ -37,7 +44,7 @@ jobs:
       - name: Checkout immutable release tag
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.ref_name }}
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
           fetch-depth: 0
 
       - name: Install Rust toolchain
@@ -49,7 +56,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "release recovery must dispatch the workflow from main" >&2
+            exit 1
+          fi
+          tag="$RELEASE_TAG"
           parsed="$(cargo run --quiet --locked -p xtask -- release-tag "$tag")"
           scope="$(jq -r .scope <<<"$parsed")"
           version="$(jq -r .version <<<"$parsed")"
