@@ -6,7 +6,9 @@ use starweaver_agent::{
     AgentSpec, AgentSpecRegistry, FunctionModel, FunctionModelInfo, ModelSettings, TestModel,
     get_model_config, get_model_settings, model_runtime_preset,
 };
-use starweaver_model::{ModelMessage, ModelResponse};
+use starweaver_context::AgentContext;
+use starweaver_core::SessionId;
+use starweaver_model::{ModelMessage, ModelProfile, ModelResponse, ProtocolFamily};
 use starweaver_usage::Usage;
 
 #[tokio::test]
@@ -60,6 +62,7 @@ fn model_presets_resolve_settings_configs_and_runtime_aliases() {
         starweaver_agent::ProtocolFamily::OpenAiResponses
     );
     assert_eq!(preset.config.context_window, 270_000);
+    assert!(preset.config.profile.supports_openai_prompt_cache_key);
 }
 
 #[tokio::test]
@@ -183,6 +186,42 @@ model:
         .unwrap();
 
     assert_eq!(result.output, "settings ok");
+}
+
+#[tokio::test]
+async fn agent_spec_preserves_transport_session_support_and_projects_cache_capability() {
+    let spec = AgentSpec::from_yaml(
+        r"
+name: session-cache-helper
+model:
+  model_id: session-model
+  config_preset: gpt5_270k
+",
+    )
+    .unwrap();
+    let mut profile = ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses);
+    profile.supports_openai_responses_session_header = true;
+    let model = FunctionModel::new(
+        |_messages: Vec<ModelMessage>,
+         settings: Option<ModelSettings>,
+         _info: FunctionModelInfo| {
+            let cache_key = settings
+                .as_ref()
+                .and_then(|settings| settings.provider_settings.openai_responses.as_ref())
+                .and_then(|settings| settings.prompt_cache_key.as_deref());
+            assert_eq!(cache_key, Some("session-agent-spec"));
+            Ok(ModelResponse::text("cache bound"))
+        },
+    )
+    .with_profile(profile);
+    let registry = AgentSpecRegistry::new().with_model("session-model", Arc::new(model));
+    let agent = spec.builder(&registry).unwrap().build();
+    let mut context = AgentContext::default();
+    context.set_session_id(SessionId::from_string("session-agent-spec"));
+
+    let result = agent.run_with_context("hello", &mut context).await.unwrap();
+
+    assert_eq!(result.output, "cache bound");
 }
 
 #[tokio::test]

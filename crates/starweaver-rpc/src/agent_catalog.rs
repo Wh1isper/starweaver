@@ -525,7 +525,7 @@ impl RpcAgentCatalog {
             }
         };
         apply_http_overrides(&mut http_config, provider);
-        let model_profile = match profile.model_config.as_deref() {
+        let mut model_profile = match profile.model_config.as_deref() {
             Some(preset) => {
                 get_model_config(preset)
                     .map_err(|error| RpcHostError::Invalid(error.to_string()))?
@@ -533,6 +533,8 @@ impl RpcAgentCatalog {
             }
             None => ModelProfile::for_protocol(parsed.protocol),
         };
+        model_profile.supports_openai_responses_session_header =
+            parsed.supports_openai_responses_session_header();
         let client = ProtocolModelClient::new(
             parsed.provider_name,
             parsed.model_name,
@@ -705,6 +707,12 @@ impl RpcModelId {
         })
     }
 
+    fn supports_openai_responses_session_header(&self) -> bool {
+        matches!(self.protocol, ProtocolFamily::OpenAiResponses)
+            && self.oauth_provider.is_none()
+            && self.provider_key != self.provider_name
+    }
+
     const fn default_api_key_env(&self) -> &'static str {
         match self.protocol {
             ProtocolFamily::OpenAiResponses | ProtocolFamily::OpenAiChatCompletions => {
@@ -752,6 +760,25 @@ mod tests {
         );
         let catalog = RpcAgentCatalog::new(config).unwrap();
         assert!(catalog.runtime_builder("codex").is_ok());
+    }
+
+    #[test]
+    fn openai_responses_gateways_support_session_headers_but_direct_http_does_not() {
+        assert!(
+            RpcModelId::parse("homelab@openai-responses:gpt-5")
+                .unwrap()
+                .supports_openai_responses_session_header()
+        );
+        assert!(
+            !RpcModelId::parse("openai-responses:gpt-5")
+                .unwrap()
+                .supports_openai_responses_session_header()
+        );
+        assert!(
+            !RpcModelId::parse("homelab@openai-chat:gpt-5")
+                .unwrap()
+                .supports_openai_responses_session_header()
+        );
     }
 
     #[test]

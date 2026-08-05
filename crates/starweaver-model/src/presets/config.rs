@@ -141,6 +141,7 @@ fn config_data(
     profile.supports_image_input = max_images > 0;
     profile.supports_image_output =
         matches!(protocol, ProtocolFamily::OpenAiResponses) && name.starts_with("gpt5_");
+    profile.supports_openai_prompt_cache_key = name.starts_with("gpt5_");
     profile.thinking_always_enabled = name.starts_with("grok_4_5_");
     profile.supports_video_input = max_videos > 0;
     profile.supports_audio_input = matches!(protocol, ProtocolFamily::GeminiGenerateContent);

@@ -24,6 +24,9 @@ pub enum ModelCapability {
     ReasoningRequired,
     /// Provider rejects foreign-provider reasoning content.
     ReasoningForeignUnsupported,
+    /// Model accepts `OpenAI`'s prompt cache key request setting.
+    #[serde(rename = "openai_prompt_cache_key")]
+    OpenAiPromptCacheKey,
 }
 
 /// Runtime model configuration stored on [`crate::AgentContext`].

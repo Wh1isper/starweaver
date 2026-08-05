@@ -9,9 +9,11 @@ use starweaver_oauth::OAuthTokenSource;
 use crate::{
     ModelError,
     oauth::headers::{
-        CODEX_USER_AGENT_HEADER, build_codex_headers, patch_codex_responses_body,
-        patch_codex_websocket_request, trace_session_headers, validate_safe_extra_headers,
+        CODEX_USER_AGENT_HEADER, build_codex_headers, canonical_codex_routing_id,
+        patch_codex_responses_body, patch_codex_websocket_request, trace_session_headers,
+        validate_safe_extra_headers,
     },
+    settings::SESSION_BOUND_PROMPT_CACHE_METADATA_KEY,
     transport::{
         DynHttpClient, HttpRequest, HttpResponse, ModelEventStream, ModelHttpClient,
         ModelWebSocketEventSession, ReqwestHttpClient, extend_headers_case_insensitive,
@@ -70,11 +72,14 @@ impl OAuthBearerHttpClient {
         mut request: HttpRequest,
         snapshot: &starweaver_oauth::TokenSnapshot,
     ) -> Result<HttpRequest, ModelError> {
-        let explicit_codex_routing_headers = if self.provider_name == "codex" {
-            extract_case_insensitive_headers(&request.headers, CODEX_ROUTING_HEADER_NAMES)
-        } else {
-            BTreeMap::new()
-        };
+        let session_bound_prompt_cache =
+            self.provider_name == "codex" && has_session_bound_prompt_cache_key(&request);
+        let explicit_codex_routing_headers =
+            if self.provider_name == "codex" && !session_bound_prompt_cache {
+                extract_case_insensitive_headers(&request.headers, CODEX_ROUTING_HEADER_NAMES)
+            } else {
+                BTreeMap::new()
+            };
         request.headers.insert(
             "Authorization".to_string(),
             format!("Bearer {}", snapshot.access_token),
@@ -85,10 +90,20 @@ impl OAuthBearerHttpClient {
                 CODEX_USER_AGENT_HEADER,
                 codex_user_agent(),
             );
-            let explicit_extra_routing_headers =
-                extract_case_insensitive_headers(&self.extra_headers, CODEX_ROUTING_HEADER_NAMES);
+            let explicit_extra_routing_headers = if session_bound_prompt_cache {
+                BTreeMap::new()
+            } else {
+                extract_case_insensitive_headers(&self.extra_headers, CODEX_ROUTING_HEADER_NAMES)
+            };
+            let mut configured_extra_headers = self.extra_headers.clone();
+            if session_bound_prompt_cache {
+                remove_case_insensitive_headers(
+                    &mut configured_extra_headers,
+                    CODEX_ROUTING_HEADER_NAMES,
+                );
+            }
             let mut extra_headers = trace_session_headers(&request);
-            extend_headers_case_insensitive(&mut extra_headers, self.extra_headers.clone());
+            extend_headers_case_insensitive(&mut extra_headers, configured_extra_headers);
             restore_case_insensitive_headers(&mut extra_headers, explicit_extra_routing_headers);
             extend_headers_case_insensitive(
                 &mut request.headers,
@@ -278,6 +293,29 @@ fn codex_user_agent() -> String {
         starweaver_core::sdk_name(),
         env!("CARGO_PKG_VERSION")
     )
+}
+
+fn has_session_bound_prompt_cache_key(request: &HttpRequest) -> bool {
+    if request
+        .metadata
+        .get(SESSION_BOUND_PROMPT_CACHE_METADATA_KEY)
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return false;
+    }
+    let Some(session_id) = request
+        .metadata
+        .get("provider.codex.session_id")
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
+    request
+        .body
+        .get("prompt_cache_key")
+        .and_then(Value::as_str)
+        .is_some_and(|prompt_cache_key| prompt_cache_key == canonical_codex_routing_id(session_id))
 }
 
 const CODEX_SESSION_ROUTING_HEADER_NAMES: &[&str] = &["session_id", "session-id"];

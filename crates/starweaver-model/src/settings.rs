@@ -7,6 +7,10 @@ use serde_json::{Map, Value};
 
 const OPENAI_PROMPT_CACHE_KEY_LIMIT: usize = 64;
 
+/// Internal request-metadata marker for authoritative session-bound prompt-cache routing.
+pub const SESSION_BOUND_PROMPT_CACHE_METADATA_KEY: &str =
+    "starweaver.openai.session_bound_prompt_cache";
+
 /// Format a stable affinity identifier for `OpenAI` prompt-cache routing.
 #[must_use]
 pub fn format_openai_prompt_cache_key(affinity_id: &str) -> Option<String> {
@@ -37,7 +41,15 @@ fn normalized_openai_model_name(model_name: &str) -> String {
         .to_string()
 }
 
-/// Return whether Starweaver may auto-derive `OpenAI` prompt-cache keys for a model name.
+/// Return whether a model name matched the legacy automatic prompt-cache heuristic.
+///
+/// This helper no longer controls session-bound cache routing. Use
+/// [`crate::ModelProfile::supports_openai_prompt_cache_key`] and an explicit runtime model
+/// capability instead.
+#[deprecated(
+    since = "0.0.0-dev.0",
+    note = "model-name heuristics no longer control session-bound prompt-cache routing"
+)]
 #[must_use]
 pub fn supports_automatic_openai_prompt_cache_key(model_name: &str) -> bool {
     let model = normalized_openai_model_name(model_name);

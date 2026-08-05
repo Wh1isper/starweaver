@@ -38,9 +38,9 @@ Provider mappers consume these presets through the same `ModelSettings`, `ModelP
 | `CodexSettings`           | Codex OAuth session/thread routing IDs                                                                                                                                     |
 | `GatewaySettings`         | Gateway sticky `x-session-id` and gateway-scoped extra headers                                                                                                             |
 
-Provider-specific typed settings should be the primary alignment surface. `provider_options`, `extra_body`, and `extra_headers` remain raw escape hatches; final raw body/header overlays intentionally win over typed settings.
+Provider-specific typed settings should be the primary alignment surface. `provider_options`, `extra_body`, and `extra_headers` remain raw escape hatches, and final raw body/header overlays normally win over typed settings. Session-bound OpenAI Responses routing is the narrow exception: when `ModelCapability::OpenAiPromptCacheKey` and an eligible provider-session transport are both active, runtime-owned copies normalize conflicting session headers and `prompt_cache_key` fields so caller overrides cannot split cache and routing affinity.
 
-Session-affinity routing uses `AgentContext.session_id` as a logical affinity source. Runtime request building converts that value into a low-priority typed `ModelSettings` overlay for OpenAI prompt-cache keys, Codex OAuth session/thread IDs, or opt-in Gateway sticky routing. Durable local session IDs remain trace/session metadata and are not generic model HTTP headers. `starweaver.durable_session_id` is the canonical durable local session metadata key.
+Session-affinity routing uses `AgentContext.session_id` as its logical source. Runtime request building projects it into typed Codex OAuth session/thread IDs or OpenAI Responses `x-session-id` routing only for transports that explicitly support those headers. GPT-5 config presets opt into `OpenAiPromptCacheKey`; capable transports bind the request cache key to the exact routed session value, with Codex canonicalization occurring before both values are produced. The session-derived overlay is authoritative, while caller-owned settings and request parameters remain unchanged. Durable local session IDs remain trace/session metadata and are not generic model HTTP headers. `starweaver.durable_session_id` is the canonical durable local session metadata key.
 
 ## Provider Families
 
@@ -164,7 +164,7 @@ Current fixture-driven coverage includes:
 | Anthropic typed parameter mapping          | tool choice, parallel-tool disable, native JSON schema output, betas, metadata/context/container/service tier                             |
 | Gemini typed parameter mapping             | seed, safety settings, cached content, labels, logprobs, service tier                                                                     |
 | Bedrock typed parameter mapping            | `ToolChoice::None`, top-k/thinking passthrough, service tier, guardrail/performance/request metadata, inference-profile `modelId` routing |
-| Session-affinity routing                   | OpenAI prompt cache, Codex OAuth headers, opt-in Gateway `x-session-id`                                                                   |
+| Session-affinity routing                   | explicit-capability OpenAI Responses cache binding, Codex OAuth headers, and eligible `x-session-id` transports                           |
 | Structured output request mapping          | OpenAI Chat, OpenAI Responses, Gemini, Anthropic JSON schema; Bedrock native output remains follow-up                                     |
 
 ## CI Gate

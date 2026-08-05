@@ -638,14 +638,14 @@ async fn builder_default_media_upload_filter_keeps_original_media_on_upload_fail
 async fn builder_derives_model_context_capabilities_from_profile_without_overriding_explicit_config()
  {
     let captured_configs = Arc::new(Mutex::new(Vec::new()));
+    let mut derived_profile = ModelProfile::for_protocol(ProtocolFamily::GeminiGenerateContent);
+    derived_profile.supports_openai_prompt_cache_key = true;
     let derived_model = FunctionModel::new(
         |_messages: Vec<ModelMessage>,
          _settings: Option<ModelSettings>,
          _info: FunctionModelInfo| { Ok(ModelResponse::text("ok")) },
     )
-    .with_profile(ModelProfile::for_protocol(
-        ProtocolFamily::GeminiGenerateContent,
-    ));
+    .with_profile(derived_profile);
 
     let result = AgentBuilder::new(Arc::new(derived_model))
         .capability(Arc::new(ModelConfigCaptureCapability {
@@ -675,16 +675,21 @@ async fn builder_derives_model_context_capabilities_from_profile_without_overrid
             .capabilities
             .contains(&ModelCapability::DocumentUnderstanding)
     );
+    assert!(
+        derived
+            .capabilities
+            .contains(&ModelCapability::OpenAiPromptCacheKey)
+    );
 
     let captured_configs = Arc::new(Mutex::new(Vec::new()));
+    let mut explicit_profile = ModelProfile::for_protocol(ProtocolFamily::GeminiGenerateContent);
+    explicit_profile.supports_openai_prompt_cache_key = true;
     let explicit_model = FunctionModel::new(
         |_messages: Vec<ModelMessage>,
          _settings: Option<ModelSettings>,
          _info: FunctionModelInfo| { Ok(ModelResponse::text("ok")) },
     )
-    .with_profile(ModelProfile::for_protocol(
-        ProtocolFamily::GeminiGenerateContent,
-    ));
+    .with_profile(explicit_profile);
     let mut explicit_config = ModelConfig::default();
     explicit_config.capabilities.insert(ModelCapability::Vision);
 

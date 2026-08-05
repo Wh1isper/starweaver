@@ -138,7 +138,10 @@ impl AgentSpec {
         let retry = self.resolved_retry(registry)?;
         let model_config = self.resolved_model_config()?;
         if let Some(config) = model_config.as_ref() {
-            model = Arc::new(ProfileOverrideModel::new(model, config.profile.clone()));
+            let mut profile = config.profile.clone();
+            profile.supports_openai_responses_session_header =
+                model.profile().supports_openai_responses_session_header;
+            model = Arc::new(ProfileOverrideModel::new(model, profile));
         }
         let mut runtime = self.preset.runtime.clone();
         retry.apply_runtime(&mut runtime);
@@ -944,6 +947,9 @@ fn context_model_config_from_preset(preset: &ModelConfigPresetData) -> ModelConf
     }
     if preset.profile.supports_document_input {
         capabilities.insert(ModelCapability::DocumentUnderstanding);
+    }
+    if preset.profile.supports_openai_prompt_cache_key {
+        capabilities.insert(ModelCapability::OpenAiPromptCacheKey);
     }
     ModelConfig {
         context_window: Some(u64::from(preset.context_window)),

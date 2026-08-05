@@ -3,16 +3,15 @@
 use std::collections::BTreeSet;
 
 use chrono::Utc;
-use starweaver_context::{AgentContext, AgentEvent, ToolAvailabilityPolicy};
+use starweaver_context::{AgentContext, AgentEvent, ModelCapability, ToolAvailabilityPolicy};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     CodexSettings, ContentPart, GatewaySettings, INSTRUCTION_DYNAMIC_METADATA,
     INSTRUCTION_ORIGIN_AGENT, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION, INSTRUCTION_ORIGIN_METADATA,
     INSTRUCTION_ORIGIN_TOOLSET, ModelMessage, ModelRequest, ModelRequestParameters,
-    ModelRequestPart, ModelSettings, OpenAiChatSettings, OpenAiResponsesSettings,
-    PreparedInstruction, ProtocolFamily, ProviderSettings, ToolDefinition,
-    attach_prepared_instructions, format_openai_prompt_cache_key,
-    supports_automatic_openai_prompt_cache_key,
+    ModelRequestPart, ModelSettings, OpenAiResponsesSettings, PreparedInstruction, ProtocolFamily,
+    ProviderSettings, ToolDefinition, attach_prepared_instructions, canonical_codex_routing_id,
+    settings::SESSION_BOUND_PROMPT_CACHE_METADATA_KEY,
 };
 use starweaver_tools::{ToolKind, ToolRegistry, set_tool_metadata_kind};
 
@@ -33,6 +32,11 @@ use crate::{
 const HISTORY_COMPACTION_TRACE_RECORDED_METADATA: &str =
     "starweaver.history.compaction.trace_recorded";
 const MAX_CODEACT_CATALOG_BYTES: usize = 32 * 1024;
+
+struct OpenAiSessionBinding {
+    provider_session_id: String,
+    x_session_id: Option<String>,
+}
 
 impl Agent {
     fn attach_static_instruction_parts(&self, request: &mut ModelRequest) {
@@ -201,11 +205,122 @@ impl Agent {
         &self,
         context: &AgentContext,
     ) -> Option<ModelSettings> {
-        merge_settings_layers([
+        let mut settings = merge_settings_layers([
             self.session_affinity_settings(context),
             self.model.default_settings().cloned(),
             self.model_settings.clone(),
-        ])
+        ]);
+        if let Some(settings) = settings.as_mut() {
+            self.normalize_session_bound_settings(context, settings);
+        }
+        settings
+    }
+
+    fn openai_session_binding(&self, context: &AgentContext) -> Option<OpenAiSessionBinding> {
+        if !matches!(
+            self.model.profile().protocol,
+            ProtocolFamily::OpenAiResponses
+        ) {
+            return None;
+        }
+        let affinity_id = context.session_id()?.as_str();
+        if self.model.provider_name() == Some("codex") {
+            return Some(OpenAiSessionBinding {
+                provider_session_id: canonical_codex_routing_id(affinity_id),
+                x_session_id: None,
+            });
+        }
+        if self
+            .model
+            .profile()
+            .supports_openai_responses_session_header
+            || gateway_affinity_enabled(context)
+        {
+            return Some(OpenAiSessionBinding {
+                provider_session_id: affinity_id.to_string(),
+                x_session_id: Some(affinity_id.to_string()),
+            });
+        }
+        None
+    }
+
+    fn normalize_session_bound_settings(
+        &self,
+        context: &AgentContext,
+        settings: &mut ModelSettings,
+    ) {
+        let Some(binding) = self.openai_session_binding(context) else {
+            return;
+        };
+        if let Some(x_session_id) = binding.x_session_id.as_ref() {
+            settings
+                .provider_settings
+                .gateway
+                .get_or_insert_with(GatewaySettings::default)
+                .x_session_id = Some(x_session_id.clone());
+            settings
+                .extra_headers
+                .retain(|name, _| !name.eq_ignore_ascii_case("x-session-id"));
+            settings
+                .extra_headers
+                .insert("x-session-id".to_string(), x_session_id.clone());
+        }
+        if context
+            .model_config
+            .has_capability(&ModelCapability::OpenAiPromptCacheKey)
+        {
+            if self.model.provider_name() == Some("codex") {
+                let codex = settings
+                    .provider_settings
+                    .codex
+                    .get_or_insert_with(CodexSettings::default);
+                codex.session_id = Some(binding.provider_session_id.clone());
+                codex.thread_id = context
+                    .run_id
+                    .as_ref()
+                    .map(|run_id| run_id.as_str().to_string());
+            }
+            settings.extra_body.remove("prompt_cache_key");
+            settings
+                .provider_settings
+                .openai_responses
+                .get_or_insert_with(OpenAiResponsesSettings::default)
+                .prompt_cache_key = Some(binding.provider_session_id);
+        }
+    }
+
+    fn normalize_session_bound_request_params(
+        &self,
+        context: &AgentContext,
+        params: &mut ModelRequestParameters,
+    ) {
+        let Some(binding) = self.openai_session_binding(context) else {
+            return;
+        };
+        if let Some(x_session_id) = binding.x_session_id {
+            params
+                .http
+                .headers
+                .retain(|name, _| !name.eq_ignore_ascii_case("x-session-id"));
+            params
+                .http
+                .headers
+                .insert("x-session-id".to_string(), x_session_id);
+        }
+        if context
+            .model_config
+            .has_capability(&ModelCapability::OpenAiPromptCacheKey)
+        {
+            params.http.extra_body.remove("prompt_cache_key");
+            params.extra_body.insert(
+                "prompt_cache_key".to_string(),
+                serde_json::json!(binding.provider_session_id),
+            );
+            params.metadata.insert(
+                SESSION_BOUND_PROMPT_CACHE_METADATA_KEY.to_string(),
+                serde_json::json!(true),
+            );
+        }
     }
 
     fn session_affinity_settings(&self, context: &AgentContext) -> Option<ModelSettings> {
@@ -213,43 +328,42 @@ impl Agent {
         let provider_name = self.model.provider_name();
         let mut provider_settings = ProviderSettings::default();
         match self.model.profile().protocol {
-            ProtocolFamily::OpenAiChatCompletions if provider_name != Some("codex") => {
-                if let Some(prompt_cache_key) =
-                    supports_automatic_openai_prompt_cache_key(self.model.model_name())
-                        .then(|| format_openai_prompt_cache_key(affinity_id))
-                        .flatten()
-                {
-                    provider_settings.openai_chat = Some(OpenAiChatSettings {
-                        prompt_cache_key: Some(prompt_cache_key),
-                        ..OpenAiChatSettings::default()
-                    });
-                }
-            }
             ProtocolFamily::OpenAiResponses if provider_name == Some("codex") => {
+                let provider_session_id = canonical_codex_routing_id(affinity_id);
                 provider_settings.codex = Some(CodexSettings {
-                    session_id: Some(affinity_id.to_string()),
+                    session_id: Some(provider_session_id.clone()),
                     thread_id: context
                         .run_id
                         .as_ref()
                         .map(|run_id| run_id.as_str().to_string()),
                 });
-            }
-            ProtocolFamily::OpenAiResponses => {
-                if let Some(prompt_cache_key) =
-                    supports_automatic_openai_prompt_cache_key(self.model.model_name())
-                        .then(|| format_openai_prompt_cache_key(affinity_id))
-                        .flatten()
+                if context
+                    .model_config
+                    .has_capability(&ModelCapability::OpenAiPromptCacheKey)
                 {
                     provider_settings.openai_responses = Some(OpenAiResponsesSettings {
-                        prompt_cache_key: Some(prompt_cache_key),
+                        prompt_cache_key: Some(provider_session_id),
                         ..OpenAiResponsesSettings::default()
                     });
                 }
-                if gateway_affinity_enabled(context) {
-                    provider_settings.gateway = Some(GatewaySettings {
-                        x_session_id: Some(affinity_id.to_string()),
-                        ..GatewaySettings::default()
-                    });
+            }
+            ProtocolFamily::OpenAiResponses => {
+                if let Some(binding) = self.openai_session_binding(context) {
+                    if context
+                        .model_config
+                        .has_capability(&ModelCapability::OpenAiPromptCacheKey)
+                    {
+                        provider_settings.openai_responses = Some(OpenAiResponsesSettings {
+                            prompt_cache_key: Some(binding.provider_session_id),
+                            ..OpenAiResponsesSettings::default()
+                        });
+                    }
+                    if let Some(x_session_id) = binding.x_session_id {
+                        provider_settings.gateway = Some(GatewaySettings {
+                            x_session_id: Some(x_session_id),
+                            ..GatewaySettings::default()
+                        });
+                    }
                 }
             }
             ProtocolFamily::GeminiGenerateContent | ProtocolFamily::BedrockConverse
@@ -589,6 +703,7 @@ impl Agent {
                 metadata,
             });
         }
+        self.normalize_session_bound_request_params(context, &mut params);
         Ok(params)
     }
 

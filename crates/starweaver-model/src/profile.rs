@@ -207,6 +207,12 @@ pub struct ModelProfile {
     pub supports_inline_system_prompts: bool,
     /// Configurable thinking support.
     pub supports_thinking: bool,
+    /// Model accepts `OpenAI`'s `prompt_cache_key` request setting.
+    #[serde(default)]
+    pub supports_openai_prompt_cache_key: bool,
+    /// Transport accepts the SDK `x-session-id` header for `OpenAI` Responses requests.
+    #[serde(default)]
+    pub supports_openai_responses_session_header: bool,
     /// Drop sampling settings such as temperature/top-p/top-k/penalties/logit-bias when reasoning is enabled.
     #[serde(default)]
     pub drop_sampling_parameters_when_reasoning: bool,
@@ -252,6 +258,8 @@ impl ModelProfile {
             supports_document_input: false,
             supports_inline_system_prompts: false,
             supports_thinking: false,
+            supports_openai_prompt_cache_key: false,
+            supports_openai_responses_session_header: false,
             drop_sampling_parameters_when_reasoning: false,
             thinking_always_enabled: false,
             thinking_tags: default_thinking_tags(),

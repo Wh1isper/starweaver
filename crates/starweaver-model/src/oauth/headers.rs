@@ -85,7 +85,9 @@ pub fn build_session_headers(
     headers
 }
 
-fn canonical_codex_routing_id(value: &str) -> String {
+/// Canonicalize a Codex provider-routing identifier for safe request headers.
+#[must_use]
+pub fn canonical_codex_routing_id(value: &str) -> String {
     if value.len() <= CODEX_ROUTING_ID_LIMIT
         && value
             .bytes()

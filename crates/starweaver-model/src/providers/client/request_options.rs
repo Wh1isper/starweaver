@@ -6,7 +6,6 @@ use crate::{
     profile::ProtocolFamily,
     settings::{
         GoogleCloudServiceTier, ModelSettings, ServiceTier, format_openai_prompt_cache_key,
-        supports_automatic_openai_prompt_cache_key,
     },
     transport::{HttpRequest, HttpRequestOptions, extend_headers_case_insensitive},
 };
@@ -102,7 +101,7 @@ impl ProtocolModelClient {
                 apply_openai_prompt_cache_metadata(
                     metadata,
                     body,
-                    supports_automatic_openai_prompt_cache_key(&self.model_name),
+                    self.profile.supports_openai_prompt_cache_key,
                 );
             }
             validate_openai_prompt_cache_fields(&self.model_name, body)?;
