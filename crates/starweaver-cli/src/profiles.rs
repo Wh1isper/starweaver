@@ -853,6 +853,9 @@ fn context_model_config_from_preset(
     if config.profile.supports_document_input {
         capabilities.insert(ModelCapability::DocumentUnderstanding);
     }
+    if config.profile.supports_openai_prompt_cache_key {
+        capabilities.insert(ModelCapability::OpenAiPromptCacheKey);
+    }
     ModelConfig {
         context_window: Some(u64::from(config.context_window)),
         max_images: usize::try_from(config.max_images).unwrap_or(usize::MAX),
@@ -949,7 +952,9 @@ fn provider_model(
         ProtocolFamily::BedrockConverse => return Ok(None),
     };
     apply_provider_http_config_overrides(&mut http_config, &provider_config);
-    let profile = provider_model_profile(model_config_preset, parsed.protocol)?;
+    let mut profile = provider_model_profile(model_config_preset, parsed.protocol)?;
+    profile.supports_openai_responses_session_header =
+        parsed.supports_openai_responses_session_header();
     let mut client = ProtocolModelClient::new(
         parsed.provider,
         parsed.model_name,
@@ -1135,6 +1140,11 @@ impl ProviderModelId {
             oauth_provider: None,
             stream_transport,
         })
+    }
+
+    const fn supports_openai_responses_session_header(&self) -> bool {
+        matches!(self.protocol, ProtocolFamily::OpenAiResponses)
+            && (self.gateway_name.is_some() || self.stream_transport.is_some())
     }
 
     fn provider_config(&self, config: &CliConfig) -> ProviderConfig {

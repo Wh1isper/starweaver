@@ -33,8 +33,8 @@ pub use message::{
 };
 pub use oauth::{
     CODEX_ORIGINATOR, CodexOAuthResponsesModel, OAuthBearerHttpClient, build_codex_headers,
-    build_codex_model, build_codex_model_with_profile, build_session_headers, codex_model_profile,
-    patch_codex_responses_body,
+    build_codex_model, build_codex_model_with_profile, build_session_headers,
+    canonical_codex_routing_id, codex_model_profile, patch_codex_responses_body,
 };
 pub use presets::{
     ModelConfigPreset, ModelConfigPresetData, ModelPresetError, ModelRuntimePreset,
@@ -57,6 +57,7 @@ pub use request::{
     PreparedInstruction, PreparedModelRequest, attach_prepared_instructions,
     context_origin_metadata, prepare_messages, prepare_model_request,
 };
+#[allow(deprecated)]
 pub use settings::{
     AnthropicSettings, BedrockSettings, CodexSettings, GatewaySettings, GoogleCloudServiceTier,
     GoogleSettings, ModelSettings, OpenAiChatSettings, OpenAiPromptCacheMode,

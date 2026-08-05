@@ -530,6 +530,12 @@ fn openai_responses_ws_model_id_prefers_websocket_with_http_fallback() {
     assert_eq!(parsed.gateway_name, None);
     assert_eq!(parsed.oauth_provider, None);
     assert_eq!(parsed.stream_transport, Some(ResponseStreamTransport::Auto));
+    assert!(parsed.supports_openai_responses_session_header());
+    assert!(
+        !ProviderModelId::parse("openai-responses:gpt-5")
+            .unwrap()
+            .supports_openai_responses_session_header()
+    );
 }
 
 #[test]
@@ -542,6 +548,12 @@ fn gateway_openai_responses_ws_model_id_prefers_websocket_with_http_fallback() {
     assert_eq!(parsed.gateway_name.as_deref(), Some("homelab"));
     assert_eq!(parsed.oauth_provider, None);
     assert_eq!(parsed.stream_transport, Some(ResponseStreamTransport::Auto));
+    assert!(parsed.supports_openai_responses_session_header());
+    assert!(
+        ProviderModelId::parse("homelab@openai-responses:gpt-5")
+            .unwrap()
+            .supports_openai_responses_session_header()
+    );
 }
 
 #[test]

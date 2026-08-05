@@ -24,10 +24,10 @@ fn agent_context_has_default_model_and_tool_config() {
 fn config_round_trips_through_resumable_state() {
     let mut context = AgentContext::new(AgentId::from_string("main"));
     context.model_config.context_window = Some(1_000_000);
-    context
-        .model_config
-        .capabilities
-        .insert(ModelCapability::Vision);
+    context.model_config.capabilities.extend([
+        ModelCapability::Vision,
+        ModelCapability::OpenAiPromptCacheKey,
+    ]);
     context.tool_config.view_relaxed_text_patterns = vec!["AGENTS.md".to_string()];
     context.tool_config.view_relaxed_line_limit = 6000;
 
@@ -35,6 +35,16 @@ fn config_round_trips_through_resumable_state() {
 
     assert_eq!(restored.model_config.context_window, Some(1_000_000));
     assert!(restored.model_config.has_vision());
+    assert!(
+        restored
+            .model_config
+            .has_capability(&ModelCapability::OpenAiPromptCacheKey)
+    );
+    assert!(
+        serde_json::to_string(&restored.model_config)
+            .unwrap()
+            .contains("openai_prompt_cache_key")
+    );
     assert_eq!(
         restored.tool_config.view_relaxed_text_patterns,
         vec!["AGENTS.md"]

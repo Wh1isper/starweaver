@@ -197,12 +197,23 @@ fn resolves_model_config_presets_and_aliases() {
     assert_eq!(gpt5_350k.max_images, 20);
     assert!(gpt5_350k.profile.supports_image_input);
     assert!(gpt5_350k.profile.supports_image_output);
+    assert!(gpt5_350k.profile.supports_openai_prompt_cache_key);
+
+    for preset in ["gpt5_270k", "gpt5_350k", "gpt5_1m"] {
+        assert!(
+            get_model_config(preset)
+                .unwrap()
+                .profile
+                .supports_openai_prompt_cache_key
+        );
+    }
 
     let grok = get_model_config("grok-4.5").unwrap();
     assert_eq!(grok.context_window, 500_000);
     assert_eq!(grok.max_images, 20);
     assert!(grok.profile.supports_image_input);
     assert!(grok.profile.thinking_always_enabled);
+    assert!(!grok.profile.supports_openai_prompt_cache_key);
 
     let gemini = get_model_config("gemini").unwrap();
     assert_eq!(gemini.max_videos, 1);

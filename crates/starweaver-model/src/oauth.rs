@@ -10,6 +10,6 @@ pub use codex_model::{
 };
 pub use headers::{
     CODEX_ORIGINATOR, RESERVED_OAUTH_EXTRA_HEADERS, build_codex_headers, build_session_headers,
-    patch_codex_responses_body,
+    canonical_codex_routing_id, patch_codex_responses_body,
 };
 pub use http_client::OAuthBearerHttpClient;

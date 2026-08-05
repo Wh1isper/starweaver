@@ -455,10 +455,12 @@ async fn protocol_client_adds_openai_prompt_cache_routing_from_explicit_affinity
         "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
         "usage": {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11}
     })));
+    let mut profile = ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses);
+    profile.supports_openai_prompt_cache_key = true;
     let client = ProtocolModelClient::new(
         "openai",
         "gpt-5.5",
-        ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+        profile,
         HttpModelConfig::new("https://api.openai.test/v1", "responses"),
         Arc::new(http.clone()),
     );
@@ -630,10 +632,12 @@ async fn protocol_client_adds_openai_chat_prompt_cache_routing_from_explicit_aff
         "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
         "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11}
     })));
+    let mut profile = ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions);
+    profile.supports_openai_prompt_cache_key = true;
     let client = ProtocolModelClient::new(
         "openai",
         "gpt-4.1-mini",
-        ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+        profile,
         HttpModelConfig::new("https://api.openai.test/v1", "chat/completions"),
         Arc::new(http.clone()),
     );

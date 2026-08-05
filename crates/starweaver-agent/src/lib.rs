@@ -957,6 +957,9 @@ fn model_capabilities_from_profile(profile: &ModelProfile) -> BTreeSet<ModelCapa
     if profile.supports_document_input {
         capabilities.insert(ModelCapability::DocumentUnderstanding);
     }
+    if profile.supports_openai_prompt_cache_key {
+        capabilities.insert(ModelCapability::OpenAiPromptCacheKey);
+    }
     capabilities
 }
 

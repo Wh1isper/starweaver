@@ -422,6 +422,15 @@ async fn codex_oauth_preserves_explicit_request_routing_headers_over_metadata() 
             "explicit-client-request".to_string(),
         ),
     ]));
+    request.metadata.insert(
+        "provider.codex.session_id".to_string(),
+        json!("typed-session"),
+    );
+    request
+        .body
+        .as_object_mut()
+        .unwrap()
+        .insert("prompt_cache_key".to_string(), json!("typed-session"));
 
     let _ = client.send(request).await;
 
@@ -434,6 +443,57 @@ async fn codex_oauth_preserves_explicit_request_routing_headers_over_metadata() 
         seen[0].headers["x-client-request-id"],
         "explicit-client-request"
     );
+}
+
+#[tokio::test]
+async fn codex_oauth_session_bound_cache_uses_typed_routing_over_explicit_headers() {
+    let token_source = Arc::new(FakeTokenSource::default());
+    let http_client = Arc::new(RecordingHttpClient::default());
+    let client = OAuthBearerHttpClient::new(
+        http_client.clone(),
+        token_source,
+        "codex",
+        BTreeMap::from([
+            ("session_id".to_string(), "configured-stale".to_string()),
+            (
+                "thread-id".to_string(),
+                "configured-thread-stale".to_string(),
+            ),
+        ]),
+    )
+    .unwrap();
+    let mut request = codex_request();
+    request.headers.extend(BTreeMap::from([
+        ("session-id".to_string(), "request-stale".to_string()),
+        ("thread_id".to_string(), "request-thread-stale".to_string()),
+    ]));
+    request.metadata.insert(
+        "provider.codex.session_id".to_string(),
+        json!("typed-session"),
+    );
+    request.metadata.insert(
+        "provider.codex.thread_id".to_string(),
+        json!("typed-thread"),
+    );
+    request.metadata.insert(
+        starweaver_model::settings::SESSION_BOUND_PROMPT_CACHE_METADATA_KEY.to_string(),
+        json!(true),
+    );
+    request
+        .body
+        .as_object_mut()
+        .unwrap()
+        .insert("prompt_cache_key".to_string(), json!("typed-session"));
+
+    let _ = client.send(request).await;
+
+    let seen = http_client.seen.lock().await;
+    assert_eq!(seen[0].headers["session_id"], "typed-session");
+    assert_eq!(seen[0].headers["session-id"], "typed-session");
+    assert_eq!(seen[0].headers["thread_id"], "typed-thread");
+    assert_eq!(seen[0].headers["thread-id"], "typed-thread");
+    assert_eq!(seen[0].headers["x-client-request-id"], "typed-thread");
+    assert_eq!(seen[0].body["prompt_cache_key"], "typed-session");
 }
 
 #[tokio::test]
