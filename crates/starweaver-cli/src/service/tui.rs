@@ -634,17 +634,20 @@ impl CliService {
                 active_shell = None;
             }
 
-            if active_run.is_none()
-                && active_shell.is_none()
-                && let Some((session_id, attempt_id)) = take_pending_background_wake(
-                    state.session_id.as_deref(),
-                    &mut pending_background_wakes,
-                    &suppressed_background_sessions,
-                    |session_id, attempt_id| {
-                        coordinator.background_completion_is_undelivered(session_id, attempt_id)
-                    },
-                )
-            {
+            let runtime_idle = active_run.is_none() && active_shell.is_none();
+            let continuation_blocked =
+                pending_hitl.is_some() || state.hitl_reload_session_id().is_some();
+            let background_continuation_allowed =
+                can_start_background_continuation(runtime_idle, continuation_blocked);
+            if let Some((session_id, attempt_id)) = take_pending_background_wake(
+                background_continuation_allowed,
+                state.session_id.as_deref(),
+                &mut pending_background_wakes,
+                &suppressed_background_sessions,
+                |session_id, attempt_id| {
+                    coordinator.background_completion_is_undelivered(session_id, attempt_id)
+                },
+            ) {
                 state.begin_background_continuation();
                 active_run = Some(spawn_tui_run(
                     &self.config,
@@ -1284,12 +1287,20 @@ fn project_pending_tui_hitl(state: &mut crate::tui::InteractiveTuiState, hitl: &
     }
 }
 
+const fn can_start_background_continuation(runtime_idle: bool, continuation_blocked: bool) -> bool {
+    runtime_idle && !continuation_blocked
+}
+
 fn take_pending_background_wake(
+    continuation_allowed: bool,
     current_session_id: Option<&str>,
     pending: &mut HashMap<String, VecDeque<String>>,
     suppressed: &BTreeSet<String>,
     is_undelivered: impl FnOnce(&str, &str) -> bool,
 ) -> Option<(String, String)> {
+    if !continuation_allowed {
+        return None;
+    }
     let session_id = current_session_id?;
     if suppressed.contains(session_id) {
         return None;
@@ -1873,6 +1884,49 @@ mod tests {
     }
 
     #[test]
+    fn background_continuation_waits_for_active_work_and_hitl_barriers() {
+        assert!(can_start_background_continuation(true, false));
+        assert!(!can_start_background_continuation(false, false));
+        assert!(!can_start_background_continuation(true, true));
+        assert!(!can_start_background_continuation(false, true));
+    }
+
+    #[test]
+    fn background_wake_stays_queued_until_continuation_barrier_clears() {
+        let mut pending = HashMap::from([(
+            "session-hitl".to_string(),
+            VecDeque::from(["attempt-hitl".to_string()]),
+        )]);
+        let suppressed = BTreeSet::new();
+
+        assert_eq!(
+            take_pending_background_wake(
+                false,
+                Some("session-hitl"),
+                &mut pending,
+                &suppressed,
+                |_, _| panic!("blocked wake must not query delivery state"),
+            ),
+            None
+        );
+        assert_eq!(pending["session-hitl"], ["attempt-hitl"]);
+
+        assert_eq!(
+            take_pending_background_wake(
+                true,
+                Some("session-hitl"),
+                &mut pending,
+                &suppressed,
+                |session_id, attempt_id| {
+                    session_id == "session-hitl" && attempt_id == "attempt-hitl"
+                },
+            ),
+            Some(("session-hitl".to_string(), "attempt-hitl".to_string()))
+        );
+        assert!(pending["session-hitl"].is_empty());
+    }
+
+    #[test]
     fn detached_session_background_wake_stays_isolated_until_reload() {
         let mut pending = HashMap::from([(
             "session-old".to_string(),
@@ -1881,12 +1935,13 @@ mod tests {
         let suppressed = BTreeSet::new();
 
         assert_eq!(
-            take_pending_background_wake(None, &mut pending, &suppressed, |_, _| true),
+            take_pending_background_wake(true, None, &mut pending, &suppressed, |_, _| true),
             None
         );
         assert_eq!(pending["session-old"].len(), 1);
         assert_eq!(
             take_pending_background_wake(
+                true,
                 Some("session-fresh"),
                 &mut pending,
                 &suppressed,
@@ -1897,6 +1952,7 @@ mod tests {
         assert_eq!(pending["session-old"].len(), 1);
         assert_eq!(
             take_pending_background_wake(
+                true,
                 Some("session-old"),
                 &mut pending,
                 &suppressed,
