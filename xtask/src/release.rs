@@ -234,7 +234,9 @@ fn classify_semver_release_type(
             "release version {release} must be newer than semver baseline {baseline}"
         ));
     }
-    if release.major > baseline.major {
+    if release.major > baseline.major
+        || (baseline.major == 0 && release.major == 0 && release.minor > baseline.minor)
+    {
         Ok("major")
     } else if release.minor > baseline.minor {
         Ok("minor")
@@ -1384,7 +1386,7 @@ mod tests {
         let baseline = Version::parse("0.13.0").unwrap_or_else(|error| panic!("{error}"));
         for (candidate, expected) in [
             ("1.0.0", "major"),
-            ("0.14.0", "minor"),
+            ("0.14.0", "major"),
             ("0.13.1", "patch"),
             ("0.13.1-rc.1", "patch"),
         ] {
@@ -1398,6 +1400,13 @@ mod tests {
         let older = Version::parse("0.12.9").unwrap_or_else(|error| panic!("{error}"));
         assert!(classify_semver_release_type(&baseline, &same).is_err());
         assert!(classify_semver_release_type(&baseline, &older).is_err());
+
+        let stable_baseline = Version::parse("1.3.0").unwrap_or_else(|error| panic!("{error}"));
+        let stable_minor = Version::parse("1.4.0").unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            classify_semver_release_type(&stable_baseline, &stable_minor),
+            Ok("minor")
+        );
     }
 
     #[test]

@@ -86,9 +86,10 @@ make publish-dry-run
 `make release-api-check TAG=vX.Y.Z` verifies the reviewed Rust facade, classified Python exports,
 semver compatibility, and a built-wheel smoke test. The semver check compares the permanent
 `0.0.0-dev.0` workspace against `last_verified_release` from `spec/capabilities.toml` and derives the
-allowed release type from the candidate tag. Intentional Rust facade changes are accepted with
-`cargo run -p xtask -- check-agent-api --bless` after review; intentional Python changes update
-`tests/fixtures/api/top-level-v1.json` in the same review.
+allowed release type from the candidate tag. A pre-1.0 minor increment is checked as a breaking
+compatibility boundary, while a patch increment must remain patch-compatible. Intentional Rust facade
+changes are accepted with `cargo run -p xtask -- check-agent-api --bless` after review; intentional
+Python changes update `tests/fixtures/api/top-level-v1.json` in the same review.
 
 Validate the intended tag before pushing it:
 
