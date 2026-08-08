@@ -587,8 +587,9 @@ mod tests {
         let revoked = coordinator.state.admissions.lock().unwrap()[&target]
             .revoked
             .clone();
-        tokio::time::sleep(Duration::from_millis(25)).await;
-        assert!(revoked.is_cancelled());
+        tokio::time::timeout(Duration::from_secs(1), revoked.cancelled())
+            .await
+            .expect("TTL task revokes the active admission");
         assert_eq!(coordinator.active_admission_count(), 0);
         drop(lease);
     }
